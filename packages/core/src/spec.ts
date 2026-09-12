@@ -256,7 +256,21 @@ export function canonicalizeProperty(spec: PropertySpec): Canonicalized<Property
   const errors: string[] = [];
 
   if (name !== spec.name) renames.push({ from: spec.name, to: name });
-  if (name === '') warnings.push(`property name '${spec.name}' canonicalizes to empty`);
+  // An ERROR, and it was a WARNING until asc-0w9. The warning shipped a defect that bricked the
+  // whole store, measured end to end: the generated view and its index address a property by JSON
+  // path `$.<name>`, and `$.` is not a path. The index is built on `entries`, not on one type, so
+  // SQLite evaluates it for EVERY insert -- after defining one empty property name, `asc record`
+  // failed with `bad JSON path: '$.'` even for an unrelated, healthy type, while `types list` and
+  // `types brief` still exited 0 and the store looked fine. Nothing repairs that store: entries are
+  // immutable, types cannot be deleted, and no command drops an index. The sibling reserved-name
+  // case below is refused for a strictly smaller reason, which is what makes the old split wrong.
+  if (name === '') {
+    errors.push(
+      `property name '${spec.name}' canonicalizes to empty, so the generated view and its index ` +
+        `have no JSON path to address it by ('$.' is not a path) and recording would fail for ` +
+        `every type afterwards. Name it with at least one letter or digit.`,
+    );
+  }
 
   // Checked on the CANONICAL name, so no spelling of a reserved name gets through: the
   // canonical form is the identity of the property, so it is the form the view would project.
@@ -315,6 +329,17 @@ export function canonicalizeTypeSpec(spec: TypeSpec): Canonicalized<TypeSpec> {
 
   const name = canonicalName(spec.name);
   if (name !== spec.name) renames.push({ from: spec.name, to: name });
+
+  // Refused here rather than left to the store's `name <> ''` CHECK (asc-0w9), which is the same
+  // defect one size smaller: measured, it reached the user as `Error: CHECK constraint failed:
+  // name <> ''` -- naming neither canonicalization nor the name nor the fix. The type name is part
+  // of every generated view and index name, so it is checked where every spec already passes.
+  if (name === '') {
+    errors.push(
+      `type name '${spec.name}' canonicalizes to empty. A type's name is part of every generated ` +
+        `view and index name, so name it with at least one letter or digit.`,
+    );
+  }
 
   const properties: PropertySpec[] = [];
   const byName = new Map<string, number>();

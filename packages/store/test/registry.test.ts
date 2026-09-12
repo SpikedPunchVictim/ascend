@@ -7,8 +7,9 @@ import {
   deprecateType,
   findType,
   openStore,
+  recordEntry,
   registerType,
-  ReservedPropertyNameError,
+  UnusableDefinitionError,
   typeVersions,
   updateTypeProse,
   type Store,
@@ -567,7 +568,7 @@ describe('a name the generated view has claimed is refused, not projected', () =
           { name: 'note', properties: [{ name: 'source', type: 'string' }] },
           { registeredAt: AT },
         ),
-      ).toThrow(ReservedPropertyNameError);
+      ).toThrow(UnusableDefinitionError);
 
       expect(rowCount(store)).toBe(0);
       expect(findType(store.db, 'note')).toBeUndefined();
@@ -591,8 +592,8 @@ describe('a name the generated view has claimed is refused, not projected', () =
         thrown = error;
       }
 
-      expect(thrown).toBeInstanceOf(ReservedPropertyNameError);
-      const reserved = thrown as ReservedPropertyNameError;
+      expect(thrown).toBeInstanceOf(UnusableDefinitionError);
+      const reserved = thrown as UnusableDefinitionError;
       expect(reserved.typeName).toBe('note');
       expect(reserved.problems).toHaveLength(1);
       expect(reserved.message).toContain("'workflow_value'");
@@ -621,7 +622,7 @@ describe('a name the generated view has claimed is refused, not projected', () =
 
       expect(() =>
         registerType(store.db, spec([{ name: 'actor', type: 'string' }]), { registeredAt: LATER }),
-      ).toThrow(ReservedPropertyNameError);
+      ).toThrow(UnusableDefinitionError);
 
       // The registered version is untouched, and no view was rebuilt around the refused one.
       expect(rowCount(store)).toBe(1);
@@ -648,6 +649,85 @@ describe('a name the generated view has claimed is refused, not projected', () =
 
       expect(result.outcome).toBe('created');
       expect(result.warnings).toEqual([]);
+    });
+  });
+});
+
+describe('a name that canonicalizes to empty is refused, not registered', () => {
+  // asc-0w9, and the second test below is the strongest evidence in this file.
+  //
+  // Measured before the fix, in a real store: the empty name registered with exit 0, `views.ts`
+  // built `json_extract(properties_json, '$.')` into an index ON `entries`, and SQLite then
+  // evaluated that expression for EVERY insert -- so recording an unrelated, healthy type failed
+  // with `bad JSON path: '$.'`. `types list` and `types brief` still exited 0, so the store looked
+  // fine; entries are immutable and types cannot be deleted, so there was no repair at all.
+  //
+  // The defect is asserted through the write path rather than by inspecting the spec, because the
+  // spec being wrong is only interesting for what it does to `entries`.
+
+  it('refuses an empty property name, and leaves nothing behind', () => {
+    withStore((store) => {
+      expect(() =>
+        registerType(
+          store.db,
+          { name: 'emptyname', properties: [{ name: '', type: 'text' }] },
+          { registeredAt: AT },
+        ),
+      ).toThrow(UnusableDefinitionError);
+
+      expect(rowCount(store)).toBe(0);
+      // The index is the mechanism, so it is what this asserts: an expression index over an empty
+      // JSON path is refused before it exists, rather than created and then complained about.
+      const badPath = store.db
+        .prepare("SELECT name FROM sqlite_master WHERE sql LIKE '%$.%'")
+        .all() as unknown as { name: string }[];
+      expect(badPath).toEqual([]);
+    });
+  });
+
+  it('leaves the store able to record an UNRELATED type, which is what the defect destroyed', () => {
+    withStore((store) => {
+      expect(() =>
+        registerType(
+          store.db,
+          { name: 'emptyname', properties: [{ name: '', type: 'text' }] },
+          { registeredAt: AT },
+        ),
+      ).toThrow(UnusableDefinitionError);
+
+      // The regression proper. With the empty name registered, this line threw
+      // `bad JSON path: '$.'` -- for a type that has nothing to do with the broken one.
+      registerType(store.db, spec(), { registeredAt: AT });
+      const { entry } = recordEntry(
+        store.db,
+        { type: 'review_completed' },
+        { id: 'e1', recordedAt: AT, ascendVersion: '0.0.0' },
+      );
+
+      expect(entry.typeName).toBe('review_completed');
+    });
+  });
+
+  it('refuses an empty type name with a message a caller can act on, not a raw CHECK', () => {
+    withStore((store) => {
+      let thrown: unknown;
+      try {
+        registerType(
+          store.db,
+          { name: '', properties: [{ name: 'count', type: 'integer' }] },
+          { registeredAt: AT },
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(UnusableDefinitionError);
+      const refused = thrown as UnusableDefinitionError;
+      expect(refused.message).toContain("type name '' canonicalizes to empty");
+      // There is no type name to quote here, so the header must not try: the alternative reads
+      // "problem(s) make '' unusable", a sentence about nothing.
+      expect(refused.message).toContain('make this definition unusable');
+      expect(rowCount(store)).toBe(0);
     });
   });
 });

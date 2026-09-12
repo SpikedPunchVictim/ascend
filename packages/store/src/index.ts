@@ -49,7 +49,7 @@ export {
   listTypes,
   registeredNames,
   registerType,
-  ReservedPropertyNameError,
+  UnusableDefinitionError,
   specHash,
   typeVersions,
   updateTypeProse,

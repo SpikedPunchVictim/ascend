@@ -78,6 +78,20 @@ describe('canonicalizeProperty', () => {
     expect(warnings.some((w) => w.includes('enum_values but its type is'))).toBe(true);
     expect(warnings.some((w) => w.includes('has a unit'))).toBe(true);
   });
+
+  it('makes an empty canonical name an ERROR, and stops warning about it', () => {
+    // asc-0w9. It was a warning, and the warning was the whole defect: the store refuses on
+    // `errors` and registers on `warnings`, so this definition landed with exit 0, `views.ts`
+    // built `json_extract(properties_json, '$.')` into an index ON `entries`, and every later
+    // INSERT of ANY type failed. Asserting the absence from `warnings` is half the test -- an
+    // implementation that pushed to both would still refuse, but would also keep printing a
+    // definition as though it had been accepted.
+    const { errors, warnings } = canonicalizeProperty({ name: '', type: 'text' });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('canonicalizes to empty');
+    expect(errors[0]).toContain('$.');
+    expect(warnings).toEqual([]);
+  });
 });
 
 describe('canonicalizeTypeSpec', () => {
@@ -91,6 +105,19 @@ describe('canonicalizeTypeSpec', () => {
       ],
     });
     expect(warnings.some((w) => w.includes("both canonicalize to 'review_kind'"))).toBe(true);
+  });
+
+  it('makes an empty TYPE name an error, where the store could only say CHECK constraint failed', () => {
+    // asc-0w9, the smaller half of the same defect. Nothing checked the type name at all, so it
+    // reached the store's `name <> ''` CHECK and the user read `Error: CHECK constraint failed:
+    // name <> ''` -- naming neither canonicalization, nor which name, nor the fix.
+    const { errors, warnings } = canonicalizeTypeSpec({
+      name: '',
+      properties: [{ name: 'count', type: 'integer' }],
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("type name '' canonicalizes to empty");
+    expect(warnings).toEqual([]);
   });
 
   it('applies the required sanity rule from EV-drift', () => {

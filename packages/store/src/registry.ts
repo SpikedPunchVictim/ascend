@@ -76,23 +76,31 @@ export interface RegisteredType {
 }
 
 /**
- * Thrown when a definition names a property the generated view has already claimed.
+ * Thrown when canonicalization produced a reason a definition cannot be USED, however it is spelled.
  *
  * Nothing is written: the version row, its indexes and its view are all refused together, so a
- * store never holds a definition whose view cannot be built faithfully. See
- * `reservedPropertyName` in `@ascend/core` for why the names are taken.
+ * store never holds a definition whose view cannot be built faithfully. See `reservedPropertyName`
+ * in `@ascend/core` for why the reserved names are taken.
+ *
+ * Named for the whole class rather than for the reserved-name case that first needed it (asc-0w9):
+ * `ReservedPropertyNameError` was accurate while a reserved collision was the only way to get here,
+ * and stopped being accurate the moment an empty name was refused too. The header says "problem(s)"
+ * for the same reason -- a name that canonicalizes to empty is a problem with the NAME, not with a
+ * projection, and `type name '' canonicalizes to empty` is not a sentence about a property.
  */
-export class ReservedPropertyNameError extends Error {
+export class UnusableDefinitionError extends Error {
   constructor(
     readonly typeName: string,
     readonly problems: readonly string[],
   ) {
+    // An empty type name cannot be quoted into "in '...'", and it is exactly the case this
+    // sentence would otherwise render as a blank.
+    const subject = typeName === '' ? 'this definition' : `'${typeName}'`;
     super(
-      `${String(problems.length)} property name(s) in '${typeName}' cannot be projected, so ` +
-        `nothing was registered:\n` +
+      `${String(problems.length)} problem(s) make ${subject} unusable, so nothing was registered:\n` +
         problems.map((problem) => `  ${problem}`).join('\n'),
     );
-    this.name = 'ReservedPropertyNameError';
+    this.name = 'UnusableDefinitionError';
   }
 }
 
@@ -336,7 +344,7 @@ export function registerType(
   // built must not be reported as `unchanged` either, or a store that already holds such a
   // definition would look like it had accepted this one.
   if (canonical.errors.length > 0) {
-    throw new ReservedPropertyNameError(canonical.spec.name, canonical.errors);
+    throw new UnusableDefinitionError(canonical.spec.name, canonical.errors);
   }
 
   const { shape, proseJson } = toStorage(canonical.spec, options);
