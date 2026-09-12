@@ -328,8 +328,8 @@ inside one file):
 | **E4.2** | `asc-6m6` | `asc types define\|list\|show\|brief\|deprecate\|import\|export`. `import` preserves `type_hash`; `brief` is the hook payload and stays one line per type. **Delivered** — see below. |
 | **E4.3** | `asc-kwr` + `asc-pcy` | The four starter types (shapes from ARCHITECTURE.md), then `asc init`: `.ascend/`, an **appended** `.gitignore` entry, starter types, and an *offer* of the recall hook — never a settings write (that is `asc-1q9`, E10, behind explicit consent). **Delivered** — see below. |
 | **E4.4** | `asc-gvr` | `asc record <type>`: `--json -` primary, flags for convenience, `--na`, batching, and a shape that keeps `Bash(asc record:*)` a valid allowlist prefix. **Dogfooding starts here.** **Delivered** — see below. |
-| **E4.5** | `asc-6ct` | `asc query "<sql>"` read-only, `--json\|--table\|--csv`, `--across <glob>`. |
-| **E4.6** | `asc-2gy`, `asc-9y1`, `asc-brt` | Define-time duplicate detection (strictness set by `EV-drift`'s numbers, FTS5 trigram); the record-cost measurement; JSONL export/import. |
+| **E4.5** | `asc-6ct` | `asc query "<sql>"` read-only, `--json\|--table\|--csv`, `--across <glob>`. **Delivered** — see below. |
+| **E4.6** | `asc-2gy`, `asc-9y1`, `asc-brt` | Define-time duplicate detection, strictness set by `EV-drift`'s numbers and carrying no similarity threshold (the bead's suggested FTS5 trigram was rejected on those numbers). **Delivered** — see below. The record-cost measurement (`asc-9y1`) and JSONL export/import (`asc-brt`) remain open. |
 
 **Where the four starter types come from.** ARCHITECTURE.md fixes the shapes
 (`review-completed`, `stuck-event`, `stage-transition`, `decision`), and `asc-kwr` carries the
@@ -751,6 +751,196 @@ provenance is `cwd` = the process's resolved directory and `source` = `self`; an
 real entry is this stage's own `--json` decision — recorded through the primary stdin path with
 `--run-id e4.4`, then read back **independently of `asc`** through `node:sqlite` to confirm the
 envelope, the `source: self`, the process-read `cwd`, and the `v_decision_v1` projection.
+
+---
+
+### E4.5 — `asc query`, and the store's first read-only connection (`asc-6ct`)
+
+**Delivered.** `asc query "<sql>"`, one read-only statement (table / `--json` / `--csv`), plus
+`--across <glob>` which `ATTACH`es every matching project under its own name and reports the names
+on **stderr**. The read-only open is the command's design, not a flag: `Bash(asc query:*)` is a
+defensible `settings.json` allowlist entry **only because the connection has been shown unable to
+mutate**, so it is asserted against the file through a second connection rather than trusted from a
+refused statement.
+
+Supporting changes: `OpenOptions.readOnly` + `StaleStoreError` (`packages/store/src/db.ts`),
+`attachStore` / `detachStore` / `databaseNames` / `AliasInUseError` (`union.ts`), `statementCount`
+(`packages/cli/src/sql.ts`), `normalizeValue`/`normalizeRow` (`query-values.ts`), and
+`openQueryProject` (`project.ts`) which falls back to an **in-memory** store when there is no project.
+
+**Two overturns. Both are records of the design being wrong, kept rather than smoothed over.**
+
+1. **`asc query` does NOT have a declared type in hand — E4.3/E4.4 carried that forward twice, and it
+   is false.** Measured: `StatementSync.columns()` gives `type: "TEXT"` for `entries.id` read through
+   `v_decision_v1` (SQLite resolves a view column's decltype when it is a direct reference to a real
+   column), but **`type: null` for all 8 property columns of that view**, for every expression
+   (`1+1 AS two`), and for `json_extract(...)`. So there is no declared type to render from, and the
+   command reports SQLite's representation — `1`/`0` for a boolean, JSON **text** for a `json`
+   property, a hex literal for a blob, a decimal **string** for an integer outside `Number`'s safe
+   range. `--help` states this, because it is not discoverable from a row. The carried-forward claim
+   that `asc query` "owns" the declared-type problem is withdrawn; the problem stays open and is
+   re-filed rather than inherited.
+
+2. **E4.1's stated reason for M8 surviving is refuted.** M8 (the stdout EPIPE guard) was said to
+   survive because no command fills a 64 KiB pipe buffer. Measured: `@oclif/core/lib/command.js:57`
+   installs **its own** `process.stdout.on('error', …)` at module load, commented *"this occurs when
+   stdout closes such as when piping to head"*. Removing ascend's guard changes nothing observable on
+   stdout. The test now asserts **what it can actually show** — that the pipeline works — and says in
+   as many words that it is not evidence ascend's own guard is installed. M8 **stays open with a
+   corrected, measured explanation**. (Its stderr half remains untriggerable: no command can put
+   64 KiB on stderr.)
+
+**A real correctness bug found by measurement, in two parts, and the half-fix was caught before it
+shipped.** `SELECT 1 AS x, 2 AS x` is legal SQLite. `columns()` reports two columns named `x`, and
+`all()` returns `[{x: 2}]` — the row is built as an object keyed by SQLite's own column names, so the
+first value is **gone**, with no error anywhere. Severity-zero class. The first attempt renamed the
+duplicate column (`x`, `x_2`), which is necessary but **not sufficient**: the collision happens
+*inside the driver*, so the header then advertised `x_2` over an empty cell — a column that does not
+exist, in place of a value that was dropped. Measured on the real binary, which is how it was caught.
+The fix is both halves together: `statement.setReturnArrays(true)` (same statement, same query:
+`[[1, 2]]` instead of `[{x: 2}]`) plus the rename, with `zipRow` applying the disambiguated names.
+The test asserts the **table** line as well as the JSON keys, which is the assertion that would have
+caught the half-fix.
+
+**Measured driver facts recorded, not fixed:**
+
+| Fact | Value |
+|---|---|
+| `setReadBigInts(true)` is mandatory, not an optimisation | a default statement doing `SELECT 9223372036854775807` **throws** `RangeError: Value is too large to be represented as a JavaScript number`; with the flag it returns `bigint`. It costs: every integer becomes a `bigint`, and `JSON.stringify` then **throws** — which `normalizeValue` pays off |
+| `SQLITE_READONLY` | `errcode: 8`, masked with `0xff` to catch SQLite's extended codes |
+| `Math.max(...rows.map(...))` | dies at ~124,179 arguments; `asc query` hit `Maximum call stack size exceeded` at ~119,726 rows. Fixed by folding with `reduce` in `output.ts` — a latent bug only `asc query` could reach |
+| `db.prepare()` runs only the FIRST statement | `'SELECT 1 AS a; SELECT 2 AS b'` → `[{"a":1}]`, silently. This is what `statementCount` refuses |
+| A comment-only string is not a statement | `db.prepare('/* c */')` throws `statement has been finalized` |
+| `column.name` is never null | an unnamed column is named after its expression text (`SELECT 1` → `"1"`), so a null guard there is dead code |
+| `@types/node` does not follow `setReturnArrays` | `all()` stays declared `Record<string, SQLOutputValue>[]`, so the cast goes through `unknown`. The type is **silent**, not wrong |
+
+**Mutation testing: 11/11 killed.** Every guard in the new code — `columnNames`, `setReturnArrays`,
+`setReadBigInts`, `requireSingleStatement`, `statementCount`, the readonly `errcode` check, the CLI
+and store duplicate-project checks, `AliasInUseError`, the read-only open, and the stale-store check.
+
+**The mutation harness itself reported a false green, twice, and both were fixed rather than noted.**
+A `-t` filter that matches no test *name* runs **zero** tests and vitest **exits 0** — indistinguishable
+from a surviving mutation. So the harness now refuses a zero-testrun. Its first guard parsed the first
+number on the `Tests` line (measured: a no-match run prints `Tests  11 skipped (11)`, so it read 11 and
+never fired); its second parsed `N passed` (measured: a killed *single* test prints
+`Tests  1 failed | 10 skipped (11)` with no "passed" at all, so it read 0 and mis-reported every kill).
+The guard now sums the non-skipped counts, which is the only quantity that means *something was
+exercised* — and it is proved to fire by a `--control` mutation whose whole job is to be unrun.
+
+**Gates:** `format:check` ✅ · `typecheck` ✅ · `lint` ✅ · **444 tests** (406 → 444; +27 `asc query`,
++11 read-only store) · `align check` **green, 19 baselined — 0 new debt**.
+
+**Carried forward, re-filed with the corrected statement above:**
+
+- **The declared-type problem is unsolved and now correctly located.** A `json` property and a
+  boolean property both project as SQLite's representation, and `columns()` cannot tell them apart.
+  What can: the **type spec** (`entry_types.spec_json`), which `asc query` does not consult. Any fix
+  belongs where the spec is available — `asc explore` (E6) or a `--typed` projection — not in a raw
+  SQL runner. Filed rather than left as a sentence in this plan.
+- **M8 (EPIPE proof) stays open**, with the oclif handler named as the reason it cannot be closed by
+  observation from stdout.
+- **`--across` reads only the store file**; it does not consult `unionEntries` (E3), so a project
+  whose type is defined elsewhere is attached but not unioned. Deliberate for a raw-SQL runner.
+
+---
+
+### E4.6 — Define-time duplicate detection (`asc-2gy`)
+
+**Delivered.** `confusableNames` / `nameTokens` / `ConfusableName` in the **pure** core
+(`packages/core/src/names.ts` — no `fs`, no clock, no database), and `registeredNames(db)` +
+`vocabularyNotes(db, spec)` in `packages/store/src/registry.ts`. The notes leave on
+`registerType(...).warnings`, the array `asc types define` and `asc types import` were **already**
+printing, so the detection arrived with **no new CLI surface and no new flag**: a caller who never
+learns the mechanism still sees the warning. "Search before you define" as an instruction would have
+failed; this is the search, in the tool.
+
+**Strictness is set by `EV-drift`'s numbers, not by taste — and the numbers argued against the
+obvious design.** Five agents, one brief, one type name, one bounded vocabulary: **44 distinct
+property names of which 4 were shared by all five** — intersection/union **9.1 %**, mean pairwise
+Jaccard **0.300**. The thresholds that would have confirmed the vocabulary as sufficient are
+intersection/union ≥ 0.70 and Jaccard ≥ 0.6. So two independent definitions of the *same* concept
+agree on 0.300 of their names: a refusal threshold high enough to mean anything sits **above** the
+same-concept score and refuses legitimate work, and one low enough to admit same-concept definitions
+admits everything. **At a 0.300 signal, similarity cannot separate "same concept, new name" from
+"different concept."** The mechanism therefore **warns and never refuses, and carries no similarity
+threshold at all** — it reports a known name when it shares a **whole token** (`review_kind` against
+`kind`), which is a *certain* relation, so there is no floor to pick and therefore no number to
+invent. What genuinely can be refused is already refused elsewhere and needed no threshold to get
+there: a name colliding with a reserved envelope column (`spec.ts`), and two properties folding to
+one name inside a single spec.
+
+**The bead's proposed mechanism was not built, and the rejection is on measured grounds.** `asc-2gy`
+suggested the cheap version be *"FTS5 trigram (mast precedent)"*. A trigram index answers "which
+stored strings are *similar*", which is the question the numbers above just ruled out — it would
+need exactly the cutoff that cannot be chosen, and it would be a second structure to keep in sync
+with names `canonicalName` has already folded. Measured scale of what replaced it: the entire
+vocabulary on the real corpus is **44 names**, and the widest match set any name produces is **6**.
+At that size a linear scan over a sorted list is free, and it is checkable by reading it.
+
+**The check reads `entry_types` BEFORE the insert, and the ordering is load-bearing rather than
+tidy.** Read after, this spec's own name is already in `entry_types` (so `isNewName` is false and the
+type-name half never fires) and its own properties are already in the stored specs (so they are
+skipped as "already registered" and the property half is inert) — a check that reports nothing looks
+exactly like a check that found nothing wrong. Two tests distinguish the two orderings instead of
+describing which one was chosen.
+
+**The type-name half is gated on the name being genuinely new.** `registerType` returns `created`
+for a new *version* too, so without the gate every future bump of `stage` would reprint "shares
+`'stage'` with `'review_stage'`" — a true sentence, on every bump, until the author stopped reading
+the channel. The property half is the mirror image: a new property whose name is **already
+registered** is silent, because reusing a registered name *is* the outcome `EV-drift`'s remedy
+asked for, and warning about it would train the author to ignore the channel on the behaviour the
+mechanism exists to encourage.
+
+**Three defects found by driving the real binary — none of them by a test.** All three are now
+asserted.
+
+1. **`Warning: warning: …` on every store warning.** oclif's `this.warn` already renders a
+   `Warning:` prefix, so the CLI's own `warning: ` doubled it. Present at `define.ts:67` and
+   `import.ts:119` since E4.2/E4.3 — **shipped for three stages because no test asserted the shape of
+   the rendered line.** A warning channel nothing asserts is a channel that can be broken without
+   anyone noticing, which is the false-green class this project treats as severity-zero.
+2. **A message that named three matches when there were six.** An earlier `confusableNames` took a
+   `limit` and sliced internally, so the one caller that formats a message could not tell "there are
+   exactly three" from "there were three and I was not shown the rest". The matcher now returns
+   everything it found and the presenter decides how much to print **and says when it truncated**
+   (`… 'stage_a', 'stage_b' and 'stage_c', and 2 more`). A matcher returns; a presenter presents.
+3. **`'a', and 'b'` for two matches.** The serial comma is right for three and reads worse than the
+   plain conjunction for two.
+
+**A real instability, found by asking the result to be stable.** The reported spelling of a folded
+name originally depended on the caller's array order — reversing the corpus returned `started_at`
+where it had returned `startedAt`. Fixed structurally by walking candidates in canonical-then-spelling
+order inside `confusableNames`, so the promise rests on a contract in this module rather than on
+`registry.ts` happening to sort. Same pass: `localeCompare` with no locale argument collates by the
+runtime's default locale, so the same name set orders differently under a different `LANG` —
+environment-dependent output is the ambient-state problem, not stability. Replaced with a code-unit
+comparator at both sites.
+
+**Mutation testing: 14/14 killed**, including the check never being called; **the read deferred to
+after the insert**; the registered-property skip removed; the `isNewName` gate removed; a
+latest-version-only registry read; exact matches no longer skipped; dedup removed; tokens taken from
+the raw spelling; candidate order not sorted; the most-shared-first sort dropped; the matcher capping
+its own list again; truncation not reported; the printed list unbounded; the two-name conjunction
+taking a comma. The harness's zero-test guard (carried from E4.5, where it was itself a false green
+twice) was proved to fire by a `--control` mutation whose whole job is to be unrun.
+
+**One harness hazard, recorded because it cost a confusing re-drive cycle.** The CLI test file's
+`beforeAll` runs `tsc -b`, so a mutation script that mutates a **CLI** source file and runs a **CLI**
+test has `dist/` rebuilt from the mutant; restoring only the source leaves a stale mutant `dist/`.
+The doubled-prefix fix appeared not to work on the real binary for exactly this reason. Restoring
+requires `pnpm build`, not just the source restore.
+
+**Gates:** `format:check` ✅ · `typecheck` ✅ · `lint` ✅ · **479 tests** (444 → 479; +14 core
+`names`, +15 store `vocabulary`, +6 CLI) · `align check` **green, 19 baselined — 0 new debt**.
+
+**Still open in E4.6:**
+
+- **`asc-9y1` (P1, empirical)** — *what does one `asc record` call cost?* Tokens (command + output)
+  and wall-clock across 20 **real** recordings; p50/p95; and confirmation that no permission prompt
+  fires with the allowlist entry. Decision rule fixed in advance: *if a record costs more than a few
+  hundred tokens, simplify the surface BEFORE E5.*
+- **`asc-brt` (P2)** — `asc export` / `asc import` (JSONL) as the durability escape hatch.
 
 ---
 

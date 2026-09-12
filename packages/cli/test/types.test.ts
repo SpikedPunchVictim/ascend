@@ -605,3 +605,119 @@ describe('the JSON contract', () => {
     ).toContain('"dry_run":true');
   });
 });
+
+/**
+ * The define-time vocabulary check, as the user actually meets it.
+ *
+ * The store half is tested in `packages/store/test/vocabulary.test.ts`. What is asserted HERE is the
+ * wiring: that a warning produced in `@ascend/store` reaches stderr through `asc types define`
+ * without the CLI having to know the check exists. That is a claim about the `warnings` channel
+ * being already general, and a claim like that is worth exactly as much as the test that drives it
+ * -- `registerType` could return the warnings and the command could drop them, and every store test
+ * would still pass.
+ *
+ * The fixtures are EV-drift's real drift: `review_stage` and `stage` are two names one author each
+ * arrived at for the same slot, from the measurement's own corpus.
+ */
+const STAGE = {
+  name: 'review_stage',
+  properties: [{ name: 'stage', type: 'text' }],
+};
+
+/** A new type whose NAME shares the token `stage`, and whose property shares nothing. */
+const OVERLAPPING = {
+  name: 'stage',
+  properties: [{ name: 'narrative', type: 'text' }],
+};
+
+describe('asc types define, and the vocabulary check', () => {
+  it('carries the store warning to stderr, and still registers the type', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'a.json', STAGE)], dir);
+
+    const run = asc(['types', 'define', json(dir, 'b.json', OVERLAPPING)], dir);
+
+    // A warning is not a refusal. If this check ever blocked a definition it would be enforcing a
+    // similarity threshold, and EV-drift measured that no such threshold can separate "same
+    // concept, new name" from "different concept" at a 0.300 same-concept agreement.
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain("shares 'stage'");
+    expect(run.stderr).toContain('review_stage');
+
+    // And the write actually landed, read back out of SQLite rather than inferred from the report:
+    // a command that warned and then failed to register would satisfy the assertions above.
+    expect(registry(dir).map((row) => row.name)).toEqual(['review_stage', 'stage']);
+  });
+
+  it('keeps the warning off stdout, so a pipeline still receives only data', () => {
+    // `cli-best-practices` rule 1, asserted rather than assumed. `this.warn` is what routes it, so
+    // this is the test that would fail if a future edit reached for `console.log`.
+    const dir = project();
+    asc(['types', 'define', json(dir, 'a.json', STAGE)], dir);
+
+    const run = asc(['types', 'define', '--json', json(dir, 'b.json', OVERLAPPING)], dir);
+
+    expect(run.stderr).toContain("shares 'stage'");
+    expect(run.stdout).not.toContain('shares');
+    // stdout is still parseable, which is the point of the separation.
+    expect(envelope(run.stdout)[0]).toMatchObject({ name: 'stage', outcome: 'created' });
+  });
+
+  it('previews the warning on --dry-run, and registers nothing', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'a.json', STAGE)], dir);
+
+    const run = asc(['types', 'define', '--dry-run', json(dir, 'b.json', OVERLAPPING)], dir);
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain("shares 'stage'");
+    // A preview that carried the warning but wrote the type anyway would be the worst of both.
+    expect(registry(dir).map((row) => row.name)).toEqual(['review_stage']);
+  });
+
+  it('says nothing when the definition reuses the registered vocabulary', () => {
+    // The negative control, driven end to end. Without it, the three tests above would pass just as
+    // well against a command that printed the warning unconditionally.
+    const dir = project();
+    asc(['types', 'define', json(dir, 'a.json', STAGE)], dir);
+
+    const reuse = {
+      name: 'note_alpha',
+      properties: [{ name: 'stage', type: 'text' }],
+    };
+    const run = asc(['types', 'define', json(dir, 'b.json', reuse)], dir);
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).not.toContain('shares');
+  });
+});
+
+describe('the warning prefix is not doubled', () => {
+  // A defect found by reading the real command's output, not by a test: `define.ts` and `import.ts`
+  // both prefixed their own `warning: ` onto a string that `this.warn` already renders as
+  // "Warning: ...", so every store warning reached the user as "Warning: warning: ...". A cosmetic
+  // defect, and still one worth a test -- it shipped through a green suite because nothing asserted
+  // the shape of the rendered line, only that it contained the warning's content.
+  it('prints one "Warning:", not two, on define', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'a.json', STAGE)], dir);
+
+    const run = asc(['types', 'define', json(dir, 'b.json', OVERLAPPING)], dir);
+
+    expect(run.stderr).toContain("shares 'stage'");
+    expect(run.stderr).not.toContain('warning: ');
+  });
+
+  it('prints one "Warning:", not two, on import', () => {
+    const dir = project();
+    const source = json(dir, 'src.json', [STAGE]);
+    asc(['types', 'import', source], dir);
+
+    // A second document against the same store, carrying a name that overlaps the first.
+    const second = json(dir, 'second.json', [OVERLAPPING]);
+    const run = asc(['types', 'import', second], dir);
+
+    expect(run.stderr).toContain("shares 'stage'");
+    expect(run.stderr).not.toContain('warning: ');
+  });
+});

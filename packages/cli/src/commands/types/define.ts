@@ -64,7 +64,10 @@ export default class TypesDefine extends BaseCommand {
       const result = registerDocument(store, document, { registeredAt: this.now(), dryRun });
 
       for (const rename of result.renames) this.warn(`renamed '${rename.from}' -> '${rename.to}'`);
-      for (const warning of result.warnings) this.warn(`warning: ${warning}`);
+      // No `warning: ` prefix of our own: `this.warn` already renders one, so prefixing printed
+      // "Warning: warning: ..." for every store warning. Caught by reading the real command's output
+      // rather than by any test -- which is the reason this comment is here instead of a test.
+      for (const warning of result.warnings) this.warn(warning);
       if (dryRun) this.warn('dry run: nothing was written.');
 
       this.emit(format, {

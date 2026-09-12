@@ -29,6 +29,8 @@ export {
   type TypeSpec,
 } from './spec.js';
 
+export { confusableNames, nameTokens, type ConfusableName } from './names.js';
+
 export {
   buildSchema,
   describeProperty,

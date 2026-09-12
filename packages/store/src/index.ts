@@ -47,6 +47,7 @@ export {
   deprecateType,
   findType,
   listTypes,
+  registeredNames,
   registerType,
   ReservedPropertyNameError,
   specHash,

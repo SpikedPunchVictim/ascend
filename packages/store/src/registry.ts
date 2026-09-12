@@ -21,7 +21,9 @@
  */
 
 import {
+  canonicalName,
   canonicalizeTypeSpec,
+  confusableNames,
   definitionShape,
   diffTypeSpec,
   typeHash,
@@ -171,6 +173,139 @@ const toStorage = (
 };
 
 /**
+ * Every name this store has already seen: the type names, and every property name ever defined.
+ *
+ * Property names are read out of `spec_json` rather than from a projection, and from **every
+ * version**, because the vocabulary is "names this store has used" -- a property that only ever
+ * appeared in v1 is still a name a caller may be about to reinvent under a different spelling, and
+ * that is the drift this serves. A projection would have to be kept in step with the spec shape;
+ * reading the stored spec cannot drift from it.
+ *
+ * Cost is one row per registered version, which is small by construction (types are defined by
+ * hand or by a model at define time, not per entry). Measured against the 4 starter types: 8 rows,
+ * and the whole check does not register on a define that already writes a row and builds a view.
+ */
+export function registeredNames(db: DatabaseSync): {
+  readonly types: readonly string[];
+  readonly properties: readonly string[];
+} {
+  const types = (
+    db.prepare('SELECT DISTINCT name FROM entry_types ORDER BY name').all() as {
+      name: string;
+    }[]
+  ).map((row) => row.name);
+
+  const properties = new Set<string>();
+  const rows = db.prepare('SELECT spec_json FROM entry_types').all() as { spec_json: string }[];
+  for (const row of rows) {
+    const spec = JSON.parse(row.spec_json) as { properties?: { name?: unknown }[] };
+    for (const property of spec.properties ?? []) {
+      if (typeof property.name === 'string') properties.add(property.name);
+    }
+  }
+
+  return { types, properties: [...properties].sort() };
+}
+
+/**
+ * What a definition reuses from the registry, and what is new that a caller may not have meant.
+ *
+ * **All warnings, never refusals, and that is the measurement's decision rather than a preference.**
+ * `EV-drift` measured that two independent definitions of the *same* concept agree on **0.300** of
+ * their property names (intersection/union **0.091**, 4 of 44 names shared by all five authors).
+ * A refusal threshold above that figure refuses legitimate new work; one below it admits everything.
+ * At a 0.300 signal, similarity cannot separate "same concept, new name" from "different concept",
+ * so nothing here blocks. See `core/src/names.ts` for why the check carries no threshold at all.
+ *
+ * A name is reported only when it shares a whole token with a registered one -- a certain relation,
+ * so nothing has to be tuned. Properties that are already registered are NOT reported: reusing a
+ * registered name is the outcome `EV-drift` asked for, and warning about it would be warning about
+ * success.
+ *
+ * **The type-name half is skipped when the name is already registered, and that is not an
+ * optimization.** `registerType` returns `created` for a new VERSION of a known type as well as for
+ * a first version, so without this gate every future version bump of `code_review` would re-print
+ * "shares 'review' with 'code_review_note'" -- a true sentence, delivered on each bump, until the
+ * author learned to ignore the whole channel. A warning that is always present carries no
+ * information. "Is this name already registered?" is a certain relation like token sharing, so
+ * there is still no number to pick: if the name is registered, this is not a second name for a
+ * concept, which is the only thing this half is for. The property half is naturally immune -- a
+ * property already registered is skipped above -- and a genuinely new property on a new version is
+ * still reported, which is the case that matters.
+ */
+function vocabularyNotes(db: DatabaseSync, spec: TypeSpec): readonly string[] {
+  const known = registeredNames(db);
+  const notes: string[] = [];
+
+  const name = canonicalName(spec.name);
+  const isNewName = !known.types.some((registered) => canonicalName(registered) === name);
+  const types = isNewName ? confusableNames(spec.name, known.types) : [];
+  if (types.length > 0) {
+    notes.push(
+      `the type name '${spec.name}' shares ${describeShared(types)} with registered ` +
+        `${types.length === 1 ? 'type' : 'types'} ${listNames(types)}. If this is the same ` +
+        `concept, register it as a new version of that type -- a second name for one concept is ` +
+        `the drift EV-drift measured at 0.091 property-name agreement.`,
+    );
+  }
+
+  const registered = new Set(known.properties.map((name) => canonicalName(name)));
+  for (const property of spec.properties) {
+    if (registered.has(canonicalName(property.name))) continue;
+
+    const matches = confusableNames(property.name, known.properties);
+    if (matches.length === 0) continue;
+
+    notes.push(
+      `the property '${property.name}' is new here and shares ${describeShared(matches)} with ` +
+        `${matches.length === 1 ? 'the registered name' : 'registered names'} ` +
+        `${listNames(matches)}. Reuse the registered name if it means the same thing.`,
+    );
+  }
+
+  return notes;
+}
+
+/**
+ * How many candidate names a single note prints before summarising the rest.
+ *
+ * A number chosen for readability and said so: this text is read by a person deciding whether two
+ * names mean one thing, and a list of a dozen is one they will skim. Three real names is enough to
+ * recognise the collision.
+ */
+const SHOWN = 3;
+
+/**
+ * The candidate names, quoted so a name containing punctuation reads correctly.
+ *
+ * Truncation is REPORTED rather than silent. `confusableNames` returns every match, and the first
+ * version of this message listed the first three as though they were all of them -- so a name
+ * overlapping six registered ones produced a sentence naming three, which a reader takes as complete.
+ * That is a message that understates what was found, and the count it withholds is exactly the part
+ * that would tell the author how crowded the vocabulary already is.
+ *
+ * `'a'`, `'a' and 'b'`, `'a', 'b' and 'c'`, `'a', 'b', 'c' and 4 more` -- the comma is dropped for two
+ * because `'a', and 'b'` reads worse than the conjunction alone.
+ */
+const listNames = (matches: readonly { readonly name: string }[]): string => {
+  const shown = matches.slice(0, SHOWN).map((match) => `'${match.name}'`);
+  const rest = matches.length - shown.length;
+
+  const list =
+    shown.length <= 2
+      ? shown.join(' and ')
+      : `${shown.slice(0, -1).join(', ')} and ${shown.at(-1) ?? ''}`;
+  return rest === 0 ? list : `${list}, and ${String(rest)} more`;
+};
+
+/** `'review'` or `'review' and 'code'` -- the shared tokens, spelled out for the message. */
+const describeShared = (matches: readonly { readonly shared: readonly string[] }[]): string =>
+  [...new Set(matches.flatMap((match) => match.shared))]
+    .sort()
+    .map((token) => `'${token}'`)
+    .join(' and ');
+
+/**
  * Register a type definition, or report that this shape is already known.
  *
  * Idempotent on shape. Never updates a registered row's identity -- see the module
@@ -263,6 +398,14 @@ export function registerType(
     changes = diff.changes;
   }
 
+  // Computed BEFORE the insert, and that ordering is load-bearing rather than tidy. The check reads
+  // the registered vocabulary out of `entry_types`; run after the insert, this spec's own
+  // properties would already be in that set, every one of them would be skipped as "already
+  // registered", and the property half would be silently inert -- a check that reports nothing
+  // while appearing to have run. Read before, it answers the question it exists for: what did the
+  // registry hold when this definition was proposed?
+  const notes = vocabularyNotes(db, shape);
+
   // The version row and the views derived from it are one unit. A committed version whose
   // views are missing is a store where `asc query` fails on a type that registered fine, so
   // both go in one transaction. `isTransaction` means a caller's transaction is joined
@@ -328,7 +471,7 @@ export function registerType(
     bump,
     changes,
     renames: canonical.renames,
-    warnings: canonical.warnings,
+    warnings: [...canonical.warnings, ...notes],
   };
 }
 

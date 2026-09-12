@@ -116,7 +116,9 @@ export default class TypesImport extends BaseCommand {
           for (const rename of result.renames) {
             this.warn(`${where}: renamed '${rename.from}' -> '${rename.to}'`);
           }
-          for (const warning of result.warnings) this.warn(`${where}: warning: ${warning}`);
+          // `where` only: `this.warn` renders the "Warning:" itself, and prefixing a second one
+          // printed "Warning: doc.json: warning: ...".
+          for (const warning of result.warnings) this.warn(`${where}: ${warning}`);
 
           rows.push({
             index,
