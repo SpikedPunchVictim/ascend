@@ -62,6 +62,27 @@ export interface RegisteredType {
   readonly warnings: readonly string[];
 }
 
+/**
+ * Thrown when a definition names a property the generated view has already claimed.
+ *
+ * Nothing is written: the version row, its indexes and its view are all refused together, so a
+ * store never holds a definition whose view cannot be built faithfully. See
+ * `reservedPropertyName` in `@ascend/core` for why the names are taken.
+ */
+export class ReservedPropertyNameError extends Error {
+  constructor(
+    readonly typeName: string,
+    readonly problems: readonly string[],
+  ) {
+    super(
+      `${String(problems.length)} property name(s) in '${typeName}' cannot be projected, so ` +
+        `nothing was registered:\n` +
+        problems.map((problem) => `  ${problem}`).join('\n'),
+    );
+    this.name = 'ReservedPropertyNameError';
+  }
+}
+
 /** A registered version, as read back out of the store. */
 export interface TypeVersionRow {
   readonly name: string;
@@ -133,6 +154,14 @@ export function registerType(
   options: RegisterTypeOptions,
 ): RegisteredType {
   const canonical = canonicalizeTypeSpec(spec);
+
+  // Refused before anything else, including the idempotence check: a spec whose view cannot be
+  // built must not be reported as `unchanged` either, or a store that already holds such a
+  // definition would look like it had accepted this one.
+  if (canonical.errors.length > 0) {
+    throw new ReservedPropertyNameError(canonical.spec.name, canonical.errors);
+  }
+
   const { shape, proseJson } = toStorage(canonical.spec, options);
   const hash = typeHash(shape);
 

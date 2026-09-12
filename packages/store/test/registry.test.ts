@@ -8,6 +8,7 @@ import {
   findType,
   openStore,
   registerType,
+  ReservedPropertyNameError,
   typeVersions,
   updateTypeProse,
   type Store,
@@ -478,6 +479,105 @@ describe('reading types back', () => {
         'reviewer',
         'summary',
       ]);
+    });
+  });
+});
+
+describe('a name the generated view has claimed is refused, not projected', () => {
+  // asc-865.1. The defect this closes was measured on this exact path: with a property named
+  // `source`, SQLite built the view with columns `source` (the envelope) and `source:1` (the
+  // property), and `SELECT source FROM v_note_v1` returned 'self'. Refusing at define time is
+  // the only place the fix is cheap -- at query time the same mistake reads as a finding.
+
+  it('refuses an envelope column name, and writes nothing at all', () => {
+    withStore((store) => {
+      expect(() =>
+        registerType(
+          store.db,
+          { name: 'note', properties: [{ name: 'source', type: 'string' }] },
+          { registeredAt: AT },
+        ),
+      ).toThrow(ReservedPropertyNameError);
+
+      expect(rowCount(store)).toBe(0);
+      expect(findType(store.db, 'note')).toBeUndefined();
+      const views = store.db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'view'")
+        .all() as unknown as { name: string }[];
+      expect(views).toEqual([]);
+    });
+  });
+
+  it('carries the reason and the rename, so the caller has nothing to look up', () => {
+    withStore((store) => {
+      let thrown: unknown;
+      try {
+        registerType(
+          store.db,
+          { name: 'note', properties: [{ name: 'workflow', type: 'string' }] },
+          { registeredAt: AT },
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ReservedPropertyNameError);
+      const reserved = thrown as ReservedPropertyNameError;
+      expect(reserved.typeName).toBe('note');
+      expect(reserved.problems).toHaveLength(1);
+      expect(reserved.message).toContain("'workflow_value'");
+    });
+  });
+
+  it('refuses the state-column suffix even when the property it would collide with is absent', () => {
+    // The collision needs two properties to be visible: `error_state` beside `error`. The rule
+    // fires anyway, because a version arrives on its own -- admitting `error_state` in version 1
+    // would leave a family that version 2 could never extend with `error`, and a registered
+    // definition is immutable, so the family would be stuck rather than wrong.
+    withStore((store) => {
+      expect(() =>
+        registerType(
+          store.db,
+          { name: 'note', properties: [{ name: 'error_state', type: 'string' }] },
+          { registeredAt: AT },
+        ),
+      ).toThrow(/state of property 'error'/);
+    });
+  });
+
+  it('refuses a reserved name added by a later version of a registered type', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+
+      expect(() =>
+        registerType(store.db, spec([{ name: 'actor', type: 'string' }]), { registeredAt: LATER }),
+      ).toThrow(ReservedPropertyNameError);
+
+      // The registered version is untouched, and no view was rebuilt around the refused one.
+      expect(rowCount(store)).toBe(1);
+      expect(typeVersions(store.db, 'review_completed').map((v) => v.version)).toEqual([1]);
+    });
+  });
+
+  it('is a REFUSAL, not a warning -- the caller is told, and the spec is not silently renamed', () => {
+    withStore((store) => {
+      // The near-miss must still register: `ascend_version` and `schema_version` are columns of
+      // `entries` that no view projects, so reserving them would refuse a harmless name.
+      const result = registerType(
+        store.db,
+        {
+          name: 'note',
+          properties: [
+            { name: 'ascend_version', type: 'string' },
+            { name: 'schema_version', type: 'integer' },
+            { name: 'state', type: 'string' },
+          ],
+        },
+        { registeredAt: AT },
+      );
+
+      expect(result.outcome).toBe('created');
+      expect(result.warnings).toEqual([]);
     });
   });
 });

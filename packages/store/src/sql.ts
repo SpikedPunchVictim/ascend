@@ -10,31 +10,24 @@
  * Internal to the package: `views.ts` and `union.ts` use it, `index.ts` does not export it.
  */
 
+import { ENVELOPE_PROPERTY_NAMES } from '@ascend/core';
+
 /** Quote an identifier for generated SQL. Doubling an embedded quote is the SQLite escape. */
 export const ident = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 
 /** A literal for generated SQL. Property names come from an LLM and are interpolated into DDL. */
 export const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
-/** The columns every generated projection carries, before the per-property ones. */
-export const ENVELOPE_COLUMNS = [
-  'id',
-  'type_name',
-  'type_version',
-  'type_hash',
-  'recorded_at',
-  'run_id',
-  'workflow',
-  'actor',
-  'source',
-  'cwd',
-  'repo',
-  'git_sha',
-  'branch',
-  'evidence_text',
-  'properties_json',
-  'na_json',
-] as const;
+/**
+ * The columns every generated projection carries, before the per-property ones.
+ *
+ * Taken from `@ascend/core` rather than written out here, because this list IS the set of
+ * names a view claims for itself -- which is what `reservedPropertyName` refuses as property
+ * names (asc-865.1). Two copies of it could disagree, and the disagreement would be a
+ * property name that core believed was free and a view believed was taken. One list, and a
+ * test that derives the same set back out of a real view's declared columns.
+ */
+export const ENVELOPE_COLUMNS: readonly string[] = ENVELOPE_PROPERTY_NAMES;
 
 /**
  * The `_state` CASE for one property.

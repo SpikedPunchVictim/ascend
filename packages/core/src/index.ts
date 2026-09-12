@@ -12,16 +12,20 @@
  */
 
 export {
+  ENVELOPE_PROPERTY_NAMES,
   PROPERTY_TYPES,
+  STATE_COLUMN_SUFFIX,
   UNIT_BEARING_TYPES,
   canonicalName,
   canonicalizeProperty,
   canonicalizeTypeSpec,
   definitionShape,
+  reservedPropertyName,
   type Canonicalized,
   type PropertySpec,
   type PropertyType,
   type Rename,
+  type ReservedName,
   type TypeSpec,
 } from './spec.js';
 

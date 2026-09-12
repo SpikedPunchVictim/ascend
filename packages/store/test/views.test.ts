@@ -1,7 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { TypeSpec } from '@ascend/core';
+import {
+  canonicalizeTypeSpec,
+  definitionShape,
+  ENVELOPE_PROPERTY_NAMES,
+  typeHash,
+  type TypeSpec,
+} from '@ascend/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   findEntry,
@@ -124,6 +130,23 @@ const columnNames = (store: Store, view: string): readonly string[] =>
   (store.db.prepare(`PRAGMA table_info(${view})`).all() as unknown as { name: string }[]).map(
     (column) => column.name,
   );
+
+/**
+ * Write a version row the way a store predating the envelope-name rule would already hold one.
+ *
+ * `registerType` refuses a property the view has claimed (asc-865.1), so a fixture for the
+ * view generator's own refusal has to go in underneath the registry. Same shape, same hash --
+ * the columns a view reads are `spec_json` and the version numbers.
+ */
+const insertVersionRow = (store: Store, spec: TypeSpec): void => {
+  const shape = definitionShape(canonicalizeTypeSpec(spec).spec);
+  store.db
+    .prepare(
+      `INSERT INTO entry_types (name, version, major, type_hash, spec_json, created_at)
+       VALUES (?, 1, 1, ?, ?, ?)`,
+    )
+    .run(shape.name, typeHash(shape), JSON.stringify(shape), AT);
+};
 
 describe('naming', () => {
   it('names a view per major family and an index per property', () => {
@@ -570,6 +593,86 @@ describe('registration is atomic with the views it derives', () => {
       expect(recorded.entry.typeHash).toBe(registered.typeHash);
       expect(recorded.entry.typeVersion).toBe(registered.version);
       expect(one(store, viewName('review_completed', registered.major), 'e1').type_version).toBe(1);
+    });
+  });
+});
+
+describe('a property can never want a column the view has already claimed', () => {
+  // asc-865.1, measured on this path before the fix: a property named `source` produced a view
+  // whose declared columns were [... "source", ..., "source:1", "source_state"], and
+  // `SELECT source FROM v_note_v1` returned 'self' -- the ENVELOPE value, with no error. The
+  // reservation lives in @ascend/core and the registry refuses on it, because a name that cannot
+  // be projected has to be refused while the author can still cheaply rename it.
+
+  it('claims exactly the names core reserves, and no others', () => {
+    // The invariant that keeps the guard honest in BOTH directions. Deriving the claimed names
+    // back out of a real view catches a column added to the projection without being reserved
+    // (which would reopen the hole silently), and a name reserved that no view projects (which
+    // would refuse a harmless property). Order included: the projection is built from the list.
+    withStore((store) => {
+      registerType(store.db, V1, { registeredAt: AT });
+
+      const fromProperties = new Set(
+        V1.properties.flatMap((property) => [property.name, `${property.name}_state`]),
+      );
+      const claimed = columnNames(store, viewName('review_completed', 1)).filter(
+        (name) => !fromProperties.has(name),
+      );
+
+      expect(claimed).toEqual([...ENVELOPE_PROPERTY_NAMES]);
+    });
+  });
+
+  it('projects a name that only LOOKS like an envelope column, keeping its own value', () => {
+    // The boundary of the reservation rather than its centre. `ascend_version` is a column of
+    // `entries` that no view projects, so it collides with nothing and must round-trip; `state`
+    // is what a literal `_state` canonicalizes to, and the suffix is only taken when something
+    // precedes it.
+    withStore((store) => {
+      registerType(
+        store.db,
+        {
+          name: 'note',
+          properties: [
+            { name: 'ascend_version', type: 'string' },
+            { name: 'state', type: 'string' },
+          ],
+        },
+        { registeredAt: AT },
+      );
+      recordEntry(
+        store.db,
+        { type: 'note', properties: { ascend_version: 'from-the-llm', state: 'open' } },
+        context('e1'),
+      );
+
+      const view = viewName('note', 1);
+      const columns = columnNames(store, view);
+      expect(columns).not.toContain('ascend_version:1');
+      expect(columns).not.toContain('state:1');
+      expect(store.db.prepare(`SELECT ascend_version, state FROM ${view}`).get()).toEqual({
+        ascend_version: 'from-the-llm',
+        state: 'open',
+      });
+    });
+  });
+
+  it('refuses a version that reached the store without the registry, rather than rename a column', () => {
+    // The second line. A hand-written row, or a store created before the rule, still cannot get
+    // a view whose `source` column is the envelope: the generator refuses and changes nothing.
+    withStore((store) => {
+      insertVersionRow(store, {
+        name: 'note',
+        properties: [{ name: 'source', type: 'string' }],
+      });
+
+      expect(() => refreshTypeViews(store.db, 'note')).toThrow(/asc-865\.1/);
+
+      const objects = store.db
+        .prepare("SELECT name FROM sqlite_master WHERE type IN ('view', 'index')")
+        .all() as unknown as { name: string }[];
+      // Nothing was built -- not the view, and not the indexes either: the refusal precedes all DDL.
+      expect(objects.filter((object) => object.name.includes('note'))).toEqual([]);
     });
   });
 });

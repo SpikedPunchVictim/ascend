@@ -25,6 +25,15 @@
  * statistic reports a plausible wrong number. `not_declared` is the view's own fourth value
  * and never appears in the entries table or in core's model.
  *
+ * **A property may not be named after a column the view already projects** (`id`, `source`,
+ * `workflow`, `properties_json`, ...) **or end in `_state`**, because those names are taken and
+ * SQLite resolves a duplicate by renaming the loser to `source:1` -- silently, so the query above
+ * would read the ENVELOPE value under the property's name. `@ascend/core`'s
+ * `reservedPropertyName` owns the vocabulary and `registerType` refuses on it, which is where the
+ * author can still cheaply rename; `assertProjectable` below is the second line, for a spec that
+ * reached the store without passing the registry. Measured and reproduced in views.test.ts
+ * (`asc-865.1`).
+ *
  * **Indexes**, per EV-4's required addition: one composite expression index per property,
  * `(type_name, json_extract(properties_json, '$.<prop>'))`. The bare-expression form is
  * *worse than no index* (449.6 ms vs 231.0 ms) because it cannot carry the `type_name`
@@ -44,9 +53,46 @@
  * by running the refresh again rather than by a migration.
  */
 
-import type { TypeSpec } from '@ascend/core';
+import { reservedPropertyName, type TypeSpec } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
 import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
+
+/**
+ * Refuse to build a view for a version that names a property the view has already claimed.
+ *
+ * `registerType` refuses these names, so this is the second line rather than the first: the
+ * specs that reach it were written without the registry -- a version row inserted by hand, or
+ * a store created before the rule existed. Both are states where the alternative is a view
+ * SQLite would happily build with a duplicate column renamed to `source:1`, and a query that
+ * selects `source` then reads the envelope. A refusal that names the property is legible; the
+ * renamed column is not.
+ *
+ * Thrown BEFORE any DDL runs, so a refused refresh changes nothing -- not the indexes, not the
+ * other families' views. It is deliberately not repaired here, either: a registered definition
+ * is immutable by design, so the repair is a new major version with the property renamed, and
+ * silently dropping or renaming the old family's columns would be the rewrite the registry
+ * exists to prevent.
+ */
+function assertProjectable(versions: readonly TypeVersion[]): void {
+  const problems: string[] = [];
+  for (const { version, spec } of versions) {
+    for (const property of spec.properties) {
+      const reserved = reservedPropertyName(property.name);
+      if (reserved === undefined) continue;
+      problems.push(
+        `version ${String(version)} declares property '${reserved.name}': ${reserved.reason}. ` +
+          `The view was NOT built -- registering a corrected version is the fix.`,
+      );
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new Error(
+      `cannot build a faithful view for these definitions (asc-865.1):\n` +
+        problems.map((problem) => `  ${problem}`).join('\n'),
+    );
+  }
+}
 
 /** The view for one major family: `v_<type>_v<major>`. */
 export function viewName(typeName: string, major: number): string {
@@ -109,6 +155,8 @@ export function refreshTypeViews(db: DatabaseSync, typeName: string): RefreshRep
   if (versions.length === 0) {
     throw new Error(`no entry type '${typeName}' is registered, so it has no views to build`);
   }
+
+  assertProjectable(versions);
 
   const indexesCreated: string[] = [];
 

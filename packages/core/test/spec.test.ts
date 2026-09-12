@@ -4,6 +4,9 @@ import {
   canonicalizeProperty,
   canonicalizeTypeSpec,
   definitionShape,
+  ENVELOPE_PROPERTY_NAMES,
+  reservedPropertyName,
+  STATE_COLUMN_SUFFIX,
   type TypeSpec,
 } from '../src/index.js';
 
@@ -151,6 +154,127 @@ describe('canonicalizeTypeSpec', () => {
     const twice = canonicalizeTypeSpec(once.spec);
     expect(twice.renames).toEqual([]);
     expect(twice.spec).toEqual(once.spec);
+  });
+});
+
+describe('the reserved property vocabulary', () => {
+  // asc-865.1. The names below are not a style preference: a generated per-type view projects
+  // every property beside the envelope's columns, and SQLite resolves a duplicate by keeping the
+  // first and renaming the later one to `source:1` -- silently. The query ARCHITECTURE.md
+  // prescribes then reads the ENVELOPE value under the property's name.
+
+  it('refuses every column a generated view projects for the envelope', () => {
+    // Driven from the constant rather than retyped, so a name added to the envelope is covered
+    // here the moment it is added -- the test cannot fall behind the vocabulary it guards.
+    for (const name of ENVELOPE_PROPERTY_NAMES) {
+      const reserved = reservedPropertyName(name);
+      expect(reserved?.name, `${name} should be reserved`).toBe(name);
+      expect(reserved?.reason, `${name} needs a reason`).toContain(name);
+    }
+  });
+
+  it('offers a suggestion that is itself free, for every refusal it can produce', () => {
+    // A suggestion that is also refused is worse than none: it sends the caller round a loop.
+    const refused = [...ENVELOPE_PROPERTY_NAMES, 'error_state', 'count_state', 'state_state'];
+    for (const name of refused) {
+      const reserved = reservedPropertyName(name);
+      expect(reserved, `${name} should be reserved`).toBeDefined();
+      const suggestion = reserved?.suggestion ?? '';
+      expect(reservedPropertyName(suggestion), `suggestion for ${name}`).toBeUndefined();
+      expect(canonicalName(suggestion)).toBe(suggestion);
+    }
+  });
+
+  it('reserves the state-column SUFFIX, naming the property it would collide with', () => {
+    // The collision needs two properties to be visible (`error_state` beside `error`), but the
+    // rule is unconditional because versions arrive one at a time: allowing `error_state` in
+    // version 1 would leave a family that version 2 could never extend with `error`.
+    const reserved = reservedPropertyName('error_state');
+    expect(reserved?.name).toBe('error_state');
+    expect(reserved?.reason).toContain("state of property 'error'");
+    expect(STATE_COLUMN_SUFFIX).toBe('_state');
+  });
+
+  it('decides on the CANONICAL name, so no spelling gets around it', () => {
+    // Canonical form is a property's identity, so it is the form the view would project.
+    expect(reservedPropertyName('Source')?.name).toBe('source');
+    expect(reservedPropertyName('gitSHA')?.name).toBe('git_sha');
+    expect(reservedPropertyName('Recorded At')?.name).toBe('recorded_at');
+
+    const { errors } = canonicalizeProperty({ name: 'Source', type: 'string' });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("property 'source'");
+  });
+
+  it('leaves a name alone when it collides with nothing', () => {
+    // The other direction, and the one that would be easy to overreach on. `_state` is the case
+    // asc-865.1 named literally: leading underscores are stripped like any other separator, so it
+    // canonicalizes to `state`, which no column claims -- the suffix is only taken when something
+    // precedes it. `ascend_version` and `schema_version` are columns of `entries` that no view
+    // projects, so a property may use them.
+    for (const name of [
+      'state',
+      '_state',
+      'ascend_version',
+      'schema_version',
+      'properties',
+      'na',
+      'source_of',
+      'id_value',
+      'error_status',
+      'sourced',
+      'count_state_of_mind',
+    ]) {
+      expect(reservedPropertyName(name), `${name} should be free`).toBeUndefined();
+    }
+  });
+
+  it('reports a reserved name as an ERROR, not a warning, and still canonicalizes the spec', () => {
+    // Errors block; warnings never do. The spec is still returned in canonical form, so a caller
+    // can show the author what they wrote and what to rename it to.
+    const { spec, renames, warnings, errors } = canonicalizeTypeSpec({
+      name: 'note',
+      properties: [
+        { name: 'summary', type: 'text' },
+        { name: 'source', type: 'string' },
+      ],
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("property 'source'");
+    expect(errors[0]).toContain("'source_value'");
+    expect(spec.properties.map((property) => property.name)).toEqual(['source', 'summary']);
+    expect(renames).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it('reports nothing at all for an ordinary spec', () => {
+    const { errors } = canonicalizeTypeSpec({
+      name: 'review_completed',
+      properties: [
+        { name: 'outcome', type: 'enum', enum_values: ['approved'] },
+        { name: 'count', type: 'integer' },
+      ],
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it('collects one error per offending property, so a rename round trip fixes them all', () => {
+    const { errors } = canonicalizeTypeSpec({
+      name: 'note',
+      properties: [
+        { name: 'id', type: 'string' },
+        { name: 'workflow', type: 'string' },
+        { name: 'error_state', type: 'string' },
+        { name: 'summary', type: 'text' },
+      ],
+    });
+    expect(errors).toHaveLength(3);
+    expect(errors.map((error) => /property '([^']+)'/.exec(error)?.[1])).toEqual([
+      'id',
+      'workflow',
+      'error_state',
+    ]);
   });
 });
 

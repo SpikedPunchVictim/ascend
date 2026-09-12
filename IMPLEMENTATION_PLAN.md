@@ -84,9 +84,10 @@ error naming field, expected type, and corrected command; `asc init` gitignores 
   The `toFtsMatch` sanitizer port is **mandatory**: 8/14 raw LLM-authored queries throw FTS5 syntax
   errors, and a naive whole-query phrase sanitizer is insufficient (returns empty for 9–13/14).
 
-**Status: In Progress** — **E2 complete** (7/7, epic `asc-72s` closed). **E3 6/6 tasks built**
-(`asc-0j0`, `asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7`, `asc-l00` closed; epic `asc-865` still open
-on one P1 defect found in E3's own output, `asc-865.1`). E4 (`asc-baj`) not started and not blocked.
+**Status: In Progress** — **E2 complete** (7/7, epic `asc-72s` closed). **E3 7/7 complete**, epic
+`asc-865` closed: `asc-0j0`, `asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7`, `asc-l00`, and the P1 defect
+found in E3's own output, `asc-865.1`, now fixed (see below). E4 (`asc-baj`) not started and not
+blocked.
 
 ### E3 delivered so far
 
@@ -163,12 +164,48 @@ exists to prevent. Plausible colliding names include `id`, `source`, `actor`, `r
 `workflow`, `run_id`. The union does not have this bug: its columns are prefixed `p.`/`s.`, with a
 regression test.
 
-It is filed (`asc-865.1`, P1) rather than fixed here because the fix chooses between two designs:
-reserve the envelope names at define time in `@ascend/core` (recommended — it refuses a name that
-cannot be projected faithfully, with a rename suggestion) or prefix the view's columns (correct, but
-breaks the documented `GROUP BY` ergonomics). That is a decision to take deliberately, not inside a
-commit for a different task. **E3's epic `asc-865` stays open on it, so the stage does not read
-complete while a known wrong-answer bug sits in its output.**
+It was filed (`asc-865.1`, P1) rather than fixed inside the union's commit because the fix chooses
+between two designs: reserve the envelope names at define time in `@ascend/core` (recommended — it
+refuses a name that cannot be projected faithfully, with a rename suggestion) or prefix the view's
+columns (correct, but breaks the documented `GROUP BY` ergonomics). That is a decision to take
+deliberately, not inside a commit for a different task.
+
+**Resolved: the bead's recommendation, option (a).** The vocabulary now lives in `@ascend/core`
+(`ENVELOPE_PROPERTY_NAMES`, `STATE_COLUMN_SUFFIX`, `reservedPropertyName`), canonicalization reports
+a reservation in a new **`errors`** bucket beside `renames`/`warnings`, and `registerType` refuses on
+a non-empty list. Errors are a different KIND from warnings, not a severity: a warning is a legal spec
+someone probably did not mean, an error is one no canonicalization can rescue.
+
+Three things about the shape of the fix are load-bearing:
+
+- **The suffix rule is unconditional, and that is the point.** A collision needs two properties to be
+  visible (`error_state` beside `error`), but versions arrive one at a time: admitting `error_state`
+  in version 1 would leave a registered family that version 2 could never extend with `error`, and a
+  registered definition is immutable. Refusing the pattern up front is the only stable form.
+- **`sql.ts` projects from core's list rather than keeping a second copy of it**, so the reserved set
+  and the projected set cannot disagree. The guard against them drifting is a test that derives the
+  claimed names back out of a real view's declared columns — added because the single-list design
+  makes one direction of drift impossible and leaves the others unguarded.
+- **`refreshTypeViews` refuses too** (`assertProjectable`, before any DDL). `registerType` is the
+  first line; a version row inserted by hand, or a store written before the rule, is the second. The
+  mutant that removes this guard rebuilds the original defect exactly — measured
+  `["source","source:1","source_state"]` — so the test guards the defect and not merely an error.
+
+**Rejected alternative, recorded on measured grounds so it is not re-proposed from scratch:**
+prefixing the view's property columns fixes the whole class for every name, including ones nobody
+enumerated, and refuses nothing. It was declined because the property column names ARE the ergonomic
+the view exists for (`ARCHITECTURE.md`: real `GROUP BY` ergonomics; a `_state` suffix that is part of
+the documented query surface), and a prefix would be paid by every query forever to protect the
+minority of names that collide. **Design Reserve, with its promotion condition stated:** if a store
+with a pre-gate colliding family ever exists in the wild, `refreshTypeViews` should qualify the
+colliding column rather than refuse the family — today that state is unreachable (no released store,
+and every fixture in the repo is written by this repo), so building it would be a mechanism for a
+directory that is not there.
+
+**The cost is now measured, not hypothetical.** The reservation took one name out of this repo's own
+fixtures: `union.test.ts`'s three-state fixture used `actor` as a property, and it had to move to
+`denier`. That fixture carries a note saying so, rather than being renamed silently. The refusal
+message names the reason and a rename suggestion, so the cost at define time is one round trip.
 
 **The fourth state is a decision taken here, and it is not in the three-state model.** A view spans
 versions, so a property introduced by a later minor is not in an earlier entry's definition at all —
@@ -221,7 +258,12 @@ Two gate defects fixed during this stage (both false greens, the severity-zero c
 file), and vitest could not resolve `node:sqlite` (aliased to a shim that reaches the real module via
 `createRequire`).
 
-Gates at E3 head: `format 0 · typecheck 0 · lint 0 · test 278 passed · align check green`.
+Gates at E3 head: `format 0 · typecheck 0 · lint 0 · test 294 passed · align check green (19
+baselined, unchanged)`. The 16 added tests are `asc-865.1`: 8 in core (the vocabulary, the refusal,
+the boundary of each rule, and that every suggestion it can produce is itself free), 5 in the
+registry (the refusal and that it writes nothing), 3 in views (the claimed-names invariant, the
+near-miss that must stay legal, and the generator's own refusal). Six mutations were run against
+them; each went red, and none of the six survived.
 
 E2 delivered, with the evidence that it holds:
 - `spec.ts` — bounded 9-type vocabulary + canonicalization. Renames are **reported**, not applied

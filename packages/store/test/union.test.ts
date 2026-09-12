@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { TypeSpec } from '@ascend/core';
+import { canonicalizeTypeSpec, definitionShape, typeHash, type TypeSpec } from '@ascend/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   DuplicateProjectError,
@@ -79,23 +79,21 @@ const DENIAL_OTHER: TypeSpec = {
 
 let projectCount = 0;
 
-/**
- * A real project store on disk, with the specs registered and entries recorded.
- *
- * A store rather than a bare database on purpose: the union's first job is to check that what it
- * attached is an ascend store at all, so a fixture it could not have written itself would not test
- * the path that matters.
- */
-function project(
+/** One entry to record into a fixture project. */
+interface FixtureEntry {
+  id: string;
+  at?: string;
+  type?: string;
+  version?: number;
+  properties?: Record<string, unknown>;
+  na?: readonly string[];
+}
+
+/** Build a project store through `register`, then record its entries through the real recorder. */
+function projectWith(
+  register: (db: DatabaseSync, spec: TypeSpec) => void,
   specs: readonly TypeSpec[],
-  entries: readonly {
-    id: string;
-    at?: string;
-    type?: string;
-    version?: number;
-    properties?: Record<string, unknown>;
-    na?: readonly string[];
-  }[] = [],
+  entries: readonly FixtureEntry[] = [],
 ): ProjectSource {
   projectCount += 1;
   const label = `p${String(projectCount)}`;
@@ -103,7 +101,7 @@ function project(
   const dir = join(tempDir(), label, STORE_DIR);
   const store = openStore({ dir });
   try {
-    for (const spec of specs) registerType(store.db, spec, { registeredAt: AT });
+    for (const spec of specs) register(store.db, spec);
     for (const entry of entries) {
       recordEntry(
         store.db,
@@ -120,6 +118,43 @@ function project(
     store.close();
   }
   return { label, file: join(dir, STORE_FILE) };
+}
+
+/**
+ * A real project store on disk, with the specs registered and entries recorded.
+ *
+ * A store rather than a bare database on purpose: the union's first job is to check that what it
+ * attached is an ascend store at all, so a fixture it could not have written itself would not test
+ * the path that matters.
+ */
+function project(specs: readonly TypeSpec[], entries: readonly FixtureEntry[] = []): ProjectSource {
+  return projectWith((db, spec) => registerType(db, spec, { registeredAt: AT }), specs, entries);
+}
+
+/**
+ * A project whose version rows were written WITHOUT the registry.
+ *
+ * `registerType` refuses a property named `id`, `source` or `id_state` (asc-865.1), so the
+ * colliding definition below cannot be registered at all. The union still has to read such a
+ * store -- it is documented as the one place ascend reads databases it did not write, and a store
+ * written by an earlier ascend is exactly that -- so the collision stays reachable here. The row
+ * is the same row the registry would have written: same canonical shape, same hash.
+ */
+function projectBypassingTheRegistry(
+  specs: readonly TypeSpec[],
+  entries: readonly FixtureEntry[] = [],
+): ProjectSource {
+  return projectWith(
+    (db, spec) => {
+      const shape = definitionShape(canonicalizeTypeSpec(spec).spec);
+      db.prepare(
+        `INSERT INTO entry_types (name, version, major, type_hash, spec_json, created_at)
+       VALUES (?, 1, 1, ?, ?, ?)`,
+      ).run(shape.name, typeHash(shape), JSON.stringify(shape), AT);
+    },
+    specs,
+    entries,
+  );
 }
 
 /** The connection a union runs through. Its own `main` database must never be consulted. */
@@ -578,12 +613,16 @@ describe('attachments are the union’s own business', () => {
 });
 
 describe('the three value states survive the crossing', () => {
+  // The third property was called `actor` until asc-865.1: that is an envelope column, so it is
+  // now refused at registration and the name had to move. Kept as a note rather than renamed
+  // silently -- `actor` is a name a person reaches for, and the cost of the reservation is that
+  // they cannot have it.
   const THREE: TypeSpec = {
     name: 'tool_denial',
     properties: [
       { name: 'count', type: 'integer' },
       { name: 'tool_name', type: 'string' },
-      { name: 'actor', type: 'string' },
+      { name: 'denier', type: 'string' },
     ],
   };
 
@@ -594,8 +633,8 @@ describe('the three value states survive the crossing', () => {
     const measured = project(
       [THREE],
       [
-        { id: 'zero', properties: { count: 0, tool_name: 'Bash', actor: 'user' } },
-        { id: 'na', properties: { count: 5, tool_name: 'Bash' }, na: ['actor'] },
+        { id: 'zero', properties: { count: 0, tool_name: 'Bash', denier: 'user' } },
+        { id: 'na', properties: { count: 5, tool_name: 'Bash' }, na: ['denier'] },
       ],
     );
     const quiet = project([THREE], [{ id: 'silent', properties: { tool_name: 'Read' } }]);
@@ -606,13 +645,13 @@ describe('the three value states survive the crossing', () => {
 
       expect(byId('zero')?.properties['count']).toBe(0);
       expect(byId('zero')?.states).toEqual({
-        actor: 'measured',
+        denier: 'measured',
         count: 'measured',
         tool_name: 'measured',
       });
-      expect(byId('na')?.states['actor']).toBe('not_applicable');
+      expect(byId('na')?.states['denier']).toBe('not_applicable');
       expect(byId('silent')?.states['count']).toBe('not_measured');
-      expect(byId('silent')?.states['actor']).toBe('not_measured');
+      expect(byId('silent')?.states['denier']).toBe('not_measured');
     });
   });
 
@@ -623,7 +662,7 @@ describe('the three value states survive the crossing', () => {
     const only = project(
       [THREE],
       [
-        { id: 'a1', properties: { count: 1, tool_name: 'Bash', actor: 'user' } },
+        { id: 'a1', properties: { count: 1, tool_name: 'Bash', denier: 'user' } },
         { id: 'a2', properties: { tool_name: 'Read' } },
       ],
     );
@@ -643,7 +682,7 @@ describe('the three value states survive the crossing', () => {
     withConnection((db) => {
       for (const row of unionEntries(db, 'tool_denial', [only]).rows) {
         expect(Object.keys(row.properties).sort()).toEqual(Object.keys(row.states).sort());
-        expect(Object.keys(row.properties).sort()).toEqual(['actor', 'count', 'tool_name']);
+        expect(Object.keys(row.properties).sort()).toEqual(['count', 'denier', 'tool_name']);
       }
     });
   });
@@ -653,6 +692,10 @@ describe('the three value states survive the crossing', () => {
     // column of that name, and SQLite renames the loser to `id:1` in `SELECT *` (measured) -- so
     // the property would come back under a name the caller never wrote, or be read as the envelope
     // value. Both are plausible wrong answers rather than errors.
+    //
+    // Registration now REFUSES these names (asc-865.1), so this fixture goes in underneath the
+    // registry. The union's own defence is still worth pinning: it reads stores ascend did not
+    // write, including ones written before the refusal existed.
     const collision: TypeSpec = {
       name: 'tool_denial',
       properties: [
@@ -661,7 +704,7 @@ describe('the three value states survive the crossing', () => {
         { name: 'id_state', type: 'string' },
       ],
     };
-    const only = project(
+    const only = projectBypassingTheRegistry(
       [collision],
       [{ id: 'a1', properties: { id: 'prop-id', source: 'prop-source', id_state: 'prop-state' } }],
     );

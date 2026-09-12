@@ -75,6 +75,116 @@ export function canonicalName(raw: string): string {
   );
 }
 
+/**
+ * The names the entry ENVELOPE occupies in a generated view, so they cannot also be
+ * property names.
+ *
+ * The envelope is a fixed vocabulary the same way `PROPERTY_TYPES` is, and for the same
+ * reason: a property named `source` or `id` cannot be projected faithfully next to it. The
+ * generated view claims all 18 of `entries`' columns' worth of namespace for the envelope
+ * and projects each property beside them, so `source` as a property and `source` as the
+ * envelope are one name for two different values.
+ *
+ * Measured (asc-865.1, reproduced on the real `registerType` + `recordEntry` path): SQLite
+ * does NOT error on that. It keeps the envelope's column and renames the loser to
+ * `source:1`, so the exact query ARCHITECTURE.md prescribes --
+ * `SELECT source, COUNT(*) FROM v_note_v1 GROUP BY 1` -- returns the ENVELOPE value under
+ * the property's name. A wrong answer with no error, which is the class this whole product
+ * exists to prevent. So the name is refused at define time, where the cost is one round
+ * trip, rather than renamed by SQLite at query time, where the cost is a fabricated finding.
+ *
+ * These are the columns a view PROJECTS, which is why `ascend_version` and `schema_version`
+ * are absent: `entries` carries them, the view does not, so a property named
+ * `ascend_version` collides with nothing and is legal. Reserving them would refuse a
+ * harmless name.
+ *
+ * Order is the projection order, and `packages/store/src/sql.ts` projects from this list
+ * rather than keeping a second copy of it. `views.test.ts` derives the same set back out of
+ * a real view's declared columns, so a column added to the projection without being added
+ * here fails a test instead of silently reopening the hole.
+ */
+export const ENVELOPE_PROPERTY_NAMES = [
+  'id',
+  'type_name',
+  'type_version',
+  'type_hash',
+  'recorded_at',
+  'run_id',
+  'workflow',
+  'actor',
+  'source',
+  'cwd',
+  'repo',
+  'git_sha',
+  'branch',
+  'evidence_text',
+  'properties_json',
+  'na_json',
+] as const;
+
+/**
+ * The pattern a generated view uses for a property's state column: `<property>_state`.
+ *
+ * Reserved as a PATTERN rather than only against the properties a spec happens to declare,
+ * because a major family is versioned and the collision arrives with a LATER version: a spec
+ * may declare `error_state` in version 1 and add `error` in version 2, at which point
+ * `error_state` is both that property's value column and `error`'s state column. A rule that
+ * only fired when both were present would let version 1 through and then have to refuse
+ * version 2 -- leaving a registered family that no later version can extend. Refusing the
+ * pattern up front is the only form of the rule that is stable under versioning.
+ */
+export const STATE_COLUMN_SUFFIX = '_state';
+
+/** Why a name is not available as a property name, and a name that is. */
+export interface ReservedName {
+  /** The reserved name, in canonical form. */
+  readonly name: string;
+  /** One sentence: which column already occupies the name, and what goes wrong. */
+  readonly reason: string;
+  /** A name that projects faithfully. Guaranteed not itself reserved. */
+  readonly suggestion: string;
+}
+
+/**
+ * Is this name already claimed by the generated view? `undefined` means it is free.
+ *
+ * Takes the name as written and canonicalizes it first, so the answer does not depend on
+ * the caller having canonicalized: `Source` and `source` are the same name and are refused
+ * together. A canonical name is a fixed point of `canonicalName`, so callers that already
+ * hold one pay nothing for that.
+ *
+ * Note what this does NOT refuse, deliberately: `_state` canonicalizes to `state` (leading
+ * underscores are stripped, as with every other name), and `state` is claimed by nothing --
+ * the suffix is only reserved when something precedes it. So the defect is a property named
+ * `error_state`, never the literal `_state`.
+ */
+export function reservedPropertyName(raw: string): ReservedName | undefined {
+  const name = canonicalName(raw);
+
+  if ((ENVELOPE_PROPERTY_NAMES as readonly string[]).includes(name)) {
+    return {
+      name,
+      reason:
+        `the entry envelope already carries a column called '${name}', so a query selecting ` +
+        `'${name}' would read the envelope value instead of the property`,
+      suggestion: `${name}_value`,
+    };
+  }
+
+  if (name.endsWith(STATE_COLUMN_SUFFIX)) {
+    const base = name.slice(0, -STATE_COLUMN_SUFFIX.length);
+    return {
+      name,
+      reason:
+        `a generated view names a property's state column '<property>${STATE_COLUMN_SUFFIX}', so a ` +
+        `property called '${name}' would occupy the same column as the state of property '${base}'`,
+      suggestion: `${name}_value`,
+    };
+  }
+
+  return undefined;
+}
+
 /** A single canonicalization applied to a spec, so the caller can surface it. */
 export interface Rename {
   readonly from: string;
@@ -87,6 +197,25 @@ export interface Canonicalized<T> {
   readonly renames: readonly Rename[];
   /** Things that are legal but almost certainly a mistake. Not errors. */
   readonly warnings: readonly string[];
+  /**
+   * Reasons this spec cannot be USED, however it is spelled. Distinct from `warnings` in
+   * kind, not in severity: a warning is a legal spec someone probably did not mean, while an
+   * error is a spec no canonicalization can rescue.
+   *
+   * Canonicalization is where this is decided because it is the one place every spec
+   * already passes through, so a caller cannot forget to ask. The registry refuses on a
+   * non-empty list; nothing here throws, so a caller can still inspect the canonical form
+   * and explain the refusal.
+   */
+  readonly errors: readonly string[];
+}
+
+/** The refusal message for one reserved name, phrased for a human or an LLM to act on. */
+function reservedMessage(reserved: ReservedName): string {
+  return (
+    `property '${reserved.name}' cannot be projected: ${reserved.reason}. ` +
+    `Rename it -- '${reserved.suggestion}' projects faithfully.`
+  );
 }
 
 /**
@@ -99,9 +228,15 @@ export function canonicalizeProperty(spec: PropertySpec): Canonicalized<Property
   const name = canonicalName(spec.name);
   const renames: Rename[] = [];
   const warnings: string[] = [];
+  const errors: string[] = [];
 
   if (name !== spec.name) renames.push({ from: spec.name, to: name });
   if (name === '') warnings.push(`property name '${spec.name}' canonicalizes to empty`);
+
+  // Checked on the CANONICAL name, so no spelling of a reserved name gets through: the
+  // canonical form is the identity of the property, so it is the form the view would project.
+  const reserved = reservedPropertyName(name);
+  if (reserved !== undefined) errors.push(reservedMessage(reserved));
 
   // Trimmed AND sorted. An enum is a SET of allowed values -- the order an author
   // listed them in carries no meaning for validation, so leaving it in would make two
@@ -136,7 +271,7 @@ export function canonicalizeProperty(spec: PropertySpec): Canonicalized<Property
     ...(spec.unit === undefined ? {} : { unit: spec.unit }),
   };
 
-  return { spec: canonical, renames, warnings };
+  return { spec: canonical, renames, warnings, errors };
 }
 
 /**
@@ -151,6 +286,7 @@ export function canonicalizeProperty(spec: PropertySpec): Canonicalized<Property
 export function canonicalizeTypeSpec(spec: TypeSpec): Canonicalized<TypeSpec> {
   const renames: Rename[] = [];
   const warnings: string[] = [];
+  const errors: string[] = [];
 
   const name = canonicalName(spec.name);
   if (name !== spec.name) renames.push({ from: spec.name, to: name });
@@ -162,6 +298,7 @@ export function canonicalizeTypeSpec(spec: TypeSpec): Canonicalized<TypeSpec> {
     const result = canonicalizeProperty(property);
     renames.push(...result.renames);
     warnings.push(...result.warnings);
+    errors.push(...result.errors);
 
     const existing = byName.get(result.spec.name);
     if (existing !== undefined) {
@@ -195,7 +332,7 @@ export function canonicalizeTypeSpec(spec: TypeSpec): Canonicalized<TypeSpec> {
     ...(spec.record_when === undefined ? {} : { record_when: spec.record_when }),
   };
 
-  return { spec: canonical, renames, warnings };
+  return { spec: canonical, renames, warnings, errors };
 }
 
 /**

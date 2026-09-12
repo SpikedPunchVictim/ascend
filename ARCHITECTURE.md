@@ -157,6 +157,16 @@ Optional is the default.
 
 Generated views project both `<prop>` and `<prop>_state` so queries can filter on state.
 
+Those two names are the view's, so they are **refused as property names at define time**. A property
+named after an envelope column (`id`, `source`, `workflow`, …) or ending in `_state` cannot be
+projected faithfully beside the column that already holds that name — measured: SQLite does not error,
+it keeps the first and renames the later one to `source:1`, so `SELECT source FROM v_note_v1` returns
+the *envelope* value under the property's name. A wrong answer with no error is the failure this
+project exists to prevent, so the name is refused while the author can still cheaply rename it
+(`@ascend/core`'s `reservedPropertyName`) rather than resolved by the database at query time. Two
+names that merely look similar stay legal: `ascend_version` and `schema_version` are `entries`
+columns no view projects, and `_state` canonicalizes to `state`, which nothing claims.
+
 ### Versioning policy
 
 - Adding an **optional** property → **minor** bump. Backward compatible; views union across minors.

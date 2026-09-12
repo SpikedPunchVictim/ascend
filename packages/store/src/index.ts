@@ -44,6 +44,7 @@ export {
   deprecateType,
   findType,
   registerType,
+  ReservedPropertyNameError,
   typeVersions,
   updateTypeProse,
   type RegisteredType,

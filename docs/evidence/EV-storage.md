@@ -170,3 +170,45 @@ This is the "reports success wrongly" class: the number was not merely imprecise
 would have shipped a design failing on the first real type registration. Corrected in phase 4b above.
 The lesson recorded for E2+: **any measurement of a runtime registration path must run against a
 populated store**, and the harness should assert population before measuring.
+
+## Follow-up (2026-09-12, `asc-865.1`): a property name is not always free
+
+EV-4 decided the shape of the generated view — one table, a JSON document, `json_extract` projected
+into typed columns. It did not ask what happens when a property's canonical name is **already a column
+name of the view**, because every fixture used names the envelope does not claim.
+
+Question: does a property named `source` (or `id`, `actor`, `repo`, `branch`, `workflow`, `run_id`,
+`recorded_at`, `type_name` — all plausible property names) project faithfully beside the envelope column
+of that name?
+
+Method: the real `registerType` + `recordEntry` path, type `note` with properties `source` and `id`,
+then read the view's declared columns and query it.
+
+```
+VIEW COLUMNS: ["id","type_name",...,"source",...,"na_json","id:1","id_state","source:1","source_state"]
+SELECT source, id FROM v_note_v1   ->   {"source":"self","id":"e1"}
+```
+
+The property values recorded were `from-the-llm` and `the-prop-id`. **SQLite does not error on the
+duplicate: it keeps the first column and renames the later one to `<name>:1`.** Both envelope values
+came back under the property names, so the exact query `ARCHITECTURE.md` prescribes for the view
+(`SELECT <prop>, COUNT(*) FROM v_<type>_v<n> GROUP BY 1`) returns a wrong answer with no error — the
+plausible-wrong-number class this product exists to prevent, and the reason it outranks a style question.
+
+The same mechanism was measured again under mutation, from the opposite side: with the generator's
+guard removed, a definition carrying `source` rebuilds the defect exactly —
+`["source","source:1","source_state"]`.
+
+Decision: the names a view claims are **refused as property names at define time**
+(`@ascend/core`'s `reservedPropertyName`; the vocabulary is the projection list itself, so the two
+cannot disagree), and `refreshTypeViews` refuses as well for a version row that reached the store
+without the registry. The rejected alternative — prefixing the view's property columns — fixes the whole
+class but charges every query a prefix for the minority of names that collide; it is held as a Design
+Reserve with its promotion condition recorded in `IMPLEMENTATION_PLAN.md`.
+
+Confidence: high on the mechanism (reproduced twice, both directions, on the real path). The
+**residual hole is stated rather than papered over**: a store that already holds such a family keeps its
+existing (wrong) view — views are derived state, `refreshTypeViews` now refuses instead of rebuilding
+it, and a registered definition is immutable, so the repair is a new major version with the property
+renamed. No such store exists in this repo or in any released build; the state is reachable only by
+hand-written SQL, which is what `union.test.ts`'s bypass fixture does.
