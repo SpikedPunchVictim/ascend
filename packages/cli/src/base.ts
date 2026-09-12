@@ -151,8 +151,13 @@ export abstract class BaseCommand extends Command {
    * plausible-looking wrong answer in the one column a later analysis uses to tell one
    * ascend's rows from another's. An unset version is a broken package, and saying so is
    * the only honest option.
+   *
+   * `protected` rather than `private`: `init` is the first command other than the base class to
+   * need it -- it opens a store WITHOUT a project, because creating the project is its job -- and
+   * it had grown its own copy of this refusal. Two copies of a rule with one owner is how the
+   * owner stops being one, so the copy is gone and every caller calls this.
    */
-  private ascendVersion(): string {
+  protected ascendVersion(): string {
     const version = this.config.version;
     // Only the empty string can happen: oclif types `config.version` as `string`, so a
     // check for `undefined` would be unreachable, and an unreachable guard reads like a

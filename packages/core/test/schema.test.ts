@@ -28,6 +28,10 @@ const CASES: Record<PropertyType, { ok: unknown; bad: unknown }> = {
   duration: { ok: 250, bad: -1 },
   ref: { ok: 'asc-abc123', bad: '' },
   text: { ok: 'a long free-text note', bad: { not: 'a string' } },
+  // The pair is deliberately each other's counterexample: `json` refuses the prose a careless
+  // recorder would write for a list-shaped fact, and `text` refuses the structure that belongs
+  // in `json`. That mutual refusal is the entire distinction between the two types.
+  json: { ok: [{ severity: 'high', category: 'bug' }], bad: 'two high-severity bugs' },
 };
 
 describe('property type coverage', () => {

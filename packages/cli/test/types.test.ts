@@ -324,6 +324,25 @@ describe('asc types show', () => {
     expect(rows.find((row) => row['field'] === 'property.rounds')).not.toHaveProperty('required');
   });
 
+  it('renders a property description, which is stored in the prose column rather than the spec', () => {
+    // Regression. `registry.ts` strips every prose field out of the spec before hashing and
+    // storing it, so `row.spec.properties[].description` is always undefined -- which made
+    // `renderProperty`'s description branch unreachable and `asc types show` silently omit
+    // prose that `asc types export` was faithfully round-tripping. Silent, and load-bearing
+    // the moment a property is `json`: the description is the only place the shape of what
+    // goes INSIDE the array is written down.
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+
+    const run = asc(['types', 'show', 'review_completed'], dir);
+    expect(run.stdout).toContain('-- How many rounds of review it took.');
+
+    // And on the row, where the file comment says the machine-readable copy lives.
+    const rows = envelope(asc(['types', 'show', '--json', 'review_completed'], dir).stdout);
+    const rounds = rows.find((row) => row['field'] === 'property.rounds');
+    expect(rounds).toMatchObject({ description: 'How many rounds of review it took.' });
+  });
+
   it('distinguishes an unknown name from an unknown version, and lists the names', () => {
     const dir = project();
     asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);

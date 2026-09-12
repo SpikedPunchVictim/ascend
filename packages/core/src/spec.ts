@@ -6,7 +6,7 @@
  * execution and would make a definition unhashable. So the registry persists THIS,
  * and `buildSchema()` (schema.ts) constructs the validator from it.
  *
- * The vocabulary is deliberately nine types, not all of zod. Constraining what an LLM
+ * The vocabulary is deliberately ten types, not all of zod. Constraining what an LLM
  * can invent is the primary structural defense against drift -- but EV-drift measured
  * that it is NOT sufficient on its own, which is why canonicalization lives here too.
  */
@@ -22,9 +22,34 @@ export const PROPERTY_TYPES = [
   'duration',
   'ref',
   'text',
+  'json',
 ] as const;
 
 export type PropertyType = (typeof PROPERTY_TYPES)[number];
+
+/**
+ * `json` is the ONE compound type: a JSON **array or object**, and nothing else. Scalars are
+ * refused on purpose, and that refusal is the whole reason the type exists rather than reusing
+ * `text`.
+ *
+ * A list-shaped fact (`findings[]`, `what_was_tried`, `options_considered`) has three possible
+ * encodings, and two of them are traps. Storing it in a `text` property works at query time --
+ * `json_each` reads it straight back into rows -- but validation cannot tell a JSON array from
+ * prose, so a recorder that writes "two high-severity bugs" is ACCEPTED and only fails much
+ * later, inside a query, far from the entry that caused it. That is a deferred failure with no
+ * error at the point of writing, which this project treats as the worst defect class. Declaring
+ * the property `json` moves the check to where the recorder can act on it.
+ *
+ * It is deliberately not unbounded: a type that accepted scalars too would be a superset of
+ * `text` and would validate nothing that `text` does not, buying a longer vocabulary and no
+ * safety. Array-or-object is the constraint `text` cannot express.
+ *
+ * There is no schema for the CONTENTS -- no per-key types, no required keys. That is a real
+ * limitation, not an oversight: it would be a second, nested definition language, and this one
+ * has to stay small enough for an LLM to invent correctly at runtime. The consequence is that
+ * `json` validates the SHAPE of the container and leaves the shape of what is inside it to
+ * convention and to `asc types brief`'s prose.
+ */
 
 /** Property types whose `unit` is meaningful. A unit on `boolean` is a spec error. */
 export const UNIT_BEARING_TYPES: readonly PropertyType[] = ['number', 'integer', 'duration'];

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PROPERTY_TYPES, type PropertyType } from '../src/index.js';
 
 describe('bounded property vocabulary', () => {
-  it('is exactly the nine types settled in ARCHITECTURE.md', () => {
+  it('is exactly the ten types settled in ARCHITECTURE.md', () => {
     expect(PROPERTY_TYPES).toEqual([
       'string',
       'number',
@@ -13,6 +13,7 @@ describe('bounded property vocabulary', () => {
       'duration',
       'ref',
       'text',
+      'json',
     ]);
   });
 

@@ -108,14 +108,31 @@ export default class TypesShow extends BaseCommand {
         columns: ['field', 'value'],
         rows: [
           ...scalarRows(row),
-          ...row.spec.properties.map((property) => ({
-            field: `property.${property.name}`,
-            value: renderProperty(property),
-            // Structured, so `--json` needs no parsing of the line above it. Absent keys stay
-            // absent: a `required: false` this command invented would be indistinguishable
-            // from one the definition actually stated.
-            ...property,
-          })),
+          ...row.spec.properties.map((property) => {
+            // Per-property prose is put back before rendering, and it is a real fix rather than
+            // tidiness. `registry.ts`'s `toStorage` strips every prose field into its own column
+            // before the spec is hashed and stored, so `row.spec.properties[].description` is
+            // ALWAYS undefined -- measured on a real registration: the description round-trips
+            // through `asc types export` under `prose`, while `asc types show` printed
+            // `json` with no description at all, because the branch below it was unreachable.
+            //
+            // That mattered enough to fix here rather than note, because a property's
+            // description is the only place the shape of a `json` property is written down --
+            // `json` validates the container and says nothing about what is inside it, so the
+            // guidance a recorder needs lives in the prose this command was silently dropping.
+            const prose = row.prose[property.name];
+            const described: PropertySpec =
+              prose === undefined ? property : { ...property, description: prose };
+
+            return {
+              field: `property.${described.name}`,
+              value: renderProperty(described),
+              // Structured, so `--json` needs no parsing of the line above it. Absent keys stay
+              // absent: a `required: false` this command invented would be indistinguishable
+              // from one the definition actually stated.
+              ...described,
+            };
+          }),
         ],
       });
     });

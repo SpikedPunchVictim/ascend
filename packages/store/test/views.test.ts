@@ -10,6 +10,7 @@ import {
 } from '@ascend/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  EntryRejectedError,
   findEntry,
   indexName,
   openStore,
@@ -706,6 +707,131 @@ describe('the view carries the envelope through', () => {
         recorded_at: AT,
       });
       expect(row['type_hash']).toBe(findEntry(store.db, 'e1')?.typeHash);
+    });
+  });
+});
+
+/**
+ * `json` is the one compound property type, and the store needs to know nothing about it: the
+ * view projects every property with the same `json_extract(properties_json, '$.p')`, so an array
+ * arrives as JSON text through exactly the path a scalar does. These tests exist because that
+ * "needs to know nothing about it" is a CLAIM, and it was originally supported only by a raw
+ * `sqlite3` probe -- a hand-built table and a hand-written view. What matters is whether
+ * ascend's own `registerType` → `recordEntry` → generated view path carries a list-shaped fact,
+ * which is a different and stronger statement.
+ */
+describe('a json property is a list-shaped fact the view can group by', () => {
+  /** One list-shaped property, beside a scalar, so the two projections are compared. */
+  const FINDINGS: TypeSpec = {
+    name: 'review_completed',
+    properties: [
+      { name: 'findings', type: 'json' },
+      { name: 'verdict', type: 'enum', enum_values: ['approved', 'rejected'] },
+    ],
+  };
+
+  const FINDING = [
+    { severity: 'high', category: 'bug', file: 'src/a.ts' },
+    { severity: 'low', category: 'style', file: 'src/b.ts' },
+  ];
+
+  it('projects the array as JSON text, so json_each reads it back into rows', () => {
+    // The flagship query ARCHITECTURE.md implies for a list-shaped property, run against the
+    // generated view rather than a fixture. `json_each` is a table-valued function, so this is
+    // the one projection shape where the value is consumed as a table instead of a column.
+    withStore((store) => {
+      registerType(store.db, FINDINGS, { registeredAt: AT });
+      recordEntry(
+        store.db,
+        { type: 'review_completed', properties: { findings: FINDING, verdict: 'rejected' } },
+        context('e1'),
+      );
+
+      const grouped = store.db
+        .prepare(
+          `SELECT f.value ->> 'severity' AS severity, COUNT(*) AS n ` +
+            `FROM ${viewName('review_completed', 1)} r, json_each(r.findings) f ` +
+            `GROUP BY 1 ORDER BY 1`,
+        )
+        .all() as unknown as { severity: string; n: number }[];
+
+      expect(grouped).toEqual([
+        { severity: 'high', n: 1 },
+        { severity: 'low', n: 1 },
+      ]);
+    });
+  });
+
+  /** The two projected columns, read straight from the view under test. */
+  const projected = (
+    store: Store,
+    id: string,
+  ): { readonly findings: string | null; readonly findings_state: string } =>
+    store.db
+      .prepare(
+        `SELECT findings, findings_state FROM ${viewName('review_completed', 1)} WHERE id = ?`,
+      )
+      .get(id) as unknown as { findings: string | null; findings_state: string };
+
+  it('round-trips the value without reordering it', () => {
+    // `canonicalJson` sorts object KEYS but must never reorder an ARRAY -- a list's order is
+    // part of what it means, so `what_was_tried` reversed is a different fact. Sorting array
+    // elements would be a silent corruption of the entry, visible only to whoever read the
+    // list back and noticed the third attempt had become the first.
+    withStore((store) => {
+      registerType(store.db, FINDINGS, { registeredAt: AT });
+      recordEntry(
+        store.db,
+        { type: 'review_completed', properties: { findings: FINDING } },
+        context('e1'),
+      );
+
+      expect(JSON.parse(projected(store, 'e1').findings as string)).toEqual(FINDING);
+    });
+  });
+
+  it('marks an EMPTY array measured, not absent', () => {
+    // "Reviewed and found nothing" is a measurement; "did not review" is not. If the empty list
+    // collapsed to absent, a clean review would be indistinguishable from a skipped one and
+    // every count of high-severity findings would be a count over a different denominator.
+    // `json_type('[]')` is `'array'` rather than NULL, which is what keeps the two apart.
+    withStore((store) => {
+      registerType(store.db, FINDINGS, { registeredAt: AT });
+      recordEntry(
+        store.db,
+        { type: 'review_completed', properties: { findings: [] } },
+        context('clean'),
+      );
+      recordEntry(store.db, { type: 'review_completed' }, context('skipped'));
+
+      expect(projected(store, 'clean').findings_state).toBe('measured');
+      expect(projected(store, 'skipped').findings_state).toBe('not_measured');
+      expect(JSON.parse(projected(store, 'clean').findings as string)).toEqual([]);
+    });
+  });
+
+  it('refuses prose where the list belongs, at record time', () => {
+    // THE REASON THE TYPE EXISTS. Recorded into a `text` property, "two high-severity bugs" is
+    // accepted and the failure surfaces months later inside a `json_each`, far from the entry
+    // that caused it and with nothing recording that the list-shaped fact was never a list.
+    // Declaring `json` moves the refusal to the write, which is the only point where the
+    // recorder can still act on it.
+    withStore((store) => {
+      registerType(store.db, FINDINGS, { registeredAt: AT });
+      expect(() => {
+        recordEntry(
+          store.db,
+          {
+            type: 'review_completed',
+            properties: { findings: 'two high-severity bugs' },
+          },
+          context('e1'),
+        );
+      }).toThrow(EntryRejectedError);
+
+      // And nothing was written: a refused entry must not leave a row with the property
+      // silently dropped, which would read as "not measured" -- a different claim.
+      expect(rows(store, viewName('review_completed', 1))).toEqual([]);
     });
   });
 });

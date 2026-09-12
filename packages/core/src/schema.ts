@@ -72,6 +72,21 @@ export function propertySchema(spec: PropertySpec): z.ZodTypeAny {
       // free text that no property anticipated.
       return z.string();
 
+    case 'json':
+      // A compound value: an array or an object, and nothing else. Scalars are refused
+      // deliberately -- accepting them would make this a superset of `text` that validates
+      // nothing `text` does not, which is the trap the type exists to avoid (`spec.ts`).
+      //
+      // `z.record` is the OBJECT half and zod 3's one-argument form is what is wanted here:
+      // the key type is unconstrained, and the value type is `unknown` because `json` says
+      // nothing about the shape inside. `z.unknown()` accepts `undefined`, so `{a: undefined}`
+      // passes this and then vanishes in `canonicalJson`, which drops `undefined` values --
+      // an entry whose stored JSON differs from what the recorder wrote. That is the recorder's
+      // problem to avoid (`JSON.stringify` drops them too, so the value never had a
+      // representation), not something a validator can repair, and no JSON document can
+      // express it in the first place.
+      return z.union([z.array(z.unknown()), z.record(z.unknown())]);
+
     default: {
       // Exhaustiveness. If a property type is added to the vocabulary and not handled
       // here, this line fails to compile -- which is the entire point.
@@ -134,6 +149,8 @@ export function describeProperty(spec: PropertySpec): string {
       return 'a non-empty identifier';
     case 'text':
       return 'text';
+    case 'json':
+      return 'a JSON array or object';
     default: {
       const unhandled: never = spec.type;
       throw new Error(`unhandled property type: ${String(unhandled)}`);

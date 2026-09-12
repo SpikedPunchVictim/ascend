@@ -139,8 +139,19 @@ The spec vocabulary is bounded by what the builder supports — **keep it delibe
 (~a dozen property types, not all of zod). Constraining what the LLM can invent is the primary
 structural defense against drift.
 
-Property spec fields: `name`, `type` (`string|number|integer|boolean|enum|timestamp|duration|ref|text`),
+Property spec fields: `name`, `type` (`string|number|integer|boolean|enum|timestamp|duration|ref|text|json`),
 `required`, `enum_values`, `description`, `unit`.
+
+`json` is the one compound type: a JSON **array or object**, and nothing else. It exists because
+list-shaped facts (`findings[]`, `what_was_tried`, `options_considered`) are real and have no scalar
+encoding. Storing them in a `text` property works at query time — `json_extract` projects the array
+as JSON text and `json_each` unpacks it into rows for a `GROUP BY` — but validation cannot then tell
+a JSON array from prose, so a recorder writing "two high-severity bugs" is accepted and fails later
+inside a query, far from the entry that caused it. Declaring the property `json` moves that check to
+where the recorder can act on it. It deliberately refuses scalars: a type that accepted them would be
+a superset of `text` that validates nothing extra. There is no schema for the contents (no per-key
+types, no required keys), which is a real limitation — a nested definition language would not stay
+small enough for an LLM to invent correctly at runtime.
 
 ### Three-state property values (load-bearing, cannot be retrofitted)
 
