@@ -24,6 +24,7 @@ export {
   openStore,
   PragmaError,
   withRollback,
+  withTransaction,
   STORE_DIR,
   STORE_FILE,
   verifyPragmas,

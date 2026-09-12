@@ -326,8 +326,8 @@ inside one file):
 |---|---|---|
 | **E4.1** | `asc-m8n` | oclif wired end to end from `src/bin.ts` (no hand-written `bin/run.js`); `packages/cli/src/{project,output,errors,base,streams}.ts` — root discovery, the three renderers, error→exit-code mapping, EPIPE/SIGINT. Tests drive the **real binary**, not the handler. |
 | **E4.2** | `asc-6m6` | `asc types define\|list\|show\|brief\|deprecate\|import\|export`. `import` preserves `type_hash`; `brief` is the hook payload and stays one line per type. **Delivered** — see below. |
-| **E4.3** | `asc-kwr` + `asc-pcy` | The four starter types (shapes from ARCHITECTURE.md), then `asc init`: `.ascend/`, an **appended** `.gitignore` entry, starter types, and an *offer* of the recall hook — never a settings write (that is `asc-1q9`, E10, behind explicit consent). |
-| **E4.4** | `asc-gvr` | `asc record <type>`: `--json -` primary, flags for convenience, `--na`, batching, and a shape that keeps `Bash(asc record:*)` a valid allowlist prefix. **Dogfooding starts here.** |
+| **E4.3** | `asc-kwr` + `asc-pcy` | The four starter types (shapes from ARCHITECTURE.md), then `asc init`: `.ascend/`, an **appended** `.gitignore` entry, starter types, and an *offer* of the recall hook — never a settings write (that is `asc-1q9`, E10, behind explicit consent). **Delivered** — see below. |
+| **E4.4** | `asc-gvr` | `asc record <type>`: `--json -` primary, flags for convenience, `--na`, batching, and a shape that keeps `Bash(asc record:*)` a valid allowlist prefix. **Dogfooding starts here.** **Delivered** — see below. |
 | **E4.5** | `asc-6ct` | `asc query "<sql>"` read-only, `--json\|--table\|--csv`, `--across <glob>`. |
 | **E4.6** | `asc-2gy`, `asc-9y1`, `asc-brt` | Define-time duplicate detection (strictness set by `EV-drift`'s numbers, FTS5 trigram); the record-cost measurement; JSONL export/import. |
 
@@ -490,6 +490,267 @@ at install time, so this affects running from the repo rather than the published
 tests invoke through `node` on purpose. Separately, the no-store error tells the caller to run
 `asc init`, which **does not exist until E4.3**; it is a forward reference to the next stage rather
 than a stale one, and it is called out here so it is not mistaken for a working suggestion.
+
+#### E4.3 (`asc-kwr` + `asc-pcy`) — the one decision that went to the user
+
+**`json` was added to the property vocabulary, and it is a fork because it ships.** Three of the four
+starter types carry a list — a review's `findings`, a stuck event's `what_was_tried`, a decision's
+`options_considered` — and ARCHITECTURE.md's shapes write them as arrays of objects. The vocabulary
+had nine types and none of them could hold that: `text` cannot distinguish a JSON array from prose,
+and `string`/`enum` are scalars. The alternatives were to flatten each list into N entries (changing
+the document's shape and the meaning of "one entry per event"), to declare the list a `text` holding
+JSON (a validator that validates nothing, which is the same as having no validator), or to add a
+tenth type. Per `empirical-planning`, this is a schema question with no cheap empirical test — it is
+decided by what the product means — so it was the user's to make, and the user chose the tenth type.
+
+**The type is `array-or-object` and refuses scalars, which is its entire reason to exist.** `text`
+accepts `"two high-severity bugs"` and the failure surfaces much later, inside some future
+`json_each`, nowhere near the entry that caused it — precisely the deferred-failure class this
+project treats as severity-zero. `json` refuses it at record time. There is deliberately **no inner
+schema** (no per-key types): a nested definition language would not stay small enough for an LLM to
+invent correctly at runtime, which is the product's whole premise. That is a real limitation and the
+consequence is that the inner shape is *convention*, stated in each property's prose — which is why
+the `asc types show` defect below mattered.
+
+**It cost the store nothing, and that was checked before it was built.** The store is type-agnostic
+by construction: every property is projected identically as `json_extract(e.properties_json,
+'$.<prop>')` (`store/views.ts:202`) with `stateCase` deciding the three-state value (`store/sql.ts:52`)
+and one composite expression index per property. `json_type()` returns `'array'`/`'object'` — both
+non-NULL, so both read as `measured` and the absent-vs-null-vs-measured model is untouched. **Zero
+lines of `packages/store/src` changed.** `canonicalJson` sorts object keys but never reorders arrays
+(`core/hash.ts:196`), which is load-bearing here: `what_was_tried` reversed is a different fact, and
+a canonicalizer that sorted it would silently rewrite the sequence.
+
+| Decision | Choice | Why |
+|---|---|---|
+| `json` accepts | **arrays and objects only** | Refusing scalars is the type's reason to exist over `text` (`core/spec.ts`). A scalar is either a `string`, a `number` or a `boolean`, and those types already exist. |
+| Inner shape | **unconstrained, guidance in prose** | A nested definition language does not stay small enough for an LLM to invent. The prose is shown by `asc types brief` and is the only place the convention lives. |
+| Verdict values | `['approved','changes_requested','rejected']` | ARCHITECTURE.md names the property and not the values. `changes_requested` vs `rejected` is the distinction worth forcing: "the approach holds" and "the approach is wrong" lead to different next actions. |
+| `resolution` | five values, **optional** | "Leave it out ENTIRELY if still open" — an open problem is a different claim from `unresolved`, which means stopping for good. Making it optional is what lets the absence carry that meaning. |
+| `STATUS` | `['not_started','in_progress','complete']` | Taken from the plan format the projects using this tool already write (`[Not Started\|In Progress\|Complete]`). Reusing a vocabulary someone already types beats inventing a tidier one. |
+| `attempt_count` | **required**, and may exceed `what_was_tried`'s length | The count of attempts MADE, not of attempts written down — some are not worth writing down, and forcing the two to agree would make the number wrong to satisfy a test. |
+| `tests_passing` | **optional boolean** | `false` asserts the tests were failing; omitting it asserts nobody ran them. A required boolean would collapse those two. |
+| Starter prose | **free to change**, and `init` re-registers | `definitionShape` drops prose before hashing, so improved wording lands as `prose-updated` instead of being dropped as `unchanged` — which is why `init` goes through `registerDocument`, not `registerType`. |
+
+#### E4.3 (`asc-kwr` + `asc-pcy`) — delivered
+
+`packages/cli/src/starters.ts`, `packages/cli/src/commands/init.ts` (new), the `json` type in
+`core/spec.ts` + `core/schema.ts`, and a fix in `commands/types/show.ts`. **Suite 344 → 365**: 15 in
+`cli/test/init.test.ts`, a 4-test `json` block in `store/test/views.test.ts`, one each in the two
+`core` vocabulary suites, and a `show` regression test. Six mutations, all caught, all restores
+hash-verified.
+
+**Two defects found by driving the built CLI, both silent.**
+
+1. **`asc types show` never printed a property's description.** `registry.ts`'s `toStorage` harvests
+   every prose field into its own column *before* the spec is hashed and stored, so
+   `row.spec.properties[].description` is **always `undefined`** — the branch rendering it was
+   unreachable, and had been since E4.2, whose own test asserted the row's `description` *key* and
+   therefore passed while the value was absent. Measured on a real registration: the description
+   round-trips through `asc types export` under `prose`, while `show` printed `json` with no
+   description at all. Fixed by merging the prose column back before rendering. This is not tidiness —
+   with `json` added, a property's description is the **only** place its inner shape is written down,
+   so the command was dropping exactly the guidance the starter types depend on.
+2. **A guard that could not fire.** `ignoresStore` was written with `if (trimmed.startsWith('!'))
+   return false;` to skip re-includes. It is dead: every line is compared by *equality* against four
+   spellings, and `!` prefixed onto any of them is unequal to all four. Verified with a one-liner
+   before removing it, per the project's own defect class — *"a rule that never fires looks identical
+   to a rule that passes."* The behaviour it was meant to guarantee is still correct, and
+   `init.test.ts` asserts it (`!.ascend/` must be treated as *not* ignoring the store).
+
+| Mutation | Result |
+|---|---|
+| dry run creates the store it previews (`:memory:` → the real dir) | caught (`writes NOTHING at all on --dry-run`) |
+| `.gitignore` entry glued onto a line with no terminator | caught (`preserves an existing .gitignore`) |
+| only one spelling of the ignore entry recognised | caught (`recognises the store in every spelling`) |
+| the recall offer printed to stdout instead of stderr | caught (`NEVER writes settings`) |
+| the ancestor branch never warns | caught (`warns when an ancestor already has a store`) |
+| the shadow check looks at the working directory, not its parent | caught (`is idempotent`) |
+
+**The last two rows are one finding, and it is E4.2's lesson repeating in a new form.** The ancestor
+mutation had to be written three times. `if (false)` failed to compile — dropping the condition drops
+the block's only use of `ancestor`, which `noUnusedLocals` rejects. `if (ancestor !== undefined &&
+false)` *also* failed to compile: **TypeScript treats the true branch as unreachable and drops
+narrowings there**, so `ancestor` widened back to `string | undefined` and the `join` inside the
+block errored (TS2345, measured). Both forms produced `build=1`, which makes `beforeAll` throw and
+**all 15 tests skip** — and a skip list parses as "no failures". The harness caught this only because
+E4.2 taught it to, and it printed `MISSED … unverified=1`, not caught. The third form —
+`ancestor !== undefined && storeExists`, a semantically real bug — compiles and fails the right test.
+The sixth mutation was then added because the first five left the *re-run* case untested: a shadow
+check that inspected cwd would find the store it was re-initialising and warn on every run. A warning
+that fires always is one nobody reads.
+
+**Four harness facts, measured rather than assumed**, all now recorded in `init.test.ts` beside the
+helpers they justify:
+
+- **oclif wraps `this.warn` at the terminal width**, and a warning containing `asc install-hook`
+  arrives as `asc` then ` ›    install-hook` — so `toContain` fails on a phrase that is plainly there.
+- **It breaks mid-token** when there is no space to break at, inserting the `›` glyph *inside* a
+  path. So the flattener has to strip the glyph **before** collapsing the newline that anchors it:
+  collapsing first leaves `<tmpdir-id-pre›suffix>`, stripping first without collapsing leaves a
+  phantom space. Both orders were measured.
+- **`tmpdir()` on macOS is `/var/folders/...`, a symlink to `/private/var/folders/...`**, and the CLI
+  prints the resolved form — the same distinction `verifyPragmas` has to survive.
+- **Table cells elide at 60 characters**, so prose assertions read `--json`, which `output.ts`
+  documents as the untruncated copy.
+
+**Verified beyond the suite**, on the real binary: the four starter types canonicalize with no
+renames or warnings and all four views build; `asc init` reports `prose-updated` when a starter word
+changes; `--dry-run` leaves a fresh directory **absent** (not empty) and leaves an existing registry
+byte-identical; the export → import round trip reports all `unchanged`; and the no-store refusal's
+`Run 'asc init'` suggestion now *works* — the loop from E4.2's forward reference is closed and
+asserted. The brief is **1,189 bytes over 4 lines**, asserted against ARCHITECTURE.md's ~4.9 KB
+`bd prime` benchmark so a later starter cannot quietly double a per-session context tax.
+
+**Two things carried forward rather than fixed.**
+
+- **`tests_passing: true` projects out of a view as `1`.** SQLite has no boolean, so the generated
+  view stores the integer. Not a wrong answer — `1` does mean true — but the renderer has to know a
+  column is boolean to print `true`, and only the declared type says so. `asc query` (`asc-6ct`) owns
+  that decision, and it is the first command with a spec in hand at render time.
+- **EPIPE installation is still unproven** (`E4.1`'s surviving M8). `asc init` prints more than
+  `types list` does but still nowhere near a 64 KiB pipe buffer. The trigger remains `asc query`.
+
+---
+
+#### E4.4 (`asc-gvr`) — delivered, and the one spelling the spec could not have
+
+**The deviation, stated first because it is a deviation.** ARCHITECTURE.md specifies
+`asc record <type> [--json -]`. That spelling cannot ship. `--json` was already the versioned-output
+contract on **every** command by E4.1 (`base.ts`, `output.ts`), and E4.2 ships a test asserting the
+JSON contract — so on `asc record`, `--json` would carry two meanings, and `asc record x --json -`
+versus `asc record x --json` would differ by an *operand that changes what the flag means*.
+
+**Resolution: the document is an operand.** `asc record <type> [file|-]`. Nothing the spec asked for
+is lost — stdin is still the primary path, `readInput` still handles `-`, flags are still the
+convenience — and it matches `asc types define|import`, which have read their document from an
+operand since E4.2. One convention for "read a document from stdin" across the whole CLI is worth
+more than the exact spelling of one flag, and `asc-6ct` (`asc query`) does not read a document at
+all, so the convention has no second chance to diverge.
+
+**Decisions taken here, with the reason they are not forks.** Same standard as E4.1/E4.2: a fork is
+something load-bearing *and* expensive to reverse. None of these are — each lives inside one file or
+one function body.
+
+| Decision | Choice | Why |
+|---|---|---|
+| `--prop=<name>=<value>` split on the **first** `=` | first, never last | `core/state.ts`'s `recordCommand` writes that exact spelling into **every** validation error it generates. A parser accepting anything else would make ascend's own suggested fix a command that fails. Splitting on the last `=` breaks the moment a value contains one (a URL, an expression, base64), and the test drives `depth = path.length` through it. |
+| Flag values | **JSON when they parse, the raw string otherwise** | `--prop=rounds=3` sets the integer 3 without the caller learning a convention. A value cannot be silently mistyped: every property type refuses a wrong shape (`core/schema.ts`), so a bad guess is a loud refusal, never a plausible wrong value in the ledger. Cost: a `string` property holding exactly a JSON literal needs `--prop=note='"3"'` — documented in the code, because it is the correct direction to fail. |
+| Entry flags vs. call-level flags | **two kinds, only the first conflicts with a document** | `--prop`/`--na`/`--evidence` describe *an entry*, so document + any of them is two answers to one question: a **usage error**. `--type-version`, `--run-id`, `--workflow`, `--actor` describe *the call*, so they are defaults for a batch — a caller recording ten entries should not repeat the run id ten times. A flag is a default an entry may override; the test asserts both directions. |
+| `source` | always `'self'`, never settable | An entry's document may not name it (`entry-document.ts` carries the reason). Only the thing doing the deriving may claim derived provenance. |
+| `recorded_at`, `id` | **minted in the command** | `TASKS.md` #6: core and store are pure and take both injected. One clock reading per call, so a batch's entries differ by what the caller said rather than by how long validation took. |
+| `cwd` | read from the process; `repo`/`git_sha`/`branch` **deferred to E5** | Same deferral E4.1 recorded: they mean spawning `git` on the exact path `asc-9y1` exists to measure. |
+| A batch | **all-or-nothing** | See `withTransaction` below. |
+
+**`withTransaction`, and why the store grew a function.** SQLite's default is autocommit, so without
+a transaction a batch whose fourth entry fails validation leaves the first three **permanently**
+written — entries are immutable and cannot be deleted — while exiting non-zero and naming one
+failure. The caller then holds a partial batch it was told failed and cannot even re-run it, because
+the ids it would reuse now collide. With the transaction, the exit code describes the whole store:
+**0 means every entry is there, 1 means none is.**
+
+`withTransaction` is `withRollback`'s commit half, and the two now share a private
+`inOwnTransaction(db, caller, ending, body)` with **one** nesting guard — two copies of a rule with
+one owner is how the owner stops being one. The `--dry-run` path is the *same work* inside
+`withRollback`, so a preview cannot report an outcome the real run would not produce. `transaction.test.ts`
+(7 tests) proves both directions, plus the property that makes a batch coherent: **the body sees its
+own earlier writes**, which is what lets a duplicate id inside one batch be caught at all.
+
+**`json-fields.ts` exists so two wire formats cannot disagree.** `isJsonObject`, `describeValue` and
+`fieldError` moved out of `document.ts` (`asc types`' format) so `entry-document.ts` reports a bad
+field *identically*. `fieldError` is annotated `(...) => never`, which is load-bearing for narrowing,
+not decoration.
+
+**Two defects found by driving, not by the suite.**
+
+- **A batch failure did not name the failing entry.** A two-entry batch whose second entry was
+  invalid produced the store's message — precise about the *problem*, silent about *which entry* —
+  leaving a fifty-entry caller to bisect it. The store cannot know the index (it records one entry
+  and has no idea it was called in a loop), so `withEntryIndex` adds it where it is known, and
+  deliberately does **not** wrap `UnknownTypeError`, which is about the call rather than any entry
+  and already lists the types that exist.
+- **A command class named `Record` shadows TypeScript's built-in `Record<K,V>` for the whole file**
+  (`TS2315: Type 'Record' is not generic`, plus cascading errors). Renamed `RecordEntry`; oclif takes
+  the command id from the **filename**, so `asc record` is unchanged.
+
+**A consequence worth stating, because it is real and was measured.** Entries in one batch **tie** on
+`recorded_at`, and `stored()` orders by that column — so a test asserting the batch's *insertion
+order* would be asserting a tie-break. The first version of
+`lets a call-level flag act as a default` did exactly that and failed with `['entry-level','call-level']`.
+The assertion is now keyed by `chosen`. This is correct rather than a limitation: one call recorded
+them as a **set**, within-set order was never a claim this command made, and the report's `index` is
+the only place the caller's order exists.
+
+**Mutation-verified — 13 mutations, caught 13, unverified 0.** Because a check that has never been
+shown to fail is not evidence:
+
+| Mutation | Caught by |
+|---|---|
+| Real path uses `withRollback` instead of `withTransaction` | `writes an entry from flags…` |
+| No transaction at all (batch commits piecemeal) | `is all-or-nothing` |
+| `withTransaction` ends with `ROLLBACK` | `keeps what the body wrote…` |
+| The shared guard never rolls back a failed body | `keeps NOTHING when the body throws` |
+| A failed entry is not named in a batch | `says WHICH entry failed` |
+| Every entry prefixed, even a lone one | `does not prefix the index onto a single entry` |
+| Flag values are always strings | `stores an empty json array as a measurement` |
+| `--prop` splits on the last `=` | `splits --prop on the FIRST =` |
+| The document's `id` is ignored | `honours an id the document names` |
+| Call-level flags overwrite what an entry said | `lets a call-level flag act as a default` |
+| `cwd` is recorded as something else | `fills in the provenance it can read` |
+| Document + entry flags are merged instead of refused | `refuses a document and entry flags together` |
+| An empty `--na` name is accepted | `refuses --na with an empty name` |
+
+**Three mutation forms were rejected because they fail the BUILD, and a build failure skips every
+test in the file — which parses as "no failures."** This is E4.2's lesson recurring, so each was
+measured rather than guessed:
+
+- `cwd: undefined` → `TS2375` under `exactOptionalPropertyTypes`. Rewritten as `cwd: ''`, which
+  compiles and fails the test on its merits.
+- `if (true || error instanceof UnknownTypeError)` → `TS18046: 'error' is of type 'unknown'`, one
+  line below. TypeScript treats the branch as unreachable and **drops the narrowing** there — the
+  same unreachable-branch narrowing family E4.3 hit, and the second time it has invalidated a
+  mutation in this repo. Rewritten using both parameters (`total <= 0 || index <= total`), which is
+  still semantically never true.
+- `if (false) {` for the document+flags guard, guarded by `noUnusedLocals` in E4.2's case; here it
+  compiles and was caught.
+
+**A lint rule was the false signal this time, and it was fixed rather than suppressed.** eslint's
+`no-unnecessary-condition` reported the rollback in `inOwnTransaction` as "value is always falsy".
+It was reading a **stale narrowing**: `@types/node` declares `readonly isTransaction: boolean`, so
+TypeScript narrows it to `false` after the nesting guard and then *keeps* that narrowing across
+`db.exec('BEGIN')`, unable to see that a method call changed the property. The branch is
+load-bearing — deleting it fails `keeps NOTHING when the body throws` (CAUGHT above). There is **no
+`eslint-disable` anywhere in this repo's source**, so the fix is a `hasOpenTransaction(db)` helper
+whose function boundary is outside the narrowing's reach, documented with that measurement.
+
+**Verified beyond the suite**, on the real binary: flags, stdin and file documents all produce the
+same stored row; all three states survive into `properties_json`, `na_json` **and** the generated
+`v_*` view; a refused value writes **nothing**; the suggested fix regex-extracted from stderr
+actually works; a failed batch leaves **0 rows**; `--dry-run` reports rows while storing none;
+provenance is `cwd` = the process's resolved directory and `source` = `self`; and `stored()` reads
+`v_<type>_v<version>` spelled literally, so a naming change is noticed.
+
+**Gates:** `format:check` ✅ · `typecheck` ✅ · `lint` ✅ · **406 tests** (365 → 406; +34 `asc record`,
++7 `transaction`) · `align check` **green, 19 baselined — 0 new debt**.
+
+**Carried forward to `asc-6ct`, all three now measured rather than predicted.**
+
+- **`tests_passing: true` projects out of a view as `1`** (E4.3's item, unchanged). SQLite has no
+  boolean; only the declared type tells a renderer otherwise.
+- **A `json` property projects as a JSON *string*.** Found by dogfooding, not by the suite: the
+  `options_considered` column of `v_decision_v1` reads back as
+  `"[\"Keep --json - …\",\"…\"]"` — `json_extract` returns the JSON *text* for an array or object, so
+  a consumer must `JSON.parse` it. `1` and `"[…]"` are the same defect shape: **the view holds
+  SQLite's representation of a value, and the declared type is the only place the intended one
+  exists.** `asc query` is the first command with a spec in hand at render time, so it owns both.
+- **EPIPE installation is still unproven** (E4.1's surviving M8). `asc record` prints one row per
+  entry — nowhere near a 64 KiB pipe buffer. The trigger remains `asc query`.
+
+**Dogfooding has started**, as this bead's close requires: `asc init` was run in this repository
+(`.ascend/` created, four starter types registered, `.gitignore` already ignored it), and the first
+real entry is this stage's own `--json` decision — recorded through the primary stdin path with
+`--run-id e4.4`, then read back **independently of `asc`** through `node:sqlite` to confirm the
+envelope, the `source: self`, the process-read `cwd`, and the `v_decision_v1` projection.
 
 ---
 

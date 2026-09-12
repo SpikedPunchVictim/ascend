@@ -43,6 +43,7 @@
 import { PROPERTY_TYPES, type PropertySpec, type PropertyType, type TypeSpec } from '@ascend/core';
 import { specHash, type TypeVersionRow } from '@ascend/store';
 import { refusal } from './errors.js';
+import { describeValue, fieldError, isJsonObject } from './json-fields.js';
 
 export interface TypeDocument {
   readonly name: string;
@@ -74,39 +75,8 @@ const KNOWN_PROPERTY_KEYS = [
   'description',
 ] as const;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-/**
- * A value as it should appear in an error message.
- *
- * `JSON.stringify` in preference to `String` because it quotes a string, so `"3"` and `3` stay
- * distinguishable in the message. Its declared return type is `string`, but it returns
- * `undefined` at runtime for `undefined`, a function and a symbol; the type is widened to say
- * so rather than leaving an unreachable-looking branch that is in fact reachable.
- */
-const describeValue = (value: unknown): string => {
-  const json = JSON.stringify(value) as string | undefined;
-  return json ?? String(value);
-};
-
-/**
- * A refusal naming the field, what was expected, and what arrived. Exit 1, because a document's
- * contents are data rather than argv (`errors.ts`).
- *
- * The `const`'s type is annotated rather than merely inferred from the arrow, and that is
- * load-bearing: TypeScript only treats a call as never-returning -- and so only narrows the
- * code after it -- when the callee is a function declaration or a `const` with an explicit
- * type. Without the annotation every call site below would need its own redundant `return`.
- */
-const fieldError: (source: string, field: string, expected: string, got: unknown) => never = (
-  source,
-  field,
-  expected,
-  got,
-) => {
-  throw refusal(`${source}: '${field}' must be ${expected}, but it is ${describeValue(got)}.`);
-};
+/** A JSON object, as opposed to a JSON array or any scalar. */
+const isRecord = isJsonObject;
 
 function parseProperty(source: string, index: number, raw: unknown): PropertySpec {
   const where = `properties[${String(index)}]`;

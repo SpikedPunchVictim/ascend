@@ -187,17 +187,85 @@ export function openStore(options: OpenOptions): Store {
  * than hidden.
  */
 export function withRollback<T>(db: DatabaseSync, body: () => T): T {
-  if (db.isTransaction) {
+  return inOwnTransaction(db, 'withRollback', 'ROLLBACK', body);
+}
+
+/**
+ * Run `body` inside a transaction that is committed on success and rolled back on failure.
+ *
+ * The batching primitive, and it exists because SQLite's default is autocommit: without a
+ * transaction, `asc record` recording five entries where the fourth fails validation leaves the
+ * first three **committed** and exits non-zero, so the caller has a partial batch it was told
+ * failed. Entries are immutable and cannot be deleted (`recorder.ts`), so that residue is
+ * permanent -- the caller cannot even re-run the batch, because the ids it would reuse now
+ * collide. All-or-nothing is the only shape that leaves the store in a state the caller can
+ * reason about from the exit code alone.
+ *
+ * The counterpart of `withRollback`, sharing its nesting guard for the reason stated there: a
+ * transaction this function did not open is one it cannot COMMIT on the caller's behalf without
+ * changing when the caller's own work becomes durable.
+ *
+ * `BEGIN` rather than `BEGIN IMMEDIATE`: this is a writer, but the lock is taken by the first
+ * write inside `body` regardless, and the store is opened with a busy timeout precisely so a
+ * concurrent writer waits rather than fails (`openStore`).
+ */
+export function withTransaction<T>(db: DatabaseSync, body: () => T): T {
+  return inOwnTransaction(db, 'withTransaction', 'COMMIT', body);
+}
+
+/**
+ * Open a transaction, run `body`, and end it with `ending`.
+ *
+ * The shared half of the two functions above, extracted so the nesting guard and the
+ * "a rollback in `finally` still happens when `body` throws" behaviour cannot drift between
+ * them -- two copies of a rule with one owner is how the owner stops being one.
+ *
+ * The `finally` is what makes a throw safe: on the COMMIT path it issues ROLLBACK against a
+ * transaction whose body failed, which is the correct end for it, and the original error
+ * propagates because `finally` does not swallow.
+ */
+function inOwnTransaction<T>(
+  db: DatabaseSync,
+  caller: string,
+  ending: 'COMMIT' | 'ROLLBACK',
+  body: () => T,
+): T {
+  if (hasOpenTransaction(db)) {
     throw new Error(
-      'withRollback cannot run inside a caller-managed transaction: it would roll back work ' +
-        'that is not its own, so nothing here could guarantee the caller keeps what they wrote.',
+      `${caller} cannot run inside a caller-managed transaction: it would ` +
+        `${ending === 'COMMIT' ? 'also commit' : 'roll back'} work that is not its own, so ` +
+        `nothing here could guarantee the caller keeps what they wrote.`,
     );
   }
 
   db.exec('BEGIN');
   try {
-    return body();
+    const result = body();
+    db.exec(ending);
+    return result;
   } finally {
-    db.exec('ROLLBACK');
+    // Only reachable with the transaction still open -- i.e. `body` threw, or `COMMIT`
+    // itself failed. On the happy path `ending` has already closed it.
+    if (hasOpenTransaction(db)) db.exec('ROLLBACK');
   }
+}
+
+/**
+ * Whether a transaction is open on this handle, read outside `inOwnTransaction`'s body.
+ *
+ * **This is a function rather than an inline `db.isTransaction` for a measured reason, not for
+ * style.** `@types/node` declares the property `readonly isTransaction: boolean`, so TypeScript
+ * narrows it to `false` after the guard above and then KEEPS that narrowing across
+ * `db.exec('BEGIN')` -- it cannot see that a method call changed it. Inlined, the rollback below
+ * reads as a condition whose value is "always falsy" (eslint's `no-unnecessary-condition` says so
+ * verbatim), which is a stale narrowing and not the state of the database. A property read inside
+ * a function body is out of that narrowing's reach, so this returns the current value.
+ *
+ * The branch is load-bearing, and that was measured rather than argued: removing the rollback
+ * makes `transaction.test.ts`'s "keeps NOTHING when the body throws" fail (the mutation harness
+ * reports it CAUGHT). So the lint error was the false signal here, and the fix is to make the code
+ * say what it means rather than to suppress the rule.
+ */
+function hasOpenTransaction(db: DatabaseSync): boolean {
+  return db.isTransaction;
 }
