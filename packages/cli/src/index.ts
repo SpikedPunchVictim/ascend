@@ -22,3 +22,15 @@ export const BIN = 'asc';
  */
 export { guardBrokenPipes, installPipeGuards } from './streams.js';
 export type { ErrorEmitting, PipeGuardDeps } from './streams.js';
+
+/**
+ * Re-exported for the same reason, and here the reason is sharper than convenience.
+ *
+ * The cases that matter to this scanner are the ones a `;` is HIDDEN inside -- a quoted literal, a
+ * doubled escape, a comment, a bracketed identifier -- and each is one string with one expected
+ * count. Driving those through the binary would mean a test per case spawning a process, and more
+ * to the point it would test the count only where it changes an exit code: a scanner that
+ * UNDERCOUNTS is the defect this exists to prevent, and an undercount is exactly the case where the
+ * command succeeds and the test sees nothing.
+ */
+export { statementCount } from './sql.js';

@@ -1,0 +1,593 @@
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { statementCount } from '@ascend/cli';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+/**
+ * `asc query`, driven as the real binary.
+ *
+ * **The two properties this command exists to have are both asserted end to end**: that it cannot
+ * write (checked against the FILE, through a second connection, since a handle that refused a
+ * statement is not evidence that nothing changed), and that it never runs more than one statement
+ * (checked by exit code, because SQLite would otherwise run the first and discard the rest in
+ * silence -- see `sql.ts`).
+ *
+ * The values block records what the output actually IS rather than what would be nicer: a boolean
+ * property reads as `1`, a `json` property as JSON *text*. That is not a defect being tolerated --
+ * `columns()` reported `type: null` for every property column of a generated view when this was
+ * written, so there is no declared type to render from -- and pinning it here means a later change
+ * to it is a deliberate decision with a failing test in front of it.
+ *
+ * `--across` is tested against several temp projects, including the case where the project being
+ * queried is the one you are standing in, and the case where there is no local project at all.
+ */
+
+const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+const bin = join(root, 'packages/cli/dist/bin.js');
+
+beforeAll(() => {
+  execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-b'], {
+    cwd: root,
+    stdio: 'pipe',
+  });
+});
+
+const dirs: string[] = [];
+
+function scratch(prefix = 'asc-query-'): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  dirs.push(dir);
+  return dir;
+}
+
+afterAll(() => {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+});
+
+interface Run {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+const env = (dir: string): NodeJS.ProcessEnv => ({
+  ...process.env,
+  HOME: dir,
+  XDG_CACHE_HOME: join(dir, '.cache'),
+});
+
+function asc(args: readonly string[], cwd: string): Run {
+  const result = spawnSync(process.execPath, [bin, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: env(cwd),
+  });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+/** A project: a directory with the starter types installed. `.git` is a plain directory. */
+function project(): string {
+  const dir = scratch('asc-query-proj-');
+  mkdirSync(join(dir, '.git'));
+  expect(asc(['init'], dir).status).toBe(0);
+  return dir;
+}
+
+/** stderr with oclif's wrap decoration removed, so a substring assertion means what it reads like. */
+function flatten(text: string): string {
+  return text
+    .replace(/^\s*›\s*/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * `flatten` with every whitespace run and every wrap marker deleted, for assertions that name a path.
+ *
+ * **Measured, and it is the reason this exists rather than `flatten` being enough.** oclif wraps
+ * `this.warn` at the terminal width and breaks **mid-token** when a word does not fit, marking the
+ * break with a `›`. Observed verbatim: `.../asc-query-hood-wV7xm7/proj-0` came back as
+ * `.../asc-query-hood-w›V7xm7/proj-0`. So `flatten`'s newline-to-space collapse inserted a space
+ * that is not in the message, AND the marker landed in the middle of the path -- a substring
+ * assertion on that path fails against output that is correct.
+ *
+ * The worse half is the NEGATIVE assertion: `expect(notes).not.toContain(path)` would pass on that
+ * same corrupted text without the path being absent at all -- a false green, and exactly the kind of
+ * check this repo treats as severity-zero. So both directions go through this one function, where
+ * neither inserted whitespace nor a wrap marker can make either of them lie.
+ */
+function squashed(text: string): string {
+  return text.replace(/[\s›]+/g, '');
+}
+
+/** The store file as a path this process can compare against SQLite's own resolution of it. */
+const storeFile = (projectDir: string): string => join(projectDir, '.ascend', 'ascend.db');
+
+/**
+ * Read one row out of a store's file through a connection that is not `asc`'s.
+ *
+ * `Record<string, unknown>` rather than a type parameter: the column wanted differs per call site,
+ * and a generic used once per signature buys nothing (lint's `no-unnecessary-type-parameters` says so,
+ * correctly). Callers read the field and assert on it, which is the whole job.
+ */
+function fromFile(file: string, sql: string): Record<string, unknown> {
+  const db = new DatabaseSync(file, { readOnly: true });
+  const row = db.prepare(sql).get() as Record<string, unknown>;
+  db.close();
+  return row;
+}
+
+const entryCount = (projectDir: string): unknown =>
+  fromFile(storeFile(projectDir), 'SELECT count(*) AS n FROM entries')['n'];
+
+/** The rows of a `--json` run. */
+function rows(stdout: string): readonly Record<string, unknown>[] {
+  return (JSON.parse(stdout) as { rows: Record<string, unknown>[] }).rows;
+}
+
+describe('the statement scanner', () => {
+  it('counts one statement however it is spelled', () => {
+    // Each of these is ONE statement with a `;` that must not separate: a literal, a doubled escape
+    // inside a literal, a doubled quote inside an identifier, a bracket, and a line comment. An
+    // undercount here is the defect the scanner exists to prevent, and it is invisible from the
+    // command -- a dropped second statement looks exactly like a query that returned fewer rows.
+    for (const sql of [
+      'SELECT 1',
+      'SELECT 1;',
+      "SELECT ';' AS semi",
+      "SELECT 'it''s; fine' AS quoted",
+      'SELECT "a"";b" AS ident',
+      'SELECT `a``;b` AS backtick',
+      'SELECT [a;b] AS bracketed',
+      'SELECT 1 -- ; not a separator',
+      'SELECT 1 /* ; neither is this */',
+      '  SELECT 1  ;  ',
+    ]) {
+      expect(statementCount(sql), sql).toBe(1);
+    }
+  });
+
+  it('counts what is genuinely more than one', () => {
+    expect(statementCount('SELECT 1; SELECT 2')).toBe(2);
+    expect(statementCount('SELECT 1; SELECT 2; SELECT 3')).toBe(3);
+    expect(statementCount('SELECT 1;;SELECT 2')).toBe(2);
+    // A `;` inside a comment does not hide a real separator that follows it.
+    expect(statementCount('SELECT 1 -- x\n; SELECT 2')).toBe(2);
+  });
+
+  it('counts nothing for what SQLite would refuse as an empty statement', () => {
+    expect(statementCount('')).toBe(0);
+    expect(statementCount('   \n\t ')).toBe(0);
+    expect(statementCount(';')).toBe(0);
+    expect(statementCount('-- only a comment')).toBe(0);
+    expect(statementCount('/* only a comment */')).toBe(0);
+  });
+});
+
+describe('running one statement', () => {
+  it('prints a table by default and the versioned envelope with --json', () => {
+    const dir = project();
+    const table = asc(['query', 'SELECT 1 AS one, 2 AS two'], dir);
+    const json = asc(['query', 'SELECT 1 AS one, 2 AS two', '--json'], dir);
+
+    expect(table.status).toBe(0);
+    expect(table.stdout.split('\n')[0]).toBe('one  two');
+    // The envelope is the contract (`output.ts`), so its shape is pinned rather than the rendering.
+    expect(JSON.parse(json.stdout)).toEqual({
+      ascend_output: 1,
+      rows: [{ one: 1, two: 2 }],
+      row_count: 1,
+    });
+  });
+
+  it('prints CSV with a header row', () => {
+    const dir = project();
+    const result = asc(['query', "SELECT 'a,b' AS x, 'c' AS y", '--csv'], dir);
+
+    // The comma inside the value is quoted, which is what makes this CSV rather than a list.
+    expect(result.stdout.split('\n')[0]).toBe('x,y');
+    expect(result.stdout.split('\n')[1]).toBe('"a,b",c');
+  });
+
+  it('refuses two output flags at once', () => {
+    const dir = project();
+    const result = asc(['query', 'SELECT 1', '--json', '--table'], dir);
+
+    expect(result.status).toBe(2);
+    expect(flatten(result.stderr)).toContain('cannot be combined');
+  });
+
+  it('refuses more than one statement, naming what SQLite would have done', () => {
+    const dir = project();
+    const result = asc(['query', 'SELECT 1; SELECT 2'], dir);
+
+    expect(result.status).toBe(2);
+    // The second half matters: the refusal is only defensible because the alternative is silent.
+    expect(flatten(result.stderr)).toContain('2 statements');
+    expect(flatten(result.stderr)).toContain('discard the others without saying so');
+  });
+
+  it('refuses an empty statement rather than reporting an empty result', () => {
+    const dir = project();
+    const result = asc(['query', '  -- nothing here'], dir);
+
+    expect(result.status).toBe(2);
+    expect(flatten(result.stderr)).toContain('empty');
+  });
+
+  it('reads the generated view for a registered type', () => {
+    const dir = project();
+    expect(asc(['query', 'SELECT count(*) AS n FROM v_decision_v1'], dir).status).toBe(0);
+  });
+
+  it('does not let a duplicate column name silently drop a value', () => {
+    const dir = project();
+    const result = asc(['query', 'SELECT 1 AS x, 2 AS x', '--json'], dir);
+    const table = asc(['query', 'SELECT 1 AS x, 2 AS x'], dir);
+
+    expect(result.status).toBe(0);
+    // BOTH values survive. `SELECT 1 AS x, 2 AS x` is legal SQLite, and `node:sqlite` builds a row
+    // object keyed by SQLite's own column names -- so the second `x` overwrites the first, the value
+    // disappears, and nothing anywhere reports an error. This assertion is why that cannot return.
+    expect(rows(result.stdout)[0]).toEqual({ x: 1, x_2: 2 });
+
+    // And the TABLE agrees with the JSON, which is the assertion a first attempt at this fix needed.
+    // Renaming the columns without also reading rows as arrays left the header advertising `x_2`
+    // over an empty cell -- a column that does not exist, in place of a value that was dropped. A
+    // test that checked only the JSON keys would have passed on that.
+    const lines = table.stdout.split('\n');
+    expect(lines[0]).toBe('x  x_2');
+    expect(lines[2]).toBe('1  2');
+
+    // And the caller is told, because `x_2` is not the alias they typed.
+    expect(flatten(result.stderr)).toContain("two result columns are named 'x'");
+  });
+});
+
+describe('read-only, and what that costs the caller', () => {
+  it('refuses a write and leaves the file untouched', () => {
+    const dir = project();
+    asc(['record', 'decision', '--prop=chosen=x', '--prop=rationale=y'], dir);
+    const before = entryCount(dir);
+    expect(before).toBe(1);
+
+    const result = asc(['query', 'DELETE FROM entries'], dir);
+
+    expect(result.status).toBe(1);
+    expect(flatten(result.stderr)).toContain('read-only connection');
+    // Read back through a SECOND connection: the point is the file, not the handle's report.
+    expect(entryCount(dir)).toBe(before);
+  });
+
+  it('refuses a write hidden behind a read, which is what the one-statement rule also protects', () => {
+    const dir = project();
+    asc(['record', 'decision', '--prop=chosen=x', '--prop=rationale=y'], dir);
+    const result = asc(['query', 'SELECT 1; DELETE FROM entries'], dir);
+
+    // Refused as a usage error before SQLite ever sees it, so the count is still 1 afterwards.
+    expect(result.status).toBe(2);
+    expect(entryCount(dir)).toBe(1);
+  });
+
+  it('reports values as SQLite represents them, and says so where a caller will look', () => {
+    const dir = project();
+    const result = asc(
+      [
+        'query',
+        // `AS missing`, not `AS nothing`: NOTHING is a SQLite keyword, and the first draft of this
+        // test asserted against a query that was a syntax error. It failed loudly rather than
+        // silently, which is the behaviour being relied on -- the error propagated verbatim.
+        "SELECT 9223372036854775807 AS big, 7 AS small, X'DEADBEEF' AS blob, NULL AS missing",
+        '--json',
+      ],
+      dir,
+    );
+
+    expect(result.status).toBe(0);
+    expect(rows(result.stdout)[0]).toEqual({
+      // Out of `Number`'s safe range, so a decimal STRING -- `Number(...)` would round it to
+      // 9223372036854776000, which is a wrong answer in the right shape.
+      big: '9223372036854775807',
+      small: 7,
+      // SQLite's own spelling for these bytes, so it can be pasted back into the next query.
+      blob: "X'deadbeef'",
+      missing: null,
+    });
+  });
+
+  it('reports a boolean property as 1, because SQLite has no boolean type to report', () => {
+    const dir = project();
+    expect(
+      asc(
+        [
+          'record',
+          'stage_transition',
+          '--prop=stage=E4',
+          '--prop=from_status=in_progress',
+          '--prop=to_status=complete',
+          '--prop=tests_passing=true',
+        ],
+        dir,
+      ).status,
+    ).toBe(0);
+
+    const result = asc(
+      [
+        'query',
+        'SELECT tests_passing AS v, typeof(tests_passing) AS t, tests_passing_state AS st FROM v_stage_transition_v1',
+        '--json',
+      ],
+      dir,
+    );
+
+    // `typeof` is asserted alongside the value so that a later change to a text `true` fails here
+    // with the reason visible rather than as a bare mismatch. The view projects the property through
+    // `json_extract`, and what SQLite hands back for a stored JSON `true` is INTEGER 1.
+    expect(rows(result.stdout)[0]).toEqual({ v: 1, t: 'integer', st: 'measured' });
+  });
+
+  it('reports a json property as text, which is the form a caller can hand back to json_extract', () => {
+    const dir = project();
+    expect(
+      asc(
+        ['record', 'review_completed', '--prop=verdict=approved', '--prop=findings=[{"a":1}]'],
+        dir,
+      ).status,
+    ).toBe(0);
+
+    const result = asc(
+      ['query', 'SELECT findings, typeof(findings) AS t FROM v_review_completed_v1', '--json'],
+      dir,
+    );
+
+    // Text rather than a decoded array, and that is the useful form here: `asc query` returns SQL, so
+    // the value that survives a round trip through the next statement is the one that still parses.
+    expect(rows(result.stdout)[0]).toEqual({ findings: '[{"a":1}]', t: 'text' });
+  });
+
+  it('states the value limitation in --help, because it is not discoverable from a row', () => {
+    const result = asc(['query', '--help'], project());
+
+    expect(result.stdout).toContain('--across');
+    expect(flatten(result.stdout)).toContain("SQLite's representation");
+  });
+});
+
+/**
+ * A parent directory holding `count` sibling projects, so one glob covers them all.
+ *
+ * At module scope rather than inside a `describe`, because `--across` is not the only block that
+ * needs a neighbourhood: the "outside any project" block queries across one from a directory that
+ * has no store at all, and a helper nested in a sibling `describe` is not visible there.
+ *
+ * The sibling names are load-bearing. `--across` derives an alias from each project's basename, so
+ * `proj-0` becoming `proj_0` is what the SQL below relies on -- and the tests assert the derivation
+ * happened rather than assuming it.
+ */
+function neighbourhood(count: number): { parent: string; members: string[] } {
+  const parent = scratch('asc-query-hood-');
+  const members: string[] = [];
+  for (let index = 0; index < count; index++) {
+    const dir = join(parent, `proj-${String(index)}`);
+    // Recursive, because the project directory itself does not exist yet -- unlike `project()`, which
+    // mkdirs inside a `scratch()` that is already there.
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    expect(asc(['init'], dir).status).toBe(0);
+    members.push(dir);
+  }
+  return { parent, members };
+}
+
+describe('--across', () => {
+  it('attaches each matched project under its own name and reports the names', () => {
+    const { parent, members } = neighbourhood(2);
+    const [first, second] = members as [string, string];
+    const result = asc(
+      [
+        'query',
+        'SELECT (SELECT count(*) FROM proj_0.entries) AS a, (SELECT count(*) FROM proj_1.entries) AS b',
+        '--across',
+        `${parent}/*`,
+        '--json',
+      ],
+      parent,
+    );
+
+    expect(result.status).toBe(0);
+    expect(rows(result.stdout)[0]).toEqual({ a: 0, b: 0 });
+    // On stderr, because the names are how the caller writes the SQL -- a result that used them
+    // without ever saying what they are would be unusable.
+    const notes = squashed(result.stderr);
+    expect(notes).toContain(squashed(`${first} attached as 'proj_0'`));
+    expect(notes).toContain(squashed(`${second} attached as 'proj_1'`));
+  });
+
+  it('accepts the .ascend/ascend.db spelling a shell would complete', () => {
+    const { parent } = neighbourhood(2);
+    const result = asc(
+      [
+        'query',
+        'SELECT (SELECT count(*) FROM proj_1.entries) AS b',
+        '--across',
+        `${parent}/*/.ascend/ascend.db`,
+        '--json',
+      ],
+      parent,
+    );
+
+    expect(result.status).toBe(0);
+    expect(rows(result.stdout)[0]).toEqual({ b: 0 });
+  });
+
+  it('leaves the project you are standing in as main, and does not attach it twice', () => {
+    const { parent, members } = neighbourhood(2);
+    const [first, second] = members as [string, string];
+    const result = asc(
+      [
+        'query',
+        'SELECT (SELECT count(*) FROM main.entries) AS m, (SELECT count(*) FROM proj_1.entries) AS b',
+        '--across',
+        `${parent}/*`,
+        '--json',
+      ],
+      // Run from INSIDE proj-0, which the glob also matches. Attaching it again would make
+      // `main.entries UNION ALL proj_0.entries` count every entry twice.
+      first,
+    );
+
+    expect(result.status).toBe(0);
+    expect(rows(result.stdout)[0]).toEqual({ m: 0, b: 0 });
+    const notes = squashed(result.stderr);
+    expect(notes).toContain(squashed("is the project you are in, so it is already here as 'main'"));
+    // The one thing that must NOT appear: a second name for the project we are in. Asserted in the
+    // squashed form, because a wrapped path would otherwise make this pass without the path being
+    // absent -- see `squashed`.
+    expect(notes).not.toContain(squashed(`${first} attached as`));
+    // And the other project DID get a name, so the assertion above is not passing because the
+    // warning loop never ran.
+    expect(notes).toContain(squashed(`${second} attached as 'proj_1'`));
+  });
+
+  it('refuses a glob that matches nothing, rather than querying an empty corpus', () => {
+    const parent = scratch('asc-query-empty-');
+    const result = asc(['query', 'SELECT 1', '--across', `${parent}/nothing-*`], parent);
+
+    expect(result.status).toBe(1);
+    expect(flatten(result.stderr)).toContain('matched no projects');
+  });
+
+  it('refuses a match that is not a store, before attaching anything', () => {
+    const { parent } = neighbourhood(1);
+    mkdirSync(join(parent, 'not-a-project', '.git'), { recursive: true });
+    const result = asc(['query', 'SELECT 1', '--across', `${parent}/*`], parent);
+
+    expect(result.status).toBe(1);
+    expect(flatten(result.stderr)).toContain('is not an ascend store');
+  });
+
+  it('refuses two paths that are one store, so a union cannot count it twice', () => {
+    const { parent, members } = neighbourhood(1);
+    const [first] = members as [string];
+    symlinkSync(first, join(parent, 'zz-alias'));
+
+    const result = asc(['query', 'SELECT 1', '--across', `${parent}/*`], parent);
+
+    expect(result.status).toBe(1);
+    expect(flatten(result.stderr)).toContain('counted twice');
+    // The resolved path is what catches it, which is asserted by the message naming the symlink.
+    expect(flatten(result.stderr)).toContain('compared after resolving the path');
+  });
+
+  it('cannot write to a project it attached, and says the statement is what must change', () => {
+    const { parent, members } = neighbourhood(1);
+    const [first] = members as [string];
+    const result = asc(['query', 'DELETE FROM proj_0.entries', '--across', `${parent}/*`], parent);
+
+    expect(result.status).toBe(1);
+    expect(flatten(result.stderr)).toContain('read-only connection');
+    expect(entryCount(first)).toBe(0);
+  });
+});
+
+describe('outside any project', () => {
+  it('queries across named projects with an empty main, and says main is empty', () => {
+    const { parent, members } = neighbourhood(1);
+    const [first] = members as [string];
+    // A directory with no store anywhere above it -- `scratch()` is under the temp dir.
+    const outside = scratch('asc-query-outside-');
+
+    // `SELECT 1` succeeds out here, and that is correct rather than a gap: it names no table, so an
+    // empty in-memory `main` answers it. Asserted first so the failure below is attributable to the
+    // missing store rather than to the query being malformed.
+    const trivial = asc(['query', 'SELECT 1 AS one'], outside);
+    expect(trivial.status).toBe(0);
+    expect(flatten(trivial.stderr)).toContain("'main' is empty");
+
+    const result = asc(
+      [
+        'query',
+        'SELECT (SELECT count(*) FROM proj_0.entries) AS a',
+        '--across',
+        `${parent}/*`,
+        '--json',
+      ],
+      outside,
+    );
+
+    expect(result.status).toBe(0);
+    expect(rows(result.stdout)[0]).toEqual({ a: 0 });
+    expect(flatten(result.stderr)).toContain("'main' is empty");
+    // The fallback connection is in memory, so the only file in play is the one attached -- and it
+    // is read-only, which the store's own suite asserts (`readonly.test.ts`).
+    expect(first).toBeTruthy();
+  });
+
+  it('refuses an unqualified table when main is empty, naming main rather than the table', () => {
+    const outside = scratch('asc-query-outside2-');
+    const result = asc(['query', 'SELECT count(*) FROM entries'], outside);
+
+    expect(result.status).toBe(1);
+    // SQLite's `no such table: entries` arrives, and the warning above it is what makes it legible.
+    expect(flatten(result.stderr)).toContain('no such table: entries');
+    expect(flatten(result.stderr)).toContain("'main' is empty");
+  });
+});
+
+describe('a reader that goes away', () => {
+  /**
+   * `asc query | head -1`, as a real pipeline.
+   *
+   * A 64 KiB pipe buffer swallows everything the other commands can print, so this is the first
+   * command where the stream guard (`streams.ts`) is exercised at all. The reader is destroyed from
+   * the parent rather than by spawning `head`, so the test depends on no shell and no coreutils --
+   * `child.stdout.destroy()` closes the read end, which is what gives the writer its EPIPE.
+   *
+   * **What this asserts, stated exactly: the pipeline works.** It does NOT prove ascend's own guard
+   * was installed -- measured, `@oclif/core` installs an equivalent EPIPE handler on stdout when
+   * `lib/command.js` loads, so removing ascend's changes nothing observable here. That is recorded
+   * rather than papered over; the wiring stays unproven, and `bin.ts` says so.
+   */
+  it('exits 0 with nothing on stderr when the reader closes the pipe', async () => {
+    const dir = project();
+    const sql =
+      'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 200000) ' +
+      "SELECT x, 'padding-padding-padding' AS pad FROM c";
+
+    const child = spawn(process.execPath, [bin, 'query', sql], {
+      cwd: dir,
+      env: env(dir),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+
+    child.stdout.once('data', () => {
+      child.stdout.destroy();
+    });
+
+    const code = await new Promise<number | null>((resolve) => {
+      child.on('close', resolve);
+    });
+
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+  });
+});
+
+describe('the store file is where the tests say it is', () => {
+  it('resolves through the same symlink SQLite does, so the path assertions above mean something', () => {
+    // macOS `tmpdir()` is a symlink under `/var`, and `--across` reports SQLite's RESOLVED path.
+    // This pins that the two agree on the real file rather than merely looking similar, which is
+    // what makes `storeFile()` usable in the assertions above.
+    const dir = project();
+    expect(realpathSync(storeFile(dir)).endsWith('ascend.db')).toBe(true);
+    expect(readFileSync(storeFile(dir)).subarray(0, 6).toString()).toBe('SQLite');
+  });
+});

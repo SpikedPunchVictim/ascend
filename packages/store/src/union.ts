@@ -252,19 +252,97 @@ function specFor(reading: Reading, hash: string): TypeSpec | null {
   return row === undefined ? null : (JSON.parse(row.spec_json) as TypeSpec);
 }
 
+/** One project as an open connection sees it: the name SQLite gave it, and the path it resolved. */
+export interface Attachment {
+  readonly label: string;
+  readonly alias: string;
+  /**
+   * The path SQLite resolved the attachment to, which is not necessarily the one it was given: a
+   * symlink, or a different spelling of the same directory, resolves to one file.
+   */
+  readonly file: string;
+}
+
+/** One alias already taken on this connection. */
+export class AliasInUseError extends Error {
+  constructor(
+    readonly alias: string,
+    readonly label: string,
+    readonly file: string,
+  ) {
+    super(
+      `the database name '${alias}' is already attached to this connection, so '${label}' (${file}) ` +
+        `cannot use it. SQLite would refuse the ATTACH, and the caller's SQL would then read ` +
+        `whichever project claimed the name first -- the wrong project, silently.`,
+    );
+    this.name = 'AliasInUseError';
+  }
+}
+
 /**
- * An alias no attachment is using.
+ * Every database name this connection currently answers to, `main` and `temp` included.
+ *
+ * Read from `PRAGMA database_list` rather than tracked in a variable, because the attachment state
+ * belongs to SQLite and a parallel copy of it here would be a second answer to "what is attached".
+ */
+export function databaseNames(db: DatabaseSync): readonly string[] {
+  return (db.prepare('PRAGMA database_list').all() as unknown as { name: string }[]).map(
+    (row) => row.name,
+  );
+}
+
+/**
+ * Attach one project's store under `alias`, and report what SQLite resolved it to.
+ *
+ * The alias is the CALLER's choice here, not this module's, and that difference is the whole
+ * reason this is a separate function from `withProject` below: the union attaches projects it is
+ * about to read immediately, so any free name will do, while `asc query --across` attaches
+ * projects that a user's SQL text has to name -- so the name must be predictable, and it must be
+ * one the user can type.
+ *
+ * Everything else is shared, deliberately: the existence check, the refusal, and the exact
+ * `ATTACH DATABASE` spelling have one owner, so the two callers cannot drift into attaching
+ * differently.
+ */
+export function attachStore(db: DatabaseSync, source: ProjectSource, alias: string): Attachment {
+  if (!existsSync(source.file)) {
+    // Checked before attaching, because ATTACH CREATES a database file when the path does not
+    // exist and its directory does (measured). A read-only query would then leave a stray empty
+    // file behind wherever the caller mistyped.
+    throw new NotAnAscendStoreError(
+      source.label,
+      source.file,
+      'there is no file at that path (SQLite would create an empty database for it, so this is ' +
+        'refused before anything is attached)',
+    );
+  }
+
+  // Checked here rather than left to SQLite, whose own refusal (`database X is already in use`)
+  // would arrive from an ATTACH the caller wrote no SQL for. A shadowed alias is the worse case:
+  // SQLite accepts a repeated spelling only when it is genuinely free, so what a caller must never
+  // get is a name that quietly means someone else's project.
+  if (databaseNames(db).includes(alias)) {
+    throw new AliasInUseError(alias, source.label, source.file);
+  }
+
+  db.exec(`ATTACH DATABASE ${literal(source.file)} AS ${ident(alias)}`);
+  return { label: source.label, alias, file: resolvedPath(db, alias) };
+}
+
+/** Detach `alias`. The counterpart of `attachStore`, and the only way to release a project. */
+export function detachStore(db: DatabaseSync, alias: string): void {
+  db.exec(`DETACH DATABASE ${ident(alias)}`);
+}
+
+/**
+ * An alias no attachment is using, for a caller that does not care what it is called.
  *
  * Namespaced, and then checked: a caller that has already attached something under the name this
  * module was about to use would otherwise get `database is already in use` from a function whose
  * only job was to read.
  */
 function freeAlias(db: DatabaseSync): string {
-  const taken = new Set(
-    (db.prepare('PRAGMA database_list').all() as unknown as { name: string }[]).map(
-      (row) => row.name,
-    ),
-  );
+  const taken = new Set(databaseNames(db));
   for (let index = 0; ; index++) {
     const candidate = `asc_union_${String(index)}`;
     if (!taken.has(candidate)) return candidate;
@@ -279,24 +357,12 @@ function freeAlias(db: DatabaseSync): string {
  * nobody meant to consult any more.
  */
 function withProject<T>(db: DatabaseSync, source: ProjectSource, body: (alias: string) => T): T {
-  if (!existsSync(source.file)) {
-    // Checked before attaching, because ATTACH CREATES a database file when the path does not
-    // exist and its directory does (measured). A read-only query would then leave a stray empty
-    // file behind wherever the caller mistyped.
-    throw new NotAnAscendStoreError(
-      source.label,
-      source.file,
-      'there is no file at that path (SQLite would create an empty database for it, so this is ' +
-        'refused before anything is attached)',
-    );
-  }
-
-  const name = freeAlias(db);
-  db.exec(`ATTACH DATABASE ${literal(source.file)} AS ${ident(name)}`);
+  const alias = freeAlias(db);
+  attachStore(db, source, alias);
   try {
-    return body(name);
+    return body(alias);
   } finally {
-    db.exec(`DETACH DATABASE ${ident(name)}`);
+    detachStore(db, alias);
   }
 }
 

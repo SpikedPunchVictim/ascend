@@ -20,7 +20,13 @@
 import { Command, Flags } from '@oclif/core';
 import { describeFailure, usageError } from './errors.js';
 import { render, type Output, type OutputFormat } from './output.js';
-import { openProject, type Project, type ProjectOptions } from './project.js';
+import {
+  openProject,
+  openQueryProject,
+  type Project,
+  type ProjectOptions,
+  type QueryProject,
+} from './project.js';
 
 /**
  * What `Command.catch` is handed.
@@ -138,6 +144,27 @@ export abstract class BaseCommand extends Command {
       // `finally` rather than a happy-path close: a command that threw must not leave a
       // write lock behind for the next one, and the store is opened in WAL mode
       // precisely so concurrent callers serialise rather than fail.
+      project.store.close();
+    }
+  }
+
+  /**
+   * The store for a read-only command, where there may be no project at all.
+   *
+   * Separate from `withProject` rather than an option on it, so that the commands which need a
+   * project root keep receiving a plain `string`: a flag would make the "there is no project" case
+   * reachable in every command, and reachable-but-impossible is how a `?? process.cwd()` gets
+   * written somewhere it does not belong. Here the case is the point, and only `asc query` has it.
+   *
+   * The store's lifetime is still owned here, for the reason stated at the top of this file: a
+   * command cannot leak a handle by forgetting, because the leak is not reachable from where the
+   * command is written.
+   */
+  protected async withQueryProject<T>(body: (project: QueryProject) => Promise<T> | T): Promise<T> {
+    const project = openQueryProject(process.cwd(), this.ascendVersion());
+    try {
+      return await body(project);
+    } finally {
       project.store.close();
     }
   }

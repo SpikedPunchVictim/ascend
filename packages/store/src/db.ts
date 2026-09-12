@@ -20,7 +20,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { migrate, userVersion, type MigrationResult } from './schema.js';
+import { migrate, SCHEMA_VERSION, userVersion, type MigrationResult } from './schema.js';
 
 /** The per-project store directory name. Gitignored; never committed. */
 export const STORE_DIR = '.ascend';
@@ -39,6 +39,56 @@ export interface OpenOptions {
   readonly migrate?: boolean;
   /** Recorded in `meta` on first open, for `asc doctor` to report. */
   readonly ascendVersion?: string;
+  /**
+   * Open the database read-only, for a command that must not write.
+   *
+   * This is a stronger promise than `migrate: false`, and the difference is the point.
+   * `migrate: false` merely declines to migrate; the handle is still writable, so any
+   * statement a caller runs can still change the file. `readOnly: true` asks SQLite for
+   * a handle that **cannot** write, which is what makes `Bash(asc query:*)` a
+   * defensible settings.json allowlist entry: the permission is granted because the
+   * command has been shown unable to mutate, not because it was asked not to.
+   *
+   * Measured, including across `ATTACH` (which matters, since the same command attaches
+   * other projects): a write to an attached database through a read-only connection is
+   * refused with `attempt to write a readonly database` and the target file is unchanged.
+   * `ATTACH` itself still works, so `--across` is unaffected.
+   *
+   * Three writes are therefore skipped, and each is skipped for a measured reason rather
+   * than defensively: the directory is not created, `PRAGMA journal_mode = WAL` is not
+   * issued (it is a write to the database header -- refused read-only, and unnecessary,
+   * because `verifyPragmas` still confirms an already-WAL store reads back as `wal`), and
+   * the `meta` version row is not inserted. Migrations cannot run at all, so a store that
+   * is behind is refused rather than queried -- see `StaleStoreError`.
+   */
+  readonly readOnly?: boolean;
+}
+
+/**
+ * Thrown when a read-only open finds a store that has not been migrated yet.
+ *
+ * A read-only handle cannot migrate, so the honest options were to query a store whose
+ * tables may not exist -- failing later with `no such table`, naming nothing about why --
+ * or to refuse up front and name the fix. This refuses up front.
+ *
+ * It is deliberately a different error from `NewerSchemaError`: one is a store from the
+ * future, the other from the past, and the fix differs. Telling a user to upgrade ascend
+ * when they need to run any *other* ascend command would send them the wrong way.
+ */
+export class StaleStoreError extends Error {
+  constructor(
+    readonly file: string,
+    readonly storeVersion: number,
+    readonly buildVersion: number,
+  ) {
+    super(
+      `${file} is at schema version ${String(storeVersion)} and this build of ascend expects ` +
+        `${String(buildVersion)}. A read-only connection cannot migrate it, and the command that ` +
+        `opened it does not write. Run any other ascend command in that project (or 'asc init') to ` +
+        `bring it up to date, then retry.`,
+    );
+    this.name = 'StaleStoreError';
+  }
 }
 
 export interface Store {
@@ -117,19 +167,32 @@ export function verifyPragmas(db: DatabaseSync, options: { readonly inMemory: bo
  * Open (creating if needed) the store in `dir`, apply pragmas, migrate, and verify.
  */
 export function openStore(options: OpenOptions): Store {
-  const { dir, busyTimeoutMs = DEFAULT_BUSY_TIMEOUT_MS } = options;
+  const { dir, busyTimeoutMs = DEFAULT_BUSY_TIMEOUT_MS, readOnly = false } = options;
   const inMemory = dir === ':memory:';
   const file = inMemory ? ':memory:' : join(dir, STORE_FILE);
 
-  if (!inMemory) mkdirSync(dir, { recursive: true });
+  // A read-only open must not create the thing it is opening: a mistyped path would
+  // otherwise leave a directory behind, which is the same failure `union.ts` refuses
+  // before attaching for.
+  if (!inMemory && !readOnly) mkdirSync(dir, { recursive: true });
 
-  const db = new DatabaseSync(file);
+  const db = new DatabaseSync(file, readOnly ? { readOnly: true } : {});
 
   try {
     // Outside any transaction: journal_mode cannot be changed inside one.
-    if (!inMemory) db.exec('PRAGMA journal_mode = WAL');
+    //
+    // Skipped read-only -- measured: it is a write to the database header, so a read-only
+    // handle gets `attempt to write a readonly database`. Skipping it cannot let a non-WAL
+    // store through, because `verifyPragmas` below reads the setting back and still refuses
+    // anything that is not `wal`; a store that is already WAL reports `wal` on a read-only
+    // handle (measured against a real store, not assumed).
+    if (!inMemory && !readOnly) db.exec('PRAGMA journal_mode = WAL');
     // WAL with synchronous=NORMAL is the standard pairing: durable across process
     // crashes, which is the failure this store actually faces.
+    //
+    // These three are connection settings rather than file writes, and all three were
+    // measured to be settable on a read-only handle -- so `foreign_keys` is still enforced
+    // for a read-only caller instead of being silently off.
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec(`PRAGMA busy_timeout = ${String(busyTimeoutMs)}`);
     db.exec('PRAGMA foreign_keys = ON');
@@ -137,10 +200,27 @@ export function openStore(options: OpenOptions): Store {
     verifyPragmas(db, { inMemory });
 
     const before = userVersion(db);
-    const migrations =
-      options.migrate === false ? { from: before, to: before, applied: [] } : migrate(db);
 
-    if (options.ascendVersion !== undefined) {
+    // Refused rather than opened: a read-only handle cannot migrate, and querying a store
+    // whose tables predate this build would fail later with `no such table`, naming nothing
+    // about why. Checked before `migrate` for that reason -- `migrate` would throw its own
+    // error about a store it is not allowed to touch, which says less.
+    //
+    // In-memory is exempt, and that is not a softening of the rule. An in-memory database has no
+    // file and no history: it starts at `user_version` 0 every time because nothing has ever been
+    // migrated into it, so "behind" is not a state it can be in. Applying the check there would
+    // refuse the one store that is *already* exactly what the caller gets -- an empty database with
+    // no schema -- on the grounds that it has no schema.
+    if (readOnly && !inMemory && before < SCHEMA_VERSION) {
+      throw new StaleStoreError(file, before, SCHEMA_VERSION);
+    }
+
+    const migrations =
+      options.migrate === false || readOnly
+        ? { from: before, to: before, applied: [] }
+        : migrate(db);
+
+    if (options.ascendVersion !== undefined && !readOnly) {
       db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run(
         'created_by_ascend_version',
         options.ascendVersion,

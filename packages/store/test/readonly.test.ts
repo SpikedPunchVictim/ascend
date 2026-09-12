@@ -1,0 +1,315 @@
+import { mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import type { TypeSpec } from '@ascend/core';
+import { afterAll, describe, expect, it } from 'vitest';
+import {
+  AliasInUseError,
+  attachStore,
+  databaseNames,
+  detachStore,
+  NotAnAscendStoreError,
+  openStore,
+  recordEntry,
+  registerType,
+  SCHEMA_VERSION,
+  StaleStoreError,
+  STORE_DIR,
+  STORE_FILE,
+  userVersion,
+} from '../src/index.js';
+
+/**
+ * The read-only open, and what it is for.
+ *
+ * **This is the guarantee `Bash(asc query:*)` as a `settings.json` allowlist entry depends on**, so
+ * it is asserted against real SQLite rather than described: a write through a read-only handle is
+ * refused, and it stays refused through an `ATTACH`, which is how `asc query --across` still reads
+ * other projects. Both directions are checked, because a test that only proved reads work would
+ * pass just as well against a writable handle.
+ *
+ * Every claim about a file is read back from the FILE -- through a fresh connection, or from the
+ * directory listing -- rather than inferred from a call returning. `openStore` can be handed the
+ * wrong flags and still return a perfectly usable handle, so "it did not throw" is not evidence
+ * that nothing was written.
+ *
+ * Fixtures go through `recordEntry`, the one write path, rather than through a hand-written INSERT.
+ * A hand-built row would duplicate the column list, and a schema change would then leave these
+ * tests failing for a reason that has nothing to do with read-only connections.
+ *
+ * Error classes are asserted by TYPE and by the fields they carry, not by message text: messages
+ * are for a person, and a test matching a phrase breaks when the phrasing improves.
+ */
+
+const dirs: string[] = [];
+
+function scratch(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'asc-readonly-'));
+  dirs.push(dir);
+  return dir;
+}
+
+afterAll(() => {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+});
+
+const AT = '2026-09-12T09:00:00.000Z';
+
+const SPEC: TypeSpec = {
+  name: 'probe',
+  properties: [{ name: 'note', type: 'text' }],
+};
+
+/**
+ * A migrated store in its own directory, holding `count` recorded entries.
+ *
+ * The returned path is the PROJECT directory, and the store's `dir` is the `.ascend` inside it --
+ * `openStore` takes the store's own directory, and `openProject` is what joins `STORE_DIR` on. The
+ * distinction is the whole reason `storeFile` exists below rather than being written at each call.
+ */
+function populated(count = 0): string {
+  const dir = scratch();
+  const store = openStore({ dir: join(dir, STORE_DIR), ascendVersion: 'test' });
+  registerType(store.db, SPEC, { registeredAt: AT });
+  for (let index = 0; index < count; index++) {
+    recordEntry(
+      store.db,
+      { type: 'probe', properties: { note: `kept-${String(index)}` } },
+      { id: `e${String(index)}`, recordedAt: AT, ascendVersion: 'test' },
+    );
+  }
+  store.close();
+  return dir;
+}
+
+const storeDir = (project: string): string => join(project, STORE_DIR);
+
+const storeFile = (project: string): string => join(storeDir(project), STORE_FILE);
+
+/**
+ * Read one row from the file through a connection that is not the one under test.
+ *
+ * `Record<string, unknown>` rather than a type parameter: the column wanted differs per call site,
+ * and a generic appearing once per signature buys nothing (`no-unnecessary-type-parameters` says so,
+ * correctly). Assertions below read the field and check it, which is the whole job.
+ */
+function readFromFile(file: string, sql: string): Record<string, unknown> {
+  const db = new DatabaseSync(file, { readOnly: true });
+  const row = db.prepare(sql).get() as Record<string, unknown>;
+  db.close();
+  return row;
+}
+
+/** A fresh connection's view of one entry's `evidence_text`, which no fixture ever sets. */
+const evidenceIn = (file: string): unknown =>
+  readFromFile(file, 'SELECT evidence_text FROM entries LIMIT 1')['evidence_text'];
+
+/** The message from a call that must throw -- or the absence of one, reported rather than hidden. */
+const refusalOf = (body: () => unknown): string => {
+  try {
+    body();
+  } catch (error) {
+    // Read as a property rather than assumed to be an Error: something other than an Error being
+    // thrown is a real (and reportable) outcome, and a helper that crashed on it would hide that.
+    return (error as { message?: string } | null)?.message ?? `(threw ${typeof error})`;
+  }
+  return '(no throw)';
+};
+
+/** Run `body` and hand back whatever it threw, so a test can assert on the error itself. */
+const capture = (body: () => unknown): unknown => {
+  try {
+    body();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+};
+
+describe('opening a store read-only', () => {
+  it('refuses a write, so the handle cannot mutate the file', () => {
+    const dir = populated(1);
+    const store = openStore({ dir: storeDir(dir), readOnly: true });
+
+    const message = refusalOf(() => {
+      store.db.exec("UPDATE entries SET evidence_text = 'changed'");
+    });
+    store.close();
+
+    expect(message).toContain('readonly');
+    // Read back through a SECOND connection: the point is that the file is unchanged, not that the
+    // handle reported an error.
+    expect(evidenceIn(storeFile(dir))).toBeNull();
+  });
+
+  it('does not create the directory it was pointed at', () => {
+    const parent = scratch();
+    const missing = join(parent, 'not-created');
+
+    expect(
+      refusalOf(() => {
+        openStore({ dir: missing, readOnly: true }).close();
+      }),
+    ).not.toBe('(no throw)');
+    // The refusal itself is allowed to be an unhelpful "unable to open database file"; what is
+    // asserted is the ABSENCE. A mistyped `--across` path that left a directory behind would be
+    // found by the next glob the caller ran, and read as a project with no entries.
+    expect(readdirSync(parent)).toEqual([]);
+  });
+
+  it('does not record the ascend version, because that row is a write', () => {
+    const dir = populated();
+    const before = readFromFile(
+      storeFile(dir),
+      "SELECT value FROM meta WHERE key = 'created_by_ascend_version'",
+    )['value'];
+
+    const store = openStore({
+      dir: storeDir(dir),
+      readOnly: true,
+      ascendVersion: 'should-not-appear',
+    });
+    const after = store.db
+      .prepare("SELECT value FROM meta WHERE key = 'created_by_ascend_version'")
+      .get() as { value: string };
+    store.close();
+
+    // Asserted against the ORIGINAL, not merely against "something is there": the writable open
+    // already inserted a row, so a read-only open that overwrote it would pass a weaker check.
+    expect(before).toBe('test');
+    expect(after.value).toBe('test');
+  });
+
+  it('reads a WAL store a writable open already created, and still verifies its pragmas', () => {
+    const dir = populated(1);
+    // `openStore` throws `PragmaError` from `verifyPragmas` if the read-back does not hold, so
+    // reaching these assertions proves the WAL check passed on a handle that never SET the pragma.
+    const store = openStore({ dir: storeDir(dir), readOnly: true });
+    const journal = store.db.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
+    const version = userVersion(store.db);
+    store.close();
+
+    expect(journal.journal_mode.toLowerCase()).toBe('wal');
+    expect(version).toBe(SCHEMA_VERSION);
+  });
+
+  it('refuses a store that is behind this build, and names the command that fixes it', () => {
+    const dir = populated();
+    // Back to an unmigrated file, so the read-only open finds a store with no tables.
+    const raw = new DatabaseSync(storeFile(dir));
+    raw.exec('PRAGMA user_version = 0');
+    raw.close();
+
+    const thrown = capture(() => openStore({ dir: storeDir(dir), readOnly: true }));
+
+    expect(thrown).toBeInstanceOf(StaleStoreError);
+    const stale = thrown as StaleStoreError;
+    expect(stale.storeVersion).toBe(0);
+    expect(stale.buildVersion).toBe(SCHEMA_VERSION);
+    expect(stale.file).toBe(storeFile(dir));
+    // The fix is a DIFFERENT command rather than a newer ascend, which is why this is deliberately
+    // not a `NewerSchemaError`. Asserted, because sending the user to upgrade would waste their time.
+    expect(stale.message).toContain('asc init');
+  });
+
+  it('does not call an in-memory store stale, because it has no history to be behind', () => {
+    const store = openStore({ dir: ':memory:', readOnly: true });
+    // `no such table` is the CORRECT answer to a query against an empty in-memory store: it proves
+    // the open succeeded and that nothing was migrated into it on the way.
+    const message = refusalOf(() => store.db.prepare('SELECT count(*) FROM entries').get());
+    store.close();
+
+    expect(message).toContain('no such table');
+  });
+
+  it('still refuses writes when the store is in memory', () => {
+    const store = openStore({ dir: ':memory:', readOnly: true });
+    const message = refusalOf(() => {
+      store.db.exec('CREATE TABLE t (x)');
+    });
+    store.close();
+
+    expect(message).toContain('readonly');
+  });
+});
+
+describe('attaching another project', () => {
+  it('refuses a path with no file, before anything is attached', () => {
+    const dir = populated(1);
+    const store = openStore({ dir: storeDir(dir), readOnly: true });
+    const absent = join(scratch(), 'nope', STORE_DIR, STORE_FILE);
+
+    const thrown = capture(() => attachStore(store.db, { label: 'nope', file: absent }, 'nope'));
+    const names = [...databaseNames(store.db)];
+    store.close();
+
+    expect(thrown).toBeInstanceOf(NotAnAscendStoreError);
+    // Nothing was attached, so a caller's SQL cannot silently read the empty database SQLite would
+    // have created at that path.
+    expect(names).toEqual(['main']);
+  });
+
+  it('attaches under the name the caller chose and reports the resolved path', () => {
+    const local = populated(1);
+    const other = populated(2);
+    const store = openStore({ dir: storeDir(local), readOnly: true });
+
+    const attachment = attachStore(store.db, { label: other, file: storeFile(other) }, 'neighbour');
+    const count = store.db.prepare('SELECT count(*) AS n FROM neighbour.entries').get() as {
+      n: number;
+    };
+    const names = [...databaseNames(store.db)];
+    detachStore(store.db, 'neighbour');
+    const after = [...databaseNames(store.db)];
+    store.close();
+
+    // The resolved path, not the one passed in -- and on macOS those differ, because `tmpdir()` is a
+    // symlink under `/var` pointing at `/private/var`. That difference is the FEATURE: it is what
+    // makes two spellings of one store recognisable as one store, so the assertion expects the
+    // resolved form rather than the argument. On a filesystem with no symlinks the two coincide and
+    // this still holds, which is why the test does not branch on the platform.
+    expect(attachment).toEqual({
+      label: other,
+      alias: 'neighbour',
+      file: realpathSync(storeFile(other)),
+    });
+    expect(count.n).toBe(2);
+    expect(names).toEqual(['main', 'neighbour']);
+    expect(after).toEqual(['main']);
+  });
+
+  it('refuses a name the connection already answers to', () => {
+    const dir = populated();
+    const store = openStore({ dir: storeDir(dir), readOnly: true });
+    const source = { label: dir, file: storeFile(dir) };
+    attachStore(store.db, source, 'twice');
+
+    const repeated = capture(() => attachStore(store.db, source, 'twice'));
+    // Also refused for `main`, which the caller never attached but the connection already has --
+    // so a shadowed name is caught before the caller's SQL can read someone else's project.
+    const shadowing = capture(() => attachStore(store.db, source, 'main'));
+    detachStore(store.db, 'twice');
+    store.close();
+
+    expect(repeated).toBeInstanceOf(AliasInUseError);
+    expect((repeated as AliasInUseError).alias).toBe('twice');
+    expect(shadowing).toBeInstanceOf(AliasInUseError);
+  });
+
+  it('cannot write to the attached project either', () => {
+    const local = populated(0);
+    const other = populated(1);
+    const store = openStore({ dir: storeDir(local), readOnly: true });
+    attachStore(store.db, { label: other, file: storeFile(other) }, 'neighbour');
+
+    const message = refusalOf(() => {
+      store.db.exec('DELETE FROM neighbour.entries');
+    });
+    store.close();
+
+    expect(message).toContain('readonly');
+    const surviving = readFromFile(storeFile(other), 'SELECT count(*) AS n FROM entries');
+    expect(surviving['n']).toBe(1);
+  });
+});

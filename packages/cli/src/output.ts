@@ -118,8 +118,17 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
     }),
   );
 
+  // Folded rather than spread, and that is a measured fix rather than a preference.
+  //
+  // `Math.max(column.length, ...rows.map(...))` passes every row's cell width as an ARGUMENT, so
+  // the call dies once there are enough rows: `asc query` on a recursive CTE failed with
+  // `Maximum call stack size exceeded` at ~120,000 rows, and an independent probe puts V8's
+  // argument limit at ~124,179 -- two numbers close enough to name the cause rather than guess it.
+  // Nothing below that limit ever noticed, because no command before `asc query` could return an
+  // unbounded number of rows. `--json` was unaffected throughout, which is what a limit in the
+  // TABLE renderer and not in the data looks like from outside.
   const widths = output.columns.map((column, index) =>
-    Math.max(column.length, ...rows.map((row) => row[index]?.length ?? 0)),
+    rows.reduce((widest, row) => Math.max(widest, row[index]?.length ?? 0), column.length),
   );
 
   const line = (cells: readonly string[]): string =>

@@ -23,6 +23,7 @@ export {
   DEFAULT_BUSY_TIMEOUT_MS,
   openStore,
   PragmaError,
+  StaleStoreError,
   withRollback,
   withTransaction,
   STORE_DIR,
@@ -82,12 +83,17 @@ export {
 } from './search.js';
 
 export {
+  AliasInUseError,
+  attachStore,
+  databaseNames,
+  detachStore,
   DuplicateProjectError,
   IncompatibleDefinitionsError,
   NotAnAscendStoreError,
   TypeNotInAnyProjectError,
   unionEntries,
   UnknownTypeHashError,
+  type Attachment,
   type DefinitionGroup,
   type ProjectSource,
   type UnionOptions,
