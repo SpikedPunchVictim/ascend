@@ -86,8 +86,8 @@ error naming field, expected type, and corrected command; `asc init` gitignores 
 
 **Status: In Progress** — **E2 complete** (7/7, epic `asc-72s` closed). **E3 7/7 complete**, epic
 `asc-865` closed: `asc-0j0`, `asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7`, `asc-l00`, and the P1 defect
-found in E3's own output, `asc-865.1`, now fixed (see below). E4 (`asc-baj`) not started and not
-blocked.
+found in E3's own output, `asc-865.1`, now fixed (see below). **E4 (`asc-baj`) In Progress** — the
+stages are specified below; cold start is already measured and needs no fast path.
 
 ### E3 delivered so far
 
@@ -291,6 +291,99 @@ and a reordering reported as drift is a false signal), and **the diff canonicali
 so a rename-only difference is correctly *no* bump.
 
 Gates at close: `format:check 0 · typecheck 0 · lint 0 · test 113 passed · align check green`.
+
+---
+
+### E4 — the CLI (`asc-baj`), in stages
+
+**Goal** — `asc init`, `asc types define`, `asc record`, `asc query` end to end, with the four starter
+types installed by `asc init`. **`asc record` closing is what starts dogfooding** (`asc-5ra`).
+
+**Cold start is already settled, and it says *build nothing extra*.** `asc-wkw` measured oclif at
+**p50 123 ms / p95 169 ms** against a bare Node script's 59/72 ms — inside the 300 ms threshold that
+would have justified a fast path for `record`. So `asc-m8n`'s escape hatch stays in the **Design
+Reserve, unbuilt**, and the CLI is plain oclif. Re-open it only if `asc-9y1` measures a real `record`
+call over budget.
+
+**Design decisions taken here, with the reason they are not forks** (`empirical-planning`: fork the
+user only on choices that are both load-bearing *and* expensive to reverse; these are all reversible
+inside one file):
+
+| Decision | Choice | Why |
+|---|---|---|
+| Project root | **walk up** from cwd for `.ascend/`, like git | A CLI that only works from the project root is wrong the first time an agent `cd`s into a subdirectory. `--across` already implies cwd is not the frame. |
+| `asc query` writes | **never — read-only connection** | Measured: `new DatabaseSync(f, {readOnly:true})` refuses writes ("attempt to write a readonly database") and **`ATTACH` still works** on that connection, so `--across` is unaffected. The DB is gitignored, so there is no version control net under a mistyped `DELETE`; and `Bash(asc query:*)` is only a defensible allowlist entry if `asc query` cannot mutate. |
+| `--json` shape | a **versioned envelope**, not a bare array | `cli-best-practices` rule 9: the JSON shape is a contract and human output is not. Bare arrays cannot be extended without breaking every consumer. |
+| `asc init` on an existing store | **idempotent, not an error** | Running it twice must be safe and must repair a half-built store (the same argument `refreshTypeViews` makes). `--force` would put a flag on the common path. |
+| Git metadata in the envelope | **deferred to E5** | `cwd` is free (`process.cwd()`); `repo`/`git_sha`/`branch` mean spawning `git` on the hot path that `asc-9y1` exists to measure. E5's adapter is where derived envelope fields are specified, and the principle recorded in `asc-kwr` — *anything mechanically derivable belongs to the adapter* — applies to the CLI too. |
+| Output on a non-TTY | no color, no prompt, ever | Rule 3: never require interactivity that was not asked for. Non-interactive callers get a flag-naming error, not a hang. |
+
+**Stages, in dependency order.** Each is a bead; each ends green on the full gate.
+
+| Stage | Bead | Deliverable |
+|---|---|---|
+| **E4.1** | `asc-m8n` | oclif wired end to end from `src/bin.ts` (no hand-written `bin/run.js`); `packages/cli/src/{project,output,errors,base,streams}.ts` — root discovery, the three renderers, error→exit-code mapping, EPIPE/SIGINT. Tests drive the **real binary**, not the handler. |
+| **E4.2** | `asc-6m6` | `asc types define\|list\|show\|brief\|deprecate\|import\|export`. `import` preserves `type_hash`; `brief` is the hook payload and stays one line per type. |
+| **E4.3** | `asc-kwr` + `asc-pcy` | The four starter types (shapes from ARCHITECTURE.md), then `asc init`: `.ascend/`, an **appended** `.gitignore` entry, starter types, and an *offer* of the recall hook — never a settings write (that is `asc-1q9`, E10, behind explicit consent). |
+| **E4.4** | `asc-gvr` | `asc record <type>`: `--json -` primary, flags for convenience, `--na`, batching, and a shape that keeps `Bash(asc record:*)` a valid allowlist prefix. **Dogfooding starts here.** |
+| **E4.5** | `asc-6ct` | `asc query "<sql>"` read-only, `--json\|--table\|--csv`, `--across <glob>`. |
+| **E4.6** | `asc-2gy`, `asc-9y1`, `asc-brt` | Define-time duplicate detection (strictness set by `EV-drift`'s numbers, FTS5 trigram); the record-cost measurement; JSONL export/import. |
+
+**Where the four starter types come from.** ARCHITECTURE.md fixes the shapes
+(`review-completed`, `stuck-event`, `stage-transition`, `decision`), and `asc-kwr` carries the
+principle that decides what is *not* in them: **anything mechanically derivable is not a property** —
+it belongs to E5's adapter. Self-reporting a fact the adapter can read off disk wastes the model's
+attention and is less reliable than reading it.
+
+#### E4.1 (`asc-m8n`) — delivered, with the gap stated rather than claimed
+
+`packages/cli/src/{bin,project,output,errors,base,streams}.ts` plus `commands/types/list.ts`. 13
+tests in `packages/cli/test/` (10 spawning the **real binary**, 3 on the guard) take the repo to 307.
+
+**The entry point is `src/bin.ts`, compiled to `dist/bin.js` — there is no hand-written
+`bin/run.js`.** That is a deliberate deviation from oclif's scaffolding (`oclif generate` writes a
+plain-JS `bin/run.js`), and it was chosen for two measured reasons:
+
+- **A `bin/` entry point forces a build-output import.** A hand-written JS file cannot import the
+  typed source at runtime, so the pipe guard had to be reached at `../dist/streams.js`. `align` said
+  exactly what that costs: *"a dependency routed through one of these is invisible to every
+  architecture rule, and a green verdict does not cover it"* — one `unevaluatable-edges` advisory,
+  new with this work. With the entry point in `src/`, the edge is `src/bin.ts → src/streams.ts` and
+  the advisory is **gone**: `align check` is green with no caveats.
+- **A `bin/` entry point cannot be typechecked.** `checkJs` is off, so the error object in its EPIPE
+  handler is `any` and `error.code` is an unchecked property read — which is what the typechecker
+  caught when the guard lived there.
+
+Cost, stated plainly: `asc` does not exist until the package is built. That is already true of
+`main`, `types` and oclif's `commands` directory, and the root `prepare` script builds on
+`pnpm install`.
+
+Two facts this rests on, both measured rather than assumed: **`tsc` preserves the `#!/usr/bin/env
+node` shebang** byte-for-byte into `dist/bin.js` (so the file stays directly executable), and
+**`execute({dir: import.meta.url})` resolves the package root correctly from `dist/`** — version,
+command dispatch and help all work from there.
+
+Seven mutations, each applied against the working tree with `shasum`-verified restores (never `git
+checkout`, which would have discarded uncommitted work). Re-run after the entry-point change, since
+the tests spawn a different file now:
+
+| Mutation | Result |
+|---|---|
+| M1 default format table → json | caught (1 test) |
+| M2 every failure exits 1 | caught (1 test) |
+| M3 drop the walk-up | caught (1 test) |
+| M4 results → stderr | caught (5 tests) |
+| M5 guard exits 1 on EPIPE | caught (1 test) |
+| M6 guard swallows every stream error | caught (2 tests) |
+| M7 entry point's guard import pointed at a missing file | caught — **by the build, not by behaviour** |
+| **M8 `installPipeGuards()` call removed** | **SURVIVED** |
+
+**M8 is the honest gap, and it is measured rather than assumed.** A 64 KiB pipe buffer swallows
+everything `types list` can print, so no test spawning the binary can observe the install step. M7
+is the weak half of the same fact: it fails because `tsc` cannot resolve the import, which says
+nothing about runtime wiring — its behavioural equivalent is M8, and M8 survives. The trigger
+arrives with `asc query` (`asc-6ct`), the first command whose output scales with the entry count;
+the end-to-end EPIPE test belongs there, and until then the install step is **unproven**.
 
 ---
 

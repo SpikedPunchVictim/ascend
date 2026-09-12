@@ -43,12 +43,14 @@ export {
 export {
   deprecateType,
   findType,
+  listTypes,
   registerType,
   ReservedPropertyNameError,
   typeVersions,
   updateTypeProse,
   type RegisteredType,
   type RegisterTypeOptions,
+  type TypeSummary,
   type TypeVersionRow,
 } from './registry.js';
 

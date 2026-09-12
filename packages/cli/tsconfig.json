@@ -3,7 +3,22 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
-    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+
+    /**
+     * The base sets `types: []`, which is load-bearing for the PURE packages. The CLI
+     * is a boundary: it reads the filesystem and the environment to find the project,
+     * so it opts back in.
+     */
+    "types": ["node"],
+
+    /**
+     * Not because the CLI touches SQLite -- it may not, and `align check` says so. It is
+     * needed because `@ascend/store`'s declarations mention `DatabaseSync`, which is
+     * `Disposable`, which is Explicit Resource Management rather than ES2023. Mirroring
+     * store's lib keeps the project reference compiling.
+     */
+    "lib": ["ES2023", "ESNext.Disposable"]
   },
   "include": ["src/**/*.ts"],
   "references": [

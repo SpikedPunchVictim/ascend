@@ -299,6 +299,102 @@ export function typeVersions(db: DatabaseSync, name: string): readonly TypeVersi
 }
 
 /**
+ * One type, summarised: enough for `asc types list` and for the checks `asc doctor` runs
+ * (a type registered but never recorded is the "dead rule" signal that tool reports).
+ *
+ * A summary rather than a `TypeVersionRow` per type, because the two callers want the
+ * LATEST version of each type plus counts, and building that from `typeVersions` would
+ * mean N+1 queries and every full spec crossing the boundary to be counted.
+ */
+export interface TypeSummary {
+  readonly name: string;
+  readonly latestVersion: number;
+  /** The version's major family -- the boundary its generated view unions within. */
+  readonly major: number;
+  readonly versionCount: number;
+  readonly typeHash: string;
+  readonly status: 'active' | 'deprecated';
+  readonly propertyCount: number;
+  /**
+   * Entries recorded against ANY version of this type.
+   *
+   * Any version, not just the latest, because this is the denominator of "is this type
+   * used at all" -- a type whose only entries are on v1 is used, and reporting 0 by
+   * counting only the latest version's rows would file it as dead.
+   */
+  readonly entryCount: number;
+  readonly description: string | null;
+  readonly recordWhen: string | null;
+}
+
+interface SummaryRowShape {
+  name: string;
+  latest_version: number;
+  major: number;
+  type_hash: string;
+  status: string;
+  description: string | null;
+  record_when: string | null;
+  property_count: number;
+  version_count: number;
+  entry_count: number;
+}
+
+/**
+ * Every registered type, alphabetically, deprecated ones included.
+ *
+ * Deprecated types are NOT filtered out here. A list that silently hides them is how a
+ * project forgets it ever defined one, and `status` is right there for a caller that
+ * wants to filter. `asc types list` decides how to show them; this reports what is
+ * registered.
+ */
+export function listTypes(db: DatabaseSync): readonly TypeSummary[] {
+  const rows = db
+    .prepare(
+      // The latest version of each name, its version count, and its entry count -- one
+      // statement, so the three cannot be read at three different moments.
+      //
+      // `property_count` is counted in SQL rather than by parsing spec_json here: it is
+      // the only thing this function needs from the spec, and shipping every full
+      // definition across the boundary to call `.length` on one array would make a summary
+      // cost what a full read costs.
+      `SELECT t.name, t.version AS latest_version, t.major, t.type_hash, t.status,
+              t.description, t.record_when,
+              json_array_length(t.spec_json, '$.properties') AS property_count,
+              v.version_count, COALESCE(e.entry_count, 0) AS entry_count
+         FROM entry_types AS t
+         JOIN (SELECT name, MAX(version) AS max_version, COUNT(*) AS version_count
+                 FROM entry_types GROUP BY name) AS v
+           ON v.name = t.name AND v.max_version = t.version
+         LEFT JOIN (SELECT type_name, COUNT(*) AS entry_count
+                      FROM entries GROUP BY type_name) AS e
+           ON e.type_name = t.name
+        ORDER BY t.name ASC`,
+    )
+    .all() as unknown as SummaryRowShape[];
+
+  return rows.map((row) => ({
+    name: row.name,
+    latestVersion: row.latest_version,
+    major: row.major,
+    versionCount: row.version_count,
+    typeHash: row.type_hash,
+    status: row.status === 'deprecated' ? 'deprecated' : 'active',
+    // No `Number(...)` coercion: node:sqlite hands back a plain `number` for both
+    // `COUNT(*)` and `json_array_length`, and it never substitutes a bigint. Measured --
+    // an integer past `Number.MAX_SAFE_INTEGER` raises
+    // `RangeError: Value is too large to be represented as a JavaScript number` rather
+    // than arriving as one. So a coercion here would be dead code that reads like a
+    // guard, which is worse than no guard: the next reader would believe bigints are
+    // handled and stop looking.
+    propertyCount: row.property_count,
+    entryCount: row.entry_count,
+    description: row.description,
+    recordWhen: row.record_when,
+  }));
+}
+
+/**
  * The version of a type, or the latest one when `version` is omitted.
  *
  * Returns undefined rather than throwing: "not registered" is an ordinary answer for

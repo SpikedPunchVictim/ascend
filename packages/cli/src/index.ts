@@ -13,3 +13,12 @@
 
 /** The binary name. */
 export const BIN = 'asc';
+
+/**
+ * Re-exported so `test/streams.test.ts` can reach it the way every other test reaches its
+ * package -- through the alias, not a relative path into `src/`. The entry point
+ * (`src/bin.ts`) imports the module directly instead, so that starting `asc` loads one
+ * function to install a stream handler rather than whatever the index grows to include.
+ */
+export { guardBrokenPipes, installPipeGuards } from './streams.js';
+export type { ErrorEmitting, PipeGuardDeps } from './streams.js';

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "The `asc` command line. oclif. The only interface in v1.",
   "bin": {
-    "asc": "./bin/run.js"
+    "asc": "./dist/bin.js"
   },
   "exports": {
     ".": {
@@ -17,7 +17,6 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "bin",
     "oclif.manifest.json"
   ],
   "scripts": {
@@ -34,6 +33,11 @@
     "bin": "asc",
     "dirname": "asc",
     "commands": "./dist/commands",
-    "topicSeparator": " "
+    "topicSeparator": " ",
+    "topics": {
+      "types": {
+        "description": "Inspect and manage the entry types registered in this project."
+      }
+    }
   }
 }
