@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc -b",
+    "prepare": "pnpm build",
     "typecheck": "tsc -b && tsc -p tsconfig.eslint.json",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -74,3 +74,18 @@ export {
   type SearchHit,
   type SearchOptions,
 } from './search.js';
+
+export {
+  DuplicateProjectError,
+  IncompatibleDefinitionsError,
+  NotAnAscendStoreError,
+  TypeNotInAnyProjectError,
+  unionEntries,
+  UnknownTypeHashError,
+  type DefinitionGroup,
+  type ProjectSource,
+  type UnionOptions,
+  type UnionProject,
+  type UnionResult,
+  type UnionRow,
+} from './union.js';

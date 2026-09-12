@@ -84,8 +84,9 @@ error naming field, expected type, and corrected command; `asc init` gitignores 
   The `toFtsMatch` sanitizer port is **mandatory**: 8/14 raw LLM-authored queries throw FTS5 syntax
   errors, and a naive whole-query phrase sanitizer is insufficient (returns empty for 9–13/14).
 
-**Status: In Progress** — **E2 complete** (7/7, epic `asc-72s` closed). **E3 5/6** (`asc-0j0`,
-`asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7` closed; `asc-l00` open). E4 (`asc-baj`) not started.
+**Status: In Progress** — **E2 complete** (7/7, epic `asc-72s` closed). **E3 6/6 tasks built**
+(`asc-0j0`, `asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7`, `asc-l00` closed; epic `asc-865` still open
+on one P1 defect found in E3's own output, `asc-865.1`). E4 (`asc-baj`) not started and not blocked.
 
 ### E3 delivered so far
 
@@ -102,6 +103,72 @@ error naming field, expected type, and corrected command; `asc init` gitignores 
   majors; a `_state` column per property carrying **four** values (`measured` / `not_applicable` /
   `not_measured` / `not_declared`); one composite expression index per property.
 - **`search.ts`** — FTS5 over `evidence_text`, trigram, with `toFtsMatch` ported **term-based**.
+- **`union.ts`** — the cross-project union, reading N project databases as one corpus. Keys on
+  `type_hash`; **refuses** when one name resolves to more than one hash, naming which project holds
+  which, and offers the way through (`typeHash`) only to a caller who names a definition explicitly.
+  One project is attached at a time, so the corpus is not capped at `SQLITE_MAX_ATTACHED` = 10.
+
+### E3 delivered: `asc-l00`, the cross-project union
+
+**Why the refusal is the feature.** `type_version` is assigned by *local* registration order, so
+"version 1" in one project and "version 1" in another are unrelated claims — and the generated view
+name `v_<type>_v<major>` derives from that same local history, so the view names are not comparable
+either. Only `type_hash` is computed from the definition itself. Measured on two stores while
+designing this: unioning by name alone put `count: 3` beside `count: 250` in one result set —
+findings next to milliseconds — with nothing marking the boundary. EV-drift makes that the *expected*
+case, not an edge case: five independently authored specs of one concept shared **9.1 %** of their
+property names.
+
+**The refusal has to have a way through, or `--across` is unusable.** `UnionOptions.typeHash` selects
+one definition explicitly, and then every project reports `entryCount`, so a project holding the other
+shape is *visibly* contributing zero rather than invisible — without that count, a hash-pinned union
+over two projects reads as the whole corpus when it is half of it.
+
+**A consequence worth stating: the union cannot produce `not_declared`.** Refusing to mix hashes means
+every row shares one definition, so every property is declared by every row; `stateCase` is called
+with `null` and the CASE has three arms. The four-state model still has four states — this query
+simply cannot ask the question that separates the fourth. That is why `stateCase` lives in `sql.ts`
+with the reason recorded, rather than being written twice.
+
+**Five error classes for the five ways it refuses** — not-a-store, missing file, the same store named
+twice, a type no project defines, and a hash no project holds. Two of them prevent a *write* on a read
+path: `ATTACH` **creates** a database file when the path is absent and its directory exists (measured),
+so a mistyped `--across` would leave a stray empty file behind and then report an empty corpus; and
+two paths can name one file (a symlink, or `/var` vs `/private/var` — measured), which would count
+every entry in it twice.
+
+**Mutation testing found a real gap, and it was the important one.** Twelve defects were planted;
+**eleven were caught on the first pass, and dropping the `type_hash` predicate from the row query
+SURVIVED** — because no test had a project holding rows recorded against *both* definitions of one
+name. That is the only case the predicate covers (the per-project filter already excludes projects
+that do not hold the hash), and it is a real scenario: a project that drifted across majors and has
+entries against each. Added the drifted-project test; it is now caught, 12/12. Recorded as a bd
+memory, because the general form is not specific to this module.
+
+### A defect found in E3's own output, filed rather than quietly fixed: `asc-865.1`
+
+Writing the union exposed a bug in `views.ts` (closed as `asc-fso`). The view projects each property
+as a bare identifier, so a property whose canonical name equals one of the envelope columns collides
+with it and **SQLite silently renames the loser to `<name>:1`** — no error anywhere. Reproduced on the
+real code path with a type carrying `source` and `id`:
+
+```
+SELECT source, id FROM v_note_v1  ->  {"source":"self", "id":"e1"}
+```
+
+The envelope values are returned for names the author used for their own properties. The exact query
+`ARCHITECTURE.md` prescribes for the view (`SELECT <prop>, COUNT(*) FROM v_<type>_v<n> GROUP BY 1`)
+therefore returns a **wrong answer with no error** — the plausible-wrong-number class this product
+exists to prevent. Plausible colliding names include `id`, `source`, `actor`, `repo`, `branch`,
+`workflow`, `run_id`. The union does not have this bug: its columns are prefixed `p.`/`s.`, with a
+regression test.
+
+It is filed (`asc-865.1`, P1) rather than fixed here because the fix chooses between two designs:
+reserve the envelope names at define time in `@ascend/core` (recommended — it refuses a name that
+cannot be projected faithfully, with a rename suggestion) or prefix the view's columns (correct, but
+breaks the documented `GROUP BY` ergonomics). That is a decision to take deliberately, not inside a
+commit for a different task. **E3's epic `asc-865` stays open on it, so the stage does not read
+complete while a known wrong-answer bug sits in its output.**
 
 **The fourth state is a decision taken here, and it is not in the three-state model.** A view spans
 versions, so a property introduced by a later minor is not in an earlier entry's definition at all —
@@ -132,7 +199,8 @@ running rather than by argument:
 
 **Every E3 suite was mutation-tested**, following the project invariant that a check must be shown to
 fail before it is trusted to pass. Six mutations on the views suite, five on search, two on the
-registry's transaction handling. Three findings came out of that and are worth carrying forward:
+registry's transaction handling, twelve on the union. Four findings came out of that and are worth
+carrying forward:
 - A test that **cannot fail** is worse than no test. The cross-store column-order test was insensitive
   as first written (both sides were already canonically ordered) and was rewritten to reach the case
   the sort actually protects.
@@ -142,6 +210,10 @@ registry's transaction handling. Three findings came out of that and are worth c
   phrase fix stops every error while returning nothing — and the "never throws" test still *passes*
   under it. Only asserting a non-empty result distinguishes the two, which is exactly what `EV-fts`
   required.
+- **A guard can have exactly one case, and a suite can miss it entirely.** Dropping the `type_hash`
+  predicate from the union's row query survived all 26 tests, because every fixture had each project
+  holding one definition. The predicate covers only a project that holds *both* (its own drift), which
+  no test had. The count matters more than the code: 26 green tests said nothing about it.
 
 Two gate defects fixed during this stage (both false greens, the severity-zero class):
 `pnpm typecheck` had been `tsc -b` over `src/**` only, so **test files were never typechecked** at all
@@ -149,7 +221,7 @@ Two gate defects fixed during this stage (both false greens, the severity-zero c
 file), and vitest could not resolve `node:sqlite` (aliased to a shim that reaches the real module via
 `createRequire`).
 
-Gates at E3 head: `format 0 · typecheck 0 · lint 0 · test 251 passed · align check green`.
+Gates at E3 head: `format 0 · typecheck 0 · lint 0 · test 278 passed · align check green`.
 
 E2 delivered, with the evidence that it holds:
 - `spec.ts` — bounded 9-type vocabulary + canonicalization. Renames are **reported**, not applied

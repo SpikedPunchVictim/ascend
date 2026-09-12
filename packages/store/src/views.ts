@@ -46,6 +46,7 @@
 
 import type { TypeSpec } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
+import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
 
 /** The view for one major family: `v_<type>_v<major>`. */
 export function viewName(typeName: string, major: number): string {
@@ -56,65 +57,6 @@ export function viewName(typeName: string, major: number): string {
 export function indexName(typeName: string, property: string): string {
   return `idx_entries_${typeName}_${property}`;
 }
-
-/**
- * Quote an identifier for generated SQL.
- *
- * Property names are canonical snake_case (`canonicalName` strips everything else), so this is
- * belt-and-braces rather than load-bearing -- but the input is an LLM's, it is interpolated
- * into DDL, and a quote is free. Doubling embedded quotes is the SQLite escape.
- */
-const ident = (name: string): string => `"${name.replace(/"/g, '""')}"`;
-
-/** A literal for generated SQL. Same reasoning as `ident`: LLM-supplied, interpolated. */
-const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
-
-/**
- * The `_state` CASE for one property, over the versions that DECLARE it.
- *
- * `json_type(json, '$.p')` is NULL exactly when the path is absent -- which is what "measured"
- * means here, since every value in the vocabulary serializes to a non-null JSON type. The
- * membership test over the `na` array uses `json_each` rather than a substring match on the
- * JSON text: `instr(na_json, '"count"')` would also match `"count_of_x"`, and a state column
- * that reports the wrong state is worse than one that costs a parse.
- *
- * Order matters. Measured outranks N/A (the recorder refuses both at once, so this only
- * decides how a hand-written row reads), and `not_declared` is the fall-through: absence from
- * both documents plus a version that never declared the property cannot mean "not measured".
- */
-function stateCase(property: string, declaringVersions: readonly number[]): string {
-  const quoted = literal(property);
-  const versions = declaringVersions.map((version) => String(version)).join(', ') || 'NULL';
-  return (
-    `CASE` +
-    ` WHEN json_type(e.properties_json, '$.${property}') IS NOT NULL THEN 'measured'` +
-    ` WHEN EXISTS (SELECT 1 FROM json_each(e.na_json) AS na WHERE na.value = ${quoted})` +
-    ` THEN 'not_applicable'` +
-    ` WHEN e.type_version IN (${versions}) THEN 'not_measured'` +
-    ` ELSE 'not_declared'` +
-    ` END`
-  );
-}
-
-/** The columns every generated view carries, before the per-property projections. */
-const ENVELOPE_COLUMNS = [
-  'id',
-  'type_name',
-  'type_version',
-  'type_hash',
-  'recorded_at',
-  'run_id',
-  'workflow',
-  'actor',
-  'source',
-  'cwd',
-  'repo',
-  'git_sha',
-  'branch',
-  'evidence_text',
-  'properties_json',
-  'na_json',
-];
 
 interface TypeVersion {
   readonly version: number;

@@ -1,0 +1,712 @@
+import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import type { TypeSpec } from '@ascend/core';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  DuplicateProjectError,
+  IncompatibleDefinitionsError,
+  NotAnAscendStoreError,
+  openStore,
+  recordEntry,
+  registerType,
+  STORE_DIR,
+  STORE_FILE,
+  TypeNotInAnyProjectError,
+  unionEntries,
+  UnknownTypeHashError,
+  type ProjectSource,
+  type RecordContext,
+  type Store,
+} from '../src/index.js';
+
+/**
+ * The cross-project union is the one place ascend reads databases it did not write, so these tests
+ * exist mostly to pin what it REFUSES.
+ *
+ * The load-bearing case is `IncompatibleDefinitionsError`: EV-drift measured five independently
+ * authored specs of one concept sharing 9.1 % of their property names, so two projects naming one
+ * type differently is the expected state of the world, not an edge case. Measured on two real
+ * stores, unioning by name alone returned `count: 3` beside `count: 250` in a single result set --
+ * findings next to milliseconds -- with nothing marking where the boundary was. Every test below
+ * that concerns the refusal asserts that NO rows came back, because a refusal that still returns a
+ * partial result set is the failure it was written to prevent.
+ *
+ * Two of these tests exist because their absence was a measured false green elsewhere in this
+ * package: the union must leave no attachment behind on the THROWING path (a `finally` that only
+ * runs when nothing goes wrong is not a `finally`), and the attach ceiling must be exceeded
+ * (one project is attached at a time, so 12 projects work -- a later "optimisation" into a single
+ * statement would break at 11 and this suite is what would catch it).
+ */
+
+const dirs: string[] = [];
+
+const tempDir = (): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'ascend-union-'));
+  dirs.push(dir);
+  return dir;
+};
+
+afterEach(() => {
+  while (dirs.length > 0) rmSync(dirs.pop() as string, { recursive: true, force: true });
+});
+
+const AT = '2026-09-11T10:00:00.000Z';
+
+const context = (id: string, at: string = AT): RecordContext => ({
+  id,
+  recordedAt: at,
+  ascendVersion: '0.0.0',
+});
+
+const DENIAL: TypeSpec = {
+  name: 'tool_denial',
+  properties: [
+    { name: 'count', type: 'integer' },
+    { name: 'tool_name', type: 'string' },
+  ],
+};
+
+/** `count` retyped to a duration: the same NAME, a genuinely different definition. */
+const DENIAL_OTHER: TypeSpec = {
+  name: 'tool_denial',
+  properties: [
+    { name: 'count', type: 'duration', unit: 'ms' },
+    { name: 'tool_name', type: 'string' },
+  ],
+};
+
+let projectCount = 0;
+
+/**
+ * A real project store on disk, with the specs registered and entries recorded.
+ *
+ * A store rather than a bare database on purpose: the union's first job is to check that what it
+ * attached is an ascend store at all, so a fixture it could not have written itself would not test
+ * the path that matters.
+ */
+function project(
+  specs: readonly TypeSpec[],
+  entries: readonly {
+    id: string;
+    at?: string;
+    type?: string;
+    version?: number;
+    properties?: Record<string, unknown>;
+    na?: readonly string[];
+  }[] = [],
+): ProjectSource {
+  projectCount += 1;
+  const label = `p${String(projectCount)}`;
+  // The real on-disk layout, from the constants rather than retyped: `<project>/.ascend/ascend.db`.
+  const dir = join(tempDir(), label, STORE_DIR);
+  const store = openStore({ dir });
+  try {
+    for (const spec of specs) registerType(store.db, spec, { registeredAt: AT });
+    for (const entry of entries) {
+      recordEntry(
+        store.db,
+        {
+          type: entry.type ?? (specs[0] as TypeSpec).name,
+          ...(entry.version === undefined ? {} : { version: entry.version }),
+          ...(entry.properties === undefined ? {} : { properties: entry.properties }),
+          ...(entry.na === undefined ? {} : { na: entry.na }),
+        },
+        context(entry.id, entry.at ?? AT),
+      );
+    }
+  } finally {
+    store.close();
+  }
+  return { label, file: join(dir, STORE_FILE) };
+}
+
+/** The connection a union runs through. Its own `main` database must never be consulted. */
+const withConnection = (body: (db: DatabaseSync, store: Store) => void): void => {
+  const store = openStore({ dir: join(tempDir(), 'local') });
+  try {
+    body(store.db, store);
+  } finally {
+    store.close();
+  }
+};
+
+const attachedNames = (db: DatabaseSync): readonly string[] =>
+  (db.prepare('PRAGMA database_list').all() as unknown as { name: string }[]).map(
+    (row) => row.name,
+  );
+
+describe('rows from several projects read as one corpus', () => {
+  it('returns every project’s rows, labelled with where each came from', () => {
+    const first = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+    const second = project([DENIAL], [{ id: 'b1', properties: { count: 250, tool_name: 'Read' } }]);
+
+    withConnection((db) => {
+      const result = unionEntries(db, 'tool_denial', [first, second]);
+
+      expect(result.rows.map((row) => [row.project, row.id])).toEqual([
+        [first.label, 'a1'],
+        [second.label, 'b1'],
+      ]);
+      expect(result.rows.map((row) => row.properties['count'])).toEqual([3, 250]);
+      expect(result.typeHash).toBe(result.projects[0]?.hashes[0]);
+    });
+  });
+
+  it('orders the union by time, not by project', () => {
+    // An ORDER BY inside each project's own statement would order each share and leave the
+    // concatenation unsorted -- plausible-looking output in the wrong order.
+    const first = project(
+      [DENIAL],
+      [{ id: 'late', at: '2026-09-11T12:00:00.000Z', properties: { count: 1, tool_name: 'Bash' } }],
+    );
+    const second = project(
+      [DENIAL],
+      [
+        {
+          id: 'early',
+          at: '2026-09-11T09:00:00.000Z',
+          properties: { count: 2, tool_name: 'Read' },
+        },
+      ],
+    );
+
+    withConnection((db) => {
+      expect(unionEntries(db, 'tool_denial', [first, second]).rows.map((row) => row.id)).toEqual([
+        'early',
+        'late',
+      ]);
+    });
+  });
+
+  it('carries the envelope, so a cross-project row is as readable as a local one', () => {
+    const only = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+
+    withConnection((db) => {
+      const row = unionEntries(db, 'tool_denial', [only]).rows[0];
+      expect(row?.typeName).toBe('tool_denial');
+      expect(row?.typeVersion).toBe(1);
+      // 'self' is the recorder's default source -- the entry was recorded here, not derived.
+      expect(row?.source).toBe('self');
+      expect(row?.recordedAt).toBe(AT);
+      expect(row?.runId).toBeNull();
+      expect(row?.repo).toBeNull();
+    });
+  });
+
+  it('does not read the connection’s own database, even when it holds the same type', () => {
+    // `--across` means "these projects". A union that quietly added the current project would
+    // answer a question the caller did not ask, and the extra rows would look like real ones.
+    const only = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+
+    withConnection((db) => {
+      registerType(db, DENIAL, { registeredAt: AT });
+      recordEntry(
+        db,
+        { type: 'tool_denial', properties: { count: 99, tool_name: 'local' } },
+        context('local-row'),
+      );
+
+      expect(unionEntries(db, 'tool_denial', [only]).rows.map((row) => row.id)).toEqual(['a1']);
+    });
+  });
+});
+
+describe('the union keys on type_hash, never on version numbers', () => {
+  it('unions one definition held at different local versions, when the hash names it', () => {
+    // `type_version` is assigned by LOCAL registration order, so one definition can sit at v1 in
+    // one project and v2 in another -- a union that joined on the version number would silently
+    // drop one of them. This is the shape that produces it: the two projects registered the
+    // name's two definitions in opposite orders, so each holds the SAME hash at a DIFFERENT
+    // version. That history is also why the name means two things here, and therefore why the
+    // hash has to be pinned -- the two facts have one cause.
+    const reference = project([DENIAL], []);
+    const first = project(
+      [DENIAL, DENIAL_OTHER],
+      [{ id: 'a1', version: 1, properties: { count: 3, tool_name: 'Bash' } }],
+    );
+    const second = project(
+      [DENIAL_OTHER, DENIAL],
+      [{ id: 'b1', at: '2026-09-11T11:00:00.000Z', properties: { count: 250, tool_name: 'Read' } }],
+    );
+
+    withConnection((db) => {
+      const hash = unionEntries(db, 'tool_denial', [reference]).typeHash;
+
+      expect(() => unionEntries(db, 'tool_denial', [first, second])).toThrow(
+        IncompatibleDefinitionsError,
+      );
+
+      const result = unionEntries(db, 'tool_denial', [first, second], { typeHash: hash });
+
+      expect(result.rows.map((row) => row.id)).toEqual(['a1', 'b1']);
+      expect(result.projects.map((entry) => entry.versions)).toEqual([[1], [2]]);
+      expect(result.projects.map((entry) => entry.entryCount)).toEqual([1, 1]);
+      // Each project holds both definitions; the pinned one is what makes them comparable.
+      expect(result.projects.map((entry) => entry.hashes.length)).toEqual([2, 2]);
+    });
+  });
+});
+
+describe('incompatible definitions are refused, not unioned', () => {
+  it('refuses when one name means two definitions, and returns no rows', () => {
+    const first = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+    const second = project(
+      [DENIAL_OTHER],
+      [{ id: 'b1', properties: { count: 250, tool_name: 'Read' } }],
+    );
+
+    withConnection((db) => {
+      let error: unknown;
+      try {
+        unionEntries(db, 'tool_denial', [first, second]);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(IncompatibleDefinitionsError);
+      const refusal = error as IncompatibleDefinitionsError;
+      expect(refusal.groups).toHaveLength(2);
+      expect(refusal.groups.map((group) => group.projects)).toEqual([
+        [first.label],
+        [second.label],
+      ]);
+      // The hashes are printed in full: the message's advice is to re-run naming one of them, and
+      // a truncated hash cannot be named.
+      expect(refusal.message).toContain(refusal.groups[0]?.typeHash as string);
+      expect(refusal.message).toContain(refusal.groups[1]?.typeHash as string);
+    });
+    // Nothing partial escaped: the throw is the whole of the result, and no attachment survived it.
+    withConnection((db) => {
+      expect(() => unionEntries(db, 'tool_denial', [first, second])).toThrow(
+        IncompatibleDefinitionsError,
+      );
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+
+  it('refuses a single project that has drifted across its own majors', () => {
+    // One project holding two shapes is the same hazard as two projects disagreeing, and the
+    // generated views already refuse to union across majors for exactly this reason.
+    const drifted = project(
+      [DENIAL, DENIAL_OTHER],
+      [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }],
+    );
+
+    withConnection((db) => {
+      expect(() => unionEntries(db, 'tool_denial', [drifted])).toThrow(
+        IncompatibleDefinitionsError,
+      );
+    });
+  });
+
+  it('unions only the named definition when the hash is pinned, and says what it left out', () => {
+    // The way through the refusal. The count is what makes this safe: without a per-project count,
+    // a hash-pinned union over two projects reads as the whole corpus when it is half of it.
+    const first = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+    const second = project(
+      [DENIAL_OTHER],
+      [{ id: 'b1', properties: { count: 250, tool_name: 'Read' } }],
+    );
+
+    withConnection((db) => {
+      let hash = '';
+      try {
+        unionEntries(db, 'tool_denial', [first, second]);
+      } catch (caught) {
+        hash = (caught as IncompatibleDefinitionsError).groups[0]?.typeHash as string;
+      }
+      expect(hash).not.toBe('');
+
+      const result = unionEntries(db, 'tool_denial', [first, second], { typeHash: hash });
+
+      expect(result.typeHash).toBe(hash);
+      expect(result.rows.map((row) => row.id)).toEqual(['a1']);
+      expect(result.projects.map((entry) => [entry.label, entry.entryCount])).toEqual([
+        [first.label, 1],
+        [second.label, 0],
+      ]);
+      // The project that contributed nothing is still described, with the hash it holds instead.
+      expect(result.projects[1]?.hashes).toHaveLength(1);
+      expect(result.projects[1]?.hashes).not.toEqual([hash]);
+      expect(result.projects[1]?.versions).toEqual([]);
+    });
+  });
+
+  it('excludes the rows a project recorded against the definition it did not name', () => {
+    // The case only a drifted project can produce: ONE project holding entries against both
+    // definitions of the name. The per-project filter cannot exclude those rows -- the project
+    // holds the pinned hash, so it contributes -- so this is what the `type_hash` predicate in the
+    // query is for. Without it the two definitions mix inside a single project's contribution,
+    // which is the whole hazard arriving through the one door the refusal does not watch.
+    const reference = project([DENIAL], []);
+    const drifted = project(
+      [DENIAL, DENIAL_OTHER],
+      [
+        { id: 'old', version: 1, properties: { count: 3, tool_name: 'Bash' } },
+        { id: 'new', version: 2, properties: { count: 250, tool_name: 'Read' } },
+      ],
+    );
+
+    withConnection((db) => {
+      const hash = unionEntries(db, 'tool_denial', [reference]).typeHash;
+      const result = unionEntries(db, 'tool_denial', [drifted], { typeHash: hash });
+
+      expect(result.rows.map((row) => row.id)).toEqual(['old']);
+      expect(result.projects[0]?.entryCount).toBe(1);
+      expect(result.projects[0]?.versions).toEqual([1]);
+    });
+  });
+
+  it('refuses a hash no project holds, rather than returning an empty corpus', () => {
+    const only = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+
+    withConnection((db) => {
+      let error: unknown;
+      try {
+        unionEntries(db, 'tool_denial', [only], { typeHash: 'f'.repeat(64) });
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(UnknownTypeHashError);
+      const refusal = error as UnknownTypeHashError;
+      expect(refusal.requested).toBe('f'.repeat(64));
+      // It offers the hashes that DO exist, so the next attempt can name one.
+      expect(refusal.message).toContain(refusal.groups[0]?.typeHash as string);
+    });
+  });
+
+  it('refuses a type no project defines, naming what it searched', () => {
+    const first = project([DENIAL]);
+    const second = project([DENIAL]);
+
+    withConnection((db) => {
+      let error: unknown;
+      try {
+        unionEntries(db, 'not_a_type', [first, second]);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(TypeNotInAnyProjectError);
+      expect((error as TypeNotInAnyProjectError).projects).toEqual([first.label, second.label]);
+      expect((error as Error).message).toContain('not_a_type');
+    });
+  });
+
+  it('refuses an empty project list, rather than reporting an empty corpus', () => {
+    withConnection((db) => {
+      expect(() => unionEntries(db, 'tool_denial', [])).toThrow(/no projects given/);
+    });
+  });
+});
+
+describe('a project that is not an ascend store is refused clearly', () => {
+  it('names the missing table instead of crashing on the first query', () => {
+    const dir = tempDir();
+    const file = join(dir, 'not-a-store.db');
+    const other = new DatabaseSync(file);
+    other.exec('CREATE TABLE unrelated (x)');
+    other.close();
+
+    withConnection((db) => {
+      let error: unknown;
+      try {
+        unionEntries(db, 'tool_denial', [{ label: 'stray', file }]);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(NotAnAscendStoreError);
+      expect((error as Error).message).toContain("has no 'entries' table");
+      expect((error as Error).message).toContain('stray');
+      // The refusal happens INSIDE the attach, which is the only path that proves the detach is
+      // in a `finally` rather than after the body.
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+
+  it('refuses a file that does not exist without creating one', () => {
+    // Measured: ATTACH creates an empty database when the path is absent and its directory
+    // exists. Without this guard a read-only query would leave a stray file wherever the caller
+    // mistyped -- and then report the corpus as empty.
+    const dir = tempDir();
+    const file = join(dir, 'typo.db');
+
+    withConnection((db) => {
+      expect(() => unionEntries(db, 'tool_denial', [{ label: 'typo', file }])).toThrow(
+        NotAnAscendStoreError,
+      );
+      expect(existsSync(file)).toBe(false);
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+
+  it('refuses an ascend store whose entries table was written differently', () => {
+    // Every envelope column but one, so the column the guard names is the only one it could
+    // name. The list is duplicated here deliberately: a test that imported it could not notice
+    // the envelope changing.
+    const dir = tempDir();
+    const file = join(dir, 'old.db');
+    const other = new DatabaseSync(file);
+    other.exec(
+      `CREATE TABLE entries (
+         id TEXT PRIMARY KEY, type_name TEXT, type_version INTEGER, type_hash TEXT,
+         recorded_at TEXT, run_id TEXT, workflow TEXT, actor TEXT, source TEXT, cwd TEXT,
+         repo TEXT, git_sha TEXT, branch TEXT, evidence_text TEXT, na_json TEXT)`,
+    );
+    other.exec('CREATE TABLE entry_types (name TEXT)');
+    other.close();
+
+    withConnection((db) => {
+      expect(() => unionEntries(db, 'tool_denial', [{ label: 'old', file }])).toThrow(
+        /has no 'properties_json' column/,
+      );
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+});
+
+describe('the same store twice is refused', () => {
+  it('catches two paths that resolve to one file, which would double every count', () => {
+    const only = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+    const link = join(tempDir(), 'alias.db');
+    symlinkSync(only.file, link);
+
+    withConnection((db) => {
+      let error: unknown;
+      try {
+        unionEntries(db, 'tool_denial', [only, { label: 'aliased', file: link }]);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(DuplicateProjectError);
+      expect((error as DuplicateProjectError).firstLabel).toBe(only.label);
+      expect((error as DuplicateProjectError).label).toBe('aliased');
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+
+  it('accepts the same file twice when the caller did not ask for it twice', () => {
+    // The negative control: the guard keys on the RESOLVED path, so two genuinely different
+    // projects are not refused, and a union over them still returns both.
+    const first = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+    const second = project([DENIAL], [{ id: 'b1', properties: { count: 4, tool_name: 'Read' } }]);
+
+    withConnection((db) => {
+      expect(unionEntries(db, 'tool_denial', [first, second]).rows).toHaveLength(2);
+    });
+  });
+});
+
+describe('attachments are the union’s own business', () => {
+  it('leaves no attachment behind after a successful union', () => {
+    const only = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+
+    withConnection((db) => {
+      unionEntries(db, 'tool_denial', [only]);
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+
+  it('leaves no attachment behind when a project is refused mid-read', () => {
+    // The throwing path, which is the one a `finally` is for. A leak here keeps the project's file
+    // open and its snapshot readable for the rest of the process.
+    const good = project([DENIAL], []);
+    const second = project([DENIAL_OTHER], []);
+
+    withConnection((db) => {
+      expect(() => unionEntries(db, 'tool_denial', [good, second])).toThrow(
+        IncompatibleDefinitionsError,
+      );
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+
+  it('does not clobber an attachment the caller already had', () => {
+    // The alias is namespaced AND checked against `database_list`, so a caller that happens to hold
+    // `asc_union_0` gets `database is already in use` only if this module stopped checking.
+    const only = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+    const held = project([DENIAL], []);
+
+    withConnection((db) => {
+      db.exec(`ATTACH DATABASE '${held.file}' AS asc_union_0`);
+
+      const result = unionEntries(db, 'tool_denial', [only]);
+
+      expect(result.rows.map((row) => row.id)).toEqual(['a1']);
+      expect(attachedNames(db)).toEqual(['main', 'asc_union_0']);
+      // Still usable under the caller's own name.
+      expect(db.prepare('SELECT count(*) AS n FROM asc_union_0.entry_types').get()).toEqual({
+        n: 1,
+      });
+    });
+  });
+
+  it('unions more projects than SQLite will attach at once', () => {
+    // SQLITE_MAX_ATTACHED defaults to 10 (measured: `too many attached databases - max 10` on the
+    // eleventh). One project is attached at a time precisely so this case works; a rewrite into a
+    // single statement over all projects would fail here, which is why the test goes past the
+    // ceiling instead of stopping just under it.
+    const projects = Array.from({ length: 12 }, (_, index) =>
+      project(
+        [DENIAL],
+        [
+          {
+            id: `e${String(index)}`,
+            at: `2026-09-11T10:${String(index).padStart(2, '0')}:00.000Z`,
+            properties: { count: index, tool_name: 'Bash' },
+          },
+        ],
+      ),
+    );
+
+    withConnection((db) => {
+      const result = unionEntries(db, 'tool_denial', projects);
+
+      expect(result.rows).toHaveLength(12);
+      expect(result.rows.map((row) => row.properties['count'])).toEqual([
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+      ]);
+      expect(result.projects).toHaveLength(12);
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+});
+
+describe('the three value states survive the crossing', () => {
+  const THREE: TypeSpec = {
+    name: 'tool_denial',
+    properties: [
+      { name: 'count', type: 'integer' },
+      { name: 'tool_name', type: 'string' },
+      { name: 'actor', type: 'string' },
+    ],
+  };
+
+  it('keeps a measured zero measured, an N/A not applicable, and silence not measured', () => {
+    // The state column is generated by `sql.ts` and shared with the generated views, so what this
+    // pins is that the shared CASE still reads a cross-database row the same way. A measured 0 is
+    // the case that a falsy check collapses into "absent" -- and `count: 0` is a real observation.
+    const measured = project(
+      [THREE],
+      [
+        { id: 'zero', properties: { count: 0, tool_name: 'Bash', actor: 'user' } },
+        { id: 'na', properties: { count: 5, tool_name: 'Bash' }, na: ['actor'] },
+      ],
+    );
+    const quiet = project([THREE], [{ id: 'silent', properties: { tool_name: 'Read' } }]);
+
+    withConnection((db) => {
+      const rows = unionEntries(db, 'tool_denial', [measured, quiet]).rows;
+      const byId = (id: string) => rows.find((row) => row.id === id);
+
+      expect(byId('zero')?.properties['count']).toBe(0);
+      expect(byId('zero')?.states).toEqual({
+        actor: 'measured',
+        count: 'measured',
+        tool_name: 'measured',
+      });
+      expect(byId('na')?.states['actor']).toBe('not_applicable');
+      expect(byId('silent')?.states['count']).toBe('not_measured');
+      expect(byId('silent')?.states['actor']).toBe('not_measured');
+    });
+  });
+
+  it('never reports not_declared, because every row shares one definition', () => {
+    // The fourth state belongs to a view that spans minor versions. The union refuses to mix
+    // hashes, so it cannot reach that case -- and reporting `not_declared` here would mean it had
+    // started unioning definitions that differ.
+    const only = project(
+      [THREE],
+      [
+        { id: 'a1', properties: { count: 1, tool_name: 'Bash', actor: 'user' } },
+        { id: 'a2', properties: { tool_name: 'Read' } },
+      ],
+    );
+
+    withConnection((db) => {
+      const states = unionEntries(db, 'tool_denial', [only]).rows.flatMap((row) =>
+        Object.values(row.states),
+      );
+      expect(states).not.toContain('not_declared');
+      expect(new Set(states)).toEqual(new Set(['measured', 'not_measured']));
+    });
+  });
+
+  it('gives properties and states exactly the same keys', () => {
+    const only = project([THREE], [{ id: 'a1', properties: { tool_name: 'Bash' } }]);
+
+    withConnection((db) => {
+      for (const row of unionEntries(db, 'tool_denial', [only]).rows) {
+        expect(Object.keys(row.properties).sort()).toEqual(Object.keys(row.states).sort());
+        expect(Object.keys(row.properties).sort()).toEqual(['actor', 'count', 'tool_name']);
+      }
+    });
+  });
+
+  it('keeps a property whose name collides with an envelope column', () => {
+    // Without the `p.`/`s.` prefixes, a property called `id` or `source` collides with the envelope
+    // column of that name, and SQLite renames the loser to `id:1` in `SELECT *` (measured) -- so
+    // the property would come back under a name the caller never wrote, or be read as the envelope
+    // value. Both are plausible wrong answers rather than errors.
+    const collision: TypeSpec = {
+      name: 'tool_denial',
+      properties: [
+        { name: 'id', type: 'string' },
+        { name: 'source', type: 'string' },
+        { name: 'id_state', type: 'string' },
+      ],
+    };
+    const only = project(
+      [collision],
+      [{ id: 'a1', properties: { id: 'prop-id', source: 'prop-source', id_state: 'prop-state' } }],
+    );
+
+    withConnection((db) => {
+      const row = unionEntries(db, 'tool_denial', [only]).rows[0];
+
+      expect(row?.id).toBe('a1');
+      expect(row?.source).toBe('self');
+      expect(row?.properties).toEqual({
+        id: 'prop-id',
+        source: 'prop-source',
+        id_state: 'prop-state',
+      });
+      expect(row?.states).toEqual({
+        id: 'measured',
+        source: 'measured',
+        id_state: 'measured',
+      });
+    });
+  });
+});
+
+describe('projects that do not define the type are part of the answer', () => {
+  it('reports a non-defining project as contributing nothing, and still returns the rest', () => {
+    const withType = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
+    const without = project([{ name: 'something_else', properties: [] }]);
+
+    withConnection((db) => {
+      const result = unionEntries(db, 'tool_denial', [withType, without]);
+
+      expect(result.rows.map((row) => row.id)).toEqual(['a1']);
+      expect(result.projects.map((entry) => [entry.label, entry.entryCount])).toEqual([
+        [withType.label, 1],
+        [without.label, 0],
+      ]);
+      expect(result.projects[1]?.hashes).toEqual([]);
+      expect(result.projects[1]?.versions).toEqual([]);
+    });
+  });
+
+  it('lists the selected definition’s properties, sorted, so two stores agree on the columns', () => {
+    const only = project([DENIAL]);
+    withConnection((db) => {
+      expect(unionEntries(db, 'tool_denial', [only]).properties).toEqual(['count', 'tool_name']);
+    });
+  });
+});

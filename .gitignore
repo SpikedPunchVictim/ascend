@@ -20,3 +20,60 @@ node_modules/
 .align/telemetry-state.json
 .align/last-scan.json
 .align/.lock
+
+# OS cruft. No global core.excludesFile is configured in this checkout, so nothing
+# else would catch these — macOS writes .DS_Store without being asked.
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor swap and backup files.
+*.swp
+*.swo
+*~
+
+# Editor project state. The agent-tool directories (.claude/, .codex/, .agents/) are
+# deliberately TRACKED — they are committed configuration, not local state. If shared
+# VS Code or JetBrains settings are ever wanted, add a negation for them here.
+.vscode/
+.idea/
+
+# Build and test output.
+#
+# `dist/` was tracked until 2026-09-11 (69 files across 5 packages). Every package's
+# `exports` points at it, so the built output was committed to let the CLI run from a
+# clone with no build step — but it meant every source change dragged 69 generated files
+# through the diff, and `pnpm clean` deleted tracked files and dirtied the tree.
+#
+# Cost of untracking, and how it is paid: the CLI needs a build in a fresh clone, and the
+# `prepare` script in the root package.json supplies it. Measured 2026-09-12: `pnpm install`
+# with every dist tree deleted runs `prepare` -> `tsc -b` and rebuilds all five packages.
+# The test suite does NOT need it either way (measured: 278 tests pass with every dist tree
+# deleted, because vitest resolves package source), so what `prepare` buys is `asc` itself.
+#
+# Two ways it does not fire, neither silent: `--ignore-scripts` (which also skips the native
+# build of any dependency shipping one) and a pnpm invocation that has nothing to install.
+packages/*/dist/
+coverage/
+.eslintcache
+
+# Logs.
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ---------------------------------------------------------------------------
+# A hazard in the beads block above, documented rather than changed.
+#
+# `*.db` is what keeps the spike's generated databases out of git (spike/corpus.db,
+# spike/tmp/*.db — verified ignored). It is global, so it would also silently ignore a
+# .db TEST FIXTURE. That failure is invisible here and shows up as a test passing
+# locally and failing in a fresh clone, with nothing pointing at the cause. If a
+# committed fixture is ever needed, negate it explicitly:
+#
+#   !packages/store/test/fixtures/**/*.db
+#
+# Not added speculatively: no such fixture exists yet, and a negation for a directory
+# that is not there is a rule nobody can verify.
+# ---------------------------------------------------------------------------
