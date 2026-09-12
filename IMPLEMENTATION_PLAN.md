@@ -86,8 +86,10 @@ error naming field, expected type, and corrected command; `asc init` gitignores 
 
 **Status: In Progress** — **E2 complete** (7/7, epic `asc-72s` closed). **E3 7/7 complete**, epic
 `asc-865` closed: `asc-0j0`, `asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7`, `asc-l00`, and the P1 defect
-found in E3's own output, `asc-865.1`, now fixed (see below). **E4 (`asc-baj`) In Progress** — the
-stages are specified below; cold start is already measured and needs no fast path.
+found in E3's own output, `asc-865.1`, now fixed (see below). **E4 (`asc-baj`) In Progress — E4.1
+and E4.2 complete, including the six `asc types` subcommands; E4.3 next.** The stages are specified
+below; cold start is already measured and needs no fast path. 343 tests pass, `align check` is green,
+and the CLI suite drives the built binary rather than the handler.
 
 ### E3 delivered so far
 
@@ -323,7 +325,7 @@ inside one file):
 | Stage | Bead | Deliverable |
 |---|---|---|
 | **E4.1** | `asc-m8n` | oclif wired end to end from `src/bin.ts` (no hand-written `bin/run.js`); `packages/cli/src/{project,output,errors,base,streams}.ts` — root discovery, the three renderers, error→exit-code mapping, EPIPE/SIGINT. Tests drive the **real binary**, not the handler. |
-| **E4.2** | `asc-6m6` | `asc types define\|list\|show\|brief\|deprecate\|import\|export`. `import` preserves `type_hash`; `brief` is the hook payload and stays one line per type. |
+| **E4.2** | `asc-6m6` | `asc types define\|list\|show\|brief\|deprecate\|import\|export`. `import` preserves `type_hash`; `brief` is the hook payload and stays one line per type. **Delivered** — see below. |
 | **E4.3** | `asc-kwr` + `asc-pcy` | The four starter types (shapes from ARCHITECTURE.md), then `asc init`: `.ascend/`, an **appended** `.gitignore` entry, starter types, and an *offer* of the recall hook — never a settings write (that is `asc-1q9`, E10, behind explicit consent). |
 | **E4.4** | `asc-gvr` | `asc record <type>`: `--json -` primary, flags for convenience, `--na`, batching, and a shape that keeps `Bash(asc record:*)` a valid allowlist prefix. **Dogfooding starts here.** |
 | **E4.5** | `asc-6ct` | `asc query "<sql>"` read-only, `--json\|--table\|--csv`, `--across <glob>`. |
@@ -384,6 +386,110 @@ is the weak half of the same fact: it fails because `tsc` cannot resolve the imp
 nothing about runtime wiring — its behavioural equivalent is M8, and M8 survives. The trigger
 arrives with `asc query` (`asc-6ct`), the first command whose output scales with the entry count;
 the end-to-end EPIPE test belongs there, and until then the install step is **unproven**.
+
+#### E4.2 (`asc-6m6`) — decisions taken before writing it
+
+**`type_hash` is preserved automatically, so `import` verifies it instead of carrying it.** Measured
+in the source rather than assumed: `type_hash = sha256(canonicalJson(definitionShape(canonicalize(
+spec))))` (`core/hash.ts:221`, `store/registry.ts:166`) — a pure function of the canonical shape,
+`name` included. The same definition therefore hashes identically in any repo, so the risk is not
+that import *loses* the hash but that the document round-trip is lossy in a field the hash covers,
+which would break cross-repo comparability silently and permanently. The exported document carries
+`type_hash` and **import recomputes and refuses on mismatch**: ARCHITECTURE.md:279's "preserving
+`type_hash`" becomes a check that can fail loudly rather than a property assumed.
+
+| Decision | Choice | Why |
+|---|---|---|
+| Document format | **one format for define, import and export** | `asc types export \| asc types import -` is then the identity, and there is no second shape to keep in sync. Prose rides in the same document (`description`, `record_when`, `prose`), because it must survive a move between projects and flags are a poor fit for paragraphs. |
+| Where a spec is read from | a **file path, or `-` for stdin** | Matches the Unix convention and `asc record --json -`. No default: a missing operand is a usage error naming the fix, never a hang. |
+| `asc types show` | **flat key/value rows** (`field`, `value`) for all three formats | The canonical document is `export`'s job. Keeping `show` rows-based preserves `Output`'s single-projection invariant, and a human gets a scannable list instead of a JSON blob elided at 60 characters. A script that wants the document runs `asc types export <name>`. |
+| `asc types brief` | **active types only**, one line each, `name — record_when` | The digest tells a model what it may record. Listing a deprecated type invites recording into a retired definition, and `asc types list` is still there for a full inventory. |
+| Bare `asc` | prints the **brief** — decided here, **implemented at the entry point, not by oclif** | ARCHITECTURE.md:429: recall is pull-only, so `asc` with no args is the discovery path. The `oclif.default` key this row originally proposed **does not exist in oclif 5.0.0** — see the correction below. |
+| `--dry-run` on define/import | **real work, then rollback** — a new `dryRun` option in the store, not CLI-side transaction plumbing | `registerType` already joins a caller's transaction (`store/registry.ts:229`), so nothing new is invented: the same validation, bump diff and view generation run and are then discarded. The store owns transaction semantics; the CLI composing `BEGIN`/`ROLLBACK` would put that knowledge in two layers. |
+| `define` on an already-registered shape whose prose changed | **update the prose and say so** | `registerType` returns `unchanged` without writing, so edited prose would otherwise be dropped while the command reported success — a silent no-op in the severity-zero class. `updateTypeProse` exists for exactly this. |
+| `deprecate` on an unknown name | **error, exit 1, listing the known names**; already-deprecated is **success reporting no change** | `deprecateType` returns a changed-row count and `0` means two different things. Reporting "deprecated" for a name that does not exist, or for one already retired, is a change that did not happen. |
+
+#### E4.2 (`asc-6m6`) — delivered
+
+`packages/cli/src/commands/types/{define,show,brief,deprecate,export,import}.ts`, plus
+`packages/cli/src/{document,input,register-document}.ts` and `packages/store/src/db.ts`'s
+`withRollback`. 28 tests in `packages/cli/test/types.test.ts` and 5 in
+`packages/store/test/rollback.test.ts` take the repo to **344**. Six mutations, each with a
+hash-verified restore — and one of them is the reason the mutation rule exists (below).
+
+**Three severity-zero defects, all found by driving the built CLI rather than by reading the code.**
+
+1. **`--json` silently dropped `dry_run`.** Measured, not guessed: oclif's parsed `flags` object
+   carries a key **only when the flag was passed** — `Object.keys(flags)` is `[]` for a bare
+   invocation and `['dry-run']` when given — so an absent boolean arrives as `undefined` while
+   oclif's own type declares it `boolean`. `JSON.stringify` then omits the property, and a
+   consumer cannot tell "not a dry run" from "this command does not report it". Fixed at the
+   boundary with `BaseCommand.flagValue`, whose parameter is deliberately `boolean | undefined`
+   — the naive `?? false` inside the callers was rejected by lint as redundant, which was the
+   compiler correctly reporting that the declared type was a lie.
+2. **`import --dry-run` reported version 1 twice where the real run produces 1 then 2.** Per-document
+   rollback meant the second document never saw the first, so the preview computed its version as
+   though document 1 did not exist. A preview that misdescribes the real run is worse than no
+   preview. Fixed by promoting `withRollback` into the store — **one caller-owned transaction for
+   the whole list**, so the preview sees its own earlier writes and then discards all of them.
+3. **`asc types export | asc types import -` — the pipeline in `import`'s own help text — failed
+   every time.** `readInput` called `readFileSync(0, 'utf8')`, and `read(2)` on a **stdin pipe with
+   nothing in it yet** returns `EAGAIN`; `readFileSync` surfaces that as a failure rather than
+   waiting. Not a race: the CLI's startup is **0.13–0.15 s** (5 runs) while `export` must open a
+   database first, so the pipe is always empty at read time. Confirmed deterministic with a
+   producer that sleeps before writing — 0.3 s and 1.5 s both fail. Fixed by reading
+   `process.stdin` as a stream, where the stream machinery waits for readability. **The suite was
+   green throughout, because `spawnSync(…, {input})` buffers the whole input before the child
+   starts** — the child never sees an empty pipe. Both pipeline tests now drive a real `sh -c`
+   pipeline with a delayed producer, and both fail against the old read (verified by mutation).
+
+**One measurement overturned a decision taken before implementation.** The row above originally
+said bare `asc` would be an oclif `default` entry. It is not: **oclif 5.0.0 has no `default`
+config key at all** — it does not appear in `config.d.ts` and is read nowhere in `lib/` (grepped in
+full). The three measurements that rule out every in-framework alternative are recorded in
+`packages/cli/src/bin.ts` beside the fix, which is three lines at the entry point where argv is
+already decided.
+
+| Mutation | Result |
+|---|---|
+| `withRollback` commits instead of rolling back | caught (4 store tests + 2 CLI tests) |
+| `import` reverts to per-document rollback | caught (the preview-versions test) |
+| `flagValue` returns the raw `undefined` | caught (2 tests, both JSON-contract) |
+| `refusal` becomes a usage error (exit 2) | caught (4 exit-code tests) |
+| `brief` inverts its active filter | caught (3 tests) |
+| stdin read reverts to `readFileSync(0)` | caught (both pipeline tests) |
+
+**The mutation harness caught a false positive in itself, which is the finding worth keeping.**
+The first `brief` mutation was `status === 'active'` → `status !== 'never'`. It reported CAUGHT,
+but the suite never ran a test: `tsc -b` rejects the comparison as having no overlap, `beforeAll`
+threw, and all 27 tests *skipped*. A skipped suite and a failing suite both exit non-zero, so
+"CAUGHT" was printed for a build error. Re-run with a mutation that type-checks
+(`!== 'active'`), the same three tests failed for the right reason. **A mutation harness must
+distinguish "the test failed" from "the run failed"** — otherwise it launders build breakage as
+behavioural coverage. The harness prints `failing: (see output)` when it cannot parse a failing
+test name, and that line now means **unverified**, never caught: every mutation in the table above
+was re-run until the harness named the tests that failed. That, not the code, is what this pass
+bought.
+
+**Verification beyond the suite.** The round trip was checked at the database level with `sqlite3`:
+`entry_types` in a target project is **byte-identical** to the source (names, versions, majors,
+hashes) including the v1→v2 replay, and a re-run reports `unchanged` for both documents and leaves
+exactly 2 rows. Dry-run inertness was confirmed in the store itself — 0 `entry_types` rows and 0
+generated views for both `define` and `import` — and both partial-failure stories were driven:
+the real run leaves 1 committed row with a warning naming the failing document and exits 1, the
+dry run leaves 0 rows, emits no rows, and says the preview was discarded.
+
+**Still unproven, and labelled as such:** the EPIPE guard's *installation* (`E4.1`'s surviving
+mutation M8) — no `types` command prints enough to fill a 64 KiB pipe buffer, so the trigger still
+belongs with `asc query` (`asc-6ct`).
+
+**Two observations from driving, recorded rather than filed.** `dist/bin.js` has **no executable
+bit** (`-rw-r--r--`): `tsc` preserves the shebang byte-for-byte but not the file mode, so
+`./dist/bin.js` gives *Permission denied*. npm and pnpm set the mode from the package's `bin` field
+at install time, so this affects running from the repo rather than the published package — and the
+tests invoke through `node` on purpose. Separately, the no-store error tells the caller to run
+`asc init`, which **does not exist until E4.3**; it is a forward reference to the next stage rather
+than a stale one, and it is called out here so it is not mistaken for a working suggestion.
 
 ---
 

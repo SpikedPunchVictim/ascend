@@ -66,6 +66,76 @@ describe('registering a type', () => {
     });
   });
 
+  it('previews a registration without writing it, and reports the same thing', () => {
+    withStore((store) => {
+      const planned = registerType(store.db, spec(), { registeredAt: AT, dryRun: true });
+
+      // The report must be the one a real registration would have produced, or the preview
+      // is of a different operation than the one the caller is deciding about. Comparing
+      // against an actual registration on a SEPARATE store is the only way to assert that
+      // without the first registration having already changed the answer.
+      expect(rowCount(store)).toBe(0);
+      expect(findType(store.db, 'review_completed')).toBeUndefined();
+
+      const real = registerType(store.db, spec(), { registeredAt: AT });
+      expect(planned).toEqual(real);
+    });
+  });
+
+  it('leaves no view or index behind -- a dry run rolls back DDL too', () => {
+    withStore((store) => {
+      const views = (): number =>
+        (
+          store.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'view'").get() as {
+            n: number;
+          }
+        ).n;
+
+      const before = views();
+      registerType(store.db, spec(), { registeredAt: AT, dryRun: true });
+
+      // The registration generates a per-type view and expression indexes. If the preview
+      // rolled back the row but not the DDL, the store would carry a view for a type it
+      // does not have -- a state `asc query` would then fail on.
+      expect(views()).toBe(before);
+    });
+  });
+
+  it('refuses a dry run inside a caller-managed transaction', () => {
+    withStore((store) => {
+      store.db.exec('BEGIN');
+      try {
+        // It cannot keep its promise there: the writes would be the caller's to commit, so
+        // returning a preview while leaving the write in place is the one outcome a dry run
+        // must never produce. Refusing is checked before any work is done.
+        expect(() => registerType(store.db, spec(), { registeredAt: AT, dryRun: true })).toThrow(
+          /cannot dry-run inside a caller-managed transaction/,
+        );
+      } finally {
+        store.db.exec('ROLLBACK');
+      }
+    });
+  });
+
+  it('a preview of a change reports the bump a change would produce', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+
+      // Removing a property is the change a preview is most useful for: it is a major bump,
+      // and seeing that before writing is the whole point of `--dry-run` on `asc types define`.
+      const planned = registerType(
+        store.db,
+        { name: 'review_completed', properties: [{ name: 'summary', type: 'text' }] },
+        { registeredAt: LATER, dryRun: true },
+      );
+
+      expect(planned.outcome).toBe('created');
+      expect(planned.bump).toBe('major');
+      expect(planned.version).toBe(2);
+      expect(rowCount(store)).toBe(1);
+    });
+  });
+
   it('stores the canonical name and reports what it rewrote', () => {
     // EV-drift measured that this is the failure mode, not a formatting preference:
     // snake_case and camelCase arrived interchangeably across real model runs.

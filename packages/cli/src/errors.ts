@@ -82,6 +82,30 @@ export function describeFailure(error: unknown, debug: boolean): Failure {
   });
 }
 
+/**
+ * A refusal: the request was understood, and the answer is no. Exit 1.
+ *
+ * **Where the line between 1 and 2 is drawn, stated once so it is not re-argued per call site:**
+ *
+ *   * `usageError` (2) is for what the caller *typed* -- two output flags at once, a format that
+ *     cannot apply, an operand that cannot be read. The fix is a different command line, and
+ *     re-reading the help is the right next step.
+ *   * `refusal` (1) is for everything else: a name that is not registered, a version that does
+ *     not exist, a document whose *contents* are invalid, a hash that does not match, no store
+ *     in sight. The command line was fine; the world said no.
+ *
+ * A file's contents are data, not argv, which is why a malformed type document is a refusal and
+ * `--json --table` is not. Getting this backwards is not cosmetic -- a script branching on the
+ * exit code would retry a typo and give up on a real absence.
+ *
+ * Returns a plain `Error` rather than an `Errors.CLIError`: `describeFailure` maps anything that
+ * is not an oclif error to exit 1, so the default *is* this case, and an oclif error would exist
+ * only to restate the default.
+ */
+export function refusal(message: string): Error {
+  return new Error(message);
+}
+
 /** Convenience for the call sites that need to raise their own usage error. */
 export function usageError(message: string): Errors.CLIError {
   return new Errors.CLIError(message, { exit: 2 });

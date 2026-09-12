@@ -43,6 +43,17 @@ export interface RegisterTypeOptions {
   readonly recordWhen?: string;
   /** Per-property prose, keyed by canonical property name. Also not identity. */
   readonly prose?: Readonly<Record<string, string>>;
+  /**
+   * Do the whole registration, then discard it.
+   *
+   * Not a simulation and not a separate code path: the validation, the bump diff and the
+   * view/index generation all run for real, inside a transaction that is rolled back
+   * instead of committed. A caller gets the same `RegisteredType` it would have got, and
+   * the store is left byte-for-byte as it was -- which is the only kind of preview worth
+   * offering, since a preview computed by a second implementation is a preview of *that*
+   * implementation.
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface RegisteredType {
@@ -116,6 +127,24 @@ interface VersionRowShape {
  * This is the single place the split between identity and prose is applied to STORAGE,
  * so `spec_json`, `type_hash` and the prose columns cannot describe different things.
  */
+/**
+ * The identity of a definition: its canonical shape, hashed.
+ *
+ * Exported because identity must have exactly ONE definition in the codebase. `asc types
+ * import` has to check that a definition moved between projects still hashes to what the
+ * document says it does, and a CLI that recomputed this itself would be a second
+ * implementation of the thing the check exists to protect -- the two would agree until the
+ * day one of them was changed, and the disagreement would look like drifted data rather
+ * than like a bug here.
+ *
+ * Takes a RAW spec, canonicalizing internally, because that is what a caller has: the
+ * canonical form is an implementation detail of registration, not something a document or
+ * a caller is expected to hold.
+ */
+export function specHash(spec: TypeSpec): string {
+  return typeHash(definitionShape(canonicalizeTypeSpec(spec).spec));
+}
+
 const toStorage = (
   spec: TypeSpec,
   options: RegisterTypeOptions,
@@ -155,6 +184,19 @@ export function registerType(
 ): RegisteredType {
   const canonical = canonicalizeTypeSpec(spec);
 
+  // Checked before anything else. A dry run promises that the store is left unchanged, and
+  // inside a caller's transaction that promise cannot be kept: the writes would be the
+  // caller's to commit or roll back, so `registerType` could return a preview and still have
+  // written the thing it previewed. Refusing is the only honest answer -- and it is checked
+  // here rather than at the rollback because a caller should learn this before their own
+  // transaction has done any work.
+  if (options.dryRun === true && db.isTransaction) {
+    throw new Error(
+      'registerType cannot dry-run inside a caller-managed transaction: the writes would be ' +
+        "the caller's to commit, so nothing here could guarantee the store is left unchanged.",
+    );
+  }
+
   // Refused before anything else, including the idempotence check: a spec whose view cannot be
   // built must not be reported as `unchanged` either, or a store that already holds such a
   // definition would look like it had accepted this one.
@@ -163,7 +205,7 @@ export function registerType(
   }
 
   const { shape, proseJson } = toStorage(canonical.spec, options);
-  const hash = typeHash(shape);
+  const hash = specHash(shape);
 
   const known = db
     .prepare('SELECT version, major FROM entry_types WHERE name = ? AND type_hash = ?')
@@ -228,6 +270,13 @@ export function registerType(
   const ownsTransaction = !db.isTransaction;
   if (ownsTransaction) db.exec('BEGIN');
 
+  // This function's own record of whether it has already ended the transaction, cleared only
+  // after the statement that ends it returned. Not a re-read of `db.isTransaction`: `exec`
+  // changes that property, which TypeScript's flow analysis does not model, so through the
+  // `ownsTransaction` alias above it reads as permanently `false` -- a guard that looks dead
+  // while guarding the thing it exists for.
+  let ended = false;
+
   try {
     db.prepare(
       `INSERT INTO entry_types
@@ -249,9 +298,24 @@ export function registerType(
     // versions, so they are rebuilt from the registry rather than accumulated.
     refreshTypeViews(db, shape.name);
 
-    if (ownsTransaction) db.exec('COMMIT');
+    // A dry run still runs all of the above -- that is what makes it a preview of this
+    // registration rather than of a description of it -- and then throws the work away.
+    // `ownsTransaction` is necessarily true for a dry run: the guard at the top of this
+    // function refuses one that would join a caller's transaction.
+    if (options.dryRun === true) {
+      db.exec('ROLLBACK');
+      ended = true;
+    } else if (ownsTransaction) {
+      db.exec('COMMIT');
+      ended = true;
+    }
   } catch (error) {
-    if (ownsTransaction) db.exec('ROLLBACK');
+    // `ended` as well as `ownsTransaction`, so a rollback that has already run -- the dry-run
+    // path's, when the rollback of a rollback is what failed -- is not attempted twice.
+    // Rolling back a transaction that is no longer open is its own error, and it would mask
+    // the one being reported. Set after the statement rather than before, so a rollback that
+    // itself threw still gets cleaned up by this path.
+    if (ownsTransaction && !ended) db.exec('ROLLBACK');
     throw error;
   }
 

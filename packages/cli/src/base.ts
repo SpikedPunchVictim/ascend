@@ -90,6 +90,38 @@ export abstract class BaseCommand extends Command {
   }
 
   /**
+   * A boolean flag's value as it actually arrives.
+   *
+   * **Measured against this oclif, not assumed.** The parsed `flags` object carries a key only
+   * when that flag was passed -- probed directly, `Object.keys(flags)` is `[]` for a command
+   * given no `--dry-run` and `['dry-run']` when given one -- so an absent boolean flag is
+   * `undefined`, while oclif's declared type for the parsed flags says `boolean`. That type is
+   * why the widening below is not a redundant narrowing, and the difference is not academic:
+   * `JSON.stringify` omits `undefined` properties, so a `--json` row built as
+   * `{ dry_run: flags['dry-run'] }` drops the field outright and a consumer cannot tell "not a
+   * dry run" from "this command does not report dry runs".
+   *
+   * Coerced at the boundary rather than at each read, so no command has to remember to, and no
+   * reader has to work out which of the two `boolean`s in play is the true one.
+   */
+  protected flagValue(value: boolean | undefined): boolean {
+    return value ?? false;
+  }
+
+  /**
+   * An optional flag's value as it actually arrives.
+   *
+   * The same measured fact, in the other direction. oclif's parsed type says `--version` is a
+   * `number`; at runtime it is `undefined` when the flag was not passed. Without this, the
+   * branch that handles "no version given" is a comparison against `undefined` on a value the
+   * compiler believes cannot be `undefined` -- a condition lint reports as dead while it is in
+   * fact the whole branch, and which a later reader would be right to delete.
+   */
+  protected optionalFlag<T>(value: T | undefined): T | undefined {
+    return value;
+  }
+
+  /**
    * Open the store for the project containing the working directory, run `body`, close it.
    *
    * Working directory rather than a flag: the store is per-project, and the project is
@@ -132,6 +164,18 @@ export abstract class BaseCommand extends Command {
       );
     }
     return version;
+  }
+
+  /**
+   * The current time, as the store wants it.
+   *
+   * This is where the clock is read, and the only place. Core and store are pure -- time is
+   * injected (`TASKS.md` #6) -- so the boundary package is what turns "now" into a value
+   * they can be handed. Kept as a method rather than a free function so a future command can
+   * be driven in a test with a fixed clock instead of whatever day it runs on.
+   */
+  protected now(): string {
+    return new Date().toISOString();
   }
 
   /**

@@ -162,3 +162,42 @@ export function openStore(options: OpenOptions): Store {
     throw error;
   }
 }
+
+/**
+ * Run `body` inside a transaction that is always rolled back.
+ *
+ * The preview primitive: everything in `body` really runs -- validation, the version bump, view
+ * and index generation -- and then the whole thing is discarded. A preview computed by a second
+ * implementation would be a preview of *that* implementation, so the only preview worth offering
+ * is the work itself, undone.
+ *
+ * **One transaction, not one per call.** Per-call rollback (`registerType`'s own `dryRun`) is
+ * right for a single write and wrong for a sequence: a preview of registering three documents
+ * would have each one rolled back before the next, so the second would compute its version as
+ * though the first had never happened -- and `import --dry-run` would report version 1 twice
+ * where the real run produces 1 then 2. A preview that misdescribes what the real run does is
+ * worse than no preview. Owning the transaction here is what lets the sequence see itself.
+ *
+ * **Refuses to run inside an existing transaction**, for the same reason `registerType`'s
+ * `dryRun` does: a ROLLBACK this function did not open would discard work that belongs to the
+ * caller, and nothing here could promise otherwise.
+ *
+ * If `body` throws, the rollback still happens and the original error propagates. A rollback
+ * that itself fails would replace that error -- unavoidable in a `finally`, and noted rather
+ * than hidden.
+ */
+export function withRollback<T>(db: DatabaseSync, body: () => T): T {
+  if (db.isTransaction) {
+    throw new Error(
+      'withRollback cannot run inside a caller-managed transaction: it would roll back work ' +
+        'that is not its own, so nothing here could guarantee the caller keeps what they wrote.',
+    );
+  }
+
+  db.exec('BEGIN');
+  try {
+    return body();
+  } finally {
+    db.exec('ROLLBACK');
+  }
+}
