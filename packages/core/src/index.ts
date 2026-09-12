@@ -17,6 +17,7 @@ export {
   canonicalName,
   canonicalizeProperty,
   canonicalizeTypeSpec,
+  definitionShape,
   type Canonicalized,
   type PropertySpec,
   type PropertyType,

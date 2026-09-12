@@ -3,7 +3,23 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
-    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+
+    /**
+     * The base sets `types: []`, which is load-bearing for the PURE packages: with
+     * no ambient Node types, `packages/core` and `packages/analysis` cannot reach
+     * `process`, `Buffer` or `fs` without an explicit import that lint and align
+     * would both reject. Store is the boundary package, so it opts back in -- this
+     * is the only package that may touch SQLite or the filesystem.
+     */
+    "types": ["node"],
+
+    /**
+     * `DatabaseSync implements Disposable` (node:sqlite), which references
+     * `Symbol.dispose`. That symbol is Explicit Resource Management, not ES2023 --
+     * without this lib the `node:sqlite` declarations do not typecheck.
+     */
+    "lib": ["ES2023", "ESNext.Disposable"]
   },
   "include": ["src/**/*.ts"],
   "references": [{ "path": "../core" }]

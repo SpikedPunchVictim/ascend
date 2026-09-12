@@ -1,9 +1,24 @@
 {
   /**
-   * Types-only project for ESLint's type-aware rules. It deliberately covers
-   * MORE than the build does -- test files, config files and bin scripts are
-   * linted but never emitted -- so the project service can resolve every file
-   * ESLint is asked to parse.
+   * Types-only project covering everything the build does NOT.
+   *
+   * Two consumers, one file set, so they cannot drift:
+   *   1. ESLint's type-aware rules -- the project service must be able to resolve
+   *      every file ESLint is asked to parse.
+   *   2. `pnpm typecheck`, which runs `tsc -b` (the build projects, src only) and
+   *      then `tsc -p` this file.
+   *
+   * The second consumer exists because `tsc -b` includes only `src/**`, so type
+   * errors in test files were invisible: the suite could pass, `pnpm typecheck`
+   * could report green, and nothing had checked the tests. `pnpm typecheck` was a
+   * false green over the whole test tree for the life of the repo. It was not
+   * theoretical -- the first run found a real error in
+   * packages/cli/test/dev-hooks.test.ts.
+   *
+   * `types: ["node"]` here is safe and does NOT weaken core purity: purity is
+   * enforced by the BUILD projects (which keep `types: []`), by ESLint, by
+   * `align check`, and by purity-enforcement.test.ts. A pure source file that
+   * reached for `process` would still fail `tsc -b`, which is authoritative.
    */
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
@@ -22,6 +37,7 @@
     "packages/*/test/**/*.ts",
     "packages/*/bin/**/*.js",
     "scripts/**/*.mjs",
+    "scripts/**/*.ts",
     "*.ts",
     "*.js"
   ]

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   CHANGE_KINDS,
+  canonicalizeTypeSpec,
+  definitionShape,
   diffTypeSpec,
+  typeHash,
   type Bump,
   type ChangeKind,
   type TypeSpec,
@@ -232,5 +235,87 @@ describe('refuses to diff two different types', () => {
     expect(() => diffTypeSpec(BASE, { ...BASE, name: 'review_started' })).toThrow(
       /different type names/,
     );
+  });
+});
+
+describe('no shape difference escapes classification', () => {
+  /**
+   * The invariant the registry depends on: if two definitions project to different
+   * SHAPES, their hashes differ, so `diffTypeSpec` MUST report something. A shape
+   * difference it stays silent about would force the registry to mint a version with
+   * no change to justify it -- and, worse, would be a diff that reports "nothing
+   * changed" about two things that are not the same.
+   *
+   * This is checked by enumeration rather than by argument, because the failure mode
+   * is a field one of the two functions knows about and the other does not.
+   */
+  const VARIATIONS: Record<string, Record<string, unknown>[]> = {
+    'property name': [
+      { name: 'x', type: 'integer' },
+      { name: 'y', type: 'integer' },
+    ],
+    'property type': [
+      { name: 'x', type: 'integer' },
+      { name: 'x', type: 'number' },
+      { name: 'x', type: 'duration' },
+      { name: 'x', type: 'string' },
+      { name: 'x', type: 'text' },
+      { name: 'x', type: 'boolean' },
+      { name: 'x', type: 'timestamp' },
+      { name: 'x', type: 'ref' },
+    ],
+    required: [
+      { name: 'x', type: 'integer' },
+      { name: 'x', type: 'integer', required: true },
+      { name: 'x', type: 'integer', required: false },
+    ],
+    'enum values': [
+      { name: 'x', type: 'enum', enum_values: ['a'] },
+      { name: 'x', type: 'enum', enum_values: ['a', 'b'] },
+      { name: 'x', type: 'enum', enum_values: ['b'] },
+      { name: 'x', type: 'enum', enum_values: ['a', 'b', 'c'] },
+    ],
+    unit: [
+      { name: 'x', type: 'integer' },
+      { name: 'x', type: 'integer', unit: 'ms' },
+      { name: 'x', type: 'integer', unit: 's' },
+      { name: 'x', type: 'duration', unit: 'ms' },
+      { name: 'x', type: 'duration' },
+    ],
+    presence: [{ name: 'x', type: 'integer' }],
+  };
+
+  it('reports a bump for every pair whose shape differs', () => {
+    let compared = 0;
+    for (const [label, variants] of Object.entries(VARIATIONS)) {
+      // `presence` is paired against a differently-shaped spec, not against itself.
+      const pool = label === 'presence' ? [...variants, { name: 'z', type: 'text' }] : variants;
+      for (const a of pool) {
+        for (const b of pool) {
+          const specA = canonicalizeTypeSpec({
+            name: 't',
+            properties:
+              label === 'property name' && a !== b ? [a as never, b as never] : [a as never],
+          }).spec;
+          const specB = canonicalizeTypeSpec({ name: 't', properties: [b as never] }).spec;
+
+          const shapeA = definitionShape(specA);
+          const shapeB = definitionShape(specB);
+          const shapesDiffer = typeHash(shapeA) !== typeHash(shapeB);
+          if (!shapesDiffer) continue;
+
+          compared += 1;
+          const diff = diffTypeSpec(specA, specB);
+          expect(
+            diff.bump,
+            `${label}: ${JSON.stringify(a)} vs ${JSON.stringify(b)} hashes differently ` +
+              `but diff reported ${diff.bump} with changes ${JSON.stringify(diff.changes.map((c) => c.kind))}`,
+          ).not.toBe('none');
+        }
+      }
+    }
+    // The enumeration must actually compare something; a loop over an empty pool
+    // would pass silently while proving nothing.
+    expect(compared).toBeGreaterThan(50);
   });
 });

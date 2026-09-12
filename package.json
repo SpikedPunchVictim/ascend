@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.eslint.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint . --ignore-pattern \"packages/*/test/fixtures/**\"",

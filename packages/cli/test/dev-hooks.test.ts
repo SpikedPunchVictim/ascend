@@ -124,7 +124,9 @@ describe('pre-commit gate', () => {
       encoding: 'utf8',
       // Prepend, so the stub wins over the real pnpm. `git` is left real: the gate
       // only uses it to find the toplevel, and this IS the toplevel.
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
+      // Bracketed because `noPropertyAccessFromIndexSignature` is on: `PATH` is not a
+      // declared member of `ProcessEnv`, so it comes from the index signature.
+      env: { ...process.env, PATH: `${bin}:${process.env['PATH'] ?? ''}` },
     });
     return { status: result.status, output: result.stdout + result.stderr };
   }

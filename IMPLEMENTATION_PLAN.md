@@ -84,8 +84,72 @@ error naming field, expected type, and corrected command; `asc init` gitignores 
   The `toFtsMatch` sanitizer port is **mandatory**: 8/14 raw LLM-authored queries throw FTS5 syntax
   errors, and a naive whole-query phrase sanitizer is insufficient (returns empty for 9–13/14).
 
-**Status: In Progress** — **E2 complete** (7/7, epic `asc-72s` closed). E3 (`asc-865`) and E4
-(`asc-baj`) not started.
+**Status: In Progress** — **E2 complete** (7/7, epic `asc-72s` closed). **E3 5/6** (`asc-0j0`,
+`asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7` closed; `asc-l00` open). E4 (`asc-baj`) not started.
+
+### E3 delivered so far
+
+- **`db.ts` / `schema.ts`** — `node:sqlite`, WAL + `busy_timeout` + `synchronous = NORMAL`, and the
+  pragmas that carry a guarantee are **read back and verified** rather than requested. Migration 1 is
+  the initial schema; **migration 2 adds FTS5**, which makes it the first real exercise of the
+  migration path.
+- **`registry.ts`** — the registry. A shape change INSERTs a version row and never UPDATEs; `type_hash`
+  is over `definitionShape`, so **prose is not identity** and registering a known shape is idempotent.
+  `major` is frozen with the shape because it is the boundary a generated view unions within.
+- **`recorder.ts`** — the single entry write path (asserted by a source-scan test, not by convention).
+  Time and IDs are injected; `''` is refused everywhere (omit to mean NULL).
+- **`views.ts`** — one generated view per **major family**, unioning minors and **never** across
+  majors; a `_state` column per property carrying **four** values (`measured` / `not_applicable` /
+  `not_measured` / `not_declared`); one composite expression index per property.
+- **`search.ts`** — FTS5 over `evidence_text`, trigram, with `toFtsMatch` ported **term-based**.
+
+**The fourth state is a decision taken here, and it is not in the three-state model.** A view spans
+versions, so a property introduced by a later minor is not in an earlier entry's definition at all —
+neither measured, nor N/A, nor "not measured". Reporting it as `not_measured` would put rows into a
+coverage denominator for a question they were never asked. `not_declared` is the view's own value and
+never appears in `entries` or in core's model.
+
+**New evidence: `EV-write-cost.md` (EV-8).** `EV-4` left the write side of the index rule
+**unmeasured** — *"how many indexes to emit, and whether index count degrades the write path"*. At 20
+properties: `asc record` **+0.135 ms**, a full ~16.6k-entry backfill **+679 ms, once**. Both
+negligible, so the set ships **uncapped**. The cost that bites is **disk** — the index set takes the
+file from 98.1 MB to **204.9 MB at 100k rows (2.1×)** — which makes store size an `asc doctor` report
+rather than a registration gate. `EV-8` also corrects a framing: the headline ratio (9.97×) is a ratio
+between two sub-millisecond numbers and is the wrong quantity to decide on.
+
+**A measurement that changed a decision, and one that did not.** Two design claims were settled by
+running rather than by argument:
+- **`VACUUM` and implicit rowids.** An external-content FTS table must key on `content_rowid`, and
+  SQLite documents that VACUUM "may change" rowids for tables with no explicit `INTEGER PRIMARY KEY`
+  — which `entries` has (its PK is `TEXT`). Measured across four scenarios; **the rowids were stable
+  in all four, so the documented caveat did not reproduce.** The standalone table was still chosen,
+  but the honest reason is the guaranteed-absent contract plus an owned join key, not a demonstrated
+  defect — and that is how it is recorded.
+- **The type filter in `search.ts` is a POST-filter.** `EXPLAIN QUERY PLAN` gives the *same* plan with
+  and without it (`SCAN entries_fts` then `SEARCH e USING ... (id=?)`); `idx_entries_type_time` is
+  never used. The filter is correct but does **not** reduce the FTS scan. The comment was corrected to
+  match the plan rather than the other way round.
+
+**Every E3 suite was mutation-tested**, following the project invariant that a check must be shown to
+fail before it is trusted to pass. Six mutations on the views suite, five on search, two on the
+registry's transaction handling. Three findings came out of that and are worth carrying forward:
+- A test that **cannot fail** is worse than no test. The cross-store column-order test was insensitive
+  as first written (both sides were already canonically ordered) and was rewritten to reach the case
+  the sort actually protects.
+- **A rollback test that runs nested cannot detect a misplaced `COMMIT`.** Moving the view refresh to
+  after `COMMIT` passed all 23 tests, because the nested path never takes the commit branch.
+- **The search suite catches the naive sanitizer on RESULTS, not on throws.** The naive whole-query
+  phrase fix stops every error while returning nothing — and the "never throws" test still *passes*
+  under it. Only asserting a non-empty result distinguishes the two, which is exactly what `EV-fts`
+  required.
+
+Two gate defects fixed during this stage (both false greens, the severity-zero class):
+`pnpm typecheck` had been `tsc -b` over `src/**` only, so **test files were never typechecked** at all
+(it is now `tsc -b && tsc -p tsconfig.eslint.json`, verified to fail on a planted error in a test
+file), and vitest could not resolve `node:sqlite` (aliased to a shim that reaches the real module via
+`createRequire`).
+
+Gates at E3 head: `format 0 · typecheck 0 · lint 0 · test 251 passed · align check green`.
 
 E2 delivered, with the evidence that it holds:
 - `spec.ts` — bounded 9-type vocabulary + canonicalization. Renames are **reported**, not applied

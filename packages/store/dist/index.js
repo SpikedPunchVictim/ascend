@@ -2,8 +2,7 @@
  * @ascend/store -- SQLite persistence.
  *
  * This is the ONLY package permitted to touch SQLite (`node:sqlite`) or the
- * filesystem. Empty at E1 (repo foundation); the schema, migrations and view
- * generation land in E3 -- see beads `asc-0j0`, `asc-fso`, `asc-uy7`.
+ * filesystem. Pure logic lives in @ascend/core; everything here is the boundary.
  *
  * Storage decisions carried in from the Stage 0 spike (docs/evidence/):
  *   - `node:sqlite`, not `better-sqlite3` -- faster (1,201,616 vs 988,435
@@ -19,6 +18,10 @@
  *   - `ALTER TABLE ADD COLUMN ... STORED` is rejected on any populated table.
  *     Only VIRTUAL generated columns are available at runtime (EV-storage.md).
  */
-/** The per-project store directory name. Gitignored; never committed. */
-export const STORE_DIR = '.ascend';
+export { DEFAULT_BUSY_TIMEOUT_MS, openStore, PragmaError, STORE_DIR, STORE_FILE, verifyPragmas, } from './db.js';
+export { migrate, MIGRATIONS, NewerSchemaError, SCHEMA_VERSION, userVersion, } from './schema.js';
+export { deprecateType, findType, registerType, typeVersions, updateTypeProse, } from './registry.js';
+export { indexName, refreshTypeViews, viewName } from './views.js';
+export { DuplicateEntryError, ENTRY_SOURCES, EntryRejectedError, findEntry, recordEntry, UnknownTypeError, } from './recorder.js';
+export { indexedDocumentCount, searchEntries, toFtsMatch, } from './search.js';
 //# sourceMappingURL=index.js.map

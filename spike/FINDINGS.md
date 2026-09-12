@@ -215,3 +215,22 @@ finding at p<1e-7 is doing its job.
 
 The thing to watch is not any single measurement above. It is that **the flagship end-to-end flow has
 never run live**, and that **every number here is n=1**.
+
+---
+
+## Post-gate records
+
+This document is the **closed** Stage 0 gate: six questions named *before* the spike ran, each with a
+verdict. Nothing above it has been edited since it closed. Records produced **after** the gate are
+listed here instead, so the gate keeps its meaning as a record of what was asked in advance.
+
+| Question | Record | When | Verdict |
+|---|---|---|---|
+| What does one composite expression index per property cost the WRITE path? | [`EV-write-cost.md`](../docs/evidence/EV-write-cost.md) | E3 | **GO** — emit uncapped; the cost is disk (2.1×), not time |
+
+**EV-8 was named during E3, not during the spike.** `EV-4` explicitly left the write side of its own
+index rule *unmeasured* — "how many indexes to emit, and whether index count degrades the write path"
+— and E3 was about to implement that rule. It is recorded here rather than retro-fitted into the
+gate's table, because adding a question to a table of "questions named before running" after the fact
+would make the gate report a rigour it did not have. The same distinction applies to any future
+post-gate record.

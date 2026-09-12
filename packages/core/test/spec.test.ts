@@ -3,6 +3,7 @@ import {
   canonicalName,
   canonicalizeProperty,
   canonicalizeTypeSpec,
+  definitionShape,
   type TypeSpec,
 } from '../src/index.js';
 
@@ -150,5 +151,106 @@ describe('canonicalizeTypeSpec', () => {
     const twice = canonicalizeTypeSpec(once.spec);
     expect(twice.renames).toEqual([]);
     expect(twice.spec).toEqual(once.spec);
+  });
+});
+
+describe('definitionShape', () => {
+  it('drops prose at every level', () => {
+    // The rule the whole identity model rests on: prose is not part of what a stored
+    // value is validated against, so it is not part of what makes two definitions the
+    // same definition.
+    const shape = definitionShape({
+      name: 'review_completed',
+      description: 'a review finished',
+      record_when: 'when a code review completes',
+      properties: [
+        { name: 'count', type: 'integer', description: 'how many findings' },
+        { name: 'outcome', type: 'enum', enum_values: ['approved'], description: 'the verdict' },
+      ],
+    });
+
+    expect(shape).toEqual({
+      name: 'review_completed',
+      properties: [
+        { name: 'count', type: 'integer' },
+        { name: 'outcome', type: 'enum', enum_values: ['approved'] },
+      ],
+    });
+  });
+
+  it('keeps every field a validator reads', () => {
+    // The other half of the rule, and the one that would be dangerous to get wrong:
+    // dropping too much would let two genuinely different shapes hash equal.
+    const shape = definitionShape({
+      name: 'review_completed',
+      properties: [
+        { name: 'count', type: 'integer', required: true, unit: 'ms' },
+        { name: 'outcome', type: 'enum', enum_values: ['approved', 'rejected'] },
+      ],
+    });
+    expect(shape.properties[0]).toEqual({
+      name: 'count',
+      type: 'integer',
+      required: true,
+      unit: 'ms',
+    });
+    expect(shape.properties[1]?.enum_values).toEqual(['approved', 'rejected']);
+  });
+
+  it('is idempotent', () => {
+    const once = definitionShape({
+      name: 'review_completed',
+      properties: [{ name: 'count', type: 'integer', description: 'drop me' }],
+    });
+    expect(definitionShape(once)).toEqual(once);
+  });
+
+  it('distinguishes shapes that differ only in a field the validator reads', () => {
+    // Each pair differs in exactly one shape field, and each must survive the
+    // projection. A projection that dropped `unit`, say, would make the first pair
+    // identical -- and 250ms and 250s would share a type_hash.
+    const base = (property: Record<string, unknown>): TypeSpec => ({
+      name: 't',
+      properties: [property as never],
+    });
+    const differ = (a: Record<string, unknown>, b: Record<string, unknown>): void => {
+      expect(definitionShape(base(a))).not.toEqual(definitionShape(base(b)));
+    };
+    differ({ name: 'x', type: 'integer', unit: 'ms' }, { name: 'x', type: 'integer', unit: 's' });
+    differ({ name: 'x', type: 'integer' }, { name: 'x', type: 'integer', required: true });
+    differ({ name: 'x', type: 'integer' }, { name: 'x', type: 'number' });
+    differ(
+      { name: 'x', type: 'enum', enum_values: ['a'] },
+      { name: 'x', type: 'enum', enum_values: ['a', 'b'] },
+    );
+    differ({ name: 'x', type: 'integer' }, { name: 'y', type: 'integer' });
+  });
+});
+
+describe('definitionShape normalizes the fields that constrain nothing', () => {
+  // Each of these pairs differs textually but constrains a value identically, so each
+  // must project to the same shape. If one did not, two spellings of one definition
+  // would hash differently and report as drift.
+  const shapeOf = (property: Record<string, unknown>): unknown =>
+    definitionShape({ name: 't', properties: [property as never] }).properties[0];
+
+  it('treats required:false and an omitted required as the same rule', () => {
+    expect(shapeOf({ name: 'x', type: 'integer', required: false })).toEqual(
+      shapeOf({ name: 'x', type: 'integer' }),
+    );
+  });
+
+  it('drops enum_values from a non-enum, where they validate nothing', () => {
+    // canonicalizeProperty warns about this, so it must not also silently split one
+    // definition into two.
+    expect(shapeOf({ name: 'x', type: 'string', enum_values: ['a'] })).toEqual(
+      shapeOf({ name: 'x', type: 'string' }),
+    );
+  });
+
+  it('drops a unit from a type that cannot carry one', () => {
+    expect(shapeOf({ name: 'x', type: 'boolean', unit: 'ms' })).toEqual(
+      shapeOf({ name: 'x', type: 'boolean' }),
+    );
   });
 });
