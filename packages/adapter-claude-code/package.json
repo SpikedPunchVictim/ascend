@@ -1,0 +1,24 @@
+{
+  "name": "@ascend/adapter-claude-code",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Derives entries from Claude Code session transcripts (~/.claude/projects/*.jsonl). Read-only on the transcript directory.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@ascend/core": "workspace:*"
+  }
+}

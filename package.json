@@ -8,8 +8,32 @@
   "engines": {
     "node": ">=22"
   },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . --ignore-pattern \"packages/*/test/fixtures/**\"",
+    "lint:all": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "align": "./node_modules/.bin/align check",
+    "quality-gate": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && pnpm align",
+    "hook:install": "node scripts/install-hooks.mjs",
+    "hook:uninstall": "node scripts/install-hooks.mjs --uninstall",
+    "clean": "tsc -b --clean && rm -rf packages/*/dist"
+  },
   "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "@oclif/core": "^5.0.0",
     "@spikedpunch/align-cli": "^0.2.1",
-    "@spikedpunch/mast": "^0.3.0"
+    "@spikedpunch/align-core": "^0.2.1",
+    "@spikedpunch/mast": "^0.3.0",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.15.0",
+    "prettier": "^3.4.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.16.0",
+    "vitest": "^2.1.0"
   }
 }

@@ -1,0 +1,41 @@
+extracting documents... 40000 docs, 24.4 MB of text in 6.7s
+
+index build:
+  unicode61 (default)     616ms  size 16.7 MB
+  porter                  599ms  size 16.4 MB
+  trigram                7770ms  size 85.7 MB
+
+retrieval vs substring ground truth (precision@10 / term coverage):
+query class                  unicode61 (default)                porter               trigram
+--------------------------------------------------------------------------------------------
+common whole words                   100% / 100%            98% / 100%            98% / 100%
+identifiers (paths, names)            97% / 100%            97% / 100%           100% / 100%
+partial tokens (prefixes)              75% / 60%             76% / 60%            91% / 100%
+  (precision@10 = of the 10 rows returned, how many actually contain the substring)
+  (term coverage = of the query terms, how many retrieved at least one correct row)
+
+query latency and hostile-input behaviour:
+arm                          p50   terms found
+unicode61 (default)       1.00ms         12/12
+porter                    1.09ms         12/12
+trigram                   2.86ms         12/12
+
+(ground truth document frequency per class: common=45103, identifiers=14696, partial=31717)
+
+raw user query passed straight to MATCH (no sanitizer):
+arm                      threw   example errors
+unicode61 (default)       8/14   unterminated string | no such column: bar
+porter                    8/14   unterminated string | no such column: bar
+trigram                   8/14   unterminated string | no such column: bar
+
+same queries through a toFtsMatch-style sanitizer (quote-escape whole query):
+  unicode61 (default)  threw 0/14, returned empty for 10
+  porter               threw 0/14, returned empty for 9
+  trigram              threw 0/14, returned empty for 13
+
+stemming check (query an inflected form, ground truth = substring):
+  query configuring  unicode61=2  porter=173  trigram=2
+  query runs         unicode61=913  porter=5774  trigram=1002
+  query failure      unicode61=671  porter=863  trigram=952
+  query complete     unicode61=610  porter=1360  trigram=1953
+  (a stemmed arm returns documents containing the OTHER inflection; substring truth is stricter)

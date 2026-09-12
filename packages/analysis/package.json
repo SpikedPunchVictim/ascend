@@ -1,0 +1,21 @@
+{
+  "name": "@ascend/analysis",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure statistical analysis: sampling, clustering, near-dup, log-odds, chi-square, FP-growth, Wilson intervals, CUSUM/Pettitt, kappa. No I/O.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

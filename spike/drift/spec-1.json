@@ -1,0 +1,100 @@
+{
+  "name": "review-completed",
+  "version": 1,
+  "description": "A structured record of a single code or artifact review that has finished at some stage of a development workflow, capturing who reviewed what, the verdict reached, and the findings that justify it.",
+  "record_when": "Record one entry at the moment a review finishes, whenever that review reached a terminal state at any stage of the workflow (specification review, plan review, implementation review, pre-merge review, post-merge or ad-hoc review). The review is finished when the reviewer has stopped examining the artifact and has settled on a verdict, whether that verdict is an approval, a request for changes, a block, or an explicit abstention because the artifact was out of scope or unavailable. Do not record when a review is started, paused, resumed, or superseded by a later review round; each completed round gets exactly one entry, so a re-review after fixes is a new entry rather than an edit of the previous one. If the review ended without a verdict because it was abandoned, cancelled, or crashed, record the entry only if the workflow treats that as a terminal outcome, and say so in the verdict rationale. Every required property must carry either a measured value or an explicit not-applicable marker such as \"not_applicable\" or \"unknown\"; a required property left blank means the entry is incomplete rather than that the value was zero.",
+  "properties": [
+    {
+      "name": "stage",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["specification", "plan", "implementation", "pre_merge", "post_merge", "ad_hoc"],
+      "description": "The workflow stage at which this review was performed, which determines the rubric applied and who is expected to act on the findings."
+    },
+    {
+      "name": "reviewed_artifact",
+      "type": "ref",
+      "required": true,
+      "description": "Reference to the exact artifact that was reviewed, such as a commit SHA, pull-request revision, diff range, or document version; if the artifact changed mid-review, this is the revision the verdict applies to."
+    },
+    {
+      "name": "reviewer",
+      "type": "ref",
+      "required": true,
+      "description": "Reference to the actor that performed the review, identified as an agent, human, or service so that findings can be attributed and re-checked later."
+    },
+    {
+      "name": "review_method",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["llm_self_review", "llm_peer_review", "automated_tool", "human_review", "mixed"],
+      "description": "How the review was carried out, which matters because a self-review by the authoring agent carries different weight than an independent or tool-driven review."
+    },
+    {
+      "name": "completed_at",
+      "type": "timestamp",
+      "required": true,
+      "description": "The moment the review reached its terminal state and the verdict was fixed; used to order review rounds and to measure review latency against the surrounding workflow steps."
+    },
+    {
+      "name": "duration",
+      "type": "duration",
+      "required": true,
+      "unit": "ms",
+      "description": "Elapsed wall-clock time the review took from first examination to verdict, recorded even when it spans multiple sessions of the same review round."
+    },
+    {
+      "name": "verdict",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["approved", "approved_with_comments", "changes_requested", "blocked", "abstained"],
+      "description": "The decision the reviewer reached about the artifact; use \"abstained\" when the review completed but the artifact was determined to be out of scope or unassessable."
+    },
+    {
+      "name": "verdict_rationale",
+      "type": "text",
+      "required": true,
+      "description": "The reviewer's justification for the verdict in its own words, including why any blocking issue blocks and why a non-approval verdict is not simply a preference."
+    },
+    {
+      "name": "findings_count",
+      "type": "integer",
+      "required": true,
+      "unit": "count",
+      "description": "Total number of distinct findings raised in this review round, counting both blocking and non-blocking ones."
+    },
+    {
+      "name": "blocking_findings_count",
+      "type": "integer",
+      "required": true,
+      "unit": "count",
+      "description": "Number of findings that must be resolved before the workflow may advance; zero is a meaningful value here and must be recorded explicitly rather than left blank."
+    },
+    {
+      "name": "max_severity",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["none", "low", "medium", "high", "critical"],
+      "description": "Highest severity among the findings raised, or \"none\" when the review raised no findings at all."
+    },
+    {
+      "name": "confidence",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["low", "medium", "high"],
+      "description": "The reviewer's confidence in the verdict itself, so that low-confidence approvals can be flagged for a second pass without being treated as firm decisions."
+    },
+    {
+      "name": "follow_up_required",
+      "type": "boolean",
+      "required": true,
+      "description": "Whether the workflow must perform further work as a result of this review, such as fixes, re-review, or escalation; false records that the review closed cleanly."
+    },
+    {
+      "name": "scope_notes",
+      "type": "text",
+      "required": true,
+      "description": "What was actually examined and what was deliberately left out, including any files, requirements, or risk areas the reviewer could not assess, so that coverage gaps are visible rather than implied."
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "oclif-probe",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "oclif": {
+    "bin": "asc",
+    "commands": "./src/commands"
+  }
+}

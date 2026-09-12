@@ -1,0 +1,132 @@
+{
+  "name": "review-completed",
+  "version": 1,
+  "description": "Records the outcome, scope, and supporting evidence of a code review that has finished at any stage of the development workflow.",
+  "record_when": "Record one entry immediately after a code review concludes — whether it was a self-review, a peer review, an LLM review, an automated gate, or a mix — and before the workflow advances to its next stage; if a review is re-run after changes, record a new entry rather than editing the prior one.",
+  "properties": [
+    {
+      "name": "reviewId",
+      "type": "string",
+      "required": true,
+      "description": "Stable identifier for this review run, unique within the workflow, used to correlate findings, evidence, and any later re-review."
+    },
+    {
+      "name": "workflowStage",
+      "type": "enum",
+      "enum_values": ["planning", "design", "implementation", "pre-commit", "pull-request", "integration", "release", "post-release"],
+      "required": true,
+      "description": "The workflow stage at which this review was performed."
+    },
+    {
+      "name": "reviewTarget",
+      "type": "ref",
+      "required": true,
+      "description": "Reference to the artifact under review (commit, diff, pull request, file set, or design document); use an explicit not-applicable marker only when the review had no single artifact."
+    },
+    {
+      "name": "reviewerKind",
+      "type": "enum",
+      "enum_values": ["self", "peer-human", "llm", "automated-tool", "mixed"],
+      "required": true,
+      "description": "Who or what actually performed the review."
+    },
+    {
+      "name": "reviewer",
+      "type": "string",
+      "required": false,
+      "description": "Identifier of the reviewing person, agent, or tool (handle, name, or model id)."
+    },
+    {
+      "name": "startedAt",
+      "type": "timestamp",
+      "required": false,
+      "description": "When the review began, when distinguishable from its completion."
+    },
+    {
+      "name": "completedAt",
+      "type": "timestamp",
+      "required": true,
+      "description": "When the review finished and its verdict was determined."
+    },
+    {
+      "name": "duration",
+      "type": "duration",
+      "unit": "ms",
+      "required": false,
+      "description": "Wall-clock time spent on the review from start to finish."
+    },
+    {
+      "name": "outcome",
+      "type": "enum",
+      "enum_values": ["approved", "approved-with-comments", "changes-requested", "rejected", "inconclusive"],
+      "required": true,
+      "description": "The review's verdict — the decision the workflow should act on."
+    },
+    {
+      "name": "maxSeverity",
+      "type": "enum",
+      "enum_values": ["none", "low", "medium", "high", "critical"],
+      "required": true,
+      "description": "Highest severity among the findings raised; use 'none' when the review produced no findings."
+    },
+    {
+      "name": "findingsCount",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "description": "Total number of findings raised, including non-blocking ones."
+    },
+    {
+      "name": "blockingFindingsCount",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "description": "Number of findings that must be resolved before the workflow may proceed."
+    },
+    {
+      "name": "scopeFilesCount",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "description": "Number of files examined; use an explicit not-applicable marker when the target was not file-based."
+    },
+    {
+      "name": "scopeLinesChanged",
+      "type": "integer",
+      "unit": "count",
+      "required": true,
+      "description": "Number of changed lines covered by the review, where measurable; use an explicit not-applicable marker otherwise."
+    },
+    {
+      "name": "automatedChecksPassed",
+      "type": "boolean",
+      "required": true,
+      "description": "Whether all automated checks run as part of the review (tests, linters, static analysis) passed; use an explicit not-applicable marker when none were run."
+    },
+    {
+      "name": "confidence",
+      "type": "enum",
+      "enum_values": ["low", "medium", "high"],
+      "required": true,
+      "description": "How confident the reviewer is that the scope was covered adequately and the verdict is sound."
+    },
+    {
+      "name": "followUpRequired",
+      "type": "boolean",
+      "required": true,
+      "description": "Whether further action (rework, re-review, or escalation) is required before proceeding."
+    },
+    {
+      "name": "evidence",
+      "type": "ref",
+      "required": false,
+      "description": "Reference to the stored review output — findings list, report, or transcript — that substantiates the outcome."
+    },
+    {
+      "name": "notes",
+      "type": "text",
+      "required": false,
+      "description": "Free-form reviewer commentary, context, or caveats about the review."
+    }
+  ]
+}

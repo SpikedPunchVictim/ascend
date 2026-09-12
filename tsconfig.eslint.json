@@ -1,0 +1,28 @@
+{
+  /**
+   * Types-only project for ESLint's type-aware rules. It deliberately covers
+   * MORE than the build does -- test files, config files and bin scripts are
+   * linted but never emitted -- so the project service can resolve every file
+   * ESLint is asked to parse.
+   */
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "allowJs": true,
+    "checkJs": false,
+    "types": ["node"]
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "packages/*/bin/**/*.js",
+    "scripts/**/*.mjs",
+    "*.ts",
+    "*.js"
+  ]
+}

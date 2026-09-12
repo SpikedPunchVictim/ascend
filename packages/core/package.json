@@ -1,0 +1,24 @@
+{
+  "name": "@ascend/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure core: spec types, buildSchema, validation, hashing, entry construction. No I/O.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}

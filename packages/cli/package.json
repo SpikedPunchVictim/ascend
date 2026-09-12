@@ -1,0 +1,39 @@
+{
+  "name": "@ascend/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The `asc` command line. oclif. The only interface in v1.",
+  "bin": {
+    "asc": "./bin/run.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "bin",
+    "oclif.manifest.json"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@ascend/adapter-claude-code": "workspace:*",
+    "@ascend/analysis": "workspace:*",
+    "@ascend/core": "workspace:*",
+    "@ascend/store": "workspace:*",
+    "@oclif/core": "^5.0.0"
+  },
+  "oclif": {
+    "bin": "asc",
+    "dirname": "asc",
+    "commands": "./dist/commands",
+    "topicSeparator": " "
+  }
+}

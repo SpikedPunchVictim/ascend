@@ -1,0 +1,69 @@
+#!/bin/sh
+# ascend's pre-commit quality gate.
+#
+# This file is the SOURCE of the gate. It is not the file git runs.
+#
+# `core.hooksPath` is a single value and beads already claims it, so ascend does not
+# set it: it splices this gate ABOVE beads' managed block in `.beads/hooks/pre-commit`
+# (see scripts/install-hooks.mjs). Beads' shims are git-tracked and portable, and
+# bd's own `bd hooks list` health check only tells the truth when bd's markers are
+# where bd expects them.
+#
+# THREE INVARIANTS, all measured in docs/evidence/EV-hooks.md:
+#
+#   1. This gate must never terminate the shell above beads' block. A bare `exit 0`
+#      there makes beads' entire block unreachable while the installer still reports
+#      success (EV-hooks Q2b, reproduced). Control falls through on success; only a
+#      failure exits, and that exit is `exit 1`, which is meant to block the commit.
+#
+#   2. The work runs in a SUBSHELL. Splicing shares one shell, so a bare `set -eu`
+#      or `cd` here would leak into beads' block and change its behaviour.
+#
+#   3. The subshell is a STANDALONE command whose status is captured -- it is NOT
+#      the condition of an `if`. This is not style. POSIX suppresses `set -e`
+#      inside any command that forms an `if` condition, so the obvious
+#         if ! ( set -eu; ...; pnpm test ); then ...fail...; fi
+#      SILENTLY IGNORES `set -eu`: the subshell keeps going after a failing check and
+#      exits 0, and the gate prints "gate ok" while the suite is red. That exact
+#      false green was written, measured (`pnpm test` -> 1, gate -> 0), and fixed
+#      here. A gate that cannot fail is worse than no gate, because it is believed.
+#
+# Never bypassed: TASKS.md non-negotiable #5 forbids --no-verify and disabled tests.
+#
+#   fast  (default)  format check + typecheck + lint + test   (~10s)
+#   full             everything above + `align check`          (adds a repo scan)
+#
+# `align check` is not in the fast path because it re-scans the whole repo; it is
+# run by the `quality-gate` script and in CI. It is still part of the definition of
+# done (KICKOFF.md) -- it is just too slow to sit in every commit.
+
+(
+  set -eu
+  ROOT="$(git rev-parse --show-toplevel)"
+  cd "$ROOT"
+
+  echo "[pre-commit] format:check"
+  pnpm format:check
+
+  echo "[pre-commit] typecheck"
+  pnpm typecheck
+
+  echo "[pre-commit] lint"
+  pnpm lint
+
+  echo "[pre-commit] test"
+  pnpm test
+
+  if [ "${ASCEND_PRECOMMIT_FULL:-0}" = "1" ]; then
+    echo "[pre-commit] align check"
+    ./node_modules/.bin/align check
+  fi
+)
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo "[pre-commit] ascend gate FAILED (exit $status) -- commit blocked" >&2
+  exit 1
+fi
+
+echo "[pre-commit] ascend gate ok"

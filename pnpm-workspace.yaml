@@ -1,4 +1,21 @@
+packages:
+  - packages/*
+
+# Which dependencies may run install scripts. ascend's own packages need NONE of
+# these: it uses `node:sqlite`, built into Node >=22, which is both faster than
+# better-sqlite3 (1,201,616 vs 988,435 rows/sec) and free of a native dependency
+# (docs/evidence/EV-runtime.md). The allowances exist solely for devDependencies:
+#   - esbuild: vitest's bundler; required for `pnpm test` to run at all.
+#   - better-sqlite3, tree-sitter*: required by mast, the code-search tool.
+allowBuilds:
+  esbuild: true
+  better-sqlite3: true
+  tree-sitter: true
+  tree-sitter-javascript: true
+  tree-sitter-typescript: true
+
 onlyBuiltDependencies:
+  - esbuild
   - better-sqlite3
   - tree-sitter
   - tree-sitter-javascript

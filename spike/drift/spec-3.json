@@ -1,0 +1,127 @@
+{
+  "name": "review-completed",
+  "version": 1,
+  "description": "Records the terminal outcome of a single code review performed at some stage of the development workflow, capturing the verdict, the findings it produced, and the cost of producing them.",
+  "record_when": "Record when a review reaches a terminal state: the reviewer has finished examining the artifact and issued a verdict (approved, changes requested, rejected, or inconclusive). Record it at any workflow stage where a review concludes - spec/design review, implementation review, pre-merge gate, or post-merge audit - and regardless of whether the reviewer was a human, an LLM agent, or an automated tool. Do not record when a review is started, paused, resumed, or abandoned without a verdict; those belong to a review-started or review-abandoned type. If a review is re-run after rework, record a separate review-completed entry for each run rather than updating the previous one.",
+  "properties": [
+    {
+      "name": "review_stage",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["spec", "design", "implementation", "pre_merge", "post_merge", "release", "retrospective"],
+      "description": "The workflow stage at which this review concluded, so reviews at different gates can be aggregated separately."
+    },
+    {
+      "name": "artifact_ref",
+      "type": "ref",
+      "required": true,
+      "description": "Stable identifier of the artifact that was reviewed (pull request, commit, file, branch, plan document, or design doc). Use an explicit not-applicable marker if the review covered a scope that cannot be addressed by a single stable identifier."
+    },
+    {
+      "name": "artifact_kind",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["diff", "pull_request", "commit", "file", "branch", "plan_document", "design_doc", "other"],
+      "description": "What kind of thing artifact_ref points at, so downstream analysis can interpret the review's scope correctly."
+    },
+    {
+      "name": "head_revision",
+      "type": "ref",
+      "required": true,
+      "description": "Exact revision of the artifact as reviewed (commit SHA, document version, or content hash). Required so the review is reproducible and can be invalidated if the artifact later changes. Use an explicit not-applicable marker when the artifact is not versioned."
+    },
+    {
+      "name": "reviewer_ref",
+      "type": "ref",
+      "required": true,
+      "description": "Identifier of the reviewer that produced the verdict - agent identifier, session identifier, or person - enabling per-reviewer quality and calibration analysis."
+    },
+    {
+      "name": "reviewer_kind",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["human", "llm_agent", "automated_tool", "mixed"],
+      "description": "Whether the verdict came from a human, an LLM agent, a deterministic tool, or a combination, which conditions how much the verdict's confidence can be trusted."
+    },
+    {
+      "name": "completed_at",
+      "type": "timestamp",
+      "required": true,
+      "description": "When the review reached its terminal state and the verdict was issued."
+    },
+    {
+      "name": "duration",
+      "type": "duration",
+      "required": true,
+      "unit": "ms",
+      "description": "Wall-clock time spent performing the review, from start to verdict, used to track review cost across stages and reviewers. Use an explicit not-applicable marker if start time was not captured."
+    },
+    {
+      "name": "verdict",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["approved", "approved_with_comments", "changes_requested", "rejected", "inconclusive"],
+      "description": "The review's terminal decision. This is the field that defines the record, so it must always carry an explicit value."
+    },
+    {
+      "name": "findings_count",
+      "type": "integer",
+      "required": true,
+      "unit": "count",
+      "description": "Total number of distinct findings raised, of any severity. Record 0 explicitly when the review produced no findings."
+    },
+    {
+      "name": "blocking_findings_count",
+      "type": "integer",
+      "required": true,
+      "unit": "count",
+      "description": "Number of findings severe enough to block approval or require rework before the workflow may proceed. Record 0 explicitly when nothing blocks."
+    },
+    {
+      "name": "highest_severity",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["none", "low", "medium", "high", "critical"],
+      "description": "Severity of the most severe finding raised, so reviews can be ranked even when their raw finding counts are similar. Use \"none\" explicitly when no findings were raised."
+    },
+    {
+      "name": "scope_covered",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["full", "partial", "spot_check", "not_applicable"],
+      "description": "How much of the artifact's intended surface the review actually examined, so an approval from a spot check is not mistaken for a full-coverage approval."
+    },
+    {
+      "name": "confidence",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["high", "medium", "low"],
+      "description": "The reviewer's self-assessed confidence in the verdict, capturing how much uncertainty the reviewer itself attributes to the outcome."
+    },
+    {
+      "name": "findings_summary",
+      "type": "text",
+      "required": true,
+      "description": "Concise prose summary of what was found and why the verdict was reached, so the entry is interpretable without retrieving the full review transcript. State explicitly that there was nothing substantive to report when no findings were raised."
+    },
+    {
+      "name": "follow_up_required",
+      "type": "boolean",
+      "required": true,
+      "description": "Whether the workflow must take a further action as a result of this review (rework, re-review, escalation, or opening follow-up issues). Record false explicitly for a clean approval."
+    },
+    {
+      "name": "follow_up_estimate",
+      "type": "duration",
+      "required": false,
+      "unit": "ms",
+      "description": "Estimated effort expected for the required follow-up work, recorded only when follow_up_required is true; omit entirely otherwise."
+    },
+    {
+      "name": "notes",
+      "type": "text",
+      "required": false,
+      "description": "Free-form remarks that do not fit the structured fields, such as tooling problems, reviewer context, or disagreements about the verdict."
+    }
+  ]
+}

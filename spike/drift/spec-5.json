@@ -1,0 +1,117 @@
+{
+  "name": "review-completed",
+  "version": 1,
+  "description": "Records the structured outcome of a code review that has finished at some stage of the development workflow.",
+  "record_when": "Record this immediately after a code review reaches a terminal state at any stage of the workflow (spec, design, implementation, pre-merge, post-merge, or release), whether the review was performed by the agent itself, a peer, an automated tool, or an external reviewer. Record it once per review run, at the moment the verdict is final, before any remediation work begins. Do not record it while the review is still in progress, and do not record one entry for multiple independent review runs - create a separate entry per run.",
+  "properties": [
+    {
+      "name": "stage",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["spec", "design", "implementation", "pre_merge", "post_merge", "release"],
+      "description": "The workflow stage at which this review was conducted."
+    },
+    {
+      "name": "reviewType",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["self", "peer", "automated", "llm_agent", "external"],
+      "description": "Who or what performed the review, distinguishing self-review, human peer review, static tooling, another LLM agent, or an external party."
+    },
+    {
+      "name": "reviewer",
+      "type": "string",
+      "required": true,
+      "description": "Identifier of the reviewing entity (person, tool name, or agent run id); use an explicit not-applicable marker if the reviewer is genuinely anonymous or unknown."
+    },
+    {
+      "name": "reviewerModel",
+      "type": "string",
+      "required": true,
+      "description": "Model identifier used when the reviewer was an LLM agent; use an explicit not-applicable marker when the reviewer was human or non-LLM tooling."
+    },
+    {
+      "name": "artifactRef",
+      "type": "ref",
+      "required": true,
+      "description": "Reference to the artifact under review (pull request, commit, changeset, design document, or file path)."
+    },
+    {
+      "name": "artifactRevision",
+      "type": "string",
+      "required": true,
+      "description": "The exact immutable revision of the artifact that was reviewed, such as a commit SHA or document version, so the verdict is pinned to what was actually seen."
+    },
+    {
+      "name": "criteriaRef",
+      "type": "ref",
+      "required": true,
+      "description": "Reference to the checklist, rubric, or standard the review was measured against."
+    },
+    {
+      "name": "startedAt",
+      "type": "timestamp",
+      "required": true,
+      "description": "When the review began."
+    },
+    {
+      "name": "completedAt",
+      "type": "timestamp",
+      "required": true,
+      "description": "When the review reached its terminal verdict."
+    },
+    {
+      "name": "duration",
+      "type": "duration",
+      "required": true,
+      "unit": "ms",
+      "description": "Wall-clock time spent performing the review, from startedAt to completedAt; use an explicit not-applicable marker if timing was not captured."
+    },
+    {
+      "name": "outcome",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["approved", "approved_with_comments", "changes_requested", "rejected", "inconclusive"],
+      "description": "The final verdict of the review."
+    },
+    {
+      "name": "maxSeverity",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["none", "low", "medium", "high", "critical"],
+      "description": "The highest severity among all findings raised; use \"none\" when no findings were raised."
+    },
+    {
+      "name": "findingsCount",
+      "type": "integer",
+      "required": true,
+      "unit": "count",
+      "description": "Total number of findings raised by the review, including non-blocking ones."
+    },
+    {
+      "name": "blockingFindingsCount",
+      "type": "integer",
+      "required": true,
+      "unit": "count",
+      "description": "Number of findings that must be resolved before the artifact can advance."
+    },
+    {
+      "name": "reworkRequired",
+      "type": "boolean",
+      "required": true,
+      "description": "Whether the artifact must be modified before it can proceed past this stage."
+    },
+    {
+      "name": "summary",
+      "type": "text",
+      "required": true,
+      "description": "Concise narrative of what was reviewed, the reasoning behind the verdict, and the substance of the findings; use an explicit not-applicable marker only if the review genuinely produced no substantive content."
+    },
+    {
+      "name": "followUpRef",
+      "type": "ref",
+      "required": false,
+      "description": "Reference to a follow-up issue or task created to address non-blocking findings; omit when none were created."
+    }
+  ]
+}

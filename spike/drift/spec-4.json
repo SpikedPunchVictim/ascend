@@ -1,0 +1,114 @@
+{
+  "name": "review-completed",
+  "version": 1,
+  "description": "Records that a code review finished at a given stage of the development workflow, along with what was reviewed, who or what reviewed it, what was found, and what happens next.",
+  "record_when": "Record this entry at the moment a review reaches a terminal state for its stage — the reviewer has finished examining the artifact and reached a verdict — and before the workflow advances to the next stage. This includes reviews that end without any findings, reviews that are abandoned or skipped (record those with an explicit not-applicable outcome rather than omitting the entry), and re-reviews of an artifact that was revised after an earlier review. Do not record it when a review is still in progress, when a review is requested but not yet started, or for informal reading that reaches no verdict. If a stage runs several distinct reviews, record one entry per review.",
+  "properties": [
+    {
+      "name": "review_stage",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["requirements", "design", "plan", "implementation", "pre_merge", "post_merge", "release", "incident_followup"],
+      "description": "The workflow stage this review concluded at; use incident_followup for reviews triggered by a production incident."
+    },
+    {
+      "name": "target_ref",
+      "type": "ref",
+      "required": true,
+      "description": "Pointer to the artifact that was reviewed (a diff, commit, pull request, design document, or plan); use an explicit not-applicable marker when the review covered something with no addressable identifier."
+    },
+    {
+      "name": "reviewer",
+      "type": "string",
+      "required": true,
+      "description": "Identity of the reviewer that produced the verdict (person, agent, or tool name); when the review was a panel, name the panel or the lead reviewer."
+    },
+    {
+      "name": "reviewer_kind",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["human", "llm", "mixed", "automated_tool"],
+      "description": "Whether the verdict came from a human, an LLM, a combination of both, or a deterministic automated tool such as a linter or static analyzer."
+    },
+    {
+      "name": "outcome",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["approved", "approved_with_comments", "changes_requested", "rejected", "abandoned", "not_applicable"],
+      "description": "The verdict reached: whether the artifact may proceed, must be revised, or was never actually judged."
+    },
+    {
+      "name": "max_severity",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["none", "trivial", "low", "medium", "high", "critical", "not_applicable"],
+      "description": "The most severe issue found in this review; use none or an explicit not-applicable marker when nothing was found so a clean review is distinguishable from an unrecorded one."
+    },
+    {
+      "name": "findings_count",
+      "type": "integer",
+      "required": true,
+      "unit": "count",
+      "description": "Total number of distinct findings raised, including trivial and non-blocking ones; record 0 when the review was clean."
+    },
+    {
+      "name": "blocking_findings_count",
+      "type": "integer",
+      "required": true,
+      "unit": "count",
+      "description": "Number of findings that must be resolved before the artifact may proceed; record 0 when nothing blocks."
+    },
+    {
+      "name": "coverage",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["full", "partial", "sampled", "spot_check", "not_applicable"],
+      "description": "How much of the target the review actually examined, so a shallow pass is not mistaken for a thorough one."
+    },
+    {
+      "name": "findings_summary",
+      "type": "text",
+      "required": true,
+      "description": "Prose summary of what was found and the reasoning behind the verdict, including why a clean or not-applicable review produced no findings."
+    },
+    {
+      "name": "completed_at",
+      "type": "timestamp",
+      "required": true,
+      "description": "When the review reached its terminal state."
+    },
+    {
+      "name": "duration",
+      "type": "duration",
+      "required": true,
+      "unit": "ms",
+      "description": "Elapsed time from the review starting to reaching its verdict; use an explicit not-applicable marker when start and end times were not observed."
+    },
+    {
+      "name": "next_action",
+      "type": "enum",
+      "required": true,
+      "enum_values": ["proceed", "revise_and_rereview", "escalate", "halt_workflow", "no_action"],
+      "description": "What the workflow should do now that the review is complete."
+    },
+    {
+      "name": "follow_up_ref",
+      "type": "ref",
+      "required": true,
+      "description": "Pointer to the issue or task created to track deferred findings; use an explicit not-applicable marker when no follow-up work was filed, so 'nothing deferred' is a recorded decision rather than an omission."
+    },
+    {
+      "name": "confidence",
+      "type": "enum",
+      "required": false,
+      "enum_values": ["low", "medium", "high"],
+      "description": "The reviewer's own confidence that the verdict is correct given the evidence available; optional, but valuable when the reviewer is an LLM."
+    },
+    {
+      "name": "notes",
+      "type": "text",
+      "required": false,
+      "description": "Free-form remarks not captured elsewhere, such as context about the review environment, interruptions, or tooling failures."
+    }
+  ]
+}
