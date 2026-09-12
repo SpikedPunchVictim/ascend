@@ -1,0 +1,15 @@
+{
+  "name": "ascend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A structured entry store for self-improving LLM workflows",
+  "packageManager": "pnpm@11.8.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@spikedpunch/align-cli": "^0.2.1",
+    "@spikedpunch/mast": "^0.3.0"
+  }
+}

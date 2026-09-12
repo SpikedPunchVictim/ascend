@@ -4,3 +4,12 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Node
+node_modules/
+
+# Tooling caches
+.mast/
+
+# ascend corpus (local-only, never committed)
+.ascend/
