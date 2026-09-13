@@ -9,6 +9,7 @@ import {
   attachStore,
   databaseNames,
   detachStore,
+  foldDatabaseName,
   NotAnAscendStoreError,
   openStore,
   recordEntry,
@@ -246,8 +247,11 @@ describe('attaching another project', () => {
 
     expect(thrown).toBeInstanceOf(NotAnAscendStoreError);
     // Nothing was attached, so a caller's SQL cannot silently read the empty database SQLite would
-    // have created at that path.
-    expect(names).toEqual(['main']);
+    // have created at that path. The two names that are listed are the ones every connection answers
+    // to whatever is attached -- `temp` included, which is why this is not `['main']`: it was, until
+    // a project directory named `temp` was handed the alias `temp` and SQLite refused the ATTACH
+    // (`PRAGMA database_list` does not report `temp`, but SQLite reserves the name anyway).
+    expect(names).toEqual(['main', 'temp']);
   });
 
   it('attaches under the name the caller chose and reports the resolved path', () => {
@@ -275,8 +279,9 @@ describe('attaching another project', () => {
       file: realpathSync(storeFile(other)),
     });
     expect(count.n).toBe(2);
-    expect(names).toEqual(['main', 'neighbour']);
-    expect(after).toEqual(['main']);
+    expect(names).toEqual(['main', 'neighbour', 'temp']);
+    // Detached, so the alias is gone and the reserved names are what is left.
+    expect(after).toEqual(['main', 'temp']);
   });
 
   it('refuses a name the connection already answers to', () => {
@@ -295,6 +300,53 @@ describe('attaching another project', () => {
     expect(repeated).toBeInstanceOf(AliasInUseError);
     expect((repeated as AliasInUseError).alias).toBe('twice');
     expect(shadowing).toBeInstanceOf(AliasInUseError);
+  });
+
+  it('refuses every spelling of `temp`, which the pragma never reports', () => {
+    // The defect this pins, measured first at the driver: a fresh connection's `PRAGMA database_list`
+    // reports `main` alone, yet `ATTACH ... AS temp` is refused with `database temp is already in
+    // use` -- SQLite reserves `temp` whether or not anything has been created there. So a guard built
+    // on the pragma alone let `temp` through, and `asc query --across` on a directory named `temp`
+    // died with that raw driver message instead of attaching the project.
+    const dir = populated();
+    const store = openStore({ dir: storeDir(dir), readOnly: true });
+    const source = { label: dir, file: storeFile(dir) };
+
+    const refused = ['temp', 'Temp', 'TEMP'].map((alias) =>
+      capture(() => attachStore(store.db, source, alias)),
+    );
+    store.close();
+
+    for (const thrown of refused) expect(thrown).toBeInstanceOf(AliasInUseError);
+  });
+
+  it('folds case when it decides a name is taken, the way SQLite does', () => {
+    // SQLite compares database names with `sqlite3_stricmp`, which folds ASCII letters only --
+    // measured: with only `main` present, `AS Main` and `AS MAIN` are both refused. A case-sensitive
+    // JavaScript guard misses that, so the mismatch surfaces as SQLite's own message rather than as
+    // the `AliasInUseError` that names the project and the alias.
+    const dir = populated();
+    const store = openStore({ dir: storeDir(dir), readOnly: true });
+    const source = { label: dir, file: storeFile(dir) };
+    attachStore(store.db, source, 'Neighbour');
+
+    const shadowing = capture(() => attachStore(store.db, source, 'neighbour'));
+    const reserved = capture(() => attachStore(store.db, source, 'MAIN'));
+    detachStore(store.db, 'Neighbour');
+    store.close();
+
+    expect(shadowing).toBeInstanceOf(AliasInUseError);
+    expect(reserved).toBeInstanceOf(AliasInUseError);
+  });
+
+  it('folds the same way for every name, so the two guards cannot disagree', () => {
+    // `foldDatabaseName` is exported for `asc query --across`, which keeps its own set of names to
+    // allocate from. If it folded differently from `attachStore`, the CLI would hand out a name this
+    // function then refuses -- a correct refusal for a name the CLI should never have chosen.
+    expect(foldDatabaseName('Temp')).toBe(foldDatabaseName('temp'));
+    expect(foldDatabaseName('main')).toBe('main');
+    // and it is idempotent, so folding a name that came out of `databaseNames` changes nothing
+    expect(foldDatabaseName(foldDatabaseName('MaIn'))).toBe(foldDatabaseName('MaIn'));
   });
 
   it('cannot write to the attached project either', () => {

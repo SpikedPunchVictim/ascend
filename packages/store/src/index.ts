@@ -88,6 +88,7 @@ export {
   attachStore,
   databaseNames,
   detachStore,
+  foldDatabaseName,
   DuplicateProjectError,
   IncompatibleDefinitionsError,
   NotAnAscendStoreError,

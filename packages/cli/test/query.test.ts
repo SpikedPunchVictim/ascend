@@ -459,6 +459,103 @@ describe('--across', () => {
     expect(flatten(result.stderr)).toContain('matched no projects');
   });
 
+  it('attaches a project whose directory is named temp, rather than dying on a reserved name', () => {
+    // Measured before the fix, running this exact fixture: the alias allocated was `temp`, and the
+    // ATTACH came back as `database temp is already in use` -- a raw driver message naming neither
+    // the project nor the alias, from a command the caller had every reason to expect to work. A
+    // scratch checkout named `temp` is ordinary, and `temp` is one of SQLite's own two databases:
+    // `PRAGMA database_list` omits it while nothing has been created there, but SQLite reserves the
+    // name regardless, so seeding the guard from the pragma alone handed out a name it would refuse.
+    const parent = scratch('asc-query-reserved-');
+    const member = join(parent, 'temp');
+    mkdirSync(join(member, '.git'), { recursive: true });
+    expect(asc(['init'], member).status).toBe(0);
+
+    const result = asc(
+      [
+        'query',
+        'SELECT (SELECT count(*) FROM temp_2.entries) AS n',
+        '--across',
+        `${parent}/*`,
+        '--json',
+      ],
+      parent,
+    );
+
+    expect(result.status).toBe(0);
+    expect(rows(result.stdout)[0]).toEqual({ n: 0 });
+    // The alias it actually chose, reported on stderr as every `--across` alias is.
+    expect(squashed(result.stderr)).toContain(squashed(`${member} attached as 'temp_2'`));
+    // And the driver's own message is gone -- that is the defect, not the naming.
+    expect(flatten(result.stderr)).not.toContain('already in use');
+  });
+
+  it('expands a leading ~ in the glob, which --help’s own example requires', () => {
+    // `--help` prints `--across '~/projects/*'`, and that example could never work: `fs.globSync`
+    // treats `~` as a literal directory name, and the example is single-quoted so the shell does not
+    // expand it either. Measured then: `globSync('~/projects/*')` matched nothing while
+    // `globSync(homedir() + '/*')` matched 17 entries. `HOME` is redirected to the scratch directory
+    // by `env`, so `homedir()` inside the CLI is exactly this directory.
+    const home = scratch('asc-query-home-');
+    for (const name of ['a', 'b']) {
+      const dir = join(home, 'projects', name);
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      expect(asc(['init'], dir).status).toBe(0);
+    }
+
+    const result = asc(
+      [
+        'query',
+        'SELECT (SELECT count(*) FROM a.entries) AS a, (SELECT count(*) FROM b.entries) AS b',
+        '--across',
+        '~/projects/*',
+        '--json',
+      ],
+      home,
+    );
+
+    expect(result.status).toBe(0);
+    expect(rows(result.stdout)[0]).toEqual({ a: 0, b: 0 });
+  });
+
+  it('shows what a ~ pattern expanded to, instead of blaming the quoting', () => {
+    // The old message ended "Check that the pattern is quoted, so your shell did not expand it
+    // first" -- advice that is wrong here twice over: quoting is what `--help`'s example does, and
+    // quoting is not what broke it. Advice that cannot work, aimed at the one thing the caller did
+    // right, is worse than no advice. The expansion is shown because it is the path actually
+    // searched, and the caller otherwise cannot tell whether their `~` was understood.
+    const home = scratch('asc-query-home-');
+    const result = asc(['query', 'SELECT 1', '--across', '~/nothing-here-*'], home);
+
+    expect(result.status).toBe(1);
+    // Squashed, not flattened: the expanded path is long enough that oclif wraps it mid-token, and
+    // `flatten`'s newline-to-space collapse would insert a space that is not in the message -- so
+    // this assertion would fail against output that is correct. See `squashed`.
+    const message = squashed(result.stderr);
+    expect(flatten(result.stderr)).toContain('matched no projects');
+    expect(message).toContain(squashed(join(home, 'nothing-here-*')));
+    expect(message).not.toContain('quoted');
+    // A pattern with no `~` is reported as written, since there is no expansion to explain.
+    const plain = asc(['query', 'SELECT 1', '--across', 'no-such-*'], home);
+    expect(flatten(plain.stderr)).toContain("'no-such-*'");
+    expect(flatten(plain.stderr)).not.toContain('expanded to');
+  });
+
+  it('leaves ~user alone, because homedir() cannot resolve another user’s home', () => {
+    // Anchored on `~/` or a bare `~` rather than on any leading `~`: `~someone` means that user's
+    // home directory, which `homedir()` does not answer, so rewriting it to OUR home and searching
+    // there would be a silent wrong answer rather than a refusal.
+    const home = scratch('asc-query-home-');
+    const result = asc(['query', 'SELECT 1', '--across', '~root/nothing-*'], home);
+
+    expect(result.status).toBe(1);
+    const message = flatten(result.stderr);
+    expect(message).toContain("'~root/nothing-*'");
+    expect(message).not.toContain('expanded to');
+    // And it really did not reach our home directory: the path it searched is not under it.
+    expect(squashed(result.stderr)).not.toContain(squashed(join(home, 'root')));
+  });
+
   it('refuses a match that is not a store, before attaching anything', () => {
     const { parent } = neighbourhood(1);
     mkdirSync(join(parent, 'not-a-project', '.git'), { recursive: true });

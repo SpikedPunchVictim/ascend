@@ -280,15 +280,51 @@ export class AliasInUseError extends Error {
 }
 
 /**
+ * The database names SQLite answers to on every connection, whatever is attached -- and therefore
+ * the names it will not let anything else take.
+ *
+ * `temp` is one of SQLite's own two databases, held in `aDb[1]` from the moment the connection
+ * opens, but `PRAGMA database_list` omits it while nothing has been created there. Measured on a
+ * fresh connection: the pragma reports `main` alone, and `ATTACH ... AS temp` is still refused with
+ * `database temp is already in use`. So the pragma is not sufficient on its own, and a guard built
+ * on it alone hands out a name SQLite rejects -- which is what `asc query --across` did for a
+ * project directory called `temp`.
+ */
+const ALWAYS_PRESENT: readonly string[] = ['main', 'temp'];
+
+/**
  * Every database name this connection currently answers to, `main` and `temp` included.
  *
  * Read from `PRAGMA database_list` rather than tracked in a variable, because the attachment state
- * belongs to SQLite and a parallel copy of it here would be a second answer to "what is attached".
+ * belongs to SQLite and a parallel copy of it here would be a second answer to "what is attached" --
+ * plus the two names the pragma does not report, since neither a caller nor SQLite would agree the
+ * connection does not answer to those.
  */
 export function databaseNames(db: DatabaseSync): readonly string[] {
-  return (db.prepare('PRAGMA database_list').all() as unknown as { name: string }[]).map(
+  const reported = (db.prepare('PRAGMA database_list').all() as unknown as { name: string }[]).map(
     (row) => row.name,
   );
+  const seen = new Set(reported.map(foldDatabaseName));
+  return [...reported, ...ALWAYS_PRESENT.filter((name) => !seen.has(foldDatabaseName(name)))];
+}
+
+/**
+ * The form SQLite compares database names in.
+ *
+ * SQLite matches a database name with `sqlite3_stricmp`, which folds **ASCII letters only**.
+ * Measured: on a connection whose only database is `main`, `ATTACH ... AS Main` and `AS MAIN` are
+ * both refused with `database main is already in use`, and `AS Temp` / `AS TEMP` likewise. A guard
+ * using `Set.has` or `Array.includes` on the raw spelling therefore misses every capitalisation --
+ * so `Temp` and `MAIN` slip past the JavaScript check and reach SQLite, which refuses them with a
+ * message naming neither the project nor the alias.
+ *
+ * `toLowerCase` is a superset of SQLite's ASCII-only fold, so this can only ever refuse a name
+ * SQLite would accept. It cannot let through one SQLite rejects, which is the direction that
+ * matters: the failure it could cause is a caller seeing one more name as taken than is, never a
+ * caller's SQL silently reading the wrong project.
+ */
+export function foldDatabaseName(name: string): string {
+  return name.toLowerCase();
 }
 
 /**
@@ -321,7 +357,12 @@ export function attachStore(db: DatabaseSync, source: ProjectSource, alias: stri
   // would arrive from an ATTACH the caller wrote no SQL for. A shadowed alias is the worse case:
   // SQLite accepts a repeated spelling only when it is genuinely free, so what a caller must never
   // get is a name that quietly means someone else's project.
-  if (databaseNames(db).includes(alias)) {
+  //
+  // Folded, because the comparison SQLite makes is: a case-sensitive check here would pass `Temp`
+  // through to an ATTACH that SQLite then refuses, which is the raw driver message this function
+  // exists to replace.
+  const wanted = foldDatabaseName(alias);
+  if (databaseNames(db).some((name) => foldDatabaseName(name) === wanted)) {
     throw new AliasInUseError(alias, source.label, source.file);
   }
 

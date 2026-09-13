@@ -24,6 +24,7 @@ import {
   attachStore,
   databaseNames,
   detachStore,
+  foldDatabaseName,
   DuplicateProjectError,
   STORE_DIR,
   STORE_FILE,
@@ -32,6 +33,7 @@ import {
   type Store,
 } from '@ascend/store';
 import { globSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { BaseCommand } from '../base.js';
 import { refusal, usageError } from '../errors.js';
@@ -124,15 +126,52 @@ function aliasBase(label: string): string {
   return /^[0-9]/.test(cleaned) ? `p_${cleaned}` : cleaned;
 }
 
-/** `base`, or `base_2`, `base_3`, ... -- the first name this connection is not already using. */
+/**
+ * `base`, or `base_2`, `base_3`, ... -- the first name this connection is not already using.
+ *
+ * `taken` holds **folded** names (`foldDatabaseName`), not raw ones, because the comparison SQLite
+ * makes when it refuses an ATTACH is case-insensitive. Testing raw spellings here would hand out
+ * `Temp` on a connection that already answers to `temp`, and the refusal would arrive from SQLite
+ * as `database temp is already in use` -- naming neither the project nor the alias it was for.
+ */
 function allocateAlias(label: string, taken: ReadonlySet<string>): string {
   const base = aliasBase(label);
-  if (!taken.has(base)) return base;
+  if (!taken.has(foldDatabaseName(base))) return base;
 
   for (let suffix = 2; ; suffix++) {
     const candidate = `${base}_${String(suffix)}`;
-    if (!taken.has(candidate)) return candidate;
+    if (!taken.has(foldDatabaseName(candidate))) return candidate;
   }
+}
+
+/**
+ * `~` at the start of a glob, as the user's home directory.
+ *
+ * `fs.globSync` performs no tilde expansion -- `~` is a literal directory name -- and `--help`'s own
+ * example is single-quoted, so the shell does not expand it either. Measured: `globSync('~/projects/*')`
+ * matched nothing, while `globSync(homedir() + '/*')` matched 17 entries. So the example `asc query
+ * --help` prints could never have worked, and the corpus it names (`ARCHITECTURE.md`'s real
+ * `~/.claude/projects/` tree) is the one a caller is most likely to reach for.
+ *
+ * Anchored on `~/` or a bare `~`. `~user` means another user's home directory, which `homedir()`
+ * cannot resolve, so it is deliberately left alone rather than silently rewritten to the wrong path.
+ *
+ * Concatenated rather than `join`ed: only the `~` is being expanded, and `join` would also normalize
+ * the rest of the pattern -- collapsing `..`, dropping a trailing slash -- which is a second change
+ * to a string the caller is entitled to have matched as written.
+ */
+function expandHome(pattern: string): string {
+  return pattern === '~' || pattern.startsWith('~/') ? `${homedir()}${pattern.slice(1)}` : pattern;
+}
+
+/**
+ * The pattern as the caller wrote it, plus what it became -- but only when the two differ.
+ *
+ * "matched no projects: '~/x/*'" leaves a caller unable to tell whether the `~` was understood and
+ * the directory is empty, or never expanded at all. Saying both answers that without a second run.
+ */
+function describePattern(pattern: string, searched: string): string {
+  return pattern === searched ? `'${pattern}'` : `'${pattern}' (expanded to '${searched}')`;
 }
 
 /** A result column that shared its name with an earlier one, and the name it was given instead. */
@@ -340,7 +379,8 @@ export default class Query extends BaseCommand {
   /** Every project the glob names, as the store's own `ProjectSource` shape. */
   private expandAcross(pattern: string): readonly ProjectSource[] {
     const cwd = process.cwd();
-    const matches = globSync(pattern, { cwd })
+    const searched = expandHome(pattern);
+    const matches = globSync(searched, { cwd })
       .map((match) => resolve(cwd, match))
       .sort();
 
@@ -348,10 +388,18 @@ export default class Query extends BaseCommand {
       // A refusal, not a usage error: the command line is well formed and the filesystem had nothing
       // to match, which is the same kind of fact as `NoProjectError`. Returning an empty result set
       // would report an empty corpus as though it were the caller's data.
+      //
+      // The expansion is shown when it differs, because that is the path that was actually searched
+      // and the caller cannot otherwise tell whether their `~` was understood. The previous wording
+      // told the caller to quote the pattern -- which is what `--help`'s own example does, and
+      // quoting is not what broke it: `fs.globSync` treats `~` as a literal directory name whether
+      // or not the shell got involved. Advice that cannot work, aimed at the one thing the caller
+      // did right, is worse than no advice.
       throw refusal(
-        `--across matched no projects: '${pattern}' (searched from ${cwd}). ` +
-          `A glob that matches nothing would query an empty corpus and report that as your data. ` +
-          `Check that the pattern is quoted, so your shell did not expand it first.`,
+        `--across matched no projects: ${describePattern(pattern, searched)} (searched from ` +
+          `${cwd}). A glob that matches nothing would query an empty corpus and report that as ` +
+          `your data. Check the pattern names real project directories -- it is matched against ` +
+          `this filesystem, and a leading '~' means your home directory.`,
       );
     }
 
@@ -383,7 +431,22 @@ export default class Query extends BaseCommand {
   ): readonly Attachment[] {
     // Seeded from the connection rather than from an empty set, so a name SQLite already answers to
     // -- `main`, `temp`, or anything a previous attachment took -- cannot be allocated.
-    const taken = new Set(databaseNames(handle));
+    //
+    // This comment was true of `main` and false of `temp` until `databaseNames` was corrected: that
+    // pragma does not report `temp` while nothing has been created there, so a project directory
+    // called `temp` was handed the alias `temp` and the ATTACH failed with `database temp is already
+    // in use` -- a raw driver message naming neither the project nor the alias. `databaseNames` now
+    // adds the names the pragma omits, and that is what fixes the measured case.
+    //
+    // The fold is the other half, and it is a deliberate claim rather than a measured one: SQLite
+    // refuses `Temp` and `MAIN` on a connection holding `temp` and `main`, so a raw `Set.has` here
+    // would hand out `Temp` and let `attachStore` refuse it -- a correct refusal for a name this
+    // function should never have chosen. **No test covers that half, and cannot on a
+    // case-insensitive filesystem**, because discriminating it needs two project directories
+    // differing only in case, which such a filesystem cannot hold. It is kept because the rule it
+    // encodes is SQLite's, verified directly against the driver, and because the alternative is a
+    // wrong-name refusal rather than a wrong answer.
+    const taken = new Set(databaseNames(handle).map(foldDatabaseName));
     const seen = new Map<string, string>();
     const attachments: Attachment[] = [];
 
@@ -408,7 +471,7 @@ export default class Query extends BaseCommand {
       }
 
       seen.set(attachment.file, target.label);
-      taken.add(alias);
+      taken.add(foldDatabaseName(alias));
       attachments.push(attachment);
       this.warn(`${target.label} attached as '${alias}'`);
     }

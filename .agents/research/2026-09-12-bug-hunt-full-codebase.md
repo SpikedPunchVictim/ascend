@@ -94,7 +94,10 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | B1 | FIXED | `3252fb3` |
 | B2 | FIXED | `49ffa87` |
 | F1 | FIXED (+ follow-up) | `304915b`, `4ee844a` |
-| B8 | FIXED | *this commit* |
+| B8 | FIXED | `acfec7a` |
+| B11, B12 | FIXED | *phase 2, one commit* |
+
+**A note on the bead IDs, because they do not match this report's B-numbers.** The beads were created in triage order (`asc-bcv.1` … `asc-bcv.21`), so `asc-bcv.<n>` is *not* finding `B<n>`. B8 is **`asc-bcv.4`**; `asc-bcv.8` is B3 (non-ASCII search). I committed B8 naming `asc-bcv.8` and corrected it in `acfec7a` — the first version of that message named a different, still-open finding. Mapping: B1→`.1`, B2→`.2`, F1→`.3`, B8→`.4`, B11→`.5`, B12→`.6`, B4→`.7`, B3→`.8`, B5→`.9`, B6→`.10`, B7→`.11`, B9→`.12`, B10→`.13`, F2→`.14`.
 
 ---
 
@@ -732,6 +735,15 @@ A raw driver message naming neither the project nor the alias. Note `Temp` fails
 
 **Verified fix:** seed `taken` with the reserved names SQLite always answers to — `main`, `temp` — in addition to what the pragma reports, and compare case-insensitively on both guards. **Boundary check (1):** a `main`/`Main` directory is the same defect and must be covered by the same fix. **Empirical re-test (8):** re-run the `temp` fixture and assert the alias allocated is not `temp`.
 
+**Status: FIXED** — `packages/store/src/union.ts` (`ALWAYS_PRESENT`, `databaseNames`, `foldDatabaseName`, `attachStore`), `packages/cli/src/commands/query.ts` (`allocateAlias`, the `taken` seed), 3 tests in `packages/store/test/readonly.test.ts` and 1 in `packages/cli/test/query.test.ts`. What the eight checks changed:
+
+- **The root cause was a false comment in the store, not the CLI's set.** `databaseNames`'s doc already said *"`main` and `temp` included"*. That was false — the pragma omits `temp` — and the CLI trusted it. So the fix is in `databaseNames`, which now returns the pragma's list **plus** the names the pragma omits, and `attachStore`'s own guard (`union.ts:324`) also folds. Both guards share one function, so they cannot disagree. Verified at the driver: a fresh connection reports `main` alone, and `ATTACH ... AS temp` is still refused `errcode=1`.
+- **Check 1 (boundary).** The reserved set is exactly `{main, temp}`, measured rather than assumed: `ATTACH AS Main`, `AS MAIN`, `AS Temp`, `AS TEMP` are all refused, `AS main_2` and `AS asc_union_0` succeed. On a case-insensitive filesystem `Main` and `Temp` cannot even be created as separate directories — this machine has four dirs where six were named, which is why the CLI fix is tested with a `temp` directory and the case-folding with `attachStore` directly.
+- **Check 2 (mirror path).** Two guards existed and both were wrong in the same way, which is why one fix covers both: `allocateAlias`'s `taken` set and `attachStore`'s `includes`. `foldDatabaseName` is exported and used by both, so a future third caller cannot invent a third rule.
+- **Check 6 (interaction) — checked, deliberately not taken.** A directory named `main` already worked before this fix (the pragma reports `main`), so no test was added claiming otherwise: a test that passes before and after is not evidence.
+- **Check 8 (re-test).** Met. Before: `db.exec` surfaced `database temp is already in use` with exit 1 and no project attached. After: `temp attached as 'temp_2'`, exit 0, the query answers, and `already in use` appears nowhere in the output.
+- **One sub-claim is kept but NOT covered by a test, and that is recorded rather than smoothed over.** The CLI-side fold (so `Temp` is not handed out on a connection holding `temp`) cannot be discriminated on a case-insensitive filesystem: it needs two project directories differing only in case. Mutation **M7** — reverting the CLI's `taken` to unfolded names — **killed no test**, because `databaseNames` alone now fixes the measured case. The fold is kept because the rule it encodes was verified directly against the driver, and because its failure mode is a correct-but-confusing refusal, not a wrong answer. The code comment says exactly this.
+
 ### B12 — The `--help` example can never work, and its error blames the user for the one thing that is correct
 
 **Lens:** 5 (error path), 7 (environment divergence) · **Confidence:** Confirmed (empirical) · **Urgency:** Medium
@@ -762,6 +774,15 @@ $ asc query 'SELECT 1' --across '~/projects/*'
 **The last line is the misdiagnosis.** Quoting is exactly what broke it. The example is not merely wrong — it teaches a rule that, if followed, keeps failing, and it is aimed at the corpus `ARCHITECTURE.md:421` names (the real `~/.claude/projects/` tree). A model copying an example from `--help` is the expected user here.
 
 **Verified fix:** expand a leading `~` before globbing (`pattern.replace(/^~(?=\/|$)/, homedir())`), and correct the error text. **Failure mode (5):** the expansion must not fire on `~user` (which means another user's home and cannot be resolved by `homedir()`), so anchor on `~/` or a bare `~`. **Mirror path (2):** check whether any other help text or default uses `~`. **Empirical re-test (8):** run the corrected example and assert it matches.
+
+**Status: FIXED** — `packages/cli/src/commands/query.ts` (`expandHome`, `describePattern`, the refusal text), 3 tests in `packages/cli/test/query.test.ts`. What the eight checks changed:
+
+- **Check 2 (mirror path) — run, and it came back clean.** Grepped every `~` in `packages/cli/src`: the only one in user-facing text is this example (`output.ts:125-126`'s two `~` are "approximately" in a comment). No default, no other help text, and `--across` is the only flag that takes a glob. So this was the single site.
+- **Check 5 (failure modes) — the dangerous direction was expanding too much, not too little.** `~user` means another user's home, which `homedir()` cannot resolve; expanding it would search *our* home under the other user's name — a silent wrong answer rather than a refusal. Anchored on `~/` or a bare `~`, and there is a test asserting `~root/nothing-*` is reported unexpanded and does not reach our home directory.
+- **Check 4 (constraint values).** Concatenated, not `join`ed: `join` would also normalize the pattern — collapsing `..`, dropping a trailing slash — which is a second change to a string the caller is entitled to have matched as written. Only the `~` is expanded.
+- **Check 8 (re-test).** Met, and the receipt is the `--help` example itself: with `HOME` pointed at a scratch tree, `asc query '...' --across '~/projects/*'` — the exact string `--help` prints — now matches both projects and exits 0.
+- **The old advice is deleted, not reworded.** The last line told the caller to quote the pattern. That is what `--help`'s own example does, and quoting is not what broke it, so the message taught a rule that keeps failing. The replacement names the two things that are actually true: the glob is matched against this filesystem, and a leading `~` means the home directory.
+- **One more improvement the re-test forced.** The message now shows the expansion when it differs from the pattern — `'~/nope-*' (expanded to '/tmp/…/nope-*')` — because "matched no projects: `~/nope-*`" leaves a caller unable to tell whether their `~` was understood and the directory is empty, or never expanded at all. Verified: a pattern with no `~` is still reported exactly as written.
 
 ### F8 — `--table` can emit a lone surrogate
 
