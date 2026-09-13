@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openStore, withRollback, withTransaction, type Store } from '../src/index.js';
 
@@ -116,6 +117,48 @@ describe('withTransaction', () => {
         });
       }).toThrow();
       expect(rows(store, 't')).toBe(0);
+    });
+  });
+
+  it('takes the write lock at BEGIN, so a concurrent writer waits instead of breaking the body', () => {
+    // B4. The property is about WHEN the lock is taken, and it has an exact failure. With a
+    // DEFERRED `BEGIN` the lock is not taken until the body's first write, so the SELECT below --
+    // the shape `recordEntry` has, reading before it writes -- establishes a WAL read snapshot that
+    // the other connection's commit then invalidates. Our write against that stale snapshot fails
+    // with `SQLITE_BUSY_SNAPSHOT`, and SQLite does not consult the busy handler for it at all,
+    // because retrying could not help. Measured on the real path with `busy_timeout` 300ms: refused
+    // in 1ms. `IMMEDIATE` takes the lock at BEGIN, so the other connection waits where the timeout
+    // applies, and the body holds a snapshot nothing can invalidate.
+    withStore((store) => {
+      createTable(store);
+
+      // A second connection, standing in for the concurrent subagent writer `db.ts`'s own header
+      // names as the reason WAL is required in the first place. Raw on purpose: it must not share
+      // any of the store's machinery, or it would be testing that machinery against itself.
+      const other = new DatabaseSync(store.file);
+      other.exec('PRAGMA busy_timeout = 50');
+      try {
+        withTransaction(store.db, () => {
+          // Reading before writing is not a contrivance -- it is what `recordEntry` does, and it is
+          // what makes the snapshot exist for a later commit to invalidate.
+          store.db.prepare('SELECT id FROM t WHERE id = ?').get('absent');
+
+          // The discriminating assertion, and the only one in this file that separates the two
+          // BEGIN modes: with the lock held from BEGIN this write BLOCKS, times out, and throws;
+          // against a deferred BEGIN it succeeds outright. Asserted rather than left implicit,
+          // because "the other connection was made to wait" IS the fix.
+          expect(() => {
+            other.prepare('INSERT INTO t (id) VALUES (?)').run('concurrent');
+          }).toThrow(/database is locked/);
+
+          insert(store, 'ours');
+        });
+      } finally {
+        other.close();
+      }
+
+      expect(count(store, "SELECT COUNT(*) AS n FROM t WHERE id = 'ours'")).toBe(1);
+      expect(count(store, "SELECT COUNT(*) AS n FROM t WHERE id = 'concurrent'")).toBe(0);
     });
   });
 

@@ -392,7 +392,17 @@ export function migrate(
   const applied: string[] = [];
 
   for (const migration of pending) {
-    db.exec('BEGIN');
+    // `IMMEDIATE`, matching the store's own `withTransaction` (B4). The window this closes is
+    // narrow, and it is not zero: the migration body is one `db.exec` of DDL, and `CREATE ...`
+    // reads `sqlite_master` before it writes -- so under a deferred BEGIN that read is what
+    // establishes the read snapshot, and a concurrent writer committing after it would fail the
+    // migration with `SQLITE_BUSY_SNAPSHOT`, which no busy timeout can wait out. Taking the write
+    // lock at the BEGIN instead moves such a writer's wait to where the timeout applies.
+    //
+    // NOT independently reproduced, unlike the `withTransaction` site: here the read and the write
+    // are both inside one `db.exec`, so a two-connection probe cannot interleave between them. Same
+    // one-token change for the same mechanism, with behaviour covered by this file's own suite.
+    db.exec('BEGIN IMMEDIATE');
     try {
       db.exec(migration.sql);
       db.exec(`PRAGMA user_version = ${String(migration.version)}`);

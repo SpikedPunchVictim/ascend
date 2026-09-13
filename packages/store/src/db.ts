@@ -285,9 +285,24 @@ export function withRollback<T>(db: DatabaseSync, body: () => T): T {
  * transaction this function did not open is one it cannot COMMIT on the caller's behalf without
  * changing when the caller's own work becomes durable.
  *
- * `BEGIN` rather than `BEGIN IMMEDIATE`: this is a writer, but the lock is taken by the first
- * write inside `body` regardless, and the store is opened with a busy timeout precisely so a
- * concurrent writer waits rather than fails (`openStore`).
+ * `BEGIN IMMEDIATE`, not `BEGIN`, and the comment here used to argue the opposite: *"this is a
+ * writer, but the lock is taken by the first write inside `body` regardless, and the store is
+ * opened with a busy timeout precisely so a concurrent writer waits rather than fails."* Measured,
+ * that is false, and it is false in the one scenario it names. A **deferred** `BEGIN` takes no
+ * lock, so the first read inside `body` -- and `recordEntry` reads before it writes -- establishes
+ * a WAL read snapshot. If another connection commits after that snapshot, our first write cannot be
+ * applied to a stale snapshot, and SQLite returns `SQLITE_BUSY_SNAPSHOT` **without consulting the
+ * busy handler at all**, because retrying could not help. The timeout is not consulted, not
+ * ignored: waiting is categorically the wrong response, so nothing asks.
+ *
+ * Measured on the real path, two connections, `busy_timeout` 300ms: the transaction failed in
+ * **1ms** with "database is locked". Concurrent subagent writers are the exact scenario `db.ts`'s
+ * own header names as the reason WAL is required, and it was the scenario that failed.
+ *
+ * `IMMEDIATE` takes the write lock at `BEGIN`, so there is no snapshot to invalidate: a concurrent
+ * writer blocks *there*, where the busy timeout applies, and waits. That moves when a concurrent
+ * writer waits rather than whether it fails -- which is the point, and the only change to the
+ * caller's contract.
  */
 export function withTransaction<T>(db: DatabaseSync, body: () => T): T {
   return inOwnTransaction(db, 'withTransaction', 'COMMIT', body);
@@ -318,7 +333,7 @@ function inOwnTransaction<T>(
     );
   }
 
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
     const result = body();
     db.exec(ending);

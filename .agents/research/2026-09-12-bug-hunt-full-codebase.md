@@ -97,6 +97,9 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | B8 | FIXED (revised: warn → refuse) | `acfec7a`, `e3325ad` |
 | B11, B12 | FIXED | `5237833` |
 | `asc-4if` (NR3, answered) | FIXED | `bfb7786` |
+| B4 | FIXED (3 sites; `registry.ts`/`schema.ts` not mutation-testable — see its Status) | (Phase 3) |
+| F4 (first half) | FIXED as a side effect of `asc-4if`; residual divergence untouched | `bfb7786` |
+| F4-data | ANSWERED — 83 stores scanned, 4 ambiguous, all this audit's own probes: **no migration needed** | (Phase 3) |
 
 **A note on the bead IDs, because they do not match this report's B-numbers.** The beads were created in triage order (`asc-bcv.1` … `asc-bcv.21`), so `asc-bcv.<n>` is *not* finding `B<n>`. B8 is **`asc-bcv.4`**; `asc-bcv.8` is B3 (non-ASCII search). I committed B8 naming `asc-bcv.8` and corrected it in `acfec7a` — the first version of that message named a different, still-open finding. Mapping: B1→`.1`, B2→`.2`, F1→`.3`, B8→`.4`, B11→`.5`, B12→`.6`, B4→`.7`, B3→`.8`, B5→`.9`, B6→`.10`, B7→`.11`, B9→`.12`, B10→`.13`, F2→`.14`.
 
@@ -112,7 +115,7 @@ Act on this section first.
 |---|---|---|
 | 1 | **B1, B2, F1** | The two Critical false-greens and the guard that protects future store work. All S-effort, single-file, no migration. |
 | 2 | **B8, B11, B12** | The CLI-silence cluster: work accepted or refused with the wrong message. B11+B12 live in the same command. |
-| 3 | **B4** (+ F4-data) | One transaction-mode change that also closes `registerType`'s check-then-act. |
+| 3 | **B4** (+ F4-data) | One transaction-mode change. It does **not** close `registerType`'s check-then-act — see the corrected note below. |
 | 4 | **B3, B5, B6, B7, B9, B10** | Independent, each with its own empirical re-test; no shared migration, so they can be committed one at a time. |
 | 5 | **F2, F3, F5, F6, F7, F8, F9** | The ones carrying a design or data decision. |
 
@@ -120,7 +123,7 @@ Act on this section first.
 
 **Ship-together sets (never split across phases):**
 
-- **{B4, F4-data}** — `BEGIN IMMEDIATE` (B4) also removes the check-then-act window in `registerType`'s version selection. Do not fix the version-selection race separately; the transaction mode is the fix. My probe reached the snapshot guard before the UNIQUE constraint, so the UNIQUE collision remains **unverified** — fixing B4 may make it unreachable, and that should be confirmed by re-running the two-connection probe, not assumed.
+- **{B4, F4-data}** — **CORRECTED 2026-09-12, and the correction matters.** This note claimed *"`BEGIN IMMEDIATE` (B4) also removes the check-then-act window in `registerType`'s version selection. Do not fix the version-selection race separately; the transaction mode is the fix. My probe reached the snapshot guard before the UNIQUE constraint, so the UNIQUE collision remains **unverified** — fixing B4 may make it unreachable, and that should be confirmed by re-running the two-connection probe, not assumed."* The instruction to confirm rather than assume was followed, and it overturned the claim: the version read at `registry.ts:354` precedes the `BEGIN` at `:439`, so no transaction mode can cover it, and the two-process probe reproduced the collision **10 times in 10 trials**. **B4 did not close the race; `asc-odh` tracks it separately.** The full refutation, with the mechanism and the measurement, is in §9 R-F4. The reason the original note is left standing above rather than deleted is that it is the thing that was wrong, and the useful part is *which* assumption failed — "a lock taken anywhere in the function covers the whole function" — not the corrected sentence alone.
 - **{B1, F5}** — **WITHDRAWN as a ships-with set: not a pair.** This report originally grouped them as "a name the guard vocabulary does not cover reaches a layer that assumes it does," and proposed extending `reservedPropertyName` once so both consumers use one list. Building B1 disproved that, and it is recorded here rather than quietly dropped. B1's mechanism was never a missing reserved name: the defect was that the property accumulator **was an object literal**, so `Object.prototype` members were reachable as values, and the fix is "stop using the prototype chain as a map" — `Object.hasOwn` for the read, a null-prototype map for the write. `constructor` is a *legitimate* property name, now working end to end (registered, refused when undecided, accepted as N/A, stored measured, projected into the view). F5's `a.b` is a different mechanism entirely: a name containing a dot becomes a JSON *path* in `json_extract(properties_json, '$.a.b')`, so the projection reads into a nested object that was never written. That needs `assertProjectable`, not a reserved-name entry — and adding `a.b` (or `constructor`) to `reservedPropertyName` would refuse a name the store can actually store. **B1 and F5 are standalone.** Shipping B1 as a pair with F5 would have meant either banning `constructor` or leaving B1 unfixed.
 - **{F3, B9}** — both are "a write path accepts a value the read path cannot interpret." Both are fixed by making the write path validate, and both need the *same* decision about existing bad rows.
 
@@ -312,8 +315,24 @@ One millisecond. Not five seconds. The timeout is configured, read back as `5000
 **Consequence:** the scenario the code names as the reason for WAL — *concurrent subagent writers* — is exactly the one that fails, and it fails instantly with a message that suggests waiting would help. No data is lost (nothing is written) and a retry succeeds, so this is a hard failure rather than corruption.
 
 **Blast radius:** code — `packages/store/src/db.ts` (fix) + `packages/store/src/registry.ts:199` (the same transaction helper, so the version-selection race goes with it); data — none; coordination — none.
-**Verified fix:** `BEGIN IMMEDIATE` for the store's own write transactions (`withTransaction` and `withRollback`, `db.ts:289-302`). **Caller contract (7):** this changes *when* a concurrent writer blocks — at `BEGIN` rather than at the first write — which is the point, because the busy timeout then applies. **Interaction (6):** it also closes `registerType`'s check-then-act version selection; see §9 (R-F4). **Empirical re-test (8):** re-run probes 1c/1d and assert no `errcode=517`.
+**Verified fix as reported:** `BEGIN IMMEDIATE` for the store's own write transactions (`withTransaction` and `withRollback`, `db.ts:289-302`). **Caller contract (7):** this changes *when* a concurrent writer blocks — at `BEGIN` rather than at the first write — which is the point, because the busy timeout then applies. **Interaction (6):** the report claimed it also closes `registerType`'s check-then-act version selection; see §9 (R-F4). **That claim is refuted** — see the Status below. **Empirical re-test (8):** re-run probes 1c/1d and assert no `errcode=517`.
 **Note on the comment:** the comment must change with the code. It currently records a reason that measurement refutes, which is how the defect survived review.
+
+**Status: FIXED (`db.ts`, `registry.ts:439`, `schema.ts:405`).**
+
+Three sites issued a deferred `BEGIN`, not one, and all three were changed. `db.ts`'s `inOwnTransaction` is the one the finding names and the one the probe drives: it is the shared half of `withTransaction` and `withRollback`. `registry.ts` was named by the Fix Plan. `schema.ts`'s per-migration loop was not named anywhere — it is the same defect class (`BEGIN` + a body that reads `sqlite_master` before it writes), so it moved with them rather than being left as a latent instance of the thing this fix exists for. Each site's comment now states its own mechanism and its own evidence, and `db.ts`'s false one is replaced by the measurement that refuted it.
+
+- **Check 1 (the fix's own arithmetic).** Nothing counts anything; the change is one token and an end-state assertion. The test's boundary is the busy timeout: the second connection is given **50 ms** and must *block for it and then throw*, which distinguishes "waited and lost" from "never waited".
+- **Check 2 (mirror path).** `withRollback` is the same helper (`inOwnTransaction`), so the preview path moved with the commit path — otherwise `--dry-run` would still take its snapshot late and a dry run could 517 where the real run does not, which is the preview lying about the run.
+- **Check 3 (existing data).** None. No stored row changes meaning; nothing is migrated. The change is *when* a lock is taken, not what is written.
+- **Check 5 (failure modes).** The failure mode moves in the caller's favour: a concurrent writer now **waits** (up to `busy_timeout`, 5 s by default) instead of failing in 1 ms with a message that implies waiting would help. That is the whole of the contract change.
+- **Check 7 (caller contract).** No return value, no throw and no resolution order changes. A caller that could complete before can still complete; a caller that used to fail instantly now blocks. No caller is newly broken by waiting, and `record.ts`'s batch semantics are untouched — a batch that loses the lock still rolls back entirely and exits 1.
+- **Check 8 (empirical re-test).** Met, both directions. `/tmp/probe-b4.mjs` drives the real `withTransaction` from `packages/store/dist` against a raw second connection, `busy_timeout` 300 ms. **Before:** `FAILED -- database is locked`, `elapsed :: 1ms`, verdict *"refused in 1ms, far below the 300ms timeout -- the handler was never consulted"*. **After:** `OK -- our transaction committed`, `elapsed :: 358ms`, and the other connection's own report is `the other connection was refused: database is locked (after 358ms)` — it waited out its own timeout against the write lock we now hold from `BEGIN`.
+- **Check 6 (interaction).** The report's interaction claim — that this also closes `registerType`'s check-then-act version selection — is **refuted, by reading and then by measurement.** See R-F4 in §9: the version read at `registry.ts:354` precedes the `BEGIN` at `:439`, so the transaction mode cannot cover it, and a two-process probe reproduced the collision **10 times in 10 trials**.
+
+**Mutation-tested.** Reverting `db.ts` to `db.exec('BEGIN')` kills exactly one test — the new one — and the failure message is the mechanism itself: `expected [Function] to throw an error`, i.e. the concurrent write *succeeded* instead of blocking. Restored byte-identical (`shasum -a 256` → `2eb94e07…`).
+
+**The two other sites are NOT mutation-tested, and the limitation is stated rather than smoothed over.** Reverting `registry.ts` and `schema.ts` to `BEGIN` kills **nothing**: 96 tests in `registry`/`schema`/`views` pass either way. That is not a gap in the tests — it is that both defects are unreproducible by a two-connection probe. At `db.ts` the gap between the read and the write is a **JS-level** gap (`body()` runs between them), which a probe can interleave into, and did. At `registry.ts` and `schema.ts` the read and the write are both inside **one `db.exec`**, so no probe can land between them; the change there is the same one token for the same mechanism, verified by reading and covered for behaviour preservation, but **the concurrency defect at those two sites was not independently reproduced**. This is recorded because F9 in this same report is *a comment asserting a cleanup guarantee the code does not provide*, and the reason it is worth reporting is that it is how B4 survived review.
 
 ---
 
@@ -620,6 +639,41 @@ So for one registered type, `validateEntry` refuses exactly what `buildSchema` a
 **Blast radius:** code — `packages/core/src/spec.ts` (1 file); data — **types already registered with a duplicate cannot be deleted** (`entry_types_cannot_be_deleted`), so the fix cannot be retroactive; coordination — none.
 **Verified fix:** make a duplicate property name an **ERROR** in `canonicalizeTypeSpec`, consistent with the empty-name rule that `asc-0w9` established (`core/test/spec.test.ts`: *"makes an empty canonical name an ERROR"*). **Existing-data check (3):** blocking new registrations does not invalidate existing ones, which keep working with the divergence — state that in the fix. **Empirical re-test (8):** re-run `asc types define` with the duplicate document and assert exit non-zero.
 
+**Status: the FIRST HALF is FIXED, as a side effect — `asc-4if` (`bfb7786`). No separate F4 fix has been made.**
+
+This finding's suggested fix was, verbatim, *"make a duplicate property name an ERROR in `canonicalizeTypeSpec`"*. `asc-4if` — a fold collision raised by a different lens, where two properties canonicalize to one name and the registry silently kept the last — took exactly that answer, on your instruction ("refuse the collision"), and its fix **is** this one: the collision moved from `canonical.warnings` to `canonical.errors`, and `registerType` refuses on non-empty `errors` before anything is written. Recorded as a side effect rather than as F4 work, because the two findings are the same defect reached from two directions and reporting it as a separate fix would double-count one change.
+
+Re-tested on the real binary with F4's own document from the Evidence block above (`properties: k:string, k:number`):
+
+```
+$ asc types define /tmp/amb.json
+ ›   Error: 1 problem(s) make 'amb' unusable, so nothing was registered:
+ ›     properties 0 ('k') and 1 ('k') are the same name: both canonicalize to 'k', ...
+exit=1        entry_types rows for 'amb': 0        v_amb* views: none
+```
+
+Exit 1, no row, no view — F4's check-8 assertion ("re-run `asc types define` with the duplicate document and assert exit non-zero") is met, and the two-enforcer divergence it describes can no longer be *reached* through the registry, because a spec that would diverge is now refused before it is stored.
+
+**F4-data — the existing-data half — is ANSWERED 2026-09-12: no migration is needed, and the retroactive half is impossible by design.** The report left two questions: whether already-registered ambiguous types need a repair, and what to do about them. Measured by walking `$HOME` and `/tmp` for every `.ascend/` directory and opening each `ascend.db` **read-only**:
+
+```
+83 store(s) scanned, 4 ambiguous type version(s) total
+  /tmp/e4rev.0nniZ0/.ascend/ascend.db  ::  foldclash   v1 dupe=review_kind
+  /tmp/e4rev.KUdnrn/.ascend/ascend.db  ::  foldclash   v1 dupe=review_kind
+  /tmp/e4rev.O62ZsH/.ascend/ascend.db  ::  fold_mixed  v1 dupe=review_kind
+  /tmp/e4rev.eedx91/.ascend/ascend.db  ::  foldclash   v1 dupe=review_kind
+
+/Users/<user>/projects/ascend/.ascend/ascend.db   6 version(s), 0 ambiguous
+```
+
+**83 stores, 4 ambiguous versions — and every one of the four is mine.** All four live in `/tmp/e4rev.*`, they are named `foldclash` and `fold_mixed`, and those are the throwaway probes this audit created to demonstrate `asc-4if`. **No store outside this audit holds one, and the repository's own store holds none of its six versions.** So there is nothing to migrate and no collision plan to write.
+
+The retroactive half is impossible anyway, for the reason the report itself named: `entry_types_cannot_be_deleted` (G6) makes a registered version permanently un-removable, so an already-stored ambiguous spec could only ever be *deprecated*, never repaired. Since the real population is empty, that is a statement about the schema rather than a task.
+
+Harness: `/tmp/scan-f4data.mjs` — read-only handles, no DML, and it reimplements `canonicalName` locally rather than importing it, so the scan cannot agree with the implementation it is checking. **Limit, stated:** it walks to depth 6 under `$HOME` and `/tmp` only, so a store elsewhere on this machine is not covered; and 83 stores on one developer's laptop is not a claim about any other machine — it is a claim that *this* population needs no migration, which is all the ships-with set needed.
+
+**What F4's residual actually is.** Only the `validateEntry`-first vs `buildSchema`-last divergence, and it is unreachable through the registry — which is why the report rated F4 FRAGILE rather than BUG in the first place, and why the reason it gives (`buildSchema` has no production caller) still holds: it is reached only by `core/test/schema.test.ts`. **The divergence itself is untouched and unaddressed by this fix**, and it is stated here rather than implied to be closed: a `buildSchema` consumer added later would still disagree with `validateEntry` about a spec with a duplicate name — it is simply that no such spec can be registered any more.
+
 ---
 
 ### F5 — `assertProjectable` misses a dotted property name
@@ -907,7 +961,31 @@ Every BUG/FRAGILE above survived Step 5. These did not. **Five headline claims d
 | R10 | "The `na` array is stored in caller order" (previous session) | My probe passed names that were **not properties of the type**, so all three were dropped as warnings and `na_json` was `[]`. Re-run with real property names: `recordEntry(...).na === ["gamma","alpha"]` vs stored `["alpha","gamma"]`. | **Refuted as run** — but the re-run found a *different* real defect: the write call's return value disagrees with the stored value. That one is §9 NR2.2, at `Suspected` for impact because I could not show any caller consuming it. |
 | R11 | "The FTS index demonstrably holds the ASCII term, so `searchEntries` is fine" | My probe indexed a *property*; FTS indexes `evidence_text`. The `[]` I measured was an artifact. | **Refuted**, then re-established correctly in B3 with `evidenceText` set. |
 
-**R-F4 — a sub-claim that is Unverified, not refuted.** `registerType`'s version selection is check-then-act (`SELECT MAX(version)`, then INSERT), but my two-connection probe reached `SQLITE_BUSY_SNAPSHOT` (errcode 517) **before** the UNIQUE constraint could fire, so the collision itself is **Unverified**. It shares B4's root cause and B4's fix; it is not reported as a separate finding, and it is not claimed as reachable.
+### R-F4 — ANSWERED 2026-09-12: the collision is REACHABLE, and B4 does **not** close it
+
+The report left this open with a stated instruction: *"fixing B4 may make it unreachable, and that should be confirmed by re-running the two-connection probe, not assumed."* It was confirmed, and the assumption it was built on is wrong.
+
+**What the report claimed.** §4's Fix Plan, ships-with note: *"`BEGIN IMMEDIATE` (B4) also removes the check-then-act window in `registerType`'s version selection. **Do not fix the version-selection race separately; the transaction mode is the fix.**"*
+
+**Refuted by reading.** The premise fails on the source. `registerType` reads the version it will use — the `known` probe at `registry.ts:354`, the `latest` probe at `:372`, and `vocabularyNotes` at `:416` — and only *then* opens its transaction at `:439`. The read is **outside** the transaction, so no transaction mode can cover it. `BEGIN IMMEDIATE` moves the lock to before the `INSERT`; it cannot move it to before a read that already happened.
+
+**Refuted by measurement.** Two processes, each driving the **real** `registerType` from `packages/store/dist`, released from a shared wall-clock barrier, against one store per trial, both computing version 1 for the same type name:
+
+```
+10 trials: 10 UNIQUE collision(s), 0 snapshot failure(s)
+  a: ERROR  role=a UNIQUE constraint failed: entry_types.name, entry_types.version
+  b: RESULT role=b outcome=created version=1
+  entry_types rows: 1
+verdict :: the check-then-act race is STILL REACHABLE -- B4 did not close it, because the read precedes the BEGIN
+```
+
+**10 of 10**, with the production `busy_timeout` of 5 s. The `0 snapshot failure(s)` is B4 working exactly as designed; the 10 collisions are the window B4 was claimed to close. Harness: `/tmp/probe-race.mjs` + `/tmp/race-worker.mjs`.
+
+**Severity, stated honestly:** the store stays **consistent** — one row, no corruption, and the loser can re-run and get version `N+1`. What the loser gets is a **spurious failure carrying a raw SQLite message**, which is why it is filed as **`asc-odh`** (P2) rather than folded into B4. It is also a `cli-best-practices` rule-8 violation (errors are context → problem → fix; `UNIQUE constraint failed: entry_types.name, entry_types.version` is none of those), and a *false* one — the definition was valid.
+
+**Why it was not fixed under B4.** The Fix Plan's instruction was *"do not fix the version-selection race separately"*, and its stated reason was that no separate fix was needed. The reason is refuted; the instruction's premise no longer holds, so it was neither followed silently nor silently overridden — the refutation is recorded here and the fix is its own bead. The real fix is a restructure rather than a token: one transaction around the whole body, `BEGIN` above the version reads, the `unchanged` early return at `:358-370` turned into a `COMMIT`, and a rollback on the `diff.bump === 'none'` throw at `:393`. It also carries a cost worth measuring before it ships — the `unchanged` path is the **idempotent re-registration** fast path, and wrapping it would make it take an exclusive write lock where it currently takes none, so a retry-on-UNIQUE design may be the better answer. That is a design decision, not a one-liner.
+
+**One more correction to B4's own blast radius.** The report listed `registry.ts:199` as a *second site of the same defect*. It is the same statement, but it is **not** the same defect: there the read and the write are both inside the enclosing `registerType` call, and the only window `IMMEDIATE` closes is the one inside the `INSERT` itself — real, but not the version race the note named.
 
 ---
 

@@ -419,8 +419,24 @@ export function registerType(
   // views are missing is a store where `asc query` fails on a type that registered fine, so
   // both go in one transaction. `isTransaction` means a caller's transaction is joined
   // rather than nested into -- SQLite rejects a nested BEGIN outright.
+  //
+  // `IMMEDIATE`, matching the store's own `withTransaction` (B4). What that buys here is narrower
+  // than it first looks, and the narrowness is written down because the alternative was a comment
+  // claiming more than the code does. Every version read above -- `known`, `latest`, and
+  // `vocabularyNotes` -- happens BEFORE this line, outside any transaction, so this does NOT close
+  // the check-then-act race between them and the INSERT below: two concurrent registrations can
+  // still both compute version N, and the loser still fails on the `(name, version)` UNIQUE
+  // constraint. Closing that needs the BEGIN moved above the reads, the `unchanged` early return
+  // turned into a COMMIT, and a rollback on the `diff.bump === 'none'` throw -- one transaction
+  // around the whole body, which is a restructure rather than a transaction mode (asc-odh).
+  //
+  // What IMMEDIATE does close is the snapshot window inside the INSERT itself: the statement
+  // probes the unique index before it writes, and under a deferred BEGIN that probe is what
+  // establishes the read snapshot, so a concurrent commit landing after it would fail the insert
+  // with `SQLITE_BUSY_SNAPSHOT` -- which no busy timeout can wait out. See `db.ts`'s
+  // `withTransaction` for the mechanism and the measurement.
   const ownsTransaction = !db.isTransaction;
-  if (ownsTransaction) db.exec('BEGIN');
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
 
   // This function's own record of whether it has already ended the transaction, cleared only
   // after the statement that ends it returned. Not a re-read of `db.isTransaction`: `exec`
