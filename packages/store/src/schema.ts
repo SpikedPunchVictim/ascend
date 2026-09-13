@@ -380,16 +380,18 @@ export function migrate(
   db: DatabaseSync,
   migrations: readonly Migration[] = MIGRATIONS,
 ): MigrationResult {
-  const from = userVersion(db);
+  const observed = userVersion(db);
   const target = migrations.reduce((highest, m) => Math.max(highest, m.version), 0);
 
-  if (from > target) throw new NewerSchemaError(from, target);
+  if (observed > target) throw new NewerSchemaError(observed, target);
 
   const pending = migrations
-    .filter((migration) => migration.version > from)
+    .filter((migration) => migration.version > observed)
     .sort((left, right) => left.version - right.version);
 
   const applied: string[] = [];
+  let from = observed;
+  let firstRead = true;
 
   for (const migration of pending) {
     // `IMMEDIATE`, matching the store's own `withTransaction` (B4). The window this closes is
@@ -398,12 +400,37 @@ export function migrate(
     // establishes the read snapshot, and a concurrent writer committing after it would fail the
     // migration with `SQLITE_BUSY_SNAPSHOT`, which no busy timeout can wait out. Taking the write
     // lock at the BEGIN instead moves such a writer's wait to where the timeout applies.
-    //
-    // NOT independently reproduced, unlike the `withTransaction` site: here the read and the write
-    // are both inside one `db.exec`, so a two-connection probe cannot interleave between them. Same
-    // one-token change for the same mechanism, with behaviour covered by this file's own suite.
     db.exec('BEGIN IMMEDIATE');
     try {
+      // The version is read INSIDE the lock, and that is the whole of this fix. `observed` above was
+      // read with no lock held at all, so a second process opening this same store can have run this
+      // very migration in the meantime -- and acting on the stale reading is not a harmless repeat,
+      // because the DDL is not idempotent: `CREATE TABLE entries` fails on a table that exists.
+      //
+      // Measured through the real CLI rather than imagined (`/tmp/probe-odh-cli.mjs`: two
+      // `asc types define` processes released from a shared wall-clock barrier against one new
+      // project): **14 of 20 runs failed**, every one of them this way, with
+      // `migration 1 (initial schema) failed and was rolled back: table ... already exists`. The
+      // BEGIN IMMEDIATE above was already there and did not help, because the read it had to cover
+      // happened before it -- the mistake recorded as `begin-immediate-does-not-cover-a-pre-read`,
+      // and the same one as asc-odh, one level up. The unlocked read above is kept only as a
+      // shortcut, so a store that is already current still takes no lock; the loop it gates may
+      // start work, but this read is what decides whether any is done.
+      const current = userVersion(db);
+      if (firstRead) {
+        // Reported as the version this call started applying from. Re-reading it here rather than
+        // reusing `observed` is what keeps it true when another process migrated first.
+        from = current;
+        firstRead = false;
+      }
+
+      // Another process got here first. Its work is committed and this migration is exactly what it
+      // did, so there is nothing left to do -- and `applied` must not claim otherwise.
+      if (current >= migration.version) {
+        db.exec('COMMIT');
+        continue;
+      }
+
       db.exec(migration.sql);
       db.exec(`PRAGMA user_version = ${String(migration.version)}`);
       db.exec('COMMIT');
