@@ -57,7 +57,7 @@
  * question the caller did not ask.
  */
 
-import type { TypeSpec } from '@ascend/core';
+import { unaddressablePropertyName, type TypeSpec, type UnaddressableName } from '@ascend/core';
 import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
@@ -617,13 +617,40 @@ export function unionEntries(
   const definition = specFor(contributing[0] as Reading, hash);
   if (definition === null) throw new Error('unreachable: a contributing project held no spec');
 
+  // The same refusal the view generator makes, at the boundary this path has instead of that one.
+  // A view is built once, under the local registry; a union is assembled at QUERY time from specs
+  // the local registry never accepted, so it cannot inherit the generator's refusal and must ask
+  // its own question. Without it a property named `a.b` projects `json_extract(..., '$.a.b')` --
+  // measured reading NULL while the value sits in the row -- and the union would report a null
+  // column as a measured absence, which is the plausible-wrong-number failure this module exists
+  // to avoid. Refused rather than projected, and the message names the store to go fix.
+  const unaddressable = definition.properties
+    .map((property) => unaddressablePropertyName(property.name))
+    .filter((problem): problem is UnaddressableName => problem !== undefined);
+  if (unaddressable.length > 0) {
+    throw new Error(
+      `cannot read type '${type}' across these projects faithfully:\n` +
+        unaddressable
+          .map(
+            (problem) =>
+              `  property '${problem.name}': ${problem.reason}. Rename it in its own project -- ` +
+              `'${problem.suggestion}' is addressable.`,
+          )
+          .join('\n'),
+    );
+  }
+
   // Sorted, so the projection is a function of the property set rather than of registration order.
   const properties = definition.properties.map((property) => property.name).sort();
 
-  // Properties and states are aliased under `p.` and `s.` prefixes. A property name is canonical
-  // (`[A-Za-z0-9_]` only, see @ascend/core), so neither prefix can occur inside one -- whereas
-  // without a prefix a property called `id` or `source` collides with an envelope column, and
-  // SQLite silently renames the loser to `id:1` in `SELECT *` (measured).
+  // Properties and states are aliased under `p.` and `s.` prefixes, so a property called `id` or
+  // `source` does not collide with an envelope column -- without a prefix SQLite silently renames
+  // the loser to `id:1` in `SELECT *` (measured). The prefix is a property of the ALIAS, not of the
+  // name: it cannot rescue the `json_extract` path above, which is built from the name alone and is
+  // why the refusal is here rather than replaced by the prefix. This comment used to read "a
+  // property name is canonical (`[A-Za-z0-9_]` only, see @ascend/core), so neither prefix can occur
+  // inside one" -- true of every name the registry accepts, and unenforced for the specs this path
+  // actually reads, which is what `asc-bcv.16` (F5) turned into the guard above.
   const projections = properties.flatMap((property) => [
     `  json_extract(e.properties_json, ${literal(`$.${property}`)}) AS ${ident(`p.${property}`)}`,
     `  ${stateCase(property, null)} AS ${ident(`s.${property}`)}`,

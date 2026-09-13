@@ -21,12 +21,14 @@ export {
   canonicalizeTypeSpec,
   definitionShape,
   reservedPropertyName,
+  unaddressablePropertyName,
   type Canonicalized,
   type PropertySpec,
   type PropertyType,
   type Rename,
   type ReservedName,
   type TypeSpec,
+  type UnaddressableName,
 } from './spec.js';
 
 export { confusableNames, nameTokens, type ConfusableName } from './names.js';

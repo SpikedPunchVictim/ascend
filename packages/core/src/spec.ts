@@ -210,6 +210,126 @@ export function reservedPropertyName(raw: string): ReservedName | undefined {
   return undefined;
 }
 
+/** Why a name cannot be addressed by the JSON path a view builds for it, and a name that can. */
+export interface UnaddressableName {
+  /** The name as written. Deliberately NOT canonicalized -- see `unaddressablePropertyName`. */
+  readonly name: string;
+  /** One sentence: what the name does to the path, and what a reader gets instead. */
+  readonly reason: string;
+  /**
+   * The canonical folding of the name, which IS addressable -- canonical names are `[a-z0-9_]`
+   * only, and no character of that set is structural in a JSON path.
+   *
+   * Not promised to be *free* the way `ReservedName.suggestion` is: `'source.'` folds to
+   * `'source'`, which is reserved, and `reservedPropertyName` reports that on its own terms.
+   */
+  readonly suggestion: string;
+}
+
+/**
+ * The code point that cannot survive the path string: an unpaired surrogate.
+ *
+ * Scanned by code point rather than by UTF-16 unit, because a well-formed pair is two units and
+ * one code point and must NOT be reported. Measured: a name holding a lone surrogate keeps its
+ * key in `properties_json` (`json_valid` is still 1, and a sibling property still reads), but
+ * `json_extract(..., '$.a<surrogate>b')` returns NULL -- the escape round-trips into a code unit
+ * the path string cannot carry.
+ */
+function loneSurrogateIn(raw: string): string | undefined {
+  for (const character of raw) {
+    if (character.length !== 1) continue;
+    const code = character.charCodeAt(0);
+    if (code >= 0xd800 && code <= 0xdfff) return character;
+  }
+  return undefined;
+}
+
+/**
+ * Characters that make `$.<name>` address something other than the key `<name>`.
+ *
+ * `position` is part of the entry, not a convenience: `.` and `[` are structural wherever they
+ * appear, while `"` and NUL are only fatal at the START -- `$.a"b` and `$.a\0b` were both measured
+ * addressing their literal key correctly. Collapsing that distinction would refuse names that
+ * project faithfully, which is the same defect as failing to refuse one that does not.
+ */
+const PATH_BREAKERS: readonly {
+  readonly character: string;
+  readonly anywhere: boolean;
+  readonly reason: string;
+}[] = [
+  {
+    character: '.',
+    anywhere: true,
+    reason:
+      'a dot is the path separator, so the path descends into a nested object and finds nothing ' +
+      'where the value actually is',
+  },
+  {
+    character: '[',
+    anywhere: true,
+    reason: 'a bracket begins a subscript, so the path stops addressing the name as a whole key',
+  },
+  {
+    character: '"',
+    anywhere: false,
+    reason: 'a leading quote opens a quoted key that the path never closes',
+  },
+  {
+    character: '\u0000',
+    anywhere: false,
+    reason: 'a leading NUL ends the path before it reaches the name',
+  },
+];
+
+/**
+ * Can a generated view address this name? `undefined` means yes.
+ *
+ * **What this is for.** A view projects a property with
+ * `json_extract(properties_json, '$.<name>')`, so a name that is not a single JSON path segment
+ * addresses something else and the column reads NULL while the value sits in the row. That is the
+ * failure this module's callers exist to prevent: a queryable surface that reports a plausible
+ * wrong answer. `registerType` canonicalizes names on the way in and so cannot store an
+ * unaddressable one; this is for the specs that reach the view generator without the registry --
+ * a version row inserted by hand, or a store created before the rule existed.
+ *
+ * **Deliberately does NOT canonicalize, and that is the whole difference from
+ * `reservedPropertyName`.** Folding first would HIDE the defect: `canonicalName('a.b')` is
+ * `'a_b'`, which is perfectly addressable, so a check on the folded name would report every
+ * dotted name as fine. The property's identity is canonical, but the string the view interpolates
+ * is the one stored, so this one asks about the string as written. `name` is carried unfolded for
+ * the same reason -- a caller printing the canonical form would name a property the store does not
+ * hold.
+ *
+ * **The character set is MEASURED, not read off the grammar.** Every code point from U+0000 to
+ * U+10FFFF was probed in four positions (leading, middle, trailing, alone) against a document
+ * whose only key was that name, with a well-formed surrogate pair skipped as its own case and a
+ * lone surrogate measured separately: 4,448,256 probes, and exactly 12 of them failed to return
+ * the value. All 12 come from the four characters above. Two things that grammar would suggest are
+ * refuted by that: `]` is harmless on its own (`$.a]b` finds `a]b`), and both `"` and NUL are
+ * harmless away from the start. Refusing either would be a false refusal.
+ */
+export function unaddressablePropertyName(raw: string): UnaddressableName | undefined {
+  const folded = canonicalName(raw);
+  const suggestion = folded === '' ? 'value' : folded;
+
+  for (const { character, anywhere, reason } of PATH_BREAKERS) {
+    if (!raw.includes(character)) continue;
+    if (!anywhere && !raw.startsWith(character)) continue;
+    return { name: raw, reason, suggestion };
+  }
+
+  const surrogate = loneSurrogateIn(raw);
+  if (surrogate !== undefined) {
+    return {
+      name: raw,
+      reason: 'it holds an unpaired surrogate, which the JSON path string cannot carry',
+      suggestion,
+    };
+  }
+
+  return undefined;
+}
+
 /** A single canonicalization applied to a spec, so the caller can surface it. */
 export interface Rename {
   readonly from: string;

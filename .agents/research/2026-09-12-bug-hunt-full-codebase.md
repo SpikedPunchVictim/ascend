@@ -78,6 +78,7 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | F3 | Per-property prose keys are stored **verbatim** while the contract says canonical, so `reviewKind` is written and never found | 9 | Confirmed (empirical) | Medium | Low | Low | Medium | 2 files / **existing rows may hold bad keys** / none | S |
 | F4 | A duplicated property name registers with only a warning, and the two enforcers **disagree in opposite directions** (`validateEntry` refuses `k=5`; `buildSchema` accepts it) | 8, 4 | Confirmed (empirical) | Medium | Low | Low | Medium | 1 file / **existing ambiguous types cannot be deleted** / none | S |
 | F5 | `assertProjectable` misses a **dotted** property name: the view column reads NULL and the index never matches, while `properties_json` holds the value | 3, 8 | Confirmed (empirical) | Medium | Low | Medium | Medium | 1 file / none (hand-insert only) / none | S |
+| F5 | FIXED — and the report's own predicate is **PARTLY REFUTED**: rejecting `"` and a lone `$` would refuse names that measure returning their literal key, which is the same defect as passing `a.b`. The shipped guard's character set is **measured across all of Unicode** (4,448,256 probes → 12 failures from 4 characters) and reconciled against SQLite for **4,456,448 names → 0 false negatives, 0 false positives**. The union's independent read path now asks the same question, and its false comment was corrected rather than deleted. `asc-bcv.16` CLOSED. See F5's Status | this commit |
 | F6 | `indexName` **collides** (`test`+`run_count` vs `test_run`+`count`) and the second index is silently never created | 8, 1 | Confirmed (empirical) | Low | Low | Low | Low | 1 file / none / none | S |
 | F7 | `unit` is not trimmed, so `" ms "` forces a **MAJOR** version bump | 3, 9 | Confirmed (empirical) | Low | Medium | Low | Low | 1 file / **hash of existing rows** / none | S |
 | B11 | A project directory named `temp` (or `Temp` / `main`) makes `--across` fail with a **raw driver error**, despite a comment claiming the alias is seeded against exactly this | 1, 7 | Confirmed (empirical) | Medium | Low | Medium | Medium | 1 file / none / none | S |
@@ -746,7 +747,44 @@ The value is in the ledger; the queryable surface says **NULL**; the index never
 **Reachability, stated honestly:** `canonicalName('a.b')` → `'a_b'`, so `registerType` can never store a dotted name. This is reachable **only** through a spec that bypassed the registry — exactly the class the guard declares it exists for. It is a gap in a defense-in-depth guard, not an open door.
 
 **Blast radius:** code — `packages/store/src/views.ts` (1 file); data — none (a dotted type can only exist where the registry was bypassed); coordination — none.
-**Verified fix:** extend `assertProjectable` to refuse any property name that is not a safe JSON path segment — reject `.` and `"`. **Boundary check (1):** test `.` at position 0, in the middle, and at the end, plus `"` and a lone `$`. **Interaction (6):** sharing the vocabulary extension with B1's second line keeps one list; see §4. **Existing-data check (3):** a store that already holds a dotted type would then fail every future `refreshTypeViews` — that is the `asc-865.1` precedent (refuse and name the fix), so it is consistent, but state it.
+**Verified fix (as proposed at audit time):** extend `assertProjectable` to refuse any property name that is not a safe JSON path segment — reject `.` and `"`. **Boundary check (1):** test `.` at position 0, in the middle, and at the end, plus `"` and a lone `$`. **Interaction (6):** sharing the vocabulary extension with B1's second line keeps one list; see §4. **Existing-data check (3):** a store that already holds a dotted type would then fail every future `refreshTypeViews` — that is the `asc-865.1` precedent (refuse and name the fix), so it is consistent, but state it.
+
+**Status: FIXED — and the Verified fix above is PARTLY REFUTED, in the over-refusal direction.** `packages/core/src/spec.ts` (`unaddressablePropertyName`, the measured character set), `packages/core/src/index.ts` (exports), `packages/store/src/views.ts` (`assertProjectable` asks the second question), `packages/store/src/union.ts` (the mirror path), plus 9 tests in `packages/core/test/spec.test.ts`, 4 in `packages/store/test/views.test.ts`, 2 in `packages/store/test/union.test.ts`.
+
+**The refutation is the first thing this Status has to say, because the report proposed the wrong predicate.** The suggested fix — *"reject `.` and `"`"* — and its boundary list's *"a lone `$`"* would have refused names that **measure returning their literal key**:
+
+```
+$.a"b   ->  returns the value stored under key `a"b`  (also with a sibling key `ab` present)
+$.a$b   ->  returns the VALUE
+$.a]b   ->  returns the key `a]b`
+```
+
+A guard that refuses those is **the same defect as one that passes `a.b`**: it reports a name broken when it works, which sends an author to rename a property for no reason. So the two mutations that deliberately attack the over-refusal direction — *refuse a quote anywhere* (the report's own fix) and *refuse a name that folds to a reserved word* — are both in the harness, and both are **caught**. `.` and `[` are the only characters that break anywhere; `"` and NUL break only at the **start**.
+
+**The character set is MEASURED, not read off the JSON path grammar.** Every Unicode code point U+0000–U+10FFFF probed in 4 positions (leading, middle, trailing, alone) against a real SQLite `json_extract`: **4,448,256 probes, exactly 12 failures**, from 4 characters — `.` (anywhere), `[` (anywhere), `"` (leading only), NUL (leading only). BMP-only sweep: 253,440 probes in 444 ms; full sweep 7.4 s. Lone surrogates (U+D800–U+DFFF) are unsafe and were measured separately, because the sweep skips them: `json_valid` still returns 1 and a sibling property (`$.ok`) still reads — so it is a **per-property** defect, not a whole-row blast radius. (That last was my own worry, and measuring killed it.) The decisive reconciliation ran the shipped guard against SQLite's actual behaviour for **4,456,448 names across all of Unicode: 0 false negatives, 0 false positives.** The guard refuses exactly what breaks and nothing that works.
+
+**Two facts keep the guard from being the wrong shape.** (a) `canonicalName`'s output alphabet is `[a-z0-9_]` only, so any canonical name is addressable and `registerType` can never store an unaddressable one — measured: `a.b`→`a_b`, `a"b`→`a_b`, `a$b`→`a_b`, `a[b]`→`a_b`, `.a`→`a`, `a.`→`a`. The guard is therefore the second line, exactly as its doc comment claims, and the union is where it is load-bearing. (b) The recorder does **not** canonicalize property keys — it stores keys as given and validates against the spec — so a hand-inserted camelCase spec round-trips correctly through the view (`$.reviewKind` addresses it). **This is why the guard must NOT use the "name must equal its canonical form" predicate**, which would have refused a working name.
+
+**The mirror path was found and closed.** `union.ts` assembles the same `$.<property>` paths at QUERY time from specs the local registry never accepted, and it did **not** call `assertProjectable` — its comment at `:623-625` asserted the invariant in prose instead (*"a property name is canonical (`[A-Za-z0-9_]` only, see @ascend/core), so neither prefix can occur inside one"*). That sentence is true of every name the registry accepts and unenforced for the specs this path actually reads. It now asks the same question, and **that comment was corrected rather than deleted**, so the next reader sees what it used to claim.
+
+**The `(asc-865.1)` citation was false for the new rule and is corrected.** Each problem now cites its own finding: `reservedPropertyName` → `asc-865.1`, `unaddressablePropertyName` → `asc-bcv.16`. A shared citation would send a reader holding the second bug to the bead for the first — *a wrong answer that looks like a right one*. Both rules may report for one property: `'source.'` folds to `'source'` (reserved) and contains a dot (unaddressable), and the author needs both sentences to fix it in one edit, so there is deliberately no `continue` between them. A test asserts both citations appear for `source.`.
+
+**Driven through the real CLI, before and after** (`/tmp/f5-drive.sh`; the views guard temporarily disabled for the BEFORE arm, byte-identical restore verified). BEFORE — hand-insert a `dotted` v1 declaring `a.b`, then record and query:
+
+```
+properties_json                   -> {"a.b":"the-value"}
+SELECT "a.b", "a.b_state" ...     -> (empty)   |  not_measured
+```
+
+AFTER: `asc types define` on the same document **exits 1**, naming the property, the reason, the rename, and `(asc-bcv.16)` — and builds no index and no view.
+
+**Mutation:** `/tmp/mutate-f5.mjs`, 10 mutations — **9 caught, 0 survived as test weaknesses, 0 known gaps, 1 equivalent, 0 not applied.** The equivalent (widening the surrogate scan's skip to `code >= 0x20`) is **provably behaviour-preserving and the proof is written into the harness**: a well-formed pair is never two separate single-unit iterations, so the widened branch is unreachable and a test that "caught" it would have to assert on something other than behaviour.
+
+**Existing-data check (3), answered:** a store that already holds a dotted type would fail every future `refreshTypeViews` — the `asc-865.1` precedent, refuse and name the fix, so it is consistent. There is no migration and none is needed: `registerType` cannot store such a name, so the population is only hand-inserted specs.
+
+**Limit, stated:** the `assertProjectable` half is reachable **only** through a spec that bypassed the registry — this remains a gap in a defense-in-depth guard, not an open door, exactly as the audit rated it. The union half is the reachable one. And the whole fix is scoped to **addressing** a property: `ident` and `literal` in `sql.ts` correctly double `"` and `'`, so SQL injection was never the defect and is not claimed to be fixed here.
+
+**Gate:** `pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && align check` — **658 passed / 28 files**, `architecture green`, `security green (19 baselined)`, `verdict: green`.
 
 ---
 

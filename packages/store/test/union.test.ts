@@ -146,10 +146,16 @@ function project(specs: readonly TypeSpec[], entries: readonly FixtureEntry[] = 
 function projectBypassingTheRegistry(
   specs: readonly TypeSpec[],
   entries: readonly FixtureEntry[] = [],
+  options: { readonly fold?: boolean } = {},
 ): ProjectSource {
   return projectWith(
     (db, spec) => {
-      const shape = definitionShape(canonicalizeTypeSpec(spec).spec);
+      // `fold: false` keeps the name as written, which one fixture needs: `canonicalName('a.b')`
+      // is `'a_b'`, so folding a dotted name before inserting it would store an addressable name
+      // and prove nothing about the guard that refuses one.
+      const shape = definitionShape(
+        options.fold === false ? spec : canonicalizeTypeSpec(spec).spec,
+      );
       db.prepare(
         `INSERT INTO entry_types (name, version, major, type_hash, spec_json, created_at)
        VALUES (?, 1, 1, ?, ?, ?)`,
@@ -283,6 +289,57 @@ describe('the union keys on type_hash, never on version numbers', () => {
       expect(result.projects.map((entry) => entry.entryCount)).toEqual([1, 1]);
       // Each project holds both definitions; the pinned one is what makes them comparable.
       expect(result.projects.map((entry) => entry.hashes.length)).toEqual([2, 2]);
+    });
+  });
+});
+
+describe('a property name the union cannot address by JSON path', () => {
+  // asc-bcv.16 (F5), on the boundary this path has instead of the view generator's. A view is
+  // built once under the local registry, which canonicalizes every name it stores; a union is
+  // assembled at QUERY time from specs read out of other projects, so it inherits no guard and the
+  // comment that used to stand here asserted the invariant ("a property name is canonical") rather
+  // than checking it. Without the check a property named `a.b` projects `json_extract(..., '$.a.b')`
+  // -- measured reading NULL while the value sits in the row -- and the union reports a null column
+  // as a measured absence. Refused, and the refusal names the store to go fix.
+
+  it('refuses a dotted property name rather than projecting a null column', () => {
+    const dotted = projectBypassingTheRegistry(
+      [{ name: 'tool_denial', properties: [{ name: 'a.b', type: 'string' }] }],
+      [],
+      { fold: false },
+    );
+
+    withConnection((db) => {
+      let error: unknown;
+      try {
+        unionEntries(db, 'tool_denial', [dotted]);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain("property 'a.b'");
+      expect(message).toContain('path separator');
+      // The fix is in the OTHER project -- a union cannot rename anything it reads -- so the
+      // message has to say which name to go change, not merely that something is wrong.
+      expect(message).toContain("'a_b' is addressable");
+    });
+  });
+
+  it('does not refuse a name that reads correctly, so a real store is never blocked', () => {
+    // The other half, and the reason it is here: a guard on a READ path that fires on a working
+    // store would make a corpus unreadable with no way to repair it. `reviewKind` addresses
+    // correctly (`$.reviewKind`), so it must cross the union untouched.
+    const camel = projectBypassingTheRegistry(
+      [{ name: 'tool_denial', properties: [{ name: 'reviewKind', type: 'string' }] }],
+      [{ id: 'a1', properties: { reviewKind: 'approved' } }],
+      { fold: false },
+    );
+
+    withConnection((db) => {
+      const result = unionEntries(db, 'tool_denial', [camel]);
+      expect(result.rows.map((row) => row.properties['reviewKind'])).toEqual(['approved']);
     });
   });
 });

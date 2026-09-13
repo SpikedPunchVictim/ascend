@@ -7,6 +7,7 @@ import {
   ENVELOPE_PROPERTY_NAMES,
   reservedPropertyName,
   STATE_COLUMN_SUFFIX,
+  unaddressablePropertyName,
   type TypeSpec,
 } from '../src/index.js';
 
@@ -426,5 +427,121 @@ describe('definitionShape normalizes the fields that constrain nothing', () => {
     expect(shapeOf({ name: 'x', type: 'boolean', unit: 'ms' })).toEqual(
       shapeOf({ name: 'x', type: 'boolean' }),
     );
+  });
+});
+
+describe('a property name the view can address by JSON path', () => {
+  // asc-bcv.16 (F5). A view projects `json_extract(properties_json, '$.<name>')`, so a name that
+  // is not ONE path segment addresses something else and the column reads NULL while the value sits
+  // in the row. The predicate below is not read off the JSON path grammar: every code point in
+  // Unicode was probed in four positions against a real SQLite, 4,448,256 probes, and exactly 12
+  // failed. These are those 12, plus the names that measured SAFE -- the second half matters as
+  // much as the first, because a guard that refuses a name which projects faithfully is the same
+  // defect as one that passes a name which does not.
+  const NUL = String.fromCharCode(0);
+
+  const refused = (name: string): string => {
+    const problem = unaddressablePropertyName(name);
+    if (problem === undefined) throw new Error(`expected '${name}' to be refused`);
+    return problem.reason;
+  };
+
+  it('refuses a dot anywhere, because the path descends into a nested object', () => {
+    for (const name of ['a.b', '.ab', 'ab.', '.']) {
+      expect(unaddressablePropertyName(name), name).toBeDefined();
+    }
+    expect(refused('a.b')).toContain('path separator');
+  });
+
+  it('refuses a bracket anywhere, because it begins a subscript', () => {
+    for (const name of ['a[b', '[ab', 'ab[', '[']) {
+      expect(unaddressablePropertyName(name), name).toBeDefined();
+    }
+  });
+
+  it('refuses a quote or a NUL only at the START, where each one ends the path', () => {
+    // The POSITIONS are the finding. A leading quote opens a quoted key the path never closes and
+    // a leading NUL ends the path, and both were measured failing; a quote or a NUL in the middle
+    // was measured returning its literal key, so refusing those would be a false refusal.
+    for (const name of ['"ab', '"']) expect(unaddressablePropertyName(name), name).toBeDefined();
+    for (const name of [`${NUL}ab`, NUL]) {
+      expect(unaddressablePropertyName(name), name).toBeDefined();
+    }
+
+    expect(unaddressablePropertyName('a"b')).toBeUndefined();
+    expect(unaddressablePropertyName(`a${NUL}b`)).toBeUndefined();
+  });
+
+  it('refuses an unpaired surrogate, and NOT a well-formed pair', () => {
+    // The pair is the boundary: two UTF-16 units, one code point, so a scan by unit would report
+    // every emoji. Measured: a lone surrogate leaves its key in the JSON -- `json_valid` still
+    // returns 1 and a sibling property still reads -- but the path cannot carry the code unit.
+    expect(unaddressablePropertyName('a\uD800b')).toBeDefined();
+    expect(unaddressablePropertyName('a\uDFFFb')).toBeDefined();
+    expect(unaddressablePropertyName('\uD800')).toBeDefined();
+
+    expect(unaddressablePropertyName('a\u{1F600}b')).toBeUndefined();
+    expect(unaddressablePropertyName('\u{1F600}')).toBeUndefined();
+  });
+
+  it('passes every character that measured addressing its own key', () => {
+    // The over-refusal guard, and the reason this list is here rather than implied: the report
+    // that found F5 suggested refusing a quote and a lone dollar sign. Both were measured working
+    // -- `$.a"b` returns the key `a"b`, and it does so UNAMBIGUOUSLY even when a key `ab` is also
+    // present in the same document.
+    for (const name of [
+      'reviewKind',
+      'review_kind',
+      'round-count',
+      'a b',
+      'a]b',
+      'a$b',
+      '123',
+      'a*b',
+      "a'b",
+      'a?b',
+      'café',
+      '中文',
+    ]) {
+      expect(unaddressablePropertyName(name), name).toBeUndefined();
+    }
+  });
+
+  it('offers the canonical folding, which is addressable by construction', () => {
+    // Two spellings of the same defect fold to the same fix, and the folding is what makes the
+    // suggestion safe: canonical names are `[a-z0-9_]` only, and no character of that set is
+    // structural in a JSON path.
+    expect(unaddressablePropertyName('a.b')?.suggestion).toBe('a_b');
+    expect(unaddressablePropertyName('"ab')?.suggestion).toBe('ab');
+    expect(unaddressablePropertyName('a\uD800b')?.suggestion).toBe('a_b');
+  });
+
+  it('reports the name AS WRITTEN, because that is the string the view interpolates', () => {
+    // The one place this differs from `reservedPropertyName`, which canonicalizes first. Folding
+    // here would HIDE the defect: `canonicalName('a.b')` is `'a_b'`, which is addressable, so a
+    // check on the folded name would report every dotted name as fine.
+    expect(unaddressablePropertyName('a.b')?.name).toBe('a.b');
+    expect(unaddressablePropertyName('a.b')?.name).not.toBe(canonicalName('a.b'));
+  });
+
+  it('has a suggestion even for a name that folds away to nothing', () => {
+    // `canonicalName('.')` is empty, and a suggestion of '' would print as `Rename it -- ''`.
+    expect(unaddressablePropertyName('.')?.suggestion).toBe('value');
+  });
+
+  it('passes the names the registry already guarantees, so it never fires on normal use', () => {
+    // This guard is the SECOND line -- every name `registerType` stores is canonical and therefore
+    // addressable -- so a spec built through the registry never reaches it. Asserted rather than
+    // assumed, because a guard that fires on ordinary documents would be a regression, not a catch.
+    const spec = canonicalizeTypeSpec({
+      name: 'review',
+      properties: [
+        { name: 'reviewKind', type: 'string' },
+        { name: 'round-count', type: 'integer' },
+      ],
+    }).spec;
+    for (const property of spec.properties) {
+      expect(unaddressablePropertyName(property.name), property.name).toBeUndefined();
+    }
   });
 });

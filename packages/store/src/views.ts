@@ -34,6 +34,17 @@
  * reached the store without passing the registry. Measured and reproduced in views.test.ts
  * (`asc-865.1`).
  *
+ * **A property name must also be one JSON path segment** (`asc-bcv.16`, F5). `reservedPropertyName`
+ * is about the COLUMN a name occupies; this is about the PATH it is read through, and the two
+ * catch different names. `a.b` is not a reserved name, so it passed -- and the generated index and
+ * view embedded it as `'$.a.b'`, which addresses field `b` of an object `a`. Measured on the real
+ * generator: `properties_json` held `{"a.b":"the-value"}`, the view's column read NULL, and the
+ * index matched nothing. `@ascend/core`'s `unaddressablePropertyName` owns that rule, and
+ * `assertProjectable` refuses on it below, before any DDL runs. `registerType` cannot store such a
+ * name (`canonicalName('a.b')` is `'a_b'`, and the author is told it was renamed), so this too is
+ * the second line -- but the union reads specs from attached stores the local registry never saw,
+ * so `union.ts` asks the same question at its own boundary.
+ *
  * **Indexes**, per EV-4's required addition: one composite expression index per property,
  * `(type_name, json_extract(properties_json, '$.<prop>'))`. The bare-expression form is
  * *worse than no index* (449.6 ms vs 231.0 ms) because it cannot carry the `type_name`
@@ -53,7 +64,7 @@
  * by running the refresh again rather than by a migration.
  */
 
-import { reservedPropertyName, type TypeSpec } from '@ascend/core';
+import { reservedPropertyName, unaddressablePropertyName, type TypeSpec } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
 import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
 
@@ -75,20 +86,48 @@ import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
  */
 function assertProjectable(versions: readonly TypeVersion[]): void {
   const problems: string[] = [];
+
+  // Two rules, and BOTH may be reported for one property: `reservedPropertyName` folds the name
+  // before answering while `unaddressablePropertyName` deliberately does not, so `'source.'` is
+  // reserved AND unaddressable, and the author needs both sentences to fix it in one edit. A
+  // `continue` between them would report whichever was asked first and hide the other.
+  //
+  // Each problem cites ITS OWN finding rather than the function citing one. The two rules came from
+  // two different bugs (`asc-865.1` reserved a name a view claims, `asc-bcv.16` refused a name the
+  // path cannot address), and a shared citation would send a reader holding the second one to the
+  // bead for the first -- which is a wrong answer that looks like a right one.
+  const refuse = (problem: {
+    readonly version: number;
+    readonly name: string;
+    readonly reason: string;
+    readonly suggestion: string;
+    readonly reference: string;
+  }): void => {
+    problems.push(
+      `version ${String(problem.version)} declares property '${problem.name}': ${problem.reason}. ` +
+        `Rename it -- '${problem.suggestion}' projects faithfully. ` +
+        `The view was NOT built -- registering a corrected version is the fix ` +
+        `(${problem.reference}).`,
+    );
+  };
+
   for (const { version, spec } of versions) {
     for (const property of spec.properties) {
       const reserved = reservedPropertyName(property.name);
-      if (reserved === undefined) continue;
-      problems.push(
-        `version ${String(version)} declares property '${reserved.name}': ${reserved.reason}. ` +
-          `The view was NOT built -- registering a corrected version is the fix.`,
-      );
+      if (reserved !== undefined) {
+        refuse({ version, ...reserved, reference: 'asc-865.1' });
+      }
+
+      const unaddressable = unaddressablePropertyName(property.name);
+      if (unaddressable !== undefined) {
+        refuse({ version, ...unaddressable, reference: 'asc-bcv.16' });
+      }
     }
   }
 
   if (problems.length > 0) {
     throw new Error(
-      `cannot build a faithful view for these definitions (asc-865.1):\n` +
+      `cannot build a faithful view for these definitions:\n` +
         problems.map((problem) => `  ${problem}`).join('\n'),
     );
   }

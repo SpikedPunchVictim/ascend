@@ -138,9 +138,19 @@ const columnNames = (store: Store, view: string): readonly string[] =>
  * `registerType` refuses a property the view has claimed (asc-865.1), so a fixture for the
  * view generator's own refusal has to go in underneath the registry. Same shape, same hash --
  * the columns a view reads are `spec_json` and the version numbers.
+ *
+ * `fold: false` inserts the name AS WRITTEN, and exists because folding is exactly what one of
+ * these fixtures is about. `canonicalName('a.b')` is `'a_b'`, so a fixture that folded its own
+ * dotted name before inserting would store an addressable name and prove nothing about the guard
+ * that refuses one. Folding is the default because folding is what the registry does; the
+ * exception is opt-in and named at the call site.
  */
-const insertVersionRow = (store: Store, spec: TypeSpec): void => {
-  const shape = definitionShape(canonicalizeTypeSpec(spec).spec);
+const insertVersionRow = (
+  store: Store,
+  spec: TypeSpec,
+  options: { readonly fold?: boolean } = {},
+): void => {
+  const shape = definitionShape(options.fold === false ? spec : canonicalizeTypeSpec(spec).spec);
   store.db
     .prepare(
       `INSERT INTO entry_types (name, version, major, type_hash, spec_json, created_at)
@@ -674,6 +684,116 @@ describe('a property can never want a column the view has already claimed', () =
         .all() as unknown as { name: string }[];
       // Nothing was built -- not the view, and not the indexes either: the refusal precedes all DDL.
       expect(objects.filter((object) => object.name.includes('note'))).toEqual([]);
+    });
+  });
+});
+
+describe('a property name the view cannot address by JSON path', () => {
+  // asc-bcv.16 (F5). The reserved-name rule above is about the COLUMN a name occupies; this is
+  // about the PATH it is read through, and the two catch different names. `a.b` is reserved by
+  // nothing, so it passed -- and the generated index and view embedded it as `'$.a.b'`, which
+  // addresses field `b` of an object `a`. The measured consequence, reproduced in the last test
+  // here, is a column reading NULL while the value sits in `properties_json`: a queryable surface
+  // reporting a plausible wrong answer, which is the class this product exists to prevent.
+
+  it('refuses a dotted name, and builds nothing at all', () => {
+    withStore((store) => {
+      insertVersionRow(
+        store,
+        { name: 'note', properties: [{ name: 'a.b', type: 'string' }] },
+        { fold: false },
+      );
+
+      // Named, not a bare throw: the message has to say which property and what the path does.
+      expect(() => refreshTypeViews(store.db, 'note')).toThrow(/property 'a\.b'/);
+      expect(() => refreshTypeViews(store.db, 'note')).toThrow(/path separator/);
+      expect(() => refreshTypeViews(store.db, 'note')).toThrow(/'a_b' projects faithfully/);
+
+      const objects = store.db
+        .prepare("SELECT name FROM sqlite_master WHERE type IN ('view', 'index')")
+        .all() as unknown as { name: string }[];
+      // Nothing was built -- not the view, and not the indexes either: the refusal precedes all DDL.
+      expect(objects.filter((object) => object.name.includes('note'))).toEqual([]);
+    });
+  });
+
+  it('refuses a leading quote and a leading NUL, the other two measured shapes', () => {
+    withStore((store) => {
+      // One type each, because a version row is unique on (name, version) and both cases are
+      // version 1 of their own type.
+      const cases = [
+        { type: 'quoted', name: '"quoted' },
+        { type: 'nuled', name: `${String.fromCharCode(0)}nul` },
+      ];
+      for (const { type, name } of cases) {
+        insertVersionRow(
+          store,
+          { name: type, properties: [{ name, type: 'string' }] },
+          { fold: false },
+        );
+        expect(() => refreshTypeViews(store.db, type), name).toThrow(/cannot build a faithful/);
+      }
+    });
+  });
+
+  it('DOES NOT refuse a name that reads correctly, which is the other half of the rule', () => {
+    // The over-refusal guard, and it is not hypothetical: the report that found F5 proposed
+    // rejecting `"` and a lone `$`, and BOTH measure returning their literal key. This test drives
+    // the strongest form of the claim -- a hand-inserted spec whose name only a folded check would
+    // reject, recorded into and read back THROUGH the view. `registerType` stores canonical names,
+    // so `reviewKind` reaches a store only this way, and `$.reviewKind` addresses it exactly.
+    withStore((store) => {
+      insertVersionRow(
+        store,
+        { name: 'note', properties: [{ name: 'reviewKind', type: 'string' }] },
+        { fold: false },
+      );
+
+      refreshTypeViews(store.db, 'note');
+      recordEntry(
+        store.db,
+        { type: 'note', properties: { reviewKind: 'from-the-llm' } },
+        context('e1'),
+      );
+
+      // The value is in the row AND in the column. A guard that refused this name would turn a
+      // working store into one that cannot be refreshed at all -- and types are immutable, so
+      // there is no way back out.
+      expect(store.db.prepare('SELECT properties_json FROM entries').get()).toEqual({
+        properties_json: '{"reviewKind":"from-the-llm"}',
+      });
+      expect(
+        store.db.prepare(`SELECT "reviewKind" AS v FROM ${viewName('note', 1)}`).get(),
+      ).toEqual({ v: 'from-the-llm' });
+    });
+  });
+
+  it('reports BOTH problems for a name that is reserved and unaddressable', () => {
+    // `reservedPropertyName` folds before answering; `unaddressablePropertyName` deliberately does
+    // not. So `source.` is both, and an early `continue` between the two checks would print one
+    // sentence and hide the other -- leaving an author to fix half the name and come back.
+    withStore((store) => {
+      insertVersionRow(
+        store,
+        { name: 'note', properties: [{ name: 'source.', type: 'string' }] },
+        { fold: false },
+      );
+
+      const message = (() => {
+        try {
+          refreshTypeViews(store.db, 'note');
+          return '';
+        } catch (error) {
+          return (error as Error).message;
+        }
+      })();
+      expect(message).toContain('path separator');
+      expect(message).toContain('envelope already carries a column');
+      // Each problem cites its OWN finding. The prefix used to carry `(asc-865.1)` for every
+      // refusal, which was correct while the reserved rule was the only one -- and became a wrong
+      // answer that looks like a right one the moment a second rule shared the message.
+      expect(message).toContain('(asc-865.1)');
+      expect(message).toContain('(asc-bcv.16)');
     });
   });
 });
