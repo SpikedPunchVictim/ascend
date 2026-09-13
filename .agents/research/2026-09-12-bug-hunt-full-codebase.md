@@ -87,6 +87,15 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 
 *B11, B12, F8 and F9 were found by a supplementary read-only CLI pass and **verified by me** before entering this table; the verification output is in §5b.*
 
+**Progress against this table** (the table itself stays as the audit found it; each finding's detail section carries its own `Status:` line):
+
+| Finding | Status | Commit |
+|---|---|---|
+| B1 | FIXED | `3252fb3` |
+| B2 | FIXED | `49ffa87` |
+| F1 | FIXED (+ follow-up) | `304915b`, `4ee844a` |
+| B8 | FIXED | *this commit* |
+
 ---
 
 ## 4. Fix Plan & Interactions
@@ -401,6 +410,19 @@ Given `--prop=chosen=a --prop=other=x --prop=chosen=b`, the ledger holds `"b"` a
 
 **Blast radius:** code — `packages/cli/src/commands/record.ts` (1 file); data — none; coordination — none.
 **Verified fix:** detect the repeat while accumulating `--prop`, and emit a warning on the existing channel naming both values and which one won — consistent with `state.ts:88-96`. **Failure mode (5):** refusing outright (exit 2) is also defensible and is stricter; the project's own precedent favours warn-and-keep, so that is the recommendation. **Empirical re-test (8):** re-run the command and assert a non-empty stderr naming `a` and `b`.
+
+**Status: FIXED** — `packages/cli/src/commands/record.ts` (`sameValue`, `PropertyFlags`, `propertiesFrom`, `overruledWarning`), six tests in `packages/cli/test/record.test.ts`. Everything the re-test above asked for, plus five assertions the fix's own eight checks produced:
+
+- **Check 1 (the fix's own arithmetic).** Nothing counts anything — the comparison is `canonicalJson(left) === canonicalJson(right)`, i.e. the store's identity function for a recording, so `{"a":1,"b":2}` and `{"b":2,"a":1}` are one value. `canonicalJson` **throws** on a non-finite number (`core/src/hash.ts:186`; `JSON.parse('1e999')` really yields `Infinity`), so `sameValue` catches and returns `false` — deliberately the direction that over-warns rather than silently discarding a value.
+- **Check 2 (mirror path).** The warning fires on the flag path and on the `--json` row's `warnings` array, the same two channels the store's own dropped-property warning uses. A repeat with the **same** value does not warn at all: nothing was discarded, and `--na` already treats a repeat as a set (`record.test.ts:482`) — a warning that fires when nothing was lost is how the channel stops being read.
+- **Check 3 (existing data).** None needed: no stored row becomes wrong, because the fix changes only what the command says, not what it writes.
+- **Check 5 (failure modes).** The warning's text is a claim about an **outcome** ("Only the last is recorded"), so it is emitted *after* the writes, inside the transaction. The first draft emitted it before `recordOrRefuse` could refuse — which announced a discard on a recording that wrote nothing, a false report from the one channel a caller is asked to trust. A seventh test pins that placement, and it is the mutation that kills it.
+- **Check 6 (interaction).** The refuse-vs-warn escalation is *not* taken here and stays open as one decision shared with `asc-4if` (NR3). Warn-and-name-the-winner changes no exit code, so it ships without pre-empting that call.
+- **Check 8 (empirical re-test).** Met: `says so when a repeated --prop discarded a value, and names both values` asserts non-empty stderr containing `'a'` and `'b'`, the winner genuinely stored, and the row's own `warnings` entry.
+
+**Mutation-tested, all four killed and every new test killed by at least one:** dropping the detection (kills 3), `canonicalJson` → `===` (kills the key-order test), warning on *any* repeat (kills both absence tests), and emitting before the writes (kills the placement test). Harness: `/tmp/mutate-b8.mjs`, restored byte-identical.
+
+**What this fix does NOT settle.** The report's own corroboration at §5b stands: `asc record` refuses document-plus-`--prop` on the grounds that *"merging them would mean choosing a winner per property -- a rule nobody could predict"*, yet silently chose a winner here. The warning makes the choice visible; it does not make it consistent. That is the `asc-4if` decision.
 
 ---
 

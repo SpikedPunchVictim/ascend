@@ -62,6 +62,7 @@ import {
   type RecordRequest,
   type RecordResult,
 } from '@ascend/store';
+import { canonicalJson } from '@ascend/core';
 import { BaseCommand } from '../base.js';
 import { parseEntryDocuments, type EntryDocument } from '../entry-document.js';
 import { refusal, usageError } from '../errors.js';
@@ -127,21 +128,96 @@ function parsePropertyFlag(raw: string): readonly [string, unknown] {
 }
 
 /**
- * The `--prop` flags as a properties object.
+ * Whether two parsed `--prop` values are the SAME value.
  *
- * Null-prototype: the names come from the command line. On an object literal
- * `--prop=__proto__=x` is swallowed by the inherited `__proto__` accessor instead of
- * becoming a key, so `Object.entries` never sees it and the unknown-property warning never
- * fires -- the flag would be dropped with no output at all, which is the silent-success
- * failure this command refuses everywhere else.
+ * `canonicalJson` rather than `JSON.stringify`, because it sorts object keys: `{"a":1,"b":2}` and
+ * `{"b":2,"a":1}` are one value written two ways, and treating them as two would be a false alarm.
+ * And an alarm that fires when nothing was lost is how a warnings channel stops being read.
+ *
+ * It THROWS on a non-finite number, and `JSON.parse('1e999')` really does produce `Infinity`, so a
+ * pair that cannot be compared counts as different. The direction matters: warning about a repeat
+ * that turns out to have been harmless is a smaller failure than silently discarding a value, and
+ * the silent discard is the defect this exists to fix.
  */
-function propertiesFrom(propFlags: readonly string[]): Record<string, unknown> {
+function sameValue(left: unknown, right: unknown): boolean {
+  try {
+    return canonicalJson(left) === canonicalJson(right);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What the `--prop` flags came to, and which of them were overruled.
+ */
+interface PropertyFlags {
+  /**
+   * The properties to record, keyed by name. Null-prototype: the names come from the command
+   * line. On an object literal `--prop=__proto__=x` is swallowed by the inherited `__proto__`
+   * accessor instead of becoming a key, so `Object.entries` never sees it and the unknown-
+   * property warning never fires -- the flag would be dropped with no output at all, which is
+   * the silent-success failure this command refuses everywhere else.
+   */
+  readonly properties: Readonly<Record<string, unknown>>;
+  /**
+   * Names given more than once with values that DIFFER, in first-written order, with the text the
+   * caller actually typed for each.
+   *
+   * The text, not the parsed value, because the message has to quote what the caller wrote: the
+   * whole point is that they cannot tell from their own command line which of their two values
+   * survived. Measured before this existed: `--prop=chosen=a --prop=chosen=b` recorded `"b"`,
+   * exited 0, and printed nothing at all to stderr -- into a ledger that cannot be corrected, since
+   * entries are immutable and `recordEntry` refuses a duplicate id.
+   *
+   * A repeat with the SAME value is deliberately NOT here. Nothing is lost, and `--na` already
+   * treats a repeat as a set rather than a warning; a warning that fires when nothing was discarded
+   * is noise, and noise is what makes a real warning invisible.
+   */
+  readonly overruled: readonly { readonly name: string; readonly texts: readonly string[] }[];
+}
+
+/** The `--prop` flags as a properties object, plus the repeats that discarded a value. */
+function propertiesFrom(propFlags: readonly string[]): PropertyFlags {
   const properties = Object.create(null) as Record<string, unknown>;
+  // A Map, not a null-prototype object: this groups by name and is never serialized, so it does
+  // not need the shape rule the `properties` object above is subject to. Insertion order is the
+  // order the names were first written, which is the order the warnings should be reported in.
+  const groups = new Map<string, { values: unknown[]; texts: string[] }>();
+
   for (const raw of propFlags) {
     const [name, value] = parsePropertyFlag(raw);
+    const text = raw.slice(raw.indexOf('=') + 1);
+    const group = groups.get(name) ?? { values: [], texts: [] };
+    group.values.push(value);
+    group.texts.push(text);
+    groups.set(name, group);
     properties[name] = value;
   }
-  return properties;
+
+  const overruled = [...groups]
+    .filter(([, group]) => group.values.some((value) => !sameValue(value, group.values[0])))
+    .map(([name, group]) => ({ name, texts: group.texts }));
+
+  return { properties, overruled };
+}
+
+/**
+ * How a discarded `--prop` repeat is reported: what was written, and which value is kept.
+ *
+ * `problem`/`fix` split rather than one sentence, because this goes onto the row alongside the
+ * store's own warnings and those are read as `field: problem`.
+ */
+function overruledWarning(
+  name: string,
+  texts: readonly string[],
+): { problem: string; fix: string } {
+  const values = texts.map((text) => `'${text}'`).join(', ');
+  return {
+    problem: `--prop=${name} was given ${String(texts.length)} times with different values (${values})`,
+    fix:
+      `Only the last is recorded. A property has one value, so the earlier ones were discarded -- ` +
+      `remove them, or if you did not mean the same property, check the names.`,
+  };
 }
 
 /** How a message names one entry: by index in a batch, and not at all otherwise. */
@@ -269,11 +345,16 @@ export default class RecordEntry extends BaseCommand {
       );
     }
 
+    const propFlags = propertiesFrom(props);
+    // Only ever non-empty when `--prop` supplied the entry, which is the one-document path below:
+    // that is why these can be emitted once for the call and attached to the first row.
+    const overruled = propFlags.overruled.map(({ name, texts }) => overruledWarning(name, texts));
+
     const documents =
       args.document === undefined
         ? [
             {
-              properties: propertiesFrom(props),
+              properties: propFlags.properties,
               ...(nas.length === 0 ? {} : { na: naFrom(nas) }),
               ...(flags.evidence === undefined ? {} : { evidence_text: flags.evidence }),
             } satisfies EntryDocument,
@@ -317,8 +398,8 @@ export default class RecordEntry extends BaseCommand {
         }
       };
 
-      const writeAll = (): RecordRow[] =>
-        documents.map((document, index) => {
+      const writeAll = (): RecordRow[] => {
+        const rows = documents.map((document, index) => {
           // Call-level flags are DEFAULTS: an entry that states its own value keeps it. A batch
           // carrying one run id per entry and a `--run-id` for the rest must not have the flag
           // overwrite the entries that were explicit about it.
@@ -363,11 +444,29 @@ export default class RecordEntry extends BaseCommand {
             na: result.entry.na,
             // Also on the row, although every one of them has just been written to stderr. A
             // dropped property is silent data loss, and the caller most likely to miss it is the
-            // machine reading stdout alone -- which is the caller this command exists for.
-            warnings: result.warnings.map((warning) => `${warning.field}: ${warning.problem}`),
+            // machine reading stdout alone -- which is the caller this command exists for. A
+            // discarded `--prop` repeat is the same loss by a different route, so it travels the
+            // same way; it is call-level, and the path that produces it is single-entry, which is
+            // why it hangs off the first row rather than every one.
+            warnings: [
+              ...(index === 0 ? overruled.map((w) => `--prop: ${w.problem}`) : []),
+              ...result.warnings.map((warning) => `${warning.field}: ${warning.problem}`),
+            ],
             dry_run: dryRun,
           };
         });
+
+        // AFTER the writes, not before them, and inside the transaction rather than outside it.
+        // The message says the last value IS recorded -- it is a claim about an outcome, so it must
+        // not be made until the outcome exists. `recordOrRefuse` refuses from inside the map above,
+        // so emitting this first (as the first draft did) announced "Only the last is recorded" on
+        // a recording that wrote nothing: a warning about a write that did not happen is its own
+        // false report. A dry run reaches here too, because it runs the real work inside
+        // `withRollback` rather than skipping it -- so a preview says what the real run would say.
+        for (const { problem, fix } of overruled) this.warn(`${problem}. ${fix}`);
+
+        return rows;
+      };
 
       const rows = dryRun ? withRollback(store.db, writeAll) : withTransaction(store.db, writeAll);
 

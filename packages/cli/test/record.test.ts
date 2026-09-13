@@ -352,6 +352,129 @@ describe('asc record', () => {
     expect(flatten(run.stderr)).toContain('--prop=<name>=<value>');
   });
 
+  it('says so when a repeated --prop discarded a value, and names both values', () => {
+    // Measured before the fix: this command exited 0, printed NOTHING to stderr, and the ledger
+    // held `"b"` -- `a` was gone with no signal at all, into a table that cannot be corrected
+    // (entries are immutable, and re-recording the id is refused). The project's own precedent for
+    // a dropped key is the opposite: `core/state.ts` strips an undeclared property AND reports it,
+    // "so it cannot be silent". This path was the exception.
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '--prop=chosen=a', '--prop=rationale=r', '--prop=chosen=b', '--json'],
+      dir,
+    );
+
+    expect(run.status).toBe(0);
+    const message = flatten(run.stderr);
+    // Both values, so the caller can see which one they are losing -- and which one they keep.
+    expect(message).toContain("'a'");
+    expect(message).toContain("'b'");
+    expect(message).toContain('Only the last is recorded');
+
+    // The winner is genuinely the last one, which is what the message claims.
+    expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      chosen: 'b',
+      rationale: 'r',
+    });
+  });
+
+  it('puts the discarded value on the row too, for a machine reading only stdout', () => {
+    // The same reasoning as the store's own dropped-property warning: the caller most likely to
+    // miss a stderr line is the one parsing stdout, which is the caller this command is built for.
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '--prop=chosen=a', '--prop=rationale=r', '--prop=chosen=b', '--json'],
+      dir,
+    );
+
+    expect(run.status).toBe(0);
+    const [row] = envelope(run.stdout);
+    expect(row?.['warnings']).toEqual([
+      expect.stringContaining('--prop=chosen was given 2 times with different values'),
+    ]);
+  });
+
+  it('does NOT warn when the repeated --prop carries the SAME value', () => {
+    // The other half, and the reason the warning is not simply "gave a name twice". Nothing was
+    // discarded here, so there is nothing to report -- and `--na` already treats a repeat as a set
+    // rather than a warning. A warning that fires when nothing was lost is how the channel stops
+    // being read, which is the same defect as a guard that over-fires.
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '--prop=chosen=a', '--prop=rationale=r', '--prop=chosen=a', '--json'],
+      dir,
+    );
+
+    expect(run.status).toBe(0);
+    expect(flatten(run.stderr)).toBe('');
+    expect(envelope(run.stdout)[0]?.['warnings']).toEqual([]);
+    expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      chosen: 'a',
+      rationale: 'r',
+    });
+  });
+
+  it('compares a repeated --prop value canonically, so key order is not a difference', () => {
+    // `{"a":1,"b":2}` and `{"b":2,"a":1}` are one value written two ways, and `options_considered`
+    // is a `json` property -- the type whose values ARE objects, so it is the only place this can
+    // bite. Written twice identically-but-reordered, nothing is discarded and the warning must stay
+    // quiet; a comparison on the raw text (`===`, or the flag strings) would fire here.
+    const dir = project();
+    const run = asc(
+      [
+        'record',
+        'decision',
+        '--prop=chosen=a',
+        '--prop=rationale=r',
+        '--prop=options_considered={"x":1,"y":2}',
+        '--prop=options_considered={"y":2,"x":1}',
+        '--json',
+      ],
+      dir,
+    );
+
+    expect(run.status).toBe(0);
+    expect(flatten(run.stderr)).toBe('');
+    expect(envelope(run.stdout)[0]?.['warnings']).toEqual([]);
+    const recorded = JSON.parse(stored(dir)[0]?.properties_json ?? '{}') as Record<string, unknown>;
+    expect(recorded['options_considered']).toEqual({ x: 1, y: 2 });
+  });
+
+  it('does NOT claim a value was discarded when the entry was refused and nothing was written', () => {
+    // The warning's text is a claim about the OUTCOME ("Only the last is recorded"), so on a
+    // refusal it would be a false report -- and a false report from the warnings channel is worse
+    // than silence, because it is the channel a caller learns to trust. `rationale` is required and
+    // is left out here, so this entry is refused before any write happens.
+    const dir = project();
+    const run = asc(['record', 'decision', '--prop=chosen=a', '--prop=chosen=b'], dir);
+
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain('rationale');
+    expect(flatten(run.stderr)).not.toContain('Only the last is recorded');
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('reports a discarded --prop on a dry run too, and still writes nothing', () => {
+    // A preview says what the real run would say -- the same rule `types import` follows, and the
+    // reason both run their work inside a rolled-back transaction rather than skipping it.
+    const dir = project();
+    const run = asc(
+      [
+        'record',
+        'decision',
+        '--prop=chosen=a',
+        '--prop=rationale=r',
+        '--prop=chosen=b',
+        '--dry-run',
+      ],
+      dir,
+    );
+
+    expect(run.status).toBe(0);
+    expect(flatten(run.stderr)).toContain('Only the last is recorded');
+    expect(stored(dir)).toEqual([]);
+  });
+
   it('splits --prop on the FIRST =, so a value may contain as many as it likes', () => {
     // The reason the split is `indexOf` rather than `lastIndexOf`. A rationale is prose about code,
     // and `x = y` is exactly what prose about code contains -- so a parser that split on the last
