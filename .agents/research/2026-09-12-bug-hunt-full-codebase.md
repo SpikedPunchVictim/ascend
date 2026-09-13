@@ -108,7 +108,7 @@ Act on this section first.
 **Ship-together sets (never split across phases):**
 
 - **{B4, F4-data}** — `BEGIN IMMEDIATE` (B4) also removes the check-then-act window in `registerType`'s version selection. Do not fix the version-selection race separately; the transaction mode is the fix. My probe reached the snapshot guard before the UNIQUE constraint, so the UNIQUE collision remains **unverified** — fixing B4 may make it unreachable, and that should be confirmed by re-running the two-connection probe, not assumed.
-- **{B1, F5}** — both are "a name the guard vocabulary does not cover reaches a layer that assumes it does." B1's repair is in state resolution; its cheap second line is extending `reservedPropertyName`. F5's is `assertProjectable`. Extend the reserved-name vocabulary **once** and have both consumers use it — otherwise the two lists drift and the class returns.
+- **{B1, F5}** — **WITHDRAWN as a ships-with set: not a pair.** This report originally grouped them as "a name the guard vocabulary does not cover reaches a layer that assumes it does," and proposed extending `reservedPropertyName` once so both consumers use one list. Building B1 disproved that, and it is recorded here rather than quietly dropped. B1's mechanism was never a missing reserved name: the defect was that the property accumulator **was an object literal**, so `Object.prototype` members were reachable as values, and the fix is "stop using the prototype chain as a map" — `Object.hasOwn` for the read, a null-prototype map for the write. `constructor` is a *legitimate* property name, now working end to end (registered, refused when undecided, accepted as N/A, stored measured, projected into the view). F5's `a.b` is a different mechanism entirely: a name containing a dot becomes a JSON *path* in `json_extract(properties_json, '$.a.b')`, so the projection reads into a nested object that was never written. That needs `assertProjectable`, not a reserved-name entry — and adding `a.b` (or `constructor`) to `reservedPropertyName` would refuse a name the store can actually store. **B1 and F5 are standalone.** Shipping B1 as a pair with F5 would have meant either banning `constructor` or leaving B1 unfixed.
 - **{F3, B9}** — both are "a write path accepts a value the read path cannot interpret." Both are fixed by making the write path validate, and both need the *same* decision about existing bad rows.
 
 **Ordering constraints:**
@@ -453,6 +453,8 @@ Three representations of "nothing": zero bytes, `[]`, and a refusal. `export` em
 
 ### F1 — The single-write-path guard evades 4 of 6 write forms
 
+**Status: FIXED** — `304915b`, with a follow-up at `4ee844a`. The evidence table below carries two corrections found while building the fix (see the postscript).
+
 **Lens:** 3 (boundary), 8 (cross-implementation divergence)
 **Confidence:** Confirmed (empirical) · **Urgency:** High
 
@@ -472,19 +474,28 @@ scan INSERT OR REPLACE     :: EVADES
 scan REPLACE INTO          :: EVADES
 scan INSERT OR IGNORE      :: EVADES
 scan split over two lines  :: EVADES
-scan block comment between :: EVADES
+scan block comment between :: CAUGHT   <-- corrected; see postscript
 ```
 
 **Consequence:** the test's own comment states the threat it exists for — *"a second `INSERT INTO entries` compiles and passes every behavioural test in this file"*. A second write path written as `INSERT OR REPLACE INTO entries` — which is the natural way to write an upsert — passes every behavioural test **and** the guard. This is the false-green class: a check that reports green while not checking.
 
 **Blast radius:** code — `packages/store/test/recorder.test.ts` (1 file); data — none; coordination — none.
-**Verified fix:** match the whole comment-stripped source with whitespace normalized, not line by line, and cover the alternations:
+**Verified fix (as shipped):** `scan` now matches over the WHOLE comment-stripped source and derives each line number from the match offset, and the pattern covers all five SQLite conflict clauses, `REPLACE INTO`, quoted/bracketed identifiers, a schema qualifier, and comment text between the verb and the table:
 
 ```
-/INSERT\b[^;]*?\bINTO\s+entries\b|\bREPLACE\s+INTO\s+entries\b/i
+\b(?:INSERT(?:\s+OR\s+(?:REPLACE|IGNORE|ABORT|FAIL|ROLLBACK))?\s+INTO|REPLACE\s+INTO)\s+
+(?:--[^\n]*\n\s*)*(?:["'\[]?\w+["'\]]?\s*\.\s*)?["'\[]?entries["'\]]?\b
 ```
 
 **Boundary check (1):** the multi-line case is exactly why per-line matching fails — the fix must operate on the whole source. **Failure mode (5):** the widened pattern must still not fire on the string `"SELECT * FROM entries"` (asserted today at `recorder.test.ts:591`) nor on prose mentioning the token. **Empirical re-test (8):** add all six forms to the test's self-check block, which already exists at `recorder.test.ts:584-591` for exactly this reason.
+
+**Postscript — two corrections found while building the fix, recorded rather than dropped.**
+
+1. **The table's sixth row was wrong.** "Block comment between" is **CAUGHT** by the guard as written: stripping `/* c */` leaves `INSERT INTO  entries`, which the narrow pattern matches. Measured both ways. The count in the headline ("4 of 6") survives because a different form the report did not enumerate does evade — see (2) — so the row is a membership error, not a count error. A finding whose conclusion is right and whose evidence is wrong is still a defective finding, which is why this is written down.
+
+2. **A seventh spelling evades, and the report omitted it:** `INSERT INTO "entries" (…)`. Measured. So the reachable set was larger than the report's enumeration, and the fix covers it.
+
+3. **A note on the fix's own construction.** After 12 of 13 spellings were caught, the last miss was `INSERT INTO -- c\n entries`, and it is worth naming why: `stripComments` removes *JS* comments, and a `--` inside the SQL text is not one, so the pattern treated the comment as an obstacle `\s+` could not cross. Closed at `4ee844a`, with all three comment spellings now in the enumerated test. Also recorded there: the first draft's comment justified `(?!\w)` over `\b` as load-bearing, and a mutation run showed the two are equivalent at that position — so the comment now claims only what the tests actually protect.
 
 ---
 
@@ -779,6 +790,32 @@ The same pass independently traced two findings already in this report, and adds
 - **B4** — it reached the identical conclusion from source alone (`record.ts:364` → deferred `BEGIN`, `recorder.ts:261` reads before the write at `:267`), and adds the reason the busy timeout cannot help: SQLite's retry is gated on the transaction being in `TRANS_NONE`, which is false during an upgrade. It also adds a consequence I had not stated: a multi-entry batch rolls back **entirely** and exits 1, which the exit-code contract defines as "the answer was no" — so a caller's script will not retry a transient lock conflict. It could not reproduce the race (it needs two live writers); **I did**, and my measurement is the one this report rests on.
 - **B8** — it adds the internal inconsistency that makes the silence indefensible: the same command refuses the analogous document-plus-flags case on the grounds that *"merging them would mean choosing a winner per property -- a rule nobody could predict from the command line"* (`record.ts:237-246`), and `naFrom` refuses an empty name rather than absorbing it (`record.ts:163-175`). The duplicate-property case is the one place that rule is not applied.
 - **F2** — it cites `union.ts:41-43` for the "attaching one at a time has no ceiling" argument, narrowing my citation from `:38-43`, and makes the reachability concrete: `EV-corpus.md` streams `~/.claude/projects/`, so a corpus exceeding 10 projects is the *expected* case for this feature, not an edge case.
+
+---
+
+## 5c. Addendum — the correction pass, and what building the fixes established
+
+This section exists because the fix work changed the report's own contents in three ways. All three are recorded here rather than edited silently into §2–§5, so a reader can see what moved.
+
+### The count was 17 when you approved it, and is 21
+
+**This is the correction owed to you.** You approved a plan to *"fix all 17 bugs, phase by phase"*, from a report whose §2 then read **10 BUG + 7 FRAGILE = 17**. Four further findings — **B11, B12, F8, F9** — were verified *after* that answer and added in §5b, which brought the totals to **12 BUG + 9 FRAGILE = 21**. §2, §3, §4 and §5b have said 21 since §5b was written; this note is so the number you were shown and the number the report states are reconcilable rather than contradictory. The four are not a scope change you did not agree to: they came from the same supplementary pass the report already describes, and they are all in `--across`, which §4 already treats as one unit of work.
+
+### Corrections to the report's own findings, made while building the fixes
+
+| Finding | What changed | Why |
+|---|---|---|
+| **F1** | Evidence-table row 6 is wrong (block comment is CAUGHT, not evaded); a seventh spelling (`INSERT INTO "entries"`) evades and was omitted | Both measured; the headline count survives, the membership did not |
+| **{B1, F5}** | **Withdrawn as a ships-with set** — the two are standalone | B1's mechanism is the prototype chain, not a missing reserved name; `constructor` is legitimate and now works. F5's `a.b` is a JSON-path bug needing `assertProjectable` |
+| **B1** | The "extend the reserved-name vocabulary once" remedy is wrong for B1 | Adding `constructor` to `reservedPropertyName` would refuse a name the store can store |
+
+### New sub-findings, verified while fixing B1 and B2
+
+- **`propertiesFrom` (`cli/src/commands/record.ts`) swallowed `--prop=__proto__=…` mutely.** The flags were collected into an object literal, so `Object.prototype`'s `__proto__` setter ignored the non-object assignment, `Object.entries` never saw the key, and the command **exited 0 having silently discarded a flag** — not "warned and stripped", not mentioned at all. This is the write-half of B1's class in a second module. **Fixed with B1** (`3252fb3`) and pinned by a CLI test that asserts the warning fires and the key is absent from the stored row. Confirmed (empirical).
+- **`toStorage`'s `prose` accumulator (`store/src/registry.ts`) has the same shape** — a per-property map keyed by a user-controlled name, built on an object literal. **Not yet a defect**: the keys reaching it are canonicalized on the way in, and no `Object.prototype` name survives `canonicalName` except `constructor`, which is a legal key and behaves correctly. Given a null prototype defensively, with the reasoning recorded in the code. **This defers to F3**: F3 is about prose keys stored verbatim while the contract says canonical, and its fix owns the canonicalization that decides whether this can ever be reachable.
+- **`shapeRow`'s accumulators (`store/src/union.ts`)** and **`buildSchema`'s `shape` (`core/src/schema.ts`)** are the same shape and got the same treatment. `buildSchema`'s is the load-bearing one: it is the zod shape object, keyed by every declared property name.
+
+**The class, stated once:** *an accumulator keyed by a user-controlled name must not be an object literal.* The read half is `Object.hasOwn`; the write half is a null prototype. Five sites in three packages; four fixed or hardened, one deferred to F3 with the reason named.
 
 ---
 
