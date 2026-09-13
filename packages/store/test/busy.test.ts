@@ -127,7 +127,7 @@ describe('a real lock conflict is recognised by the guard that has to recognise 
   it('does not mistake its own StoreBusyError for a driver busy error', () => {
     // It is an ascend error describing a failed OPEN, not a driver error from a failed statement.
     // The CLI treats them differently -- this one already carries its own context and fix.
-    expect(isBusyError(new StoreBusyError('/x/ascend.db', 5000))).toBe(false);
+    expect(isBusyError(new StoreBusyError('/x/ascend.db'))).toBe(false);
   });
 
   it("does NOT match a lock that is not SQLite's to report", () => {
@@ -186,13 +186,89 @@ describe('a lock conflict AFTER the constructor is reported the same way', () =>
 });
 
 describe('the busy error a failed OPEN raises says the retry is safe', () => {
-  it('names the file, the wait, and the fact that nothing was opened', () => {
-    const error = new StoreBusyError('/p/.ascend/ascend.db', 5000);
+  it('names the file, and the fact that nothing was opened', () => {
+    const error = new StoreBusyError('/p/.ascend/ascend.db');
     expect(error.name).toBe('StoreBusyError');
     expect(error.file).toBe('/p/.ascend/ascend.db');
-    expect(error.waitedMs).toBe(5000);
-    expect(error.message).toMatch(/gave up after waiting 5000ms/);
+    expect(error.message).toMatch(/could not open it/);
     expect(error.message).toMatch(/was NOT opened/);
     expect(error.message).toMatch(/re-running it is safe/);
+  });
+
+  it('says contention is EXPECTED, which is the difference between a fault and a Tuesday', () => {
+    // The second of the two things `db.ts` says matter more than the wording, and until this test it
+    // was a claim only the comment made: deleting the sentence changed nothing any test could see.
+    // Several subagents recording into one store is the scenario the WAL requirement exists for, so
+    // an operator must not read a lock conflict as corruption or as a bug in ascend.
+    const error = new StoreBusyError('/p/.ascend/ascend.db');
+    expect(error.message).toMatch(/Several ascend processes sharing one store is expected/);
+    expect(error.message).toMatch(/retry once the other one has finished/);
+  });
+
+  it('claims NO duration and names NO step -- both were tried and both were false', () => {
+    // The anti-regression assertion, and the two claims it kills are the two this message has
+    // already carried wrongly.
+    //
+    // (1) The duration. The message used to say "gave up after waiting 5000ms" -- the CONFIGURED
+    // busy timeout reported as though it were the elapsed wait. Measured (`/tmp/probe-wait.mjs`, 8
+    // concurrent opens x 25 rounds against one fresh store): the failures it describes take **0-2ms**,
+    // and a twelvefold larger timeout produces exactly the same failures at the same speed. The
+    // number was wrong by three to four orders of magnitude and pointed at the one action that
+    // provably does nothing. The store cannot measure the wait instead: `packages/store` may not read
+    // a clock at all (`recorder.test.ts` bans `Date.now`, `new Date`, `Math.random`, `randomUUID`,
+    // `performance.now` and `hrtime` across `src` -- adding one failed that guard).
+    //
+    // (2) The step. The proposed replacement was one of two site labels, and measurement refused
+    // that too: 91 of 91 failures across 832 concurrent opens landed at the post-constructor site,
+    // and six shapes built to make the CONSTRUCTOR lose a lock all let it succeed
+    // (`/tmp/probe-step.mjs`, `/tmp/probe-ctor.mjs` -- both cited in `db.ts`). One label was then
+    // unobservable, so it was a claim in a user-facing message that nothing could check.
+    //
+    // The assertion is deliberately stronger than "no milliseconds": a sentence like "waited for the
+    // timeout" is the same falsehood without a unit on it. Banning the words outright is safe
+    // precisely because the store cannot know either of these things.
+    const error = new StoreBusyError('/p/.ascend/ascend.db');
+
+    expect(error.message).not.toMatch(/wait/i);
+    expect(error.message).not.toMatch(/\bgave up\b/);
+    expect(error.message).not.toMatch(/\b\d{3,}\s*ms\b/);
+    // No site is named either -- neither the constructor's phrasing nor the post-constructor's.
+    expect(error.message).not.toMatch(/while opening the database file/);
+    expect(error.message).not.toMatch(/while preparing the connection/);
+    // It still says what it DOES know.
+    expect(error.message).toMatch(/locked by another process/);
+    expect(error.message).toMatch(/re-running it is safe/);
+  });
+
+  it('carries the same message whichever site lost the lock, since one is unobservable', () => {
+    // A real failed open, and the value of the test now is that it pins the SINGLE message on the
+    // path that actually fires. Another connection holds the write lock while the store is opened
+    // with the timeout switched off, so the failure lands on a statement after the constructor.
+    //
+    // This shape does wait the timeout out when one is configured (measured 32,028ms for a 30,000ms
+    // setting), and the message still claims no duration -- because the store has no clock to say so,
+    // and a message that guessed would be guessing on the other path too.
+    const dir = tempDir();
+    const first = openStore({ dir });
+    const other = new DatabaseSync(first.file);
+    try {
+      other.exec('PRAGMA busy_timeout = 0');
+      other.exec('BEGIN EXCLUSIVE');
+
+      let caught: unknown;
+      try {
+        openStore({ dir, busyTimeoutMs: 0, ascendVersion: '0.0.0-test' });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(StoreBusyError);
+      expect((caught as StoreBusyError).file).toBe(first.file);
+      expect((caught as StoreBusyError).message).not.toMatch(/\b\d+\s*ms\b/);
+      expect((caught as StoreBusyError).message).toMatch(/re-running it is safe/);
+    } finally {
+      other.close();
+      first.close();
+    }
   });
 });

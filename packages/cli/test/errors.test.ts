@@ -36,7 +36,7 @@ describe('a lock conflict is reported as something a person can act on', () => {
   });
 
   it("passes the store's own busy error through unchanged, since it is already actionable", () => {
-    const failure = describeFailure(new StoreBusyError('/x/.ascend/ascend.db', 5000), false);
+    const failure = describeFailure(new StoreBusyError('/x/.ascend/ascend.db'), false);
     expect(failure.exitCode).toBe(1);
     expect(failure.message).toMatch(/\/x\/\.ascend\/ascend\.db is locked/);
   });

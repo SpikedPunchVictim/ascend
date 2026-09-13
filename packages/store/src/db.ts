@@ -98,17 +98,52 @@ export function isBusyError(error: unknown): boolean {
  *    is sitting in the store.
  * 2. **It says contention is expected**, not a fault: several subagents recording into one store is
  *    the scenario `db.ts`'s WAL requirement exists for.
+ *
+ * **It reports no duration, and that is the fix, not an omission.** The first version took the
+ * configured busy timeout and reported it as the wait -- "gave up after waiting 5000ms" -- for an
+ * open that had in fact been refused in **1ms**. Measured (`/tmp/probe-wait.mjs`: 8 concurrent opens
+ * x 25 rounds against one fresh store, recording the elapsed time of every failure):
+ *
+ *   `busyTimeoutMs: 5000`  :: 200 opens, 2 failed, after **0ms and 1ms**
+ *   `busyTimeoutMs: 60000` :: 200 opens, 2 failed, after **1ms and 2ms**
+ *
+ * Raising the timeout twelvefold changed nothing, so that number was not a duration anything spent:
+ * it told an operator their store had been contended for five seconds -- or a minute, had they raised
+ * the timeout, which is exactly what such a message invites -- when the lock had been refused
+ * instantly. "Omitted, never fabricated" applies to a duration the same way it applies to any other
+ * measurement. Reporting the real elapsed time instead is not available either, because
+ * `packages/store` may not read a clock: `recorder.test.ts` scans every module in `src` for
+ * `Date.now`, `new Date`, `Math.random`, `randomUUID`, `performance.now` and `hrtime`, and adding
+ * one to measure this failed that guard -- the guard working, not an obstacle to route around.
+ *
+ * **It names no step either, and the second half of that is a measurement too.** The proposed
+ * replacement for the duration was a `BusyStep` label: this class took one of two strings, one per
+ * wrap site (the `new DatabaseSync` constructor, and the statements after it). It was written,
+ * tested, and then measured, and the split turns out not to exist in practice:
+ *
+ *   * 640 concurrent opens of fresh stores at `busyTimeoutMs: 0` produced **66 failures, all at the
+ *     post-constructor site**; a smaller run (192 opens) produced 25 more, also all
+ *     post-constructor. **91 of 91.**
+ *   * Six shapes built to make the CONSTRUCTOR itself lose a lock -- a plain, a WAL and a
+ *     hot-WAL database each under a peer's `BEGIN EXCLUSIVE`, plus read-only opens of the first
+ *     two -- all let the constructor succeed (`/tmp/probe-ctor.mjs`).
+ *   * Consequently, mutating the constructor's label changed nothing any test or probe could
+ *     observe. A label no observation can distinguish is noise, and one of the two was an
+ *     unverifiable claim in a user-facing message -- the same defect class as the duration.
+ *
+ * So there is one message, true whichever site loses the lock. Both wraps stay: asc-51t's point is
+ * that a raw driver error must not escape from either, and that part was never in question. If a
+ * real environment is ever seen failing at the constructor, the label can come back -- and
+ * `/tmp/probe-step.mjs` is the probe that would show it, since it counts the site rather than
+ * asserting one.
  */
 export class StoreBusyError extends Error {
-  constructor(
-    readonly file: string,
-    readonly waitedMs: number,
-  ) {
+  constructor(readonly file: string) {
     super(
-      `${file} is locked by another process, and this one gave up after waiting ` +
-        `${String(waitedMs)}ms. The store was NOT opened, so the command read nothing and wrote ` +
-        `nothing -- re-running it is safe. Several ascend processes sharing one store is expected; ` +
-        `retry once the other one has finished.`,
+      `${file} is locked by another process, and this one could not open it. ` +
+        `The store was NOT opened, so the command read nothing and wrote nothing -- re-running it ` +
+        `is safe. Several ascend processes sharing one store is expected; retry once the other one ` +
+        `has finished.`,
     );
     this.name = 'StoreBusyError';
   }
@@ -197,14 +232,23 @@ export interface Store {
  * mechanism and not a coincidence:
  *
  *   pre-fix sequence, hand-transcribed :: 300 opens, 13 failed -- `errcode` 5 and **261**
- *                                         (`SQLITE_BUSY_RECOVERY`), at the constructor
+ *                                         (`SQLITE_BUSY_RECOVERY`)
  *   `openStore`, as shipped             :: 300 opens, **0 failed**
- *   `openStore` with `busyTimeoutMs: 0` :: 300 opens, 13 failed -- same codes, and they land on
- *                                         both sides of the constructor
+ *   `openStore` with `busyTimeoutMs: 0` :: 300 opens, 13 failed -- same codes
+ *
+ * **Where those failures land is settled, and it is not the constructor.** That probe sorted errors
+ * by KIND (`raw driver errcode N` vs `StoreBusyError`), which cannot name a site, and an earlier
+ * reading of it attributed some failures to `new DatabaseSync` itself. Measured directly instead
+ * (`/tmp/probe-step.mjs`, which parses the site out of the message): **832 concurrent opens of fresh
+ * stores, 91 failures, 91 at the statements after the constructor and 0 at it**, and six shapes built
+ * to make the constructor lose a lock -- plain, WAL and hot-WAL databases each under a peer's
+ * `BEGIN EXCLUSIVE`, plus read-only opens -- all let it succeed (`/tmp/probe-ctor.mjs`). The
+ * constructor must still be wrapped, because a failure there would otherwise escape as the bare
+ * string that asc-51t is about; it is not where the observed failures are.
  *
  * This also overturns the cause recorded when the finding was filed. The bead inferred the pragma
  * *ordering* (`journal_mode` running before `busy_timeout`) and rated that inference explicitly as
- * "suggestive at n=3, not proof"; the labelled steps show the failing step is one earlier, which is
+ * "suggestive at n=3, not proof"; the failures are on the open path, ahead of the pragmas, which is
  * why reordering the pragmas alone would not have fixed it.
  *
  * A busy failure here -- and anywhere else in the open -- becomes `StoreBusyError` rather than
@@ -212,7 +256,10 @@ export interface Store {
  */
 function openHandle(
   file: string,
-  options: { readonly readOnly: boolean; readonly busyTimeoutMs: number },
+  options: {
+    readonly readOnly: boolean;
+    readonly busyTimeoutMs: number;
+  },
 ): DatabaseSync {
   try {
     return new DatabaseSync(file, {
@@ -220,21 +267,21 @@ function openHandle(
       timeout: options.busyTimeoutMs,
     });
   } catch (error) {
-    return asStoreBusy(error, file, options.busyTimeoutMs);
+    return asStoreBusy(error, file);
   }
 }
 
 /**
  * Turn a lock conflict into `StoreBusyError`; rethrow anything else untouched.
  *
- * Called from **two** places, and the second one is not belt-and-braces. Measured: with the busy
- * timeout turned off, the 13 failures in 300 concurrent opens split across both sides of the
- * constructor -- some inside `new DatabaseSync` itself, the rest on the pragma statements that
- * follow it. Wrapping only the constructor, which is what the first version of this fix did, leaves
- * the second group exiting 1 with the bare `database is locked` string that asc-51t is about.
+ * Called from **two** places, and the second one is not belt-and-braces. The first version of this
+ * fix wrapped only the constructor, and under contention a second group of failures -- the ones on
+ * the statements that follow it -- still exited 1 with the bare `database is locked` string that
+ * asc-51t is about. Measured since: that second group is where **all** of them are (91 of 91 across
+ * 832 concurrent opens; see `StoreBusyError`). Both sites keep their wrap.
  */
-const asStoreBusy = (error: unknown, file: string, waitedMs: number): never => {
-  if (isBusyError(error)) throw new StoreBusyError(file, waitedMs);
+const asStoreBusy = (error: unknown, file: string): never => {
+  if (isBusyError(error)) throw new StoreBusyError(file);
   throw error;
 };
 
@@ -418,8 +465,9 @@ export function openStore(options: OpenOptions): Store {
     // Never leave a half-open handle behind on a failed open.
     db.close();
     // And a lock conflict anywhere in the open -- the pragmas above, or the migration below --
-    // becomes the same actionable error as a conflict at the constructor.
-    return asStoreBusy(error, file, busyTimeoutMs);
+    // becomes the same actionable error as a conflict at the constructor. This is the site that
+    // actually fires: 91 of 91 measured failures landed here.
+    return asStoreBusy(error, file);
   }
 }
 
