@@ -97,9 +97,9 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | B8 | FIXED (revised: warn → refuse) | `acfec7a`, `e3325ad` |
 | B11, B12 | FIXED | `5237833` |
 | `asc-4if` (NR3, answered) | FIXED | `bfb7786` |
-| B4 | FIXED (3 sites; `registry.ts`/`schema.ts` not mutation-testable — see its Status) | (Phase 3) |
+| B4 | FIXED (3 sites; `registry.ts`/`schema.ts` not mutation-testable — see its Status) | `15947f8` |
 | F4 (first half) | FIXED as a side effect of `asc-4if`; residual divergence untouched | `bfb7786` |
-| F4-data | ANSWERED — 83 stores scanned, 4 ambiguous, all this audit's own probes: **no migration needed** | (Phase 3) |
+| F4-data | ANSWERED — 83 stores scanned, 4 ambiguous, all this audit's own probes: **no migration needed** | `15947f8` |
 
 **A note on the bead IDs, because they do not match this report's B-numbers.** The beads were created in triage order (`asc-bcv.1` … `asc-bcv.21`), so `asc-bcv.<n>` is *not* finding `B<n>`. B8 is **`asc-bcv.4`**; `asc-bcv.8` is B3 (non-ASCII search). I committed B8 naming `asc-bcv.8` and corrected it in `acfec7a` — the first version of that message named a different, still-open finding. Mapping: B1→`.1`, B2→`.2`, F1→`.3`, B8→`.4`, B11→`.5`, B12→`.6`, B4→`.7`, B3→`.8`, B5→`.9`, B6→`.10`, B7→`.11`, B9→`.12`, B10→`.13`, F2→`.14`.
 
@@ -909,6 +909,8 @@ This section exists because the fix work changed the report's own contents in th
 | **F1** | Evidence-table row 6 is wrong (block comment is CAUGHT, not evaded); a seventh spelling (`INSERT INTO "entries"`) evades and was omitted | Both measured; the headline count survives, the membership did not |
 | **{B1, F5}** | **Withdrawn as a ships-with set** — the two are standalone | B1's mechanism is the prototype chain, not a missing reserved name; `constructor` is legitimate and now works. F5's `a.b` is a JSON-path bug needing `assertProjectable` |
 | **B1** | The "extend the reserved-name vocabulary once" remedy is wrong for B1 | Adding `constructor` to `reservedPropertyName` would refuse a name the store can store |
+| **B4** | The Fix Plan's claim that *"the transaction mode is the fix"* for `registerType`'s check-then-act version selection is **refuted** — by reading (`registry.ts:354` precedes `:439`) and by measurement (10 collisions in 10 trials) | The instruction to confirm rather than assume was followed, and it overturned the premise. B4 is a genuine fix for the snapshot failure it was written for; it never covered this race, and `asc-odh` now tracks that separately |
+| **F4** | Its suggested fix was already delivered by `asc-4if` — recorded as a side effect rather than as F4 work | Both findings are one defect reached from two lenses, and counting one change twice would overstate what was fixed |
 
 ### New sub-findings, verified while fixing B1 and B2
 
