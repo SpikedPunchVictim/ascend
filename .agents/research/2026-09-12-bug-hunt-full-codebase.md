@@ -96,8 +96,8 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | F1 | FIXED (+ follow-up) | `304915b`, `4ee844a` |
 | B8 | FIXED (revised: warn → refuse) | `acfec7a`, `e3325ad` |
 | B11, B12 | FIXED | `5237833` |
-| F2 | FIXED — the report's own suggested fix is **refuted**; F9's leak is closed with it. See F2's Status | `asc-bcv.14` commit |
-| F9 | FIXED as a side effect of F2 (the release moved inside `attachScope`; the false comment is deleted). No CLI-observable test exists — see its Status | `asc-bcv.14` commit |
+| F2 | FIXED — the report's own suggested fix is **refuted**; F9's leak is closed with it. See F2's Status | `1ac8075` |
+| F9 | FIXED as a side effect of F2 (the release moved inside `attachScope`; the false comment is deleted). No CLI-observable test exists — see its Status | `1ac8075` |
 | `asc-4if` (NR3, answered) | FIXED | `bfb7786` |
 | B4 | FIXED (3 sites; `registry.ts`/`schema.ts` not mutation-testable — see its Status) | `15947f8` |
 | F4 (first half) | FIXED as a side effect of `asc-4if`; residual divergence untouched | `bfb7786` |
