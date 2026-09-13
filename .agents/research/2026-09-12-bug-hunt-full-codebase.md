@@ -100,6 +100,7 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | B4 | FIXED (3 sites; `registry.ts`/`schema.ts` not mutation-testable — see its Status) | `15947f8` |
 | F4 (first half) | FIXED as a side effect of `asc-4if`; residual divergence untouched | `bfb7786` |
 | F4-data | ANSWERED — 83 stores scanned, 4 ambiguous, all this audit's own probes: **no migration needed** | `15947f8` |
+| `asc-51t` (not a hunt finding — the OPEN-path sibling of B4) | FIXED, and its inferred cause refuted. See §5c | this commit |
 
 **A note on the bead IDs, because they do not match this report's B-numbers.** The beads were created in triage order (`asc-bcv.1` … `asc-bcv.21`), so `asc-bcv.<n>` is *not* finding `B<n>`. B8 is **`asc-bcv.4`**; `asc-bcv.8` is B3 (non-ASCII search). I committed B8 naming `asc-bcv.8` and corrected it in `acfec7a` — the first version of that message named a different, still-open finding. Mapping: B1→`.1`, B2→`.2`, F1→`.3`, B8→`.4`, B11→`.5`, B12→`.6`, B4→`.7`, B3→`.8`, B5→`.9`, B6→`.10`, B7→`.11`, B9→`.12`, B10→`.13`, F2→`.14`.
 
@@ -911,6 +912,42 @@ This section exists because the fix work changed the report's own contents in th
 | **B1** | The "extend the reserved-name vocabulary once" remedy is wrong for B1 | Adding `constructor` to `reservedPropertyName` would refuse a name the store can store |
 | **B4** | The Fix Plan's claim that *"the transaction mode is the fix"* for `registerType`'s check-then-act version selection is **refuted** — by reading (`registry.ts:354` precedes `:439`) and by measurement (10 collisions in 10 trials) | The instruction to confirm rather than assume was followed, and it overturned the premise. B4 is a genuine fix for the snapshot failure it was written for; it never covered this race, and `asc-odh` now tracks that separately |
 | **F4** | Its suggested fix was already delivered by `asc-4if` — recorded as a side effect rather than as F4 work | Both findings are one defect reached from two lenses, and counting one change twice would overstate what was fixed |
+| **`asc-51t`** | The bead's inferred cause — pragma **ordering** — is **refuted**; the failing step is the **constructor** itself, one step earlier. Its recommendation 1 (reorder the pragmas) would not have fixed it | A step-labelled probe replaced the inference with the failing step's name, exactly as the bead's own "suggestive at n=3, not proof" asked to be tested. The recommendation's *goal* was right and its *mechanism* was not — the same shape as R6 |
+
+### `asc-51t` — the OPEN-path sibling of B4, and its recorded cause was wrong
+
+Not one of this report's findings: it came from the adversarial review of E4 and was already filed before the hunt started. It is recorded here because fixing it overturned its own inference, and because B4 and it are the same failure seen at two layers — B4 is the **transaction** losing a lock in 1 ms, this is the **open** losing one.
+
+The bead's inference, explicitly labelled *"suggestive at n=3, not proof"*, was that the pragma **ordering** caused it — `PRAGMA journal_mode = WAL` running before `PRAGMA busy_timeout`. A step-labelled probe refuted that. The failure is one step **earlier**:
+
+```
+/tmp/probe-51t-where.mjs, 20 concurrent x 12 rounds, real store
+  current  240 concurrent opens, 10 failed -- EVERY ONE at step 1 [construct()]
+  proposed 240 concurrent opens,  0 failed
+```
+
+The constructor's own WAL open reads, and may recover, the `-shm` index — before the next line of the module runs, so before any pragma can widen a timeout that is still **zero** at that moment. Reordering pragmas would not have fixed it. The fix is the `timeout` **constructor option**, which also removed the need for the pragma entirely.
+
+Measured against the code that ships (`/tmp/probe-51t-real.mjs`, the real `openStore` from `packages/store/dist`, 20 concurrent x 25 rounds, three arms — the third is the mutation):
+
+| arm | 500 concurrent opens | |
+|---|---|---|
+| pre-fix sequence, transcribed | **11–13 failed** | errcode **5** and **261** |
+| `openStore`, as shipped | **0 failed** | |
+| `openStore` with `busyTimeoutMs: 0` | **15–19 failed** | the mechanism, switched off and back on |
+
+**Two things the fix found that the bead did not anticipate, both by measurement:**
+
+1. **`SQLITE_BUSY` is not the only code.** 1–3 of every 11–13 real failures carried errcode **261** — `SQLITE_BUSY_RECOVERY`, i.e. `SQLITE_BUSY` with the recovery extension in the high bits. A guard written as `errcode === 5` (which the first version of this fix was) misses those, so a real fraction would have kept the bare string. The guard now masks to the primary code. This is the same shape as R8/R9/R10 — a claim about a mechanism that a measurement corrected — and it is the reason the mutation arm exists at all.
+2. **Wrapping only the constructor is not enough.** The failures land on **both** sides of `new DatabaseSync`. The first version wrapped the constructor alone and left the second group exiting 1 with `database is locked`; the probe shows the change directly (`raw driver errcode 5` before, `StoreBusyError` after).
+
+**One more defect, found and fixed in passing:** `PRAGMA busy_timeout` names its result column **`timeout`**, not `busy_timeout` — the only pragma here that does not follow the pattern. The new read-back therefore returned `(no result)`, which failed the comparison and **sounded the alarm for the wrong reason**. Worth recording because the wrong fix — loosening the comparison — would have disarmed the check entirely.
+
+**Verified:** 542 tests pass (was 527). New: `packages/store/test/busy.test.ts` (8) and `packages/cli/test/errors.test.ts` (6). Mutation harness `/tmp/mutate-51t.mjs`: **9/9 caught, 0 survived, 0 not applied**, source restored byte-identical. The real CLI under 20-way contention: 20/20 on `record`, `types list` and `query`, 0 `database is locked`.
+
+**Limitations, stated rather than smoothed over.** The fix does not make contention free — it makes it **wait**. One open in ~3,500 under 20-way contention still gave up after the full 5,000 ms and raised `StoreBusyError`; that is the intended behaviour, not a defect. Separately, **one run of the shipped arm recorded 2 failures whose error printed as a plain `Error` with no numeric `errcode`**, before the probe was capturing messages; ~3,500 later shipped-arm opens did not reproduce it, and **its cause is unresolved rather than explained**. And one full-suite run reported `1 failed | 541 passed` without the test name being captured; 10 subsequent full-suite runs were green.
+
+---
 
 ### New sub-findings, verified while fixing B1 and B2
 

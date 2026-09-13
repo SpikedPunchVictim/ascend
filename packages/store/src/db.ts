@@ -1,7 +1,7 @@
 /**
  * Opening a store: the pragmas, and the verification that they actually took.
  *
- * Every pragma set here is load-bearing, and two of them can fail SILENTLY in ways
+ * Every setting made here is load-bearing, and three of them can fail SILENTLY in ways
  * that would make the store's guarantees false:
  *
  *   - `foreign_keys` defaults to OFF, and it is per CONNECTION, not per database. If
@@ -11,8 +11,13 @@
  *   - `journal_mode` is persisted in the file, but not every filesystem supports
  *     WAL. If it silently stays `delete`, concurrent subagent writes hit
  *     "database is locked" instead of serialising.
+ *   - `busy_timeout` defaults to ZERO, so a connection that does not get it waits for
+ *     nothing and refuses instantly. It is set through the CONSTRUCTOR rather than by a
+ *     pragma, because the lock that refuses us is taken by the constructor's own WAL
+ *     open -- measured: 6 of 240 concurrent opens failed, every one of them at
+ *     `new DatabaseSync(...)`, before any pragma had run (asc-51t).
  *
- * So both are READ BACK and checked. An invariant that is merely requested is not an
+ * So all three are READ BACK and checked. An invariant that is merely requested is not an
  * invariant; this project has already shipped one false green from exactly that gap
  * (docs/evidence/EV-hooks.md).
  */
@@ -30,6 +35,84 @@ export const STORE_FILE = 'ascend.db';
 
 /** Milliseconds a writer waits for a lock before giving up. */
 export const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
+
+/**
+ * SQLite's PRIMARY result codes for "another connection holds the lock".
+ *
+ * `SQLITE_BUSY` (5) is a lock held by another CONNECTION. `SQLITE_LOCKED` (6) is a lock held by
+ * another STATEMENT on the same connection. Both mean "try again later", which is why both are
+ * treated the same here.
+ *
+ * These are the primary codes. What `node:sqlite` actually reports is often an EXTENDED code --
+ * `SQLITE_BUSY | (n << 8)` -- so the check below masks down to the low byte rather than comparing
+ * against these directly. See `isBusyError`.
+ */
+const SQLITE_BUSY = 5;
+const SQLITE_LOCKED = 6;
+
+/** The low byte of a result code, which is the primary code; the high bits are the extension. */
+const PRIMARY_CODE_MASK = 0xff;
+
+/**
+ * Whether a thrown thing is SQLite refusing because another connection holds a lock.
+ *
+ * **Duck-typed on `errcode`, and that is a measured decision rather than a shortcut.** `node:sqlite`
+ * has no error class to test against: measured on a real lock conflict, it throws a plain `Error`
+ * whose own properties are exactly `{ code: 'ERR_SQLITE_ERROR', errcode: 5, errstr: 'database is
+ * locked' }` -- `constructor.name` is `'Error'` and there is no `SQLiteError` export. An
+ * `instanceof` check would therefore be **false for every real busy error**, which is the shape of
+ * guard that never fires and reports nothing.
+ *
+ * **The mask is not defensive; it was measured, and the first version of this function was wrong
+ * without it.** The probe that mutation-tests this fix (`/tmp/probe-51t-real.mjs`) runs the real
+ * `openStore` concurrently 300 times with the busy timeout turned off, and of the 12 failures it
+ * produced, **3 carried errcode 261 -- `SQLITE_BUSY_RECOVERY`, which is `SQLITE_BUSY` with the
+ * recovery extension set.** An `=== SQLITE_BUSY` comparison misses those, so a quarter of real lock
+ * conflicts would have gone unrecognised and surfaced as the bare `database is locked` string this
+ * whole change exists to remove. The same applies to `SQLITE_BUSY_SNAPSHOT` (517, the code B4's
+ * transaction comment names) and to the extended `SQLITE_LOCKED` codes.
+ *
+ * Exported because two layers need the same answer about the same error: this module, to turn it
+ * into `StoreBusyError`, and the CLI's error boundary, to turn it into something a person can act
+ * on. Two copies of the predicate would agree until the day one changed.
+ */
+export function isBusyError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const { code, errcode } = error as { readonly code?: unknown; readonly errcode?: unknown };
+  if (code !== 'ERR_SQLITE_ERROR') return false;
+  if (typeof errcode !== 'number') return false;
+  const primary = errcode & PRIMARY_CODE_MASK;
+  return primary === SQLITE_BUSY || primary === SQLITE_LOCKED;
+}
+
+/**
+ * Thrown when a store could not be OPENED because another process holds its lock.
+ *
+ * asc-51t: the message SQLite gives is the bare string `database is locked`, which is none of
+ * context, problem or fix (`cli-best-practices` rule 8) -- and the command that prints it exits 1,
+ * so a caller cannot tell it apart from "no such type". Two things this adds that matter more than
+ * the wording:
+ *
+ * 1. **It says the command did NOT run.** A busy open reads nothing and writes nothing, so a
+ *    retry is unambiguously safe. Without that, a caller has to guess whether a half-applied write
+ *    is sitting in the store.
+ * 2. **It says contention is expected**, not a fault: several subagents recording into one store is
+ *    the scenario `db.ts`'s WAL requirement exists for.
+ */
+export class StoreBusyError extends Error {
+  constructor(
+    readonly file: string,
+    readonly waitedMs: number,
+  ) {
+    super(
+      `${file} is locked by another process, and this one gave up after waiting ` +
+        `${String(waitedMs)}ms. The store was NOT opened, so the command read nothing and wrote ` +
+        `nothing -- re-running it is safe. Several ascend processes sharing one store is expected; ` +
+        `retry once the other one has finished.`,
+    );
+    this.name = 'StoreBusyError';
+  }
+}
 
 export interface OpenOptions {
   /** The `.ascend` directory. Created if missing. */
@@ -99,6 +182,62 @@ export interface Store {
   close(): void;
 }
 
+/**
+ * Open the SQLite handle, with the busy timeout already in effect.
+ *
+ * **The timeout goes to the CONSTRUCTOR, not to a `PRAGMA busy_timeout`, and the difference is the
+ * whole of asc-51t.** Opening a WAL database is not a passive act: the connection must read the
+ * `-shm` index and recover it if another process left it dirty, and that work happens inside
+ * `new DatabaseSync(...)` -- before this module's next line is reached, so before any pragma can
+ * set a timeout. A pragma that runs afterwards cannot retroactively help it.
+ *
+ * Measured against the SHIPPED function, 20 concurrent opens x 15 rounds on a real store
+ * (`/tmp/probe-51t-real.mjs`). Three arms, and the third is the one that matters -- the same code
+ * with the timeout switched off, which is the mutation that shows the constructor option is the
+ * mechanism and not a coincidence:
+ *
+ *   pre-fix sequence, hand-transcribed :: 300 opens, 13 failed -- `errcode` 5 and **261**
+ *                                         (`SQLITE_BUSY_RECOVERY`), at the constructor
+ *   `openStore`, as shipped             :: 300 opens, **0 failed**
+ *   `openStore` with `busyTimeoutMs: 0` :: 300 opens, 13 failed -- same codes, and they land on
+ *                                         both sides of the constructor
+ *
+ * This also overturns the cause recorded when the finding was filed. The bead inferred the pragma
+ * *ordering* (`journal_mode` running before `busy_timeout`) and rated that inference explicitly as
+ * "suggestive at n=3, not proof"; the labelled steps show the failing step is one earlier, which is
+ * why reordering the pragmas alone would not have fixed it.
+ *
+ * A busy failure here -- and anywhere else in the open -- becomes `StoreBusyError` rather than
+ * propagating SQLite's bare string; see `asStoreBusy`.
+ */
+function openHandle(
+  file: string,
+  options: { readonly readOnly: boolean; readonly busyTimeoutMs: number },
+): DatabaseSync {
+  try {
+    return new DatabaseSync(file, {
+      ...(options.readOnly ? { readOnly: true } : {}),
+      timeout: options.busyTimeoutMs,
+    });
+  } catch (error) {
+    return asStoreBusy(error, file, options.busyTimeoutMs);
+  }
+}
+
+/**
+ * Turn a lock conflict into `StoreBusyError`; rethrow anything else untouched.
+ *
+ * Called from **two** places, and the second one is not belt-and-braces. Measured: with the busy
+ * timeout turned off, the 13 failures in 300 concurrent opens split across both sides of the
+ * constructor -- some inside `new DatabaseSync` itself, the rest on the pragma statements that
+ * follow it. Wrapping only the constructor, which is what the first version of this fix did, leaves
+ * the second group exiting 1 with the bare `database is locked` string that asc-51t is about.
+ */
+const asStoreBusy = (error: unknown, file: string, waitedMs: number): never => {
+  if (isBusyError(error)) throw new StoreBusyError(file, waitedMs);
+  throw error;
+};
+
 /** Thrown when a required pragma did not take effect. */
 export class PragmaError extends Error {
   constructor(pragma: string, expected: string, actual: string, why: string) {
@@ -110,10 +249,20 @@ export class PragmaError extends Error {
   }
 }
 
-const readSetting = (db: DatabaseSync, pragma: string): string => {
-  // `PRAGMA x` returns one row whose single column is named `x`.
+const readSetting = (db: DatabaseSync, pragma: string, column = pragma): string => {
+  // `PRAGMA x` returns one row whose single column is USUALLY named `x` -- but not always, which is
+  // why the column is a parameter. Measured across every pragma this module reads: `journal_mode`
+  // -> `journal_mode`, `foreign_keys` -> `foreign_keys`, `synchronous` -> `synchronous`,
+  // `user_version` -> `user_version`, and **`busy_timeout` -> `timeout`**, the one that does not
+  // follow the pattern.
+  //
+  // Worth stating because of how that one fails. Reading `row['busy_timeout']` on the busy pragma
+  // yields `undefined`, i.e. `(no result)` -- a non-empty string, so the comparison against the
+  // expected value still fails and the alarm still sounds. A read-back check that reports a
+  // mismatch for the wrong reason is easy to misread as a working check, and the wrong fix (loosen
+  // the comparison) would have disarmed it entirely.
   const row = db.prepare(`PRAGMA ${pragma}`).get() as Record<string, unknown> | undefined;
-  const value = row?.[pragma];
+  const value = row?.[column];
   if (value === undefined) return '(no result)';
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'bigint') return value.toString();
@@ -130,7 +279,7 @@ const readSetting = (db: DatabaseSync, pragma: string): string => {
 };
 
 /**
- * Read back the pragmas that carry a guarantee, and throw if any did not take.
+ * Read back the settings that carry a guarantee, and throw if any did not take.
  *
  * Exported so its FAILURE path is testable. A verification whose alarm has never
  * been shown to sound is indistinguishable from one that cannot sound, and this is
@@ -138,8 +287,16 @@ const readSetting = (db: DatabaseSync, pragma: string): string => {
  *
  * In-memory stores skip the WAL check only: WAL is not applicable to them, so
  * demanding it would be a false alarm rather than a finding.
+ *
+ * `busyTimeoutMs` is required rather than optional, because an optional check is one a caller can
+ * forget -- and the default it would fall back on is **zero**, which is the value that made asc-51t
+ * possible in the first place. A caller must state what it asked for so the read-back has something
+ * to disagree with.
  */
-export function verifyPragmas(db: DatabaseSync, options: { readonly inMemory: boolean }): void {
+export function verifyPragmas(
+  db: DatabaseSync,
+  options: { readonly inMemory: boolean; readonly busyTimeoutMs: number },
+): void {
   if (!options.inMemory) {
     const journal = readSetting(db, 'journal_mode').toLowerCase();
     if (journal !== 'wal') {
@@ -161,6 +318,24 @@ export function verifyPragmas(db: DatabaseSync, options: { readonly inMemory: bo
       'Without it an entry can reference a type definition that does not exist, which is the schema drift the composite key exists to prevent.',
     );
   }
+
+  // The third setting, and the newest: asc-51t. It is set by the CONSTRUCTOR (see `openHandle`),
+  // which is the only place it CAN be set early enough to cover the lock the constructor's own WAL
+  // open takes -- and that is where 6 of 240 concurrent opens were measured to fail. Reading it
+  // back is what makes "the constructor option was honoured" a checked fact rather than an
+  // assumption about this Node version's `node:sqlite`.
+  //
+  // The result column is `timeout`, not `busy_timeout` -- see `readSetting`.
+  const timeout = readSetting(db, 'busy_timeout', 'timeout');
+  if (timeout !== String(options.busyTimeoutMs)) {
+    throw new PragmaError(
+      'busy_timeout',
+      String(options.busyTimeoutMs),
+      timeout,
+      'A timeout of ' +
+        `${timeout}ms means a lock conflict refuses immediately instead of waiting, which is the failure concurrent subagent writers hit.`,
+    );
+  }
 }
 
 /**
@@ -176,7 +351,7 @@ export function openStore(options: OpenOptions): Store {
   // before attaching for.
   if (!inMemory && !readOnly) mkdirSync(dir, { recursive: true });
 
-  const db = new DatabaseSync(file, readOnly ? { readOnly: true } : {});
+  const db = openHandle(file, { readOnly, busyTimeoutMs });
 
   try {
     // Outside any transaction: journal_mode cannot be changed inside one.
@@ -190,14 +365,17 @@ export function openStore(options: OpenOptions): Store {
     // WAL with synchronous=NORMAL is the standard pairing: durable across process
     // crashes, which is the failure this store actually faces.
     //
-    // These three are connection settings rather than file writes, and all three were
-    // measured to be settable on a read-only handle -- so `foreign_keys` is still enforced
-    // for a read-only caller instead of being silently off.
+    // Both are connection settings rather than file writes, and both were measured to be
+    // settable on a read-only handle -- so `foreign_keys` is still enforced for a read-only
+    // caller instead of being silently off.
+    //
+    // `busy_timeout` is deliberately NOT here. It is set by `openHandle`, at construction,
+    // because this line is already too late: the lock a concurrent open loses to is taken by
+    // the constructor itself, before this function's first statement runs (asc-51t, measured).
     db.exec('PRAGMA synchronous = NORMAL');
-    db.exec(`PRAGMA busy_timeout = ${String(busyTimeoutMs)}`);
     db.exec('PRAGMA foreign_keys = ON');
 
-    verifyPragmas(db, { inMemory });
+    verifyPragmas(db, { inMemory, busyTimeoutMs });
 
     const before = userVersion(db);
 
@@ -239,7 +417,9 @@ export function openStore(options: OpenOptions): Store {
   } catch (error) {
     // Never leave a half-open handle behind on a failed open.
     db.close();
-    throw error;
+    // And a lock conflict anywhere in the open -- the pragmas above, or the migration below --
+    // becomes the same actionable error as a conflict at the constructor.
+    return asStoreBusy(error, file, busyTimeoutMs);
   }
 }
 

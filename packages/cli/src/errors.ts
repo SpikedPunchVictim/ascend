@@ -21,6 +21,7 @@
  */
 
 import { Errors } from '@oclif/core';
+import { isBusyError } from '@ascend/store';
 import { NoProjectError } from './project.js';
 
 export interface Failure {
@@ -63,6 +64,33 @@ export function describeFailure(error: unknown, debug: boolean): Failure {
     return withDetail({
       message: error instanceof Error ? error.message : String(error),
       exitCode: oclifExit,
+    });
+  }
+
+  // A lock conflict that outlived the busy timeout.
+  //
+  // Two shapes of it reach here. The store's own `StoreBusyError`, thrown when the *open* lost the
+  // lock, already reads context -> problem -> fix and needs nothing from this module. The other is
+  // the raw driver error from a lock lost *mid-transaction*, and that one is a plain `Error` whose
+  // message is the bare string `database is locked` -- no context, no cause, no next step, and
+  // indistinguishable to a caller from "no such type" because both exit 1. That bare string is what
+  // asc-51t reported, so it is the reason this branch exists.
+  //
+  // Exit 1 rather than 2: the command line was fine, and the answer is "not right now". A script
+  // that branches on the code should retry this and re-read the help for a 2.
+  //
+  // The wording deliberately stops at "it did not complete" rather than claiming nothing was
+  // written. `StoreBusyError` can make that stronger claim because it is raised before the store's
+  // first statement runs; here the error may have come from any point in the command, and a
+  // reassurance this branch cannot verify is exactly the kind of false-green this project treats as
+  // severity-zero.
+  if (isBusyError(error)) {
+    return withDetail({
+      message:
+        'the store is locked by another ascend process, and this command gave up waiting for it ' +
+        'after the busy timeout. It did not complete. Several ascend processes sharing one store is ' +
+        'expected -- re-run the command once the other one has finished.',
+      exitCode: 1,
     });
   }
 

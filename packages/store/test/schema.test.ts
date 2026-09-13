@@ -146,7 +146,7 @@ describe('pragmas are verified, not assumed', () => {
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys = OFF');
     expect(() => {
-      verifyPragmas(db, { inMemory: false });
+      verifyPragmas(db, { inMemory: false, busyTimeoutMs: 0 });
     }).toThrow(PragmaError);
     db.close();
   });
@@ -156,8 +156,21 @@ describe('pragmas are verified, not assumed', () => {
     db.exec('PRAGMA foreign_keys = ON');
     // Journal mode here is 'memory'; failing on that would be a false alarm.
     expect(() => {
-      verifyPragmas(db, { inMemory: true });
+      verifyPragmas(db, { inMemory: true, busyTimeoutMs: 0 });
     }).not.toThrow();
+    db.close();
+  });
+
+  it('SOUNDS THE ALARM when the busy timeout did not take', () => {
+    // The third setting that fails silently, and the one that was missing until asc-51t.
+    // A bare handle has a timeout of ZERO, so asking for 5000 must not read back as
+    // anything else -- and a store that opened without its timeout refuses instantly
+    // under contention instead of waiting, which is the whole defect.
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    expect(() => {
+      verifyPragmas(db, { inMemory: true, busyTimeoutMs: 5000 });
+    }).toThrow(/busy_timeout/);
     db.close();
   });
 });

@@ -21,9 +21,11 @@
 
 export {
   DEFAULT_BUSY_TIMEOUT_MS,
+  isBusyError,
   openStore,
   PragmaError,
   StaleStoreError,
+  StoreBusyError,
   withRollback,
   withTransaction,
   STORE_DIR,
