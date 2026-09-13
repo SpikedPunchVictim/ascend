@@ -128,27 +128,39 @@ function parsePropertyFlag(raw: string): readonly [string, unknown] {
 }
 
 /**
- * Whether two parsed `--prop` values are the SAME value.
+ * Whether two `--prop` occurrences of one name are the SAME value.
  *
  * `canonicalJson` rather than `JSON.stringify`, because it sorts object keys: `{"a":1,"b":2}` and
  * `{"b":2,"a":1}` are one value written two ways, and treating them as two would be a false alarm.
  * And an alarm that fires when nothing was lost is how a warnings channel stops being read.
  *
- * It THROWS on a non-finite number, and `JSON.parse('1e999')` really does produce `Infinity`, so a
- * pair that cannot be compared counts as different. The direction matters: warning about a repeat
- * that turns out to have been harmless is a smaller failure than silently discarding a value, and
- * the silent discard is the defect this exists to fix.
+ * It THROWS on a non-finite number, and `JSON.parse('1e999')` really does produce `Infinity` --
+ * measured. So the uncomparable case needs a direction, and the direction FLIPPED when this stopped
+ * feeding a warning and started feeding a refusal. "Cannot compare" used to mean "different", on the
+ * grounds that a spurious warning is the smaller failure; as a refusal that same choice refuses a
+ * legitimate command, and refuses it with a message quoting two IDENTICAL values as different --
+ * a false report, which is the class this project treats as severity-zero.
+ *
+ * So the text is the tiebreak: when the values cannot be compared, the same text is the same value.
+ * That is sound rather than a fudge -- `flagValue` is deterministic, so one text parses to one
+ * value, and equal text therefore really is equal input.
  */
-function sameValue(left: unknown, right: unknown): boolean {
+function sameValue(left: PropOccurrence, right: PropOccurrence): boolean {
   try {
-    return canonicalJson(left) === canonicalJson(right);
+    return canonicalJson(left.value) === canonicalJson(right.value);
   } catch {
-    return false;
+    return left.text === right.text;
   }
 }
 
+/** One `--prop` occurrence: the parsed value, and the text the caller typed for it. */
+interface PropOccurrence {
+  readonly value: unknown;
+  readonly text: string;
+}
+
 /**
- * What the `--prop` flags came to, and which of them were overruled.
+ * What the `--prop` flags came to, and the names they contradicted themselves about.
  */
 interface PropertyFlags {
   /**
@@ -165,59 +177,74 @@ interface PropertyFlags {
    *
    * The text, not the parsed value, because the message has to quote what the caller wrote: the
    * whole point is that they cannot tell from their own command line which of their two values
-   * survived. Measured before this existed: `--prop=chosen=a --prop=chosen=b` recorded `"b"`,
-   * exited 0, and printed nothing at all to stderr -- into a ledger that cannot be corrected, since
+   * would win. Measured before any of this existed: `--prop=chosen=a --prop=chosen=b` recorded
+   * `"b"`, exited 0, and printed NOTHING to stderr -- into a ledger that cannot be corrected, since
    * entries are immutable and `recordEntry` refuses a duplicate id.
    *
-   * A repeat with the SAME value is deliberately NOT here. Nothing is lost, and `--na` already
-   * treats a repeat as a set rather than a warning; a warning that fires when nothing was discarded
-   * is noise, and noise is what makes a real warning invisible.
+   * A REFUSAL, not a warning, and the change is deliberate. The warning version said which value
+   * won and left the row in place, which is still a row whose contents the caller did not choose:
+   * it cannot be distinguished afterwards from one where they meant `b` all along, and the caller
+   * this command exists for -- an LLM workflow -- reads stdout and may never look at stderr. This
+   * is the same answer asc-4if took for the fold collision one spec over: a conflict resolved by
+   * silently picking a winner is refused, not narrated.
+   *
+   * Grouped by the name AS WRITTEN, which is what the store does too -- measured: `--prop=Chosen=b`
+   * against a type declaring `chosen` is dropped as "not a property of decision", not folded onto
+   * `chosen`. So the CLI's notion of "the same name" is the store's, and there is no fold-collision
+   * to detect on this path.
+   *
+   * A repeat with the SAME value is deliberately NOT here: nothing is lost, and `--na` already
+   * treats a repeat as a set. A refusal that fires when nothing conflicted would reject legitimate
+   * work, which is worse than the noise it replaced.
    */
-  readonly overruled: readonly { readonly name: string; readonly texts: readonly string[] }[];
+  readonly repeats: readonly { readonly name: string; readonly texts: readonly string[] }[];
 }
 
-/** The `--prop` flags as a properties object, plus the repeats that discarded a value. */
+/** The `--prop` flags as a properties object, plus the names they contradicted themselves about. */
 function propertiesFrom(propFlags: readonly string[]): PropertyFlags {
   const properties = Object.create(null) as Record<string, unknown>;
   // A Map, not a null-prototype object: this groups by name and is never serialized, so it does
   // not need the shape rule the `properties` object above is subject to. Insertion order is the
-  // order the names were first written, which is the order the warnings should be reported in.
-  const groups = new Map<string, { values: unknown[]; texts: string[] }>();
+  // order the names were first written, which is the order they should be reported in.
+  const groups = new Map<string, PropOccurrence[]>();
 
   for (const raw of propFlags) {
     const [name, value] = parsePropertyFlag(raw);
-    const text = raw.slice(raw.indexOf('=') + 1);
-    const group = groups.get(name) ?? { values: [], texts: [] };
-    group.values.push(value);
-    group.texts.push(text);
+    const group = groups.get(name) ?? [];
+    group.push({ value, text: raw.slice(raw.indexOf('=') + 1) });
     groups.set(name, group);
     properties[name] = value;
   }
 
-  const overruled = [...groups]
-    .filter(([, group]) => group.values.some((value) => !sameValue(value, group.values[0])))
-    .map(([name, group]) => ({ name, texts: group.texts }));
+  const repeats = [...groups]
+    .filter(([, group]) => {
+      const first = group[0];
+      return first !== undefined && group.some((occurrence) => !sameValue(occurrence, first));
+    })
+    .map(([name, group]) => ({ name, texts: group.map((occurrence) => occurrence.text) }));
 
-  return { properties, overruled };
+  return { properties, repeats };
 }
 
 /**
- * How a discarded `--prop` repeat is reported: what was written, and which value is kept.
+ * Refuse a `--prop` given more than once with different values.
  *
- * `problem`/`fix` split rather than one sentence, because this goes onto the row alongside the
- * store's own warnings and those are read as `field: problem`.
+ * Every conflicting name is reported in one refusal rather than one per name, so a command line
+ * with two of them is fixed in one pass instead of two. Raised before any store work: the conflict
+ * is entirely inside the caller's own argv, so there is nothing to open, validate or transact.
  */
-function overruledWarning(
-  name: string,
-  texts: readonly string[],
-): { problem: string; fix: string } {
-  const values = texts.map((text) => `'${text}'`).join(', ');
-  return {
-    problem: `--prop=${name} was given ${String(texts.length)} times with different values (${values})`,
-    fix:
-      `Only the last is recorded. A property has one value, so the earlier ones were discarded -- ` +
-      `remove them, or if you did not mean the same property, check the names.`,
-  };
+function repeatedPropertyError(
+  repeats: readonly { readonly name: string; readonly texts: readonly string[] }[],
+): Error {
+  const conflicts = repeats.map(({ name, texts }) => {
+    const values = texts.map((text) => `'${text}'`).join(', ');
+    return `--prop=${name} was given ${String(texts.length)} times with different values (${values})`;
+  });
+  return usageError(
+    `${conflicts.join('; ')}. A property has one value, so ascend cannot tell which you meant, and ` +
+      `nothing was recorded. Keep one of them -- or, if you meant two different properties, note ` +
+      `that a name is matched exactly, so check the spelling.`,
+  );
 }
 
 /** How a message names one entry: by index in a batch, and not at all otherwise. */
@@ -346,9 +373,12 @@ export default class RecordEntry extends BaseCommand {
     }
 
     const propFlags = propertiesFrom(props);
-    // Only ever non-empty when `--prop` supplied the entry, which is the one-document path below:
-    // that is why these can be emitted once for the call and attached to the first row.
-    const overruled = propFlags.overruled.map(({ name, texts }) => overruledWarning(name, texts));
+    // Refused here, before the store is opened and before anything is validated, because the
+    // conflict is entirely within the caller's own argv -- no store state can make it resolvable,
+    // and no validation error it might also have is the more useful thing to report first. A
+    // `--dry-run` reaches this too, and must: previewing a recording that cannot happen is its own
+    // false report.
+    if (propFlags.repeats.length > 0) throw repeatedPropertyError(propFlags.repeats);
 
     const documents =
       args.document === undefined
@@ -444,26 +474,11 @@ export default class RecordEntry extends BaseCommand {
             na: result.entry.na,
             // Also on the row, although every one of them has just been written to stderr. A
             // dropped property is silent data loss, and the caller most likely to miss it is the
-            // machine reading stdout alone -- which is the caller this command exists for. A
-            // discarded `--prop` repeat is the same loss by a different route, so it travels the
-            // same way; it is call-level, and the path that produces it is single-entry, which is
-            // why it hangs off the first row rather than every one.
-            warnings: [
-              ...(index === 0 ? overruled.map((w) => `--prop: ${w.problem}`) : []),
-              ...result.warnings.map((warning) => `${warning.field}: ${warning.problem}`),
-            ],
+            // machine reading stdout alone -- which is the caller this command exists for.
+            warnings: result.warnings.map((warning) => `${warning.field}: ${warning.problem}`),
             dry_run: dryRun,
           };
         });
-
-        // AFTER the writes, not before them, and inside the transaction rather than outside it.
-        // The message says the last value IS recorded -- it is a claim about an outcome, so it must
-        // not be made until the outcome exists. `recordOrRefuse` refuses from inside the map above,
-        // so emitting this first (as the first draft did) announced "Only the last is recorded" on
-        // a recording that wrote nothing: a warning about a write that did not happen is its own
-        // false report. A dry run reaches here too, because it runs the real work inside
-        // `withRollback` rather than skipping it -- so a preview says what the real run would say.
-        for (const { problem, fix } of overruled) this.warn(`${problem}. ${fix}`);
 
         return rows;
       };

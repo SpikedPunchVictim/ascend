@@ -352,53 +352,64 @@ describe('asc record', () => {
     expect(flatten(run.stderr)).toContain('--prop=<name>=<value>');
   });
 
-  it('says so when a repeated --prop discarded a value, and names both values', () => {
-    // Measured before the fix: this command exited 0, printed NOTHING to stderr, and the ledger
-    // held `"b"` -- `a` was gone with no signal at all, into a table that cannot be corrected
-    // (entries are immutable, and re-recording the id is refused). The project's own precedent for
-    // a dropped key is the opposite: `core/state.ts` strips an undeclared property AND reports it,
-    // "so it cannot be silent". This path was the exception.
+  it('refuses a --prop given twice with different values, naming both and writing nothing', () => {
+    // Measured before any of this existed: this command exited 0, printed NOTHING to stderr, and
+    // the ledger held `"b"` -- `a` was gone with no signal at all, into a table that cannot be
+    // corrected (entries are immutable, and re-recording the id is refused).
+    //
+    // It then warned and named the winner, and that is still a row whose contents the caller did
+    // not choose: nothing in the stored row distinguishes it from one where they meant `b` all
+    // along, and the caller this command is built for -- an LLM workflow -- reads stdout and may
+    // never look at stderr. A conflict resolved by silently picking a winner is refused, which is
+    // the same answer asc-4if took for the fold collision one spec over.
     const dir = project();
     const run = asc(
       ['record', 'decision', '--prop=chosen=a', '--prop=rationale=r', '--prop=chosen=b', '--json'],
       dir,
     );
 
-    expect(run.status).toBe(0);
+    // 2, not 1: the conflict is entirely inside the caller's own argv -- no store state can make it
+    // resolvable -- and it is the same class as a malformed `--prop`, which already exits 2.
+    expect(run.status).toBe(2);
     const message = flatten(run.stderr);
-    // Both values, so the caller can see which one they are losing -- and which one they keep.
+    expect(message).toContain('--prop=chosen was given 2 times with different values');
+    // Both values, so the caller can see the two they have to choose between.
     expect(message).toContain("'a'");
     expect(message).toContain("'b'");
-    expect(message).toContain('Only the last is recorded');
+    expect(message).toContain('Keep one of them');
 
-    // The winner is genuinely the last one, which is what the message claims.
-    expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
-      chosen: 'b',
-      rationale: 'r',
-    });
+    // The whole point: nothing was recorded, so no row can carry the ambiguity forward.
+    expect(stored(dir)).toEqual([]);
   });
 
-  it('puts the discarded value on the row too, for a machine reading only stdout', () => {
-    // The same reasoning as the store's own dropped-property warning: the caller most likely to
-    // miss a stderr line is the one parsing stdout, which is the caller this command is built for.
+  it('refuses every conflicting name in one message, so one command line takes one pass', () => {
+    // Two names, two conflicts. Reporting only the first would make the caller run the command
+    // again to discover the second, which is the same defect one size down.
     const dir = project();
     const run = asc(
-      ['record', 'decision', '--prop=chosen=a', '--prop=rationale=r', '--prop=chosen=b', '--json'],
+      [
+        'record',
+        'decision',
+        '--prop=chosen=a',
+        '--prop=chosen=b',
+        '--prop=rationale=r',
+        '--prop=rationale=s',
+      ],
       dir,
     );
 
-    expect(run.status).toBe(0);
-    const [row] = envelope(run.stdout);
-    expect(row?.['warnings']).toEqual([
-      expect.stringContaining('--prop=chosen was given 2 times with different values'),
-    ]);
+    expect(run.status).toBe(2);
+    const message = flatten(run.stderr);
+    expect(message).toContain('--prop=chosen was given 2 times');
+    expect(message).toContain('--prop=rationale was given 2 times');
+    expect(stored(dir)).toEqual([]);
   });
 
-  it('does NOT warn when the repeated --prop carries the SAME value', () => {
-    // The other half, and the reason the warning is not simply "gave a name twice". Nothing was
-    // discarded here, so there is nothing to report -- and `--na` already treats a repeat as a set
-    // rather than a warning. A warning that fires when nothing was lost is how the channel stops
-    // being read, which is the same defect as a guard that over-fires.
+  it('does NOT refuse when the repeated --prop carries the SAME value', () => {
+    // The other half, and the reason the check is not simply "gave a name twice". Nothing
+    // conflicted here, so there is nothing to refuse -- and `--na` already treats a repeat as a set
+    // rather than a warning. A refusal that fires when nothing conflicted rejects legitimate work,
+    // which is worse than the noise it replaced.
     const dir = project();
     const run = asc(
       ['record', 'decision', '--prop=chosen=a', '--prop=rationale=r', '--prop=chosen=a', '--json'],
@@ -417,8 +428,8 @@ describe('asc record', () => {
   it('compares a repeated --prop value canonically, so key order is not a difference', () => {
     // `{"a":1,"b":2}` and `{"b":2,"a":1}` are one value written two ways, and `options_considered`
     // is a `json` property -- the type whose values ARE objects, so it is the only place this can
-    // bite. Written twice identically-but-reordered, nothing is discarded and the warning must stay
-    // quiet; a comparison on the raw text (`===`, or the flag strings) would fire here.
+    // bite. Written twice identically-but-reordered nothing conflicted; a comparison on the raw
+    // text (`===`, or the flag strings) would refuse this legitimate command.
     const dir = project();
     const run = asc(
       [
@@ -440,23 +451,50 @@ describe('asc record', () => {
     expect(recorded['options_considered']).toEqual({ x: 1, y: 2 });
   });
 
-  it('does NOT claim a value was discarded when the entry was refused and nothing was written', () => {
-    // The warning's text is a claim about the OUTCOME ("Only the last is recorded"), so on a
-    // refusal it would be a false report -- and a false report from the warnings channel is worse
-    // than silence, because it is the channel a caller learns to trust. `rationale` is required and
-    // is left out here, so this entry is refused before any write happens.
+  it('does not call an identical repeat "different" when the value cannot be compared', () => {
+    // `--prop=x=1e999` parses to `Infinity`, and `canonicalJson` throws on a non-finite number --
+    // measured, not hypothetical. Resolving "cannot compare" as "different" was defensible while
+    // this fed a warning and is a false report now that it feeds a refusal: the message would quote
+    // two IDENTICAL values as different. So the text is the tiebreak, and the accurate refusal --
+    // the store's own, about the value being unusable -- is the one the caller reads.
     const dir = project();
-    const run = asc(['record', 'decision', '--prop=chosen=a', '--prop=chosen=b'], dir);
+    const run = asc(
+      [
+        'record',
+        'decision',
+        '--prop=chosen=a',
+        '--prop=rationale=r',
+        '--prop=options_considered=1e999',
+        '--prop=options_considered=1e999',
+      ],
+      dir,
+    );
 
-    expect(run.status).toBe(1);
-    expect(flatten(run.stderr)).toContain('rationale');
-    expect(flatten(run.stderr)).not.toContain('Only the last is recorded');
+    expect(flatten(run.stderr)).not.toContain('different values');
+    expect(flatten(run.stderr)).toContain('expects a JSON array or object');
     expect(stored(dir)).toEqual([]);
   });
 
-  it('reports a discarded --prop on a dry run too, and still writes nothing', () => {
-    // A preview says what the real run would say -- the same rule `types import` follows, and the
-    // reason both run their work inside a rolled-back transaction rather than skipping it.
+  it('refuses before validating, so the argv conflict is what the caller is told about', () => {
+    // `rationale` is required and is left out; the repeated `chosen` is also here. Both are real
+    // problems, and only one of them can be reported first. The conflict is entirely inside the
+    // caller's argv -- no store state can resolve it -- and it is the more actionable of the two,
+    // so it is checked before the store is opened at all. Refusing after validation would instead
+    // report a missing property, and the repeat would surface only on the second run.
+    const dir = project();
+    const run = asc(['record', 'decision', '--prop=chosen=a', '--prop=chosen=b'], dir);
+
+    expect(run.status).toBe(2);
+    const message = flatten(run.stderr);
+    expect(message).toContain('--prop=chosen was given 2 times with different values');
+    expect(message).not.toContain('rationale');
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('refuses a --dry-run too, rather than previewing a recording that cannot happen', () => {
+    // A preview promises what the real run would do, so it cannot promise a write this command
+    // would refuse. The refusal is raised before the dry-run branch is reached, which is what makes
+    // that true rather than a coincidence of ordering.
     const dir = project();
     const run = asc(
       [
@@ -470,8 +508,11 @@ describe('asc record', () => {
       dir,
     );
 
-    expect(run.status).toBe(0);
-    expect(flatten(run.stderr)).toContain('Only the last is recorded');
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--prop=chosen was given 2 times with different values');
+    // stdout stays empty, not "an envelope with no rows": stdout is the data channel, and a
+    // refusal produces no data. A caller piping this into `jq` gets nothing to misread.
+    expect(run.stdout).toBe('');
     expect(stored(dir)).toEqual([]);
   });
 
