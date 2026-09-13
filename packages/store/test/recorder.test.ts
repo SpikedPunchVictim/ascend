@@ -540,6 +540,83 @@ describe('reading entries back', () => {
 });
 
 /**
+ * A property named `constructor` end to end: definition, refusal, N/A, value, projection.
+ *
+ * Measured before the fix, through this same API: `validateEntry` resolved `constructor` to
+ * `measured` from `Object.prototype` alone, so a REQUIRED `constructor` property was satisfied
+ * by recording nothing -- the ledger held `properties_json = {"real":"yes"}` with
+ * `json_extract(..., '$.constructor')` reading `null` while validation reported ok. The
+ * correct repair was refused too: `--na constructor` came back as "both measured and listed
+ * as not applicable". Both halves are asserted here, at the API a caller actually uses.
+ *
+ * It is not a synthetic name. `constructor` is an ordinary word in this product's own domain
+ * (a code-analysis type records which constructor a finding was attributed to), and
+ * `core/test/state.test.ts` proves it is the ONE `Object.prototype` member that survives
+ * `canonicalName` -- so it is the whole reachable surface, not one example of it.
+ */
+describe('a property named `constructor` is an ordinary property', () => {
+  const CONSTRUCTOR_SPEC: TypeSpec = {
+    name: 'constructor_probe',
+    properties: [{ name: 'constructor', type: 'string', required: true }],
+  };
+
+  it('registers, because the name is not reserved', () => {
+    withStore(() => undefined, CONSTRUCTOR_SPEC);
+  });
+
+  it('refuses a recording that leaves a required `constructor` undecided', () => {
+    withStore((store) => {
+      expect(() => recordEntry(store.db, { type: 'constructor_probe' }, context())).toThrow(
+        EntryRejectedError,
+      );
+      expect(countEntries(store)).toBe(0);
+    }, CONSTRUCTOR_SPEC);
+  });
+
+  it('accepts an explicit N/A, and reads it back as not_applicable', () => {
+    withStore((store) => {
+      recordEntry(store.db, { type: 'constructor_probe', na: ['constructor'] }, context());
+      expect(storedRow(store).properties_json).toBe('{}');
+      expect(storedRow(store).na_json).toBe('["constructor"]');
+      expect(findEntry(store.db, 'e1')?.states['constructor']).toBe('not_applicable');
+    }, CONSTRUCTOR_SPEC);
+  });
+
+  it('stores a measured value the ledger and the read path both return', () => {
+    withStore((store) => {
+      const recorded = recordEntry(
+        store.db,
+        { type: 'constructor_probe', properties: { constructor: 'Widget' } },
+        context(),
+      );
+      expect(recorded.entry.states['constructor']).toBe('measured');
+      expect(storedRow(store).properties_json).toBe('{"constructor":"Widget"}');
+      expect(findEntry(store.db, 'e1')?.properties['constructor']).toBe('Widget');
+    }, CONSTRUCTOR_SPEC);
+  });
+
+  it('projects the value into the generated view, under its own name', () => {
+    // The reserved-name vocabulary exists because a property whose name the envelope or the
+    // `<property>_state` suffix already occupies would make the view read the wrong column.
+    // `constructor` occupies neither, so the column must be the property's own -- and the
+    // only way to know is to select it, since the name is also a JavaScript prototype member
+    // and a projection built by string concatenation could quietly collide here.
+    withStore((store) => {
+      recordEntry(
+        store.db,
+        { type: 'constructor_probe', properties: { constructor: 'Widget' } },
+        context(),
+      );
+      const row = store.db
+        .prepare('SELECT constructor, constructor_state FROM v_constructor_probe_v1')
+        .get() as { constructor: string; constructor_state: string };
+      expect(row.constructor).toBe('Widget');
+      expect(row.constructor_state).toBe('measured');
+    }, CONSTRUCTOR_SPEC);
+  });
+});
+
+/**
  * The one-recorder discipline, and the injected-clock rule, both enforced by reading the
  * package's own source. These are the two invariants that a future edit is most likely to
  * break silently -- a second `INSERT INTO entries` compiles and passes every behavioural

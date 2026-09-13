@@ -603,8 +603,11 @@ function requireText(value: unknown, column: string): string {
  * caller never sees while the query reports success.
  */
 function shapeRow(row: Record<string, unknown>): UnionRow {
-  const properties: Record<string, unknown> = {};
-  const states: Record<string, string> = {};
+  // Null-prototype maps: keyed by a user-defined property name, so an object literal's
+  // inherited keys would be observable here. See `state.ts`'s `validateEntry` for the measured
+  // defect this shape prevents.
+  const properties = Object.create(null) as Record<string, unknown>;
+  const states = Object.create(null) as Record<string, string>;
 
   for (const [key, value] of Object.entries(row)) {
     if (key.startsWith('p.')) properties[key.slice(2)] = value;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateEntry, type TypeSpec } from '../src/index.js';
+import { canonicalJson, canonicalName, validateEntry, type TypeSpec } from '../src/index.js';
 
 /**
  * The three-state model is the reason this product exists. The fold corpus it was
@@ -186,5 +186,82 @@ describe('purity', () => {
     validateEntry(SPEC, { properties, na });
     expect(properties).toEqual({ comments: 1, surprise: true });
     expect(na).toEqual(['reviewer']);
+  });
+});
+
+/**
+ * A property name is a KEY, not a slot on `Object.prototype`.
+ *
+ * The defect this pins, measured before the fix: `properties` was an object literal, so
+ * `'constructor' in properties` was true for an empty recording. A required property named
+ * `constructor` therefore resolved to `measured` with nothing recorded for it, the entry
+ * persisted with no value for a required property, and the correct repair
+ * (`asc record <type> --na constructor`) was refused as "both measured and listed as not
+ * applicable" -- so there was no way to record the truth either.
+ *
+ * The class is enumerated from `Object.prototype` rather than hard-coded, because the set of
+ * names that can reach `validateEntry` is "`Object.prototype`'s members, filtered by what
+ * `canonicalName` leaves alone", and that filter moves if the canonicalizer's renaming rules
+ * change. A test that named `constructor` would keep passing while the class grew.
+ */
+describe('an inherited name is not a recorded value', () => {
+  const INHERITED = Object.getOwnPropertyNames(Object.prototype).filter(
+    (name) => canonicalName(name) === name,
+  );
+
+  const specFor = (name: string): TypeSpec => ({
+    name: 'proto_probe',
+    properties: [{ name, type: 'string', required: true }],
+  });
+
+  it('is not vacuous: at least one Object.prototype name survives canonicalization', () => {
+    // A loop over an empty list passes without testing anything, and a test that cannot fail
+    // is the exact failure mode this file exists to prevent.
+    expect(INHERITED).toContain('constructor');
+  });
+
+  it.each(INHERITED)('reads an unrecorded `%s` as not_measured, not as measured', (name) => {
+    const result = validateEntry(specFor(name), {});
+    expect(result.states[name]).toBe('not_measured');
+    // And because it is required with no decision, the recording is refused.
+    expect(result.ok).toBe(false);
+    expect(result.errors.map((issue) => issue.field)).toEqual([name]);
+  });
+
+  it.each(INHERITED)(
+    'accepts an explicit N/A for `%s` instead of calling it a contradiction',
+    (name) => {
+      const result = validateEntry(specFor(name), { na: [name] });
+      expect(result.states[name]).toBe('not_applicable');
+      expect(result.errors).toEqual([]);
+      expect(result.ok).toBe(true);
+    },
+  );
+
+  it.each(INHERITED)('stores a measured `%s` as a real own key', (name) => {
+    const result = validateEntry(specFor(name), { properties: { [name]: 'v' } });
+    expect(result.states[name]).toBe('measured');
+    expect(Object.hasOwn(result.properties, name)).toBe(true);
+    // The store's identity function for a recording: a value that vanishes here is a value
+    // the ledger never holds, however green validation reported.
+    expect(canonicalJson(result.properties)).toBe(`{"${name}":"v"}`);
+  });
+
+  it('stores a value under a name that is an inherited ACCESSOR, not a data property', () => {
+    // The write half of the same defect, and the half no canonical name can reach:
+    // `canonicalName('__proto__')` is 'proto', so this is not a spec the registry would ever
+    // store -- but `validateEntry` is an exported pure function and its contract does not
+    // require a canonical spec, so this is a legal call. On an object literal the assignment
+    // below is swallowed by `Object.prototype`'s `__proto__` setter (a non-object is ignored)
+    // and the value disappears with no error and no warning; on a null-prototype map it is an
+    // ordinary key. This is the assertion that fails if the accumulator goes back to a
+    // literal, which is why the three tests above (all discriminating on `Object.hasOwn`)
+    // are not the whole fix.
+    const result = validateEntry(
+      { name: 'proto_write', properties: [{ name: '__proto__', type: 'string' }] },
+      { properties: { ['__proto__']: 'v' } },
+    );
+    expect(result.states['__proto__']).toBe('measured');
+    expect(canonicalJson(result.properties)).toBe('{"__proto__":"v"}');
   });
 });

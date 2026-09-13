@@ -126,9 +126,17 @@ function parsePropertyFlag(raw: string): readonly [string, unknown] {
   return [raw.slice(0, separator), flagValue(raw.slice(separator + 1))];
 }
 
-/** The `--prop` flags as a properties object. */
+/**
+ * The `--prop` flags as a properties object.
+ *
+ * Null-prototype: the names come from the command line. On an object literal
+ * `--prop=__proto__=x` is swallowed by the inherited `__proto__` accessor instead of
+ * becoming a key, so `Object.entries` never sees it and the unknown-property warning never
+ * fires -- the flag would be dropped with no output at all, which is the silent-success
+ * failure this command refuses everywhere else.
+ */
 function propertiesFrom(propFlags: readonly string[]): Record<string, unknown> {
-  const properties: Record<string, unknown> = {};
+  const properties = Object.create(null) as Record<string, unknown>;
   for (const raw of propFlags) {
     const [name, value] = parsePropertyFlag(raw);
     properties[name] = value;

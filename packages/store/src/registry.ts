@@ -165,8 +165,9 @@ const toStorage = (
   const shape = definitionShape(spec);
 
   // Per-property prose, keyed by the canonical property name, collected from the spec
-  // itself and overridden by anything passed explicitly.
-  const prose: Record<string, string> = {};
+  // itself and overridden by anything passed explicitly. A null-prototype map for the same
+  // reason as `state.ts`'s `validateEntry`: the keys are user-controlled names.
+  const prose = Object.create(null) as Record<string, string>;
   for (const property of spec.properties) {
     if (property.description !== undefined) prose[property.name] = property.description;
   }

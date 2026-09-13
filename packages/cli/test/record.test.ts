@@ -591,6 +591,35 @@ describe('asc record', () => {
     });
   });
 
+  it('reports a --prop whose name is a JavaScript prototype member, instead of dropping it mutely', () => {
+    // The same warning as above, for the one name that used to escape it. Measured before the
+    // fix: `--prop=__proto__=pwned` was swallowed when the flags were collected into an object
+    // literal -- `Object.prototype`'s `__proto__` setter ignores a non-object, so the key never
+    // became an own property, `Object.entries` never saw it, and the command exited 0 having
+    // silently discarded a flag. Not "warned and stripped": not mentioned at all, which is the
+    // one outcome this command refuses everywhere else. `notaproperty` above cannot catch it,
+    // because an ordinary undefined key and an inherited accessor fail differently.
+    const dir = project();
+    const run = asc(
+      [
+        'record',
+        'decision',
+        '--prop=chosen=a',
+        '--prop=rationale=because',
+        '--prop=__proto__=pwned',
+        '--json',
+      ],
+      dir,
+    );
+
+    expect(run.status).toBe(0);
+    expect(flatten(run.stderr)).toContain("'__proto__' is not a property of decision");
+    expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      chosen: 'a',
+      rationale: 'because',
+    });
+  });
+
   it('warns rather than refusing when every property is not applicable', () => {
     // Legal, and the entry is written: `required` means "must have a decision", never "must have a
     // value" (`core/state.ts`). Refusing here would pressure a recorder into fabricating one.

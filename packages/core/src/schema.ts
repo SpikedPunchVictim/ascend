@@ -106,7 +106,9 @@ export function propertySchema(spec: PropertySpec): z.ZodTypeAny {
  * warning so it cannot happen silently.
  */
 export function buildSchema(spec: TypeSpec): z.ZodObject<Record<string, z.ZodTypeAny>> {
-  const shape: Record<string, z.ZodTypeAny> = {};
+  // Null-prototype, like every other map keyed by a property name: `state.ts`'s
+  // `validateEntry` carries the measured defect this shape prevents.
+  const shape = Object.create(null) as Record<string, z.ZodTypeAny>;
   for (const property of spec.properties) {
     shape[property.name] = propertySchema(property).optional();
   }

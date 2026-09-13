@@ -83,7 +83,22 @@ export function validateEntry(spec: TypeSpec, input: EntryInput): ValidatedEntry
   const naInput = input.na ?? [];
 
   // --- values -----------------------------------------------------------------
-  const properties: Record<string, unknown> = {};
+  // A null-prototype map, not an object literal, and every membership test below is
+  // `Object.hasOwn`. Both are needed, and both are the same defect: the accumulator is keyed
+  // by a property name, the name is user-controlled, and an object literal inherits from
+  // `Object.prototype`. Measured: `'constructor' in {}` is `true`, so a required property
+  // named `constructor` read as `measured` when nothing had been recorded for it -- the entry
+  // persisted with no value for a required property, and the correct repair
+  // (`--na constructor`) was refused as "both measured and listed as not applicable", so
+  // there was no way to record the truth either.
+  //
+  // `Object.hasOwn` fixes the read (an inherited key is not a measurement). The null
+  // prototype fixes the write (a name that is an inherited accessor would be swallowed by the
+  // assignment instead of stored), which keeps the map correct even if `canonicalName`'s
+  // renaming rules change. Measured: exactly ONE name on `Object.prototype` survives
+  // canonicalization today -- `constructor`; `__proto__` canonicalizes to `proto` and
+  // `toString` to `to_string`, so the others are unreachable rather than safe.
+  const properties = Object.create(null) as Record<string, unknown>;
 
   for (const [name, value] of Object.entries(offered)) {
     const property = declared(spec, name);
@@ -144,16 +159,16 @@ export function validateEntry(spec: TypeSpec, input: EntryInput): ValidatedEntry
   // --- resolve states ---------------------------------------------------------
   // Every declared property gets a state, so a caller can compute three-state ratios
   // across the whole definition without re-deriving what "absent" meant.
-  const states: Record<string, PropertyState> = {};
+  const states = Object.create(null) as Record<string, PropertyState>;
   for (const property of spec.properties) {
-    if (property.name in properties) states[property.name] = 'measured';
+    if (Object.hasOwn(properties, property.name)) states[property.name] = 'measured';
     else if (seenNa.has(property.name)) states[property.name] = 'not_applicable';
     else states[property.name] = 'not_measured';
   }
 
   // --- contradictions ---------------------------------------------------------
   for (const name of na) {
-    if (name in properties) {
+    if (Object.hasOwn(properties, name)) {
       // Both measured and declared meaningless. Storing this would put one entry in
       // two states at once, which is the ambiguity the model exists to remove.
       const property = declared(spec, name);
