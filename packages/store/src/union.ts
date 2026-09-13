@@ -37,10 +37,20 @@
  *
  * **One project is attached at a time, and that is deliberate.** `SQLITE_MAX_ATTACHED` defaults to
  * 10 -- measured, `too many attached databases - max 10` on the eleventh -- so a single statement
- * joining every project would break at eleven projects. Attaching one at a time has no ceiling, and
- * concatenating in JS is exactly the union because `UNION ALL` is associative. The suite unions 12
- * projects so a later "optimisation" into one statement fails loudly instead of quietly capping the
- * corpus.
+ * joining every project would break at eleven projects. Attaching one at a time has no ceiling:
+ * measured over **25** projects, every one read and the connection left holding only `main`, because
+ * each is detached before the next is attached. Concatenating in JS is exactly the union because
+ * `UNION ALL` is associative. The suite unions 12 projects so a later "optimisation" into one
+ * statement fails loudly instead of quietly capping the corpus.
+ *
+ * **This workaround is available here and NOT to `asc query --across`, and the difference is worth
+ * stating because the two read as the same feature.** The union BUILDS the statement, so it can read
+ * one project at a time and decide how to combine the results. `--across` runs SQL the caller wrote,
+ * which may name several projects in one statement (`... FROM a.entries JOIN b.entries`), so every
+ * project it is asked about has to be attached at once -- there is no "one at a time" for a query
+ * this module does not author. That is why `--across` needs a ceiling of its own and refuses a glob
+ * wider than the connection can hold (`attachHeadroom` below), rather than growing the same
+ * workaround.
  *
  * The projects given are the whole scope: the connection's own `main` database is not consulted.
  * `--across` means "these projects", and a union that silently added the current one would answer a
@@ -373,6 +383,64 @@ export function attachStore(db: DatabaseSync, source: ProjectSource, alias: stri
 /** Detach `alias`. The counterpart of `attachStore`, and the only way to release a project. */
 export function detachStore(db: DatabaseSync, alias: string): void {
   db.exec(`DETACH DATABASE ${ident(alias)}`);
+}
+
+/**
+ * How many more databases this connection can attach, measured rather than assumed.
+ *
+ * **Why this asks instead of knowing.** The cap is SQLite's compile-time `SQLITE_MAX_ATTACHED`,
+ * which defaults to 10 and which nothing at runtime can raise: `node:sqlite`'s `DatabaseSync`
+ * exposes no limit method (measured by enumerating its prototype), and the C `sqlite3_limit` can
+ * only ever lower the value. A constant here would be a belief about the driver, and it would fail
+ * in both directions -- too high, and a caller attaches until the raw `too many attached databases`
+ * message arrives, which is the defect this exists to remove; too low, and a query that would have
+ * worked is refused. Neither is acceptable, so the number comes from the connection.
+ *
+ * **How it measures.** It attaches `:memory:` databases until SQLite refuses, then detaches them.
+ * Measured on a read-only handle, which is the one `asc query` holds: the tenth succeeds, the
+ * eleventh fails, and `PRAGMA database_list` afterwards reports exactly the names it reported
+ * before. A `:memory:` attach creates no file (checked against the store directory's own listing,
+ * before and after), so the probe leaves nothing behind but the count.
+ *
+ * **The one thing it deliberately does not do.** The refusal arrives as `SQLITE_ERROR` -- `errcode`
+ * 1, `errstr` "SQL logic error" -- which is the same code and string as a syntax error, so the only
+ * signal is the message text, a translation rather than an interface. Classifying by that text is
+ * what this avoids: the count is the answer, and a caller refuses with the number it measured
+ * instead of attaching stores and then guessing why one failed.
+ *
+ * `wanted` bounds the probe, and it is the caller's own count rather than a limit of this function's.
+ * A caller only needs to know whether ITS projects fit, so learning the exact capacity above that
+ * number would spend attaches on a question nobody asked. The result is therefore
+ * `min(capacity, wanted)` -- and on the path that matters, where the caller refuses, it is below
+ * `wanted` and is the true capacity, which is why it can be reported as one.
+ */
+export function attachHeadroom(db: DatabaseSync, wanted: number): number {
+  const taken = new Set(databaseNames(db).map(foldDatabaseName));
+  const opened: string[] = [];
+
+  try {
+    for (let index = 0; opened.length < wanted; index++) {
+      const alias = `asc_probe_${String(index)}`;
+      // A caller that already attached under this name owns it, and an ATTACH that fails for THAT
+      // reason would be counted as the ceiling. Skipped rather than assumed free.
+      if (taken.has(foldDatabaseName(alias))) continue;
+
+      try {
+        db.exec(`ATTACH DATABASE ':memory:' AS ${ident(alias)}`);
+      } catch {
+        // Not an error being swallowed: the refusal IS the measurement, and its value is the count
+        // accumulated so far. See the doc block -- the message is deliberately not inspected.
+        return opened.length;
+      }
+      opened.push(alias);
+    }
+    return opened.length;
+  } finally {
+    // `finally`, so a probe cannot outlive the question it answered -- including on the early return
+    // above, which a `finally` still runs for. Detaching in reverse is not required (DETACH does not
+    // care about order) and is here so the loop reads as unwinding what the one above did.
+    for (const alias of opened.reverse()) db.exec(`DETACH DATABASE ${ident(alias)}`);
+  }
 }
 
 /**

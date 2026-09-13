@@ -1,10 +1,13 @@
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { canonicalizeTypeSpec, definitionShape, typeHash, type TypeSpec } from '@ascend/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  attachHeadroom,
+  attachStore,
+  detachStore,
   DuplicateProjectError,
   IncompatibleDefinitionsError,
   NotAnAscendStoreError,
@@ -608,6 +611,138 @@ describe('attachments are the union’s own business', () => {
       ]);
       expect(result.projects).toHaveLength(12);
       expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+});
+
+describe('the attach ceiling is measured rather than assumed', () => {
+  /**
+   * The number is never written down here.
+   *
+   * A literal `10` in these tests would be the same belief the function was written to avoid, and it
+   * would pass whether or not `attachHeadroom` measured anything -- the value and the assertion would
+   * be the same guess. So the tests USE the number instead: they attach exactly that many real
+   * projects, and then one more, and require SQLite to accept the first batch and refuse the next.
+   * That is a property of the number itself, and it is what makes `attachHeadroom`'s result
+   * trustworthy rather than merely non-zero. It also means a driver whose ceiling moves makes these
+   * tests still correct rather than newly wrong.
+   */
+  it('returns a number that is exactly the headroom: that many attach, and one more does not', () => {
+    withConnection((db) => {
+      const headroom = attachHeadroom(db, 64);
+      expect(headroom).toBeGreaterThan(1);
+
+      const projects = Array.from({ length: headroom }, (_, index) =>
+        project(
+          [DENIAL],
+          [{ id: `h${String(index)}`, properties: { count: index, tool_name: 'Bash' } }],
+        ),
+      );
+
+      // Every one of them fits. If `attachHeadroom` under-reported, this is where it shows.
+      for (const [index, source] of projects.entries()) {
+        expect(() => attachStore(db, source, `a${String(index)}`)).not.toThrow();
+      }
+
+      // And the next one does not. If it over-reported, THIS is where it shows -- and the failure is
+      // SQLite's own message, which is the raw text the caller is supposed to be spared and which
+      // therefore must not be reachable here.
+      const overflow = project(
+        [DENIAL],
+        [{ id: 'overflow', properties: { count: 0, tool_name: 'Bash' } }],
+      );
+      expect(() => attachStore(db, overflow, 'overflow')).toThrow(/too many attached databases/);
+
+      for (const [index] of projects.entries()) detachStore(db, `a${String(index)}`);
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+
+  it('probes no further than the caller asked, and reports only what it saw', () => {
+    withConnection((db) => {
+      // `wanted` is the caller's own count. A caller with two projects has no use for the exact
+      // capacity above that, and this is the assertion that the probe does not go looking for it.
+      expect(attachHeadroom(db, 2)).toBe(2);
+      expect(attachHeadroom(db, 4)).toBe(4);
+      expect(attachedNames(db)).toEqual(['main']);
+
+      // Zero is not a special case with its own branch: the loop simply does not run, and reporting
+      // 0 is the truth -- there is nothing this connection was asked to hold.
+      expect(attachHeadroom(db, 0)).toBe(0);
+      expect(attachedNames(db)).toEqual(['main']);
+    });
+  });
+
+  it('counts what is already attached against the headroom', () => {
+    withConnection((db) => {
+      const empty = attachHeadroom(db, 64);
+
+      const three = Array.from({ length: 3 }, (_, index) =>
+        project(
+          [DENIAL],
+          [{ id: `p${String(index)}`, properties: { count: index, tool_name: 'Bash' } }],
+        ),
+      );
+      for (const [index, source] of three.entries()) attachStore(db, source, `t${String(index)}`);
+
+      // The ceiling is a property of the CONNECTION, not of the process, so three already attached
+      // is three fewer available. A probe that reported the fresh-connection number here would tell
+      // `--across` it had room it does not have, and the caller would attach until SQLite refused --
+      // which is precisely the bug, arriving one level down.
+      expect(attachHeadroom(db, 64)).toBe(empty - 3);
+
+      for (const index of three.keys()) detachStore(db, `t${String(index)}`);
+    });
+  });
+
+  it('works on the read-only handle that `asc query` holds', () => {
+    // The whole point of the measurement is that the CLI can take it. `openQueryProject` opens with
+    // `readOnly: true`, so an ATTACH that only works writable would be no use at all.
+    //
+    // Built first and reopened second, because a read-only open does not create the store: it does
+    // not even create the directory (measured in `openStore`), so a read-only handle on a path that
+    // does not exist fails to open rather than reporting an empty store.
+    const dir = join(tempDir(), 'readonly', STORE_DIR);
+    openStore({ dir }).close();
+
+    const store = openStore({ dir, readOnly: true });
+    try {
+      expect(attachHeadroom(store.db, 64)).toBeGreaterThan(1);
+      expect(attachedNames(store.db)).toEqual(['main']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('leaves the connection and the filesystem exactly as it found them', () => {
+    // A probe that mutates is a probe that can change the answer it is measuring, so both halves are
+    // asserted: the database names, and the directory listing. The second is the one that would
+    // catch a probe that attached a FILE -- `ATTACH` creates an empty database when the path does
+    // not exist, so a mis-spelled probe path is a stray file left in someone's project.
+    const dir = join(tempDir(), 'untouched', STORE_DIR);
+    const store = openStore({ dir });
+    try {
+      const before = readdirSync(dir).sort();
+      expect(attachHeadroom(store.db, 64)).toBeGreaterThan(1);
+      expect(attachedNames(store.db)).toEqual(['main']);
+      expect(readdirSync(dir).sort()).toEqual(before);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('does not mistake a name it cannot use for the ceiling', () => {
+    withConnection((db) => {
+      // `asc_probe_0` is the first name the probe reaches for. A caller that already attached under
+      // it must not turn an ATTACH that fails for THAT reason into a reported capacity of zero --
+      // which would refuse every query on a connection that in fact has room.
+      const blocker = project(
+        [DENIAL],
+        [{ id: 'blocker', properties: { count: 0, tool_name: 'Bash' } }],
+      );
+      attachStore(db, blocker, 'asc_probe_0');
+
+      expect(attachHeadroom(db, 64)).toBeGreaterThan(1);
     });
   });
 });

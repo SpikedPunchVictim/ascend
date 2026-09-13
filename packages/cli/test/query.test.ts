@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { statementCount } from '@ascend/cli';
+import { attachHeadroom, openStore } from '@ascend/store';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
@@ -610,6 +611,70 @@ describe('a store written by a newer ascend', () => {
     // Nothing was printed as data, because nothing was read.
     expect(result.stdout.trim()).toBe('');
   });
+});
+
+describe('--across and the attachment ceiling', () => {
+  /**
+   * One test for both sides of the boundary, because the interesting failure is the PAIR: refusing
+   * one project too many is only correct if exactly one fewer still works, and a check that refused
+   * everything would satisfy the first half alone.
+   *
+   * The capacity is MEASURED here rather than written down, for the reason the store suite gives:
+   * an assertion and a constant that came from the same guess cannot check each other. What this
+   * test states is the rule -- what fits is attached, what does not is refused -- and the store
+   * suite is where the number itself is witnessed by attaching exactly that many and one more.
+   *
+   * `capacity + 1` projects give both arms: run from a directory with no store, all of them are
+   * targets and the glob is one over; run from INSIDE one of them, that project is `main` and the
+   * remaining `capacity` are exactly what fits.
+   *
+   * The explicit timeout is deliberate. Eleven `asc init` calls are eleven real processes, which is
+   * ~2s of the 5s default on this machine and less headroom than that on a loaded CI box -- and a
+   * flaky boundary test is worse than none, because the failure looks like the boundary moved.
+   */
+  it('attaches a glob that exactly fills the connection, and refuses one project more', () => {
+    const probe = openStore({ dir: ':memory:', ascendVersion: 'test' });
+    const capacity = attachHeadroom(probe.db, 64);
+    probe.close();
+    expect(capacity).toBeGreaterThan(1);
+
+    const { parent, members } = neighbourhood(capacity + 1);
+    const [first] = members as [string];
+
+    // --- one project over ----------------------------------------------------------------
+    const outside = scratch('asc-query-ceiling-outside-');
+    const over = asc(['query', 'SELECT 1', '--across', `${parent}/*`], outside);
+
+    expect(over.status).toBe(1);
+    const overNotes = flatten(over.stderr);
+    expect(overNotes).toContain(`needs to attach ${String(capacity + 1)} projects`);
+    expect(overNotes).toContain(`at most ${String(capacity)} attached databases`);
+
+    // The raw driver message is what this refusal replaced, and `errcode` cannot tell it apart
+    // from a syntax error (measured: both are `SQLITE_ERROR`), so the ONLY way this fix can fail
+    // is by the message coming back. Asserted in the negative, and on the squeezed text: oclif
+    // wraps mid-token, so `squashed` is what makes the phrase matchable at all.
+    expect(squashed(over.stderr)).not.toContain('toomanyattacheddatabases');
+
+    // Nothing was attached, which is the observable form of "the refusal is decided before the
+    // first ATTACH". It is also why there is nothing for the command to release on this path.
+    expect(squashed(over.stderr)).not.toContain('attachedas');
+
+    // --- exactly at capacity -------------------------------------------------------------
+    const at = asc(
+      ['query', 'SELECT count(*) AS n FROM proj_1.entries', '--across', `${parent}/*`, '--json'],
+      first,
+    );
+
+    expect(at.status).toBe(0);
+    expect(rows(at.stdout)[0]).toEqual({ n: 0 });
+
+    const atNotes = squashed(at.stderr);
+    expect((atNotes.match(/attachedas/g) ?? []).length).toBe(capacity);
+    // The hoisted local-project check still fires, and still says why -- moving it above the loop
+    // is what made the count knowable, and the warning is the part a caller would notice missing.
+    expect(flatten(at.stderr)).toContain('is the project you are in');
+  }, 30_000);
 });
 
 describe('outside any project', () => {

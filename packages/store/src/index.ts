@@ -89,6 +89,7 @@ export {
 export {
   AliasInUseError,
   attachStore,
+  attachHeadroom,
   databaseNames,
   detachStore,
   foldDatabaseName,

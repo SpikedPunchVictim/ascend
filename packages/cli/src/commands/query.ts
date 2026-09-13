@@ -21,6 +21,7 @@
 
 import { Args, Flags } from '@oclif/core';
 import {
+  attachHeadroom,
   attachStore,
   databaseNames,
   detachStore,
@@ -315,7 +316,9 @@ export default class Query extends BaseCommand {
     across: Flags.string({
       description:
         'Attach every project matching this glob, each under its own database name, and report ' +
-        'the names on stderr. Quote the glob. The project you are in stays unqualified as "main".',
+        'the names on stderr. Quote the glob. The project you are in stays unqualified as "main". ' +
+        'A SQLite connection holds a limited number of attached databases, so a glob matching ' +
+        'more projects than fit is refused rather than partly attached.',
     }),
   };
 
@@ -450,32 +453,86 @@ export default class Query extends BaseCommand {
     const seen = new Map<string, string>();
     const attachments: Attachment[] = [];
 
-    for (const target of targets) {
-      if (localFile !== undefined && resolveOrSelf(target.file) === localFile) {
-        this.warn(
-          `${target.label} is the project you are in, so it is already here as 'main' and was not ` +
-            `attached again. Query it unqualified.`,
-        );
-        continue;
-      }
+    // Which targets this command would attach, decided BEFORE the first ATTACH, because the count
+    // has to be known before any of them is made -- see the ceiling refusal below.
+    //
+    // The test is the one the loop always made, moved rather than changed: `resolveOrSelf` is
+    // `realpathSync`, which is the same resolution `localFile` was built with in `run`. Hoisting it
+    // costs nothing, because it is a fact about the filesystem and not about SQLite -- no attach is
+    // needed to learn it -- and it leaves ONE owner of the "is this the project I am in" rule
+    // instead of a check made twice.
+    const planned = targets.map((target) => ({
+      target,
+      local: localFile !== undefined && resolveOrSelf(target.file) === localFile,
+    }));
+    const wanted = planned.filter((entry) => !entry.local).length;
 
-      const alias = allocateAlias(target.label, taken);
-      const attachment = attachStore(handle, target, alias);
-
-      // After the attach, because the path that matters is the one SQLite resolved: a symlink, or a
-      // second spelling of one directory, would otherwise read as two projects. The attachment is
-      // released by the caller's `finally` even on this throw.
-      const first = seen.get(attachment.file);
-      if (first !== undefined) {
-        throw new DuplicateProjectError(target.label, attachment.file, first);
-      }
-
-      seen.set(attachment.file, target.label);
-      taken.add(foldDatabaseName(alias));
-      attachments.push(attachment);
-      this.warn(`${target.label} attached as '${alias}'`);
+    // **The ceiling, refused rather than discovered.** Every `--across` target is attached at once
+    // and stays attached for the caller's statement, because that statement is the caller's own SQL
+    // and may name several projects in one query -- so unlike `unionEntries`, which builds its
+    // statement and can therefore read one project at a time, this command cannot detach anything
+    // early. Measured before this check existed: a glob matching 11 non-local projects attached ten
+    // and then died on the eleventh with `too many attached databases - max 10` -- a raw SQLite
+    // message naming no project, no count and no fix, at a round number a monorepo reaches
+    // (asc-bcv.14, F2).
+    //
+    // The number comes from the connection rather than from a constant here, and `attachHeadroom`'s
+    // doc block says why: the failure it would otherwise be guessing at is reported as a generic
+    // `SQLITE_ERROR`, indistinguishable by code from a syntax error, so a wrong constant would put
+    // the raw message back.
+    const headroom = attachHeadroom(handle, wanted);
+    if (wanted > headroom) {
+      // A refusal rather than a usage error, matching "--across matched no projects": the command
+      // line is well formed and the glob is honest about what it matched. The connection is what
+      // cannot hold it.
+      throw refusal(
+        `--across needs to attach ${String(wanted)} projects, and a SQLite connection can hold at ` +
+          `most ${String(headroom)} attached databases at once. Narrow the pattern to ` +
+          `${String(headroom)} projects or fewer, or run the query once per batch.`,
+      );
     }
 
-    return attachments;
+    try {
+      for (const { target, local } of planned) {
+        if (local) {
+          this.warn(
+            `${target.label} is the project you are in, so it is already here as 'main' and was ` +
+              `not attached again. Query it unqualified.`,
+          );
+          continue;
+        }
+
+        const alias = allocateAlias(target.label, taken);
+        const attachment = attachStore(handle, target, alias);
+
+        // After the attach, because the path that matters is the one SQLite resolved: a symlink, or
+        // a second spelling of one directory, would otherwise read as two projects.
+        const first = seen.get(attachment.file);
+        if (first !== undefined) {
+          throw new DuplicateProjectError(target.label, attachment.file, first);
+        }
+
+        seen.set(attachment.file, target.label);
+        taken.add(foldDatabaseName(alias));
+        attachments.push(attachment);
+        this.warn(`${target.label} attached as '${alias}'`);
+      }
+      return attachments;
+    } catch (error) {
+      // **The caller's `finally` cannot cover this, which is why the release is here.** That
+      // `finally` iterates `attachments`, and the assignment binding it is the call to this very
+      // method -- so a throw part-way through the loop leaves `attachments` unbound, the `finally`
+      // never runs, and every project attached so far stays attached for the rest of the process.
+      // Measured before this existed: a 12-project glob left exactly ten databases attached after
+      // the throw, released only because the CLI exits and closes the connection. That is fine for
+      // this command and is a leak for any in-process caller, which is a supported way to use the
+      // store.
+      //
+      // Detached plainly rather than defensively: each alias here was attached by this loop and is
+      // recorded in `attachments` immediately after, so DETACH cannot fail for an unknown name, and
+      // a `try` around it would only be able to hide the error this `throw` is reporting.
+      for (const attachment of attachments) detachStore(handle, attachment.alias);
+      throw error;
+    }
   }
 }
