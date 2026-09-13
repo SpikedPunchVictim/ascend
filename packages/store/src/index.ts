@@ -53,6 +53,7 @@ export {
   registeredNames,
   registerType,
   UnusableDefinitionError,
+  UnusableProseError,
   specHash,
   typeVersions,
   updateTypeProse,

@@ -10,6 +10,7 @@ import {
   recordEntry,
   registerType,
   UnusableDefinitionError,
+  UnusableProseError,
   typeVersions,
   updateTypeProse,
   withRollback,
@@ -458,6 +459,135 @@ describe('prose is not part of the definition', () => {
       expect(() => {
         updateTypeProse(store.db, 'review_completed', 7, { description: 'x' });
       }).toThrow(/not registered/);
+    });
+  });
+});
+
+describe("a prose key must name a property, under the store's own spelling", () => {
+  /**
+   * `RegisterTypeOptions.prose` is documented as *"keyed by canonical property name"*, and both
+   * writers used to copy the caller's keys verbatim. The consequence was not a wrong value but a
+   * LOST one: the map held `reviewKind` beside `review_kind`, and every reader looks the prose up
+   * by the declared, canonical name, so the row held guidance nothing could show (asc-bcv.15, F3).
+   */
+  const reviewSpec = (): TypeSpec => ({
+    name: 'review_completed',
+    properties: [
+      { name: 'review_kind', type: 'text' },
+      { name: 'rounds', type: 'integer' },
+    ],
+  });
+
+  it('stores a key the caller spelled differently under the property it names', () => {
+    withStore((store) => {
+      registerType(store.db, reviewSpec(), {
+        registeredAt: AT,
+        prose: { reviewKind: 'the verdict that was reached' },
+      });
+
+      // `toEqual` on the whole map, not on the one lookup: the defect stored BOTH keys, and an
+      // assertion for `review_kind` alone passes against a map that also holds `reviewKind`.
+      expect(findType(store.db, 'review_completed')?.prose).toEqual({
+        review_kind: 'the verdict that was reached',
+      });
+    });
+  });
+
+  it('refuses a key that names no property, listing the ones that exist, and writes nothing', () => {
+    withStore((store) => {
+      let thrown: unknown;
+      try {
+        registerType(store.db, reviewSpec(), {
+          registeredAt: AT,
+          prose: { verdict: 'not a declared property' },
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(UnusableProseError);
+      const message = (thrown as Error).message;
+      expect(message).toContain("prose key 'verdict'");
+      expect(message).toContain("'review_kind'");
+      expect(message).toContain("'rounds'");
+      // Refused before the transaction, so there is no row and no version to point at.
+      expect(rowCount(store)).toBe(0);
+      expect(findType(store.db, 'review_completed')).toBeUndefined();
+    });
+  });
+
+  it('refuses a key that is BOTH misspelled and names nothing', () => {
+    // The shape the defect actually took: `reviewKind` prose for a type that does not declare it.
+    // A refusal that fired only on keys already spelled the store's way would let this through and
+    // store it verbatim -- invisible to every reader, which is the whole finding. Found by a
+    // surviving mutation, not by inspection: the first version of the test above used `verdict`,
+    // which is already canonical, so it could not tell the two rules apart.
+    withStore((store) => {
+      expect(() => {
+        registerType(store.db, reviewSpec(), {
+          registeredAt: AT,
+          prose: { verdictKind: 'neither declared nor spelled the way the store spells it' },
+        });
+      }).toThrow(UnusableProseError);
+      expect(rowCount(store)).toBe(0);
+    });
+  });
+
+  it('refuses two keys that fold to the same property, rather than picking one', () => {
+    // There is no principled winner between `review_kind: 'a'` and `reviewKind: 'b'`, and
+    // choosing silently is the resolution this repository refuses everywhere else.
+    withStore((store) => {
+      let thrown: unknown;
+      try {
+        registerType(store.db, reviewSpec(), {
+          registeredAt: AT,
+          prose: { review_kind: 'a', reviewKind: 'b' },
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(UnusableProseError);
+      expect((thrown as Error).message).toContain("'review_kind' and 'reviewKind'");
+      expect(rowCount(store)).toBe(0);
+    });
+  });
+
+  it('refuses an undeclared key on the prose UPDATE path too, and leaves the stored prose alone', () => {
+    // The second writer, and the one reachable WITHOUT a shape change -- `asc types define` of an
+    // already-known shape goes through here. A fix applied only to registration would leave this
+    // half storing the key verbatim.
+    withStore((store) => {
+      registerType(store.db, reviewSpec(), {
+        registeredAt: AT,
+        prose: { review_kind: 'original' },
+      });
+
+      expect(() => {
+        updateTypeProse(store.db, 'review_completed', 1, {
+          propertyProse: { verdict: 'nope' },
+        });
+      }).toThrow(UnusableProseError);
+
+      const row = findType(store.db, 'review_completed');
+      expect(row?.prose).toEqual({ review_kind: 'original' });
+      // The whole statement was refused, so the other fields it carried were refused with it.
+      expect(row?.recordWhen).toBeNull();
+    });
+  });
+
+  it('folds an update key to the stored spelling rather than adding a second one', () => {
+    withStore((store) => {
+      registerType(store.db, reviewSpec(), {
+        registeredAt: AT,
+        prose: { review_kind: 'original' },
+      });
+
+      updateTypeProse(store.db, 'review_completed', 1, {
+        propertyProse: { reviewKind: 'reworded' },
+      });
+
+      expect(findType(store.db, 'review_completed')?.prose).toEqual({ review_kind: 'reworded' });
     });
   });
 });

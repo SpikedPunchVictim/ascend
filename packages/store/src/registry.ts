@@ -104,6 +104,89 @@ export class UnusableDefinitionError extends Error {
   }
 }
 
+/**
+ * Thrown when a caller's per-property prose cannot be stored against the definition it names.
+ *
+ * **The contract it enforces** is stated on `RegisterTypeOptions.prose`: *"keyed by canonical
+ * property name."* Both writers used to copy the caller's keys verbatim, so `"reviewKind"` was
+ * stored beside `review_kind` and every reader -- which looks up the declared, canonical name --
+ * reported the prose as absent while the row held it (asc-bcv.15, F3). Silently accepting a key
+ * that names nothing is the same defect one step later: the prose would be invisible again.
+ *
+ * A separate class from `UnusableDefinitionError` because the sentence has to stay true for both
+ * callers. That one says *"nothing was registered"*, and `updateTypeProse` is not a registration;
+ * this says nothing was WRITTEN, which is what both actually guarantee. The two also differ in
+ * subject: there the DEFINITION is unusable, here the definition is fine and the prose is not.
+ */
+export class UnusableProseError extends Error {
+  constructor(
+    readonly typeName: string,
+    readonly problems: readonly string[],
+  ) {
+    super(
+      `${String(problems.length)} problem(s) make the prose for '${typeName}' unusable, so ` +
+        `nothing was written:\n${problems.map((problem) => `  ${problem}`).join('\n')}`,
+    );
+    this.name = 'UnusableProseError';
+  }
+}
+
+/**
+ * A caller's prose map, re-keyed by the canonical form of each name it uses.
+ *
+ * Canonicalizing rather than refusing a differently-spelled key is the same rule the store applies
+ * to every other name a caller supplies: `reviewKind`, `review-kind` and `review_kind` are one
+ * property, and the spec's own declarations were folded the same way. Refusing `reviewKind` while
+ * storing `review_kind` would be a refusal about spelling, and the prose would be lost to a caller
+ * who named the property correctly by the store's own rule.
+ *
+ * What IS refused is a key that names nothing, and two keys that fold to one property. The second
+ * is not hypothetical tidiness: `{review_kind: 'a', reviewKind: 'b'}` has no principled winner, and
+ * choosing one would be the silent resolution this repository refuses everywhere else (the same
+ * rule `asc-4if` and B8 share: a conflict between two declarations of one name is refused, never
+ * resolved). Both are returned as problems rather than thrown one at a time, so a caller sees every
+ * bad key in one message.
+ *
+ * `spec` must already be canonical -- both callers hold a canonical spec (a registration's
+ * `canonical.spec`, an update's stored row), and `property.name` is the canonical name there.
+ */
+function canonicalProseKeys(
+  typeName: string,
+  spec: TypeSpec,
+  prose: Readonly<Record<string, string>>,
+): { readonly prose: Record<string, string>; readonly problems: readonly string[] } {
+  const declared = new Set(spec.properties.map((property) => property.name));
+  const keyed = Object.create(null) as Record<string, string>;
+  const problems: string[] = [];
+  const usedBy = new Map<string, string>();
+
+  for (const [key, value] of Object.entries(prose)) {
+    const canonical = canonicalName(key);
+
+    if (!declared.has(canonical)) {
+      problems.push(
+        `prose key '${key}' canonicalizes to '${canonical}', which is not a property of ` +
+          `${typeName} -- the declared properties are ${[...declared].map((p) => `'${p}'`).join(', ')}`,
+      );
+      continue;
+    }
+
+    const first = usedBy.get(canonical);
+    if (first !== undefined) {
+      problems.push(
+        `prose keys '${first}' and '${key}' are both the property '${canonical}', so there is no ` +
+          `way to choose between them -- name it once`,
+      );
+      continue;
+    }
+
+    usedBy.set(canonical, key);
+    keyed[canonical] = value;
+  }
+
+  return { prose: keyed, problems };
+}
+
 /** A registered version, as read back out of the store. */
 export interface TypeVersionRow {
   readonly name: string;
@@ -171,7 +254,12 @@ const toStorage = (
   for (const property of spec.properties) {
     if (property.description !== undefined) prose[property.name] = property.description;
   }
-  for (const [key, value] of Object.entries(options.prose ?? {})) {
+
+  // The caller's keys go through the same fold as the ones above, so the map cannot hold two
+  // spellings of one property -- which is what it did while these were copied verbatim.
+  const override = canonicalProseKeys(spec.name, spec, options.prose ?? {});
+  if (override.problems.length > 0) throw new UnusableProseError(spec.name, override.problems);
+  for (const [key, value] of Object.entries(override.prose)) {
     prose[key] = value;
   }
 
@@ -719,10 +807,20 @@ export function updateTypeProse(
     throw new Error(`type '${name}' version ${String(version)} is not registered`);
   }
 
-  const nextProse =
+  // The second writer, and it needs the same fold for the same reason -- it is the one reachable
+  // WITHOUT a shape change (`asc types define` on an already-known shape), so a fix applied only
+  // to registration would leave this half storing the key verbatim.
+  //
+  // The merge keeps the canonical spelling already stored, and `existing.prose` is used as-is
+  // rather than re-keyed: a row may hold a key from before this fix, and silently renaming a
+  // caller's unrelated prose is a different decision from refusing the key they just sent.
+  const { prose: canonical, problems } =
     prose.propertyProse === undefined
-      ? existing.prose
-      : { ...existing.prose, ...prose.propertyProse };
+      ? { prose: undefined, problems: [] }
+      : canonicalProseKeys(existing.name, existing.spec, prose.propertyProse);
+  if (problems.length > 0) throw new UnusableProseError(existing.name, problems);
+
+  const nextProse = canonical === undefined ? existing.prose : { ...existing.prose, ...canonical };
 
   db.prepare(
     `UPDATE entry_types

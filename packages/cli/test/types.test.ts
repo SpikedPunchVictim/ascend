@@ -183,10 +183,19 @@ const REVIEW = {
   prose: { rounds: 'How many rounds of review it took.' },
 };
 
-/** REVIEW with one property dropped, so it hashes differently and becomes version 2. */
+/**
+ * REVIEW with one property dropped, so it hashes differently and becomes version 2.
+ *
+ * `rounds` is gone from the shape and its prose goes with it. Left in, this document would be
+ * refusing itself: prose naming a property the definition does not declare is refused outright
+ * (asc-bcv.15), so version 2 would never register. That is the right answer for a document whose
+ * two halves disagree about what the type is, and it is why the drop is written down here rather
+ * than inherited by spreading REVIEW.
+ */
 const REVIEW_V2 = {
   ...REVIEW,
   properties: [{ name: 'review_kind', type: 'enum', enum_values: ['approved'], required: true }],
+  prose: { review_kind: 'The verdict that was reached.' },
 };
 
 describe('asc types define', () => {
@@ -294,6 +303,53 @@ describe('asc types define', () => {
     const run = asc(['types', 'define'], project());
     // 2, not 1: the command line itself was incomplete.
     expect(run.status).toBe(2);
+  });
+});
+
+describe('asc types define, and how a prose key is spelled', () => {
+  /**
+   * End to end, because the store's fold is only half the fix: `define` of an already-known shape
+   * reaches `updateTypeProse` directly, and the command compares the document's prose against what
+   * is stored to decide whether to report `prose-updated`. Comparing raw keys against a folded map
+   * reports a change on every run of an idempotent command -- the exact class of wrong answer
+   * `register-document.ts` exists to prevent.
+   */
+  const SPELLED = { ...REVIEW, prose: { reviewKind: 'The verdict that was reached.' } };
+
+  it('stores a camelCase key under the property it names, and reads it back', () => {
+    const dir = project();
+    const run = asc(['types', 'define', json(dir, 'r.json', SPELLED)], dir);
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('created');
+
+    const rows = envelope(asc(['types', 'show', '--json', 'review_completed'], dir).stdout);
+    expect(rows.find((row) => row['field'] === 'property.review_kind')).toMatchObject({
+      description: 'The verdict that was reached.',
+    });
+  });
+
+  it('reports `unchanged` on a second run of the same document, not `prose-updated`', () => {
+    const dir = project();
+    asc(['types', 'define', '--json', json(dir, 'r.json', SPELLED)], dir);
+
+    const again = asc(['types', 'define', '--json', json(dir, 'r.json', SPELLED)], dir);
+
+    expect(again.status).toBe(0);
+    expect(envelope(again.stdout)[0]?.['outcome']).toBe('unchanged');
+  });
+
+  it('refuses a prose key that names no property, and registers nothing', () => {
+    const dir = project();
+    const run = asc(
+      ['types', 'define', json(dir, 'r.json', { ...REVIEW, prose: { verdict: 'nope' } })],
+      dir,
+    );
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("prose key 'verdict'");
+    expect(run.stderr).toContain('review_kind');
+    expect(registry(dir)).toEqual([]);
   });
 });
 

@@ -16,7 +16,7 @@
  * comparable.
  */
 
-import type { Bump, Rename } from '@ascend/core';
+import { canonicalName, type Bump, type Rename } from '@ascend/core';
 import { findType, listTypes, registerType, updateTypeProse, type Store } from '@ascend/store';
 import { documentSpec, type TypeDocument } from './document.js';
 
@@ -126,7 +126,14 @@ function pendingProseChange(
     return 'pending';
   }
   for (const [property, text] of Object.entries(document.prose ?? {})) {
-    if (stored.prose[property] !== text) return 'pending';
+    // Folded, because the store folded it on the way in: a document that spells a property
+    // `reviewKind` has its prose stored under `review_kind` (`canonicalProseKeys`), and comparing
+    // the document's raw key against the stored map would miss -- so this would answer `pending`
+    // for prose that is already exactly what the document asks for. That is a false "changed"
+    // reported on every run of an idempotent command, which is the class of wrong answer this
+    // whole module exists to prevent. Measured before the fold was added here: `asc types define`
+    // with a `reviewKind` prose key reported `prose-updated` on the second run of the same file.
+    if (stored.prose[canonicalName(property)] !== text) return 'pending';
   }
   return undefined;
 }
