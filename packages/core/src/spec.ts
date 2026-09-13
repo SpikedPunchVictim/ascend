@@ -251,12 +251,23 @@ function loneSurrogateIn(raw: string): string | undefined {
 }
 
 /**
- * Characters that make `$.<name>` address something other than the key `<name>`.
+ * Characters that make a generated statement fail to read the key `<name>`.
  *
  * `position` is part of the entry, not a convenience: `.` and `[` are structural wherever they
- * appear, while `"` and NUL are only fatal at the START -- `$.a"b` and `$.a\0b` were both measured
- * addressing their literal key correctly. Collapsing that distinction would refuse names that
- * project faithfully, which is the same defect as failing to refuse one that does not.
+ * appear, while `"` is fatal only at the START -- `$.a"b` was measured addressing its literal key
+ * correctly. Collapsing that distinction would refuse names that project faithfully, which is the
+ * same defect as failing to refuse one that does not.
+ *
+ * **NUL is `anywhere`, and the first version of this table had it at the start only. It was
+ * measured, and measured against the wrong thing** (`asc-bcv.22`, F11). The probe that produced the
+ * original table asked whether the path ADDRESSES the key, and handed the path to SQLite as a bound
+ * VALUE: `json_extract(doc, ?)` with `$.a\0b` does find the key `a\0b`, so the entry read
+ * `anywhere: false` -- correctly, about addressing. The generator does not bind it. `literal()`
+ * escapes `'` and nothing else, so the path is INTERPOLATED into the statement text, where the SQL
+ * parser stops at the NUL and the statement is truncated mid-literal: measured,
+ * `unrecognized token: "'$.a"` from both `refreshTypeViews` and `unionEntries`. That is a different
+ * failure from the other three -- a hard error rather than a plausible NULL column -- and it is not
+ * position-dependent, because the NUL breaks the STATEMENT rather than the PATH.
  */
 const PATH_BREAKERS: readonly {
   readonly character: string;
@@ -282,8 +293,10 @@ const PATH_BREAKERS: readonly {
   },
   {
     character: '\u0000',
-    anywhere: false,
-    reason: 'a leading NUL ends the path before it reaches the name',
+    anywhere: true,
+    reason:
+      'a NUL ends the SQL statement text, so the generated query is truncated mid-literal and ' +
+      'SQLite rejects it rather than ever reading the name',
   },
 ];
 
@@ -298,6 +311,13 @@ const PATH_BREAKERS: readonly {
  * unaddressable one; this is for the specs that reach the view generator without the registry --
  * a version row inserted by hand, or a store created before the rule existed.
  *
+ * **Two findings shaped this rule, and the callers cite the rule rather than the character.**
+ * `assertProjectable` and `unionEntries` both name `asc-bcv.16` (F5), which is the bead for the
+ * refusal this function performs; F11 (`asc-bcv.22`) widened the character set by one without
+ * changing what a caller does with an answer. A reader sent to F5 holding a NUL name arrives at the
+ * right rule with the mechanism spelled out in `reason`. Per-character citations would be the more
+ * precise shape and are not worth an interface change while both findings are the same refusal.
+ *
  * **Deliberately does NOT canonicalize, and that is the whole difference from
  * `reservedPropertyName`.** Folding first would HIDE the defect: `canonicalName('a.b')` is
  * `'a_b'`, which is perfectly addressable, so a check on the folded name would report every
@@ -310,9 +330,28 @@ const PATH_BREAKERS: readonly {
  * U+10FFFF was probed in four positions (leading, middle, trailing, alone) against a document
  * whose only key was that name, with a well-formed surrogate pair skipped as its own case and a
  * lone surrogate measured separately: 4,448,256 probes, and exactly 12 of them failed to return
- * the value. All 12 come from the four characters above. Two things that grammar would suggest are
- * refuted by that: `]` is harmless on its own (`$.a]b` finds `a]b`), and both `"` and NUL are
- * harmless away from the start. Refusing either would be a false refusal.
+ * the value. All 12 come from the four characters above. One thing grammar would suggest is
+ * refuted by that: `]` is harmless on its own (`$.a]b` finds `a]b`). One thing the sweep had right
+ * about a narrower question than this predicate asks: a `"` away from the start addresses its key.
+ *
+ * **What that sweep could not see, and therefore what it is evidence FOR.** It modelled ADDRESSING,
+ * and it handed every path to SQLite as a bound value. A generated view does not bind the path, it
+ * interpolates it into the statement text, so a name is unaddressable here for either of two
+ * unrelated reasons: the path reads the wrong thing, or the statement never parses. The sweep sees
+ * only the first. NUL is the one character that fails the second while passing the first, measured
+ * both ways (`asc-bcv.22`), which is why it is `anywhere` above -- and why the sweep's sentence
+ * reads "addressing its own key", a claim about the probe rather than about this function.
+ *
+ * **A NUL in the TYPE name is not checked anywhere, deliberately -- a stated limit, not a gap
+ * nobody looked at** (`asc-bcv.22`). `ident()` escapes `"` and nothing else, so a type name holding
+ * a NUL truncates the generated DDL exactly as a property name does: measured,
+ * `unrecognized token: ""idx_entries_nultype"` from `refreshTypeViews`. It is unguarded for two
+ * reasons. No caller can supply one -- the only real caller is `registry.ts:589` passing
+ * `shape.name`, which `canonicalizeTypeSpec` has already folded to `[a-z0-9_]` -- and the string the
+ * DDL interpolates is the `typeName` ARGUMENT, which `assertProjectable` never receives, so the
+ * guard's shape would have to change to check the right string. It also fails cleanly where the
+ * property half does not: `ensurePropertyIndex` emits the first DDL statement, so a NUL in the type
+ * name throws before anything partial is left behind.
  *
  * **The sweep's scope, stated because the claim was once wider than the evidence.** "Every code
  * point" is every NON-EMPTY name: an empty name has no code point to probe, so it is outside a

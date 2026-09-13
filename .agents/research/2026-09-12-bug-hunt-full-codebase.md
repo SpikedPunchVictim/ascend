@@ -46,7 +46,7 @@ Located before hunting. Steps 4 and 5 grepped **these** files, not just the flag
 
 | Class | Count |
 |---|---|
-| **BUG** — real risk, no guard, realistic, reachable | **13** |
+| **BUG** — real risk, no guard, realistic, reachable | **14** |
 | **FRAGILE** — correct today, breaks under a foreseeable change | **9** |
 | **OK** — guarded, intentional, or dead | 8 |
 | **Needs human review** | 3 |
@@ -56,6 +56,8 @@ Located before hunting. Steps 4 and 5 grepped **these** files, not just the flag
 The last four findings (B11, B12, F8, F9) came from a supplementary read-only CLI pass, verified by me before inclusion — see §5b. Three of the four are concentrated in `--across`, which now carries four separate defects (F2, B11, B12, and F2's sibling in `union.ts`); that command is the least-tested surface in the repository and should be treated as one unit of work rather than four.
 
 **F10 was found while building F5's fix, and by measurement rather than by reading.** F5's reconciliation swept non-empty names only — a per-character scan has no code point to look at in an empty one — and that blind spot hid a name whose consequence is strictly worse than F5's: `$.` is not a path, so instead of a NULL column the whole store stops accepting entries of any type. It is filed as its own finding (§5, after F5) because it is a different defect with a different blast radius, not a footnote to F5.
+
+**F11 was found by F10's own reconciliation, minutes after F10 was closed, and it is the mirror image of F10's blind spot.** F10's sweep asked both predicates together against a real SQLite over 63,881 names and reported exactly two false negatives — both a NUL inside a name. F5's sweep modelled whether the **path addresses the key**; the shipped generator does not pass the path as a value, it **interpolates** it, and `literal()` escapes `'` and nothing else, so a NUL truncates the statement before `json_extract` sees it. The character set was measured; what was measured was the wrong half of the trip.
 
 ---
 
@@ -82,6 +84,7 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | F5 | `assertProjectable` misses a **dotted** property name: the view column reads NULL and the index never matches, while `properties_json` holds the value | 3, 8 | Confirmed (empirical) | Medium | Low | Medium | Medium | 1 file / none (hand-insert only) / none | S |
 | F5 | FIXED — and the report's own predicate is **PARTLY REFUTED**: rejecting `"` and a lone `$` would refuse names that measure returning their literal key, which is the same defect as passing `a.b`. The shipped guard's character set is **measured across all of Unicode** (4,448,256 probes → 12 failures from 4 characters) and reconciled against SQLite for **4,456,448 names → 0 false negatives, 0 false positives**. **That number is scoped by F10 below: the reconciled set is non-empty, NUL-free names.** The union's independent read path now asks the same question, and its false comment was corrected rather than deleted. `asc-bcv.16` CLOSED. See F5's Status and its scope correction | this commit |
 | F10 | An **empty** property name makes `$.`, which is not a path: `assertProjectable` and `union.ts` both pass it, and because the index sits on `entries` every insert of **every type** then fails while `types list` still exits 0 | 3, 8 | Confirmed (empirical) | Medium | Low | High | High | 4 files / none (hand-insert only) / none | S |
+| F11 | A **NUL anywhere** in a property name is passed by every rule and truncates the generated statement — `literal()` escapes `'` and nothing else and the path is *interpolated*, not bound — so the CLI exits 1 with a raw `unrecognized token` naming neither the property nor the store | 3, 8 | Confirmed (empirical) | Low | Low | Low | Low | 1 file / none (hand-insert only) / none | S |
 | F6 | `indexName` **collides** (`test`+`run_count` vs `test_run`+`count`) and the second index is silently never created | 8, 1 | Confirmed (empirical) | Low | Low | Low | Low | 1 file / none / none | S |
 | F7 | `unit` is not trimmed, so `" ms "` forces a **MAJOR** version bump | 3, 9 | Confirmed (empirical) | Low | Medium | Low | Low | 1 file / **hash of existing rows** / none | S |
 | B11 | A project directory named `temp` (or `Temp` / `main`) makes `--across` fail with a **raw driver error**, despite a comment claiming the alias is seeded against exactly this | 1, 7 | Confirmed (empirical) | Medium | Low | Medium | Medium | 1 file / none / none | S |
@@ -103,8 +106,8 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | F2 | FIXED — the report's own suggested fix is **refuted**; F9's leak is closed with it. See F2's Status | `1ac8075` |
 | F9 | FIXED as a side effect of F2 (the release moved inside `attachScope`; the false comment is deleted). No CLI-observable test exists — see its Status | `1ac8075` |
 | F3 | FIXED — the report's stated reason is **refuted** (`canonicalName` folds `reviewKind` → `review_kind`, not `reviewkind`); the shape survives. 386 stores / 1,063 rows scanned read-only: **1** row held the defect, **0** would be refused. Its data half is **closed by measurement, not by a migration**: the bead's own `type_hash` objection is refuted, and a round trip repairs the one real row. `asc-bcv.15` CLOSED. See F3's Status | this commit |
-| F10 | FIXED — found **while building F5's fix**, by a reconciliation sweep rather than by reading. The predicate is `raw === ''`, not `canonicalName(raw) === ''`: 24 of the 25 names that fold to empty were measured addressing their literal key, and refusing them would be F5's defect wearing the other hat. `asc-bcv.21` CLOSED. See F10's Status | this commit |
-| F11 | **FILED, not fixed here** — found by F10's own reconciliation: a NUL anywhere in a property name is passed by both rules (`unaddressablePropertyName('a\0b')` is `undefined`) and truncates the generated statement, measured as `unrecognized token: "'$.a"` from `unionEntries` and from `refreshTypeViews`. `asc-bcv.22` | F11's commit |
+| F10 | FIXED — found **while building F5's fix**, by a reconciliation sweep rather than by reading. The predicate is `raw === ''`, not `canonicalName(raw) === ''`: 24 of the 25 names that fold to empty were measured addressing their literal key, and refusing them would be F5's defect wearing the other hat. `asc-bcv.21` CLOSED. See F10's Status | `d7d99f7` |
+| F11 | FIXED — found by F10's own reconciliation, which reported exactly **2 false negatives over 63,881 names**. The rule was right about **addressing** and silent about **transport**: the sweep bound the path as a value, the generator interpolates it. Now `anywhere`, and the reconciliation re-run reads **0 false negatives, 0 false positives**. `asc-bcv.22` CLOSED. See F11's Status | this commit |
 | `asc-4if` (NR3, answered) | FIXED | `bfb7786` |
 | B4 | FIXED (3 sites; `registry.ts`/`schema.ts` not mutation-testable — see its Status) | `15947f8` |
 | F4 (first half) | FIXED as a side effect of `asc-4if`; residual divergence untouched | `bfb7786` |
@@ -777,6 +780,8 @@ A guard that refuses those is **the same defect as one that passes `a.b`**: it r
 
 The claim that survives measurement, and the one this section should be read as making: **among the non-empty, NUL-free names a generated statement can actually carry, 0 false negatives and 0 false positives.** The sweep's model of *addressing* was right; its model of *transport* was missing, and the second gap is the more dangerous one — a guard that is right about JSON paths and silent about the statement that contains them looks exactly like one that is right about both.
 
+**Both gaps are now closed, and the scoped claim above is what the sweep is still evidence for.** F10 added the empty-name rule; F11 widened this rule's character set by NUL. Re-run after F11, the same reconciliation over the same 63,881 names reads **0 false negatives, 0 false positives** — so the sentence "0 false negatives" is true of the *union of the two predicates* over the whole probed set, and the scope correction stays written because the sweep alone never supported it. The measured set did not change: the 13 rejected names and the 63,864 addressed ones are the same names before and after, which is what makes the over-refusal direction a measurement here rather than an assertion — the fix moved 2 names from "passed but broken" to "refused" without refusing a single one that works.
+
 **The mirror path was found and closed.** `union.ts` assembles the same `$.<property>` paths at QUERY time from specs the local registry never accepted, and it did **not** call `assertProjectable` — its comment at `:623-625` asserted the invariant in prose instead (*"a property name is canonical (`[A-Za-z0-9_]` only, see @ascend/core), so neither prefix can occur inside one"*). That sentence is true of every name the registry accepts and unenforced for the specs this path actually reads. It now asks the same question, and **that comment was corrected rather than deleted**, so the next reader sees what it used to claim.
 
 **The `(asc-865.1)` citation was false for the new rule and is corrected.** Each problem now cites its own finding: `reservedPropertyName` → `asc-865.1`, `unaddressablePropertyName` → `asc-bcv.16`. A shared citation would send a reader holding the second bug to the bead for the first — *a wrong answer that looks like a right one*. Both rules may report for one property: `'source.'` folds to `'source'` (reserved) and contains a dot (unaddressable), and the author needs both sentences to fix it in one edit, so there is deliberately no `continue` between them. A test asserts both citations appear for `source.`.
@@ -844,7 +849,74 @@ $.*   -> returns the value stored under `*`      $.<U+4E2D U+6587> -> returns it
 
 **Reconciliation, and the second finding it produced.** `/tmp/f10-reconcile.mjs` asked the two predicates together against a real SQLite over **63,881 raw names** — every ASCII code point in four positions, every BMP code point alone, the 25 fold-away names, and a set of realistic ones. Result: **13 rejected, 4 accepted-but-NULL, 63,864 addressed; 0 false positives, and 2 false negatives** — both a NUL inside a name, which the two predicates pass and the generated statement cannot carry. That is **F11** (`asc-bcv.22`), filed from this measurement and fixed in its own commit; `emptyPropertyName` by itself refuses exactly one name, and it is `''`.
 
+**The same harness, re-run after F11 was fixed, is F11's re-test (check 8):** **13 rejected, 4 accepted-but-NULL, 63,864 addressed; 0 false negatives, 0 false positives.** Identical buckets, two names moved from "passed by the guard" to "measured broken" — i.e. the fix closed the two false negatives and refused nothing that measures working. The sweep models the **path** half of the generated statement; the identifier half (`ident()` building `idx_entries_<type>_<property>`) is not modelled there, and for a property name both are built from the same string, so one refusal covers both.
+
 **Gate:** `pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && align check` — **666 passed / 28 files**, `architecture green`, `security green (19 baselined)`, `verdict: green`.
+
+---
+
+### F11 — A NUL anywhere in a property name passes every rule and truncates the generated statement
+
+**Lens:** 3 (boundary — the one code point that is not a character), 8 (cross-implementation divergence — the two halves of a generated statement, and the guard's model of each)
+**Confidence:** Confirmed (empirical) · **Urgency:** Low
+**Found:** by **F10's own reconciliation**, minutes after F10 was closed, which reported exactly two false negatives over 63,881 names. Filed as `asc-bcv.22`.
+
+**Status: FIXED.** `unaddressablePropertyName`'s NUL entry moved from `anywhere: false` to `anywhere: true`, with the reason rewritten to name the mechanism that is actually at work.
+
+**What is wrong, and why it took a reconciliation to see.** Both property-name predicates pass a name with a NUL in it — `unaddressablePropertyName('a\0b')` was `undefined` and so was `emptyPropertyName('a\0b')` — and the generated statement cannot carry it. `literal()` in `sql.ts` is `'${value.replace(/'/g, "''")}'`: it escapes a single quote and **nothing else**, and `views.ts` and `union.ts` **interpolate** the path into the statement text rather than binding it as a parameter. The SQL parser stops at the NUL, so the statement is truncated mid-token.
+
+**The mechanism, measured through the real functions, one variable per arm** (`/tmp/f10-nul2.mjs`):
+
+```
+A  NUL in the PROPERTY name (type name clean)
+     refreshTypeViews -> THREW: unrecognized token: ""idx_entries_nulprop_a"
+     unionEntries     -> THREW: unrecognized token: "'$.a"
+B  NUL in the TYPE name only
+     refreshTypeViews -> THREW: unrecognized token: ""idx_entries_nultype"
+C  a clean property, THEN a NUL property
+     the clean property's idx_entries_nulpart_ab WAS CREATED, the second failed
+D  control, no NUL anywhere -> exit 0, index and view built
+```
+
+**Why the shipped guard missed it, and this is the part that matters.** F5's sweep reconciled the guard against SQLite's behaviour over 4,448,256 probes and reported *"0 false negatives"*. That claim is now scoped: the sweep modelled whether the **path addresses the key**, and it handed the path to SQLite as a **bound value**. The shipped generator does not pass the path as a value — it interpolates it into a string literal. Its model of *addressing* was right; its model of *transport* was missing. A guard that is right about JSON paths and silent about the statement containing them looks exactly like one that is right about both, which is why this survived a sweep with four million probes behind it.
+
+```
+json_extract(doc, ?)  with '$.a\0b'   -> finds the key     (what the sweep measured)
+json_extract(doc, '$.a\0b')           -> unrecognized token: "'$.a"   (what ships)
+```
+
+**The asymmetry with `"` is coherent, and it is not the same shape.** `.` and `[` are structural *in the path grammar*, so they break in any position. `"` is structural only at the **start** — a leading quote opens a key the path never closes; `$.a"b` was measured returning its literal key. A NUL is not a path-grammar character at all but a **transport** one, so it breaks wherever it sits, and it breaks the **statement** rather than the **path**. That is why it is `anywhere` and `"` is not, and why the reason text says what it does.
+
+**Position was not assumed, it was swept.** For a property name, `ident()` builds the index and view names from the same string that `literal()` builds the path from, so one refusal covers both halves. The reconciliation harness does not model the identifier half, which is stated rather than glossed; the mutation entry that refuses a NUL at every position *except* trailing is caught by the core test, so the boundary of "anywhere" is covered at the predicate.
+
+**Driven through the real CLI, before and after** (`/tmp/f11-cli.mjs` and `/tmp/f11-before.sh`; the BEFORE arm reverts only the position flag on the NUL entry and rebuilds, then restores the file from a backup taken before the patch — the tree was checked afterwards, and `git diff` shows the single `anywhere: false` → `true` line and nothing else). Hand-insert a version 1 of `byhand` declaring `ab` and `a\0b` — written with the real `definitionShape` + `typeHash`, so it is a faithful row — then make the CLI refresh every version by registering a version 2:
+
+```
+BEFORE  asc types define type.json -> exit 1
+          Error: unrecognized token: ""idx_entries_byhand_a"
+        (names neither the property nor the store; the user is told nothing actionable)
+
+AFTER   asc types define type.json -> exit 1
+          version 1 declares property 'a\0b': a NUL ends the SQL statement text, so the
+          generated query is truncated mid-literal and SQLite rejects it rather than ever
+          reading the name. Rename it -- 'a_b' projects faithfully. The view was NOT built
+          -- registering a corrected version is the fix (asc-bcv.16).
+        objects named after the type: NONE
+```
+
+**One correction to the bead's own arm C, measured while driving the CLI.** The partial DDL is real for a **direct `refreshTypeViews` call outside a transaction**, which is how arm C measured it. It is **not** reachable through the CLI: `registry.ts` calls `refreshTypeViews` inside the registration transaction, so when the guard is absent the raw error rolls the whole thing back and nothing partial survives — measured, `objects named after the type: NONE` in the BEFORE arm. The guard still earns its place *before* the DDL for the library path, which is the path arm C exercised, and the store test asserts that ordering against a clean property followed by a NUL one.
+
+**The over-refusal direction, driven rather than described.** The names that measure addressing their own key must cross the widened rule untouched, because a false refusal on a read path makes a corpus unreadable with nothing the reader can do. Through the real CLI: hand-insert a version declaring `-`, `*`, `中文`, `a"b`, `a]b`, `a b`, register a version 2 (exit 0, all seven indexes created), **record** into version 1 (exit 0), and read every key back **through the generated view** by column name — all six return their values.
+
+**The eight-check list.** (1) **Boundary:** the positions are swept — leading, interior, trailing and alone — and the mutant that refuses a NUL everywhere *except* trailing is caught. (2) **Mirror path:** both consumers of the predicate interpolate (`views.ts:202,262` and `union.ts:680`), and both are asserted to refuse, with the **mechanism** asserted rather than the refusal alone. (3) **Existing data:** a store whose `entry_types` row holds such a name cannot be refreshed; it is **not repaired by this fix** and cannot be by any command, exactly as F10's is not. Stated rather than smoothed over. (4) **Constraint value:** the constraint is "the name must survive `literal()` and `ident()`, each of which escapes exactly one character", read from `sql.ts` rather than assumed. (5) **Failure modes:** the guard refuses loudly, and it cannot reintroduce the class for any input — a NUL is now refused wherever it appears. (6) **Interaction:** none with F5 or F10's rule; the three rules cannot overlap, asserted by an overlap test. (7) **Caller contract:** no signature changes; `assertProjectable` and `unionEntries` throw the same error types with a longer message. (8) **Empirical re-test:** the reconciliation re-run (0 false negatives, 0 false positives) and the CLI drive above.
+
+**Mutation:** `/tmp/mutate-f11.mjs`, 7 mutations — **6 caught, 0 survived as test weaknesses, 0 known gaps, 1 equivalent, 0 not applied.** Both over-refusal mutants are caught: treating `"` as fatal anywhere, and refusing every name that is not already canonical (which refuses `reviewKind`, `a]b`, `a"b` and a CJK name — all measured working). The equivalent spells the containment test as an index scan (`indexOf(c) === -1` for `includes(c)`), which is the same predicate for every input including the empty string.
+
+**Blast radius:** code — `packages/core/src/spec.ts` (1 file; the two callers already asked this predicate, so neither changed); data — none (only a hand-inserted version row can hold such a name, and `canonicalName` folds a NUL away so `registerType` cannot store one); coordination — none.
+
+**Limits, stated.** Reachable only through a spec that bypassed the registry or through a foreign store's spec via the union, exactly as F5's `assertProjectable` half is — a gap in a defense-in-depth guard, not an open door. It **fails closed**: a raw SQLite error, never a wrong number. The defects were legibility (the message named neither the property nor the store) and the false negative in a claim already recorded as measured. **The TYPE-name half is deliberately not guarded** and is recorded as a stated limit rather than left unnoticed: the string the DDL interpolates is the `typeName` **argument**, which `assertProjectable` never receives (it takes `versions`, and a hand-inserted row's `spec_json` name can differ from the `name` column the DDL is built from), and no caller can supply one — the only real caller is `registry.ts:589` passing `shape.name`, already folded to `[a-z0-9_]`. It also fails cleanly where the property half does not: `ensurePropertyIndex` emits the first DDL statement, so a NUL there throws before anything partial exists. The reasoning is written into `unaddressablePropertyName`'s doc comment so the next reader does not have to re-derive it.
+
+**Gate:** `pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && align check` — **669 passed / 28 files** (was 666; one test split in two on each of `spec.test.ts` and `union.test.ts`, and one added in `views.test.ts`), `architecture green`, `security green (19 baselined)`, `verdict: green`.
 
 ---
 
@@ -1033,11 +1105,11 @@ The same pass independently traced two findings already in this report, and adds
 
 This section exists because the fix work changed the report's own contents in three ways. All three are recorded here rather than edited silently into §2–§5, so a reader can see what moved.
 
-### The count was 17 when you approved it, and is 22
+### The count was 17 when you approved it, and is 23
 
 **This is the correction owed to you.** You approved a plan to *"fix all 17 bugs, phase by phase"*, from a report whose §2 then read **10 BUG + 7 FRAGILE = 17**. Four further findings — **B11, B12, F8, F9** — were verified *after* that answer and added in §5b, which brought the totals to **12 BUG + 9 FRAGILE = 21**. §2, §3, §4 and §5b have said 21 since §5b was written; this note is so the number you were shown and the number the report states are reconcilable rather than contradictory. The four are not a scope change you did not agree to: they came from the same supplementary pass the report already describes, and they are all in `--across`, which §4 already treats as one unit of work.
 
-**The number moved again, to 22, and the movement is the fix work doing its job.** **F10** (§5, after F5) was found *while building F5's fix* — by the reconciliation sweep, not by review — and it is a genuine finding, not a footnote: same guard, different rule, and a strictly worse blast radius. **F11** (`asc-bcv.22`), found by F10's own reconciliation moments later, takes it to **23**; it is filed here and fixed in the commit that follows this one, so this section will read 23 once that lands. Both are recorded rather than absorbed because *"the count was 17"* is the number you approved, and a report that quietly grows its own findings is the failure this section exists to prevent.
+**The number moved again — twice — and each movement is the fix work doing its job.** **F10** (§5, after F5) was found *while building F5's fix*, by the reconciliation sweep rather than by review, and it is a genuine finding rather than a footnote: same guard, different rule, and a strictly worse blast radius. That took the totals to **22**. **F11** (`asc-bcv.22`) was then found by **F10's own reconciliation** minutes later, which takes them to **23 — 14 BUG + 9 FRAGILE** — and it is fixed in its own commit, so both are now closed rather than pending. Both are recorded rather than absorbed because *"the count was 17"* is the number you approved, and a report that quietly grows its own findings is the failure this section exists to prevent.
 
 ### Corrections to the report's own findings, made while building the fixes
 
@@ -1280,4 +1352,15 @@ node /tmp/recheck7.mjs              # B1, B9, F4 with the CORRECT validateEntry 
 
 # The empirical re-tests named in the Fix Plan, after any fix lands
 node /tmp/recheck.mjs               # B2's placeholder must stop being storable
+node /tmp/f10-reconcile.mjs         # F10 + F11: both predicates vs a real SQLite, 63,881 names
+node /tmp/f11-cli.mjs               # F11 through the real CLI: the refusal, and the over-refusal
+bash /tmp/f11-before.sh             # F11's BEFORE arm (reverts one flag, rebuilds, restores)
+node /tmp/mutate-f11.mjs            # F11's mutation harness, 7 mutations
+node /tmp/f10-nul2.mjs              # F11's reachability probe, four arms, one variable each
 ```
+
+**A note on these harnesses, because three of them patch source and rebuild.** `mutate-f11.mjs` and
+`f11-before.sh` write to `packages/core/src/spec.ts`, rebuild, and restore. Both verify the restore:
+the mutation harness asserts byte-identity and throws if it differs, and the before-arm copies the
+file back before rebuilding. `f11-cli.mjs` and `f10-reconcile.mjs` are read-only outside `/tmp`.
+None of them reads or writes `~/.claude/projects/`.

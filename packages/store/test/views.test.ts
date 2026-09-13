@@ -717,22 +717,65 @@ describe('a property name the view cannot address by JSON path', () => {
     });
   });
 
-  it('refuses a leading quote and a leading NUL, the other two measured shapes', () => {
+  it('refuses a leading quote and a NUL in any position, the other measured shapes', () => {
     withStore((store) => {
       // One type each, because a version row is unique on (name, version) and both cases are
-      // version 1 of their own type.
+      // version 1 of their own type. The NUL cases are asc-bcv.22 (F11): a NUL is not a path
+      // character but a transport one, so it is refused wherever it sits -- `literal()` escapes `'`
+      // and nothing else and the path is INTERPOLATED, so the statement is truncated mid-literal
+      // and SQLite rejects it. Measured before the fix: `unrecognized token: ""idx_entries_nulprop_a"`.
+      const NUL = String.fromCharCode(0);
       const cases = [
-        { type: 'quoted', name: '"quoted' },
-        { type: 'nuled', name: `${String.fromCharCode(0)}nul` },
+        { type: 'quoted', name: '"quoted', mechanism: /path never closes/ },
+        { type: 'nuled', name: `${NUL}nul`, mechanism: /SQL statement text/ },
+        { type: 'nulmid', name: `a${NUL}b`, mechanism: /SQL statement text/ },
+        { type: 'nultail', name: `ab${NUL}`, mechanism: /SQL statement text/ },
       ];
-      for (const { type, name } of cases) {
+      for (const { type, name, mechanism } of cases) {
         insertVersionRow(
           store,
           { name: type, properties: [{ name, type: 'string' }] },
           { fold: false },
         );
-        expect(() => refreshTypeViews(store.db, type), name).toThrow(/cannot build a faithful/);
+        expect(() => refreshTypeViews(store.db, type), JSON.stringify(name)).toThrow(
+          /cannot build a faithful/,
+        );
+        // The mechanism, not merely the refusal: a quote breaks the PATH and a NUL breaks the
+        // STATEMENT, and a test that only asserted "refused" would pass if the rule were the wrong
+        // shape -- which is exactly the defect F11 was.
+        expect(() => refreshTypeViews(store.db, type), JSON.stringify(name)).toThrow(mechanism);
       }
+    });
+  });
+
+  it('refuses a NUL that a CLEAN sibling property precedes, leaving no partial DDL', () => {
+    // The refusal is asserted before it here for a measured reason, not for tidiness: refreshTypeViews
+    // is not atomic, so a rule that fires LATE leaves the earlier property's index behind. Measured
+    // on the real generator with a clean property followed by a NUL one -- the clean property's
+    // `idx_entries_nulpart_ab` WAS created and then the second index failed, so the store kept an
+    // index for a type whose refresh never completed. The guard runs before any DDL, which is what
+    // makes that state unreachable; this test is that claim driven rather than described.
+    withStore((store) => {
+      const NUL = String.fromCharCode(0);
+      insertVersionRow(
+        store,
+        {
+          name: 'nulpart',
+          properties: [
+            { name: 'ab', type: 'string' },
+            { name: `a${NUL}b`, type: 'string' },
+          ],
+        },
+        { fold: false },
+      );
+
+      expect(() => refreshTypeViews(store.db, 'nulpart')).toThrow(/SQL statement text/);
+
+      const objects = store.db
+        .prepare("SELECT name FROM sqlite_master WHERE type IN ('view', 'index')")
+        .all() as unknown as { name: string }[];
+      // Not even the property that would have been legal on its own.
+      expect(objects.filter((object) => object.name.includes('nulpart'))).toEqual([]);
     });
   });
 

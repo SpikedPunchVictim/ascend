@@ -460,17 +460,34 @@ describe('a property name the view can address by JSON path', () => {
     }
   });
 
-  it('refuses a quote or a NUL only at the START, where each one ends the path', () => {
-    // The POSITIONS are the finding. A leading quote opens a quoted key the path never closes and
-    // a leading NUL ends the path, and both were measured failing; a quote or a NUL in the middle
-    // was measured returning its literal key, so refusing those would be a false refusal.
+  it('refuses a quote only at the START, where it opens a key the path never closes', () => {
+    // The POSITION is the finding. A leading quote opens a quoted key the path never closes and was
+    // measured failing; a quote in the middle was measured returning its literal key, so refusing
+    // it would be a false refusal.
     for (const name of ['"ab', '"']) expect(unaddressablePropertyName(name), name).toBeDefined();
-    for (const name of [`${NUL}ab`, NUL]) {
-      expect(unaddressablePropertyName(name), name).toBeDefined();
-    }
-
     expect(unaddressablePropertyName('a"b')).toBeUndefined();
-    expect(unaddressablePropertyName(`a${NUL}b`)).toBeUndefined();
+  });
+
+  it('refuses a NUL ANYWHERE, because it breaks the statement rather than the path', () => {
+    // asc-bcv.22 (F11). THIS TEST PREVIOUSLY ASSERTED THE OPPOSITE for `a\0b`, and the assertion is
+    // changed deliberately rather than deleted -- the same way F5's over-refusal proposal was
+    // refuted by measurement, this is an under-refusal refuted the same way.
+    //
+    // The original entry read `anywhere: false` because `$.a\0b` was measured ADDRESSING its
+    // literal key. That measurement is still correct and it is about the wrong thing: it passed the
+    // path to `json_extract` as a bound VALUE. The generator INTERPOLATES it (`literal()` escapes
+    // `'` and nothing else), so the SQL parser stops at the NUL and the statement is truncated
+    // mid-literal. Measured through both generated-statement paths, one variable each:
+    //   refreshTypeViews(db, '<clean type>') with property `a\0b`
+    //     -> unrecognized token: ""idx_entries_nulprop_a"
+    //   unionEntries(db, '<clean type>', ...) with the same property
+    //     -> unrecognized token: "'$.a"
+    // Both are hard errors naming neither the property nor the store. A name that cannot be carried
+    // into a statement is unaddressable, whichever half of the trip it dies on.
+    for (const name of [`${NUL}ab`, NUL, `a${NUL}b`, `ab${NUL}`]) {
+      expect(unaddressablePropertyName(name), JSON.stringify(name)).toBeDefined();
+    }
+    expect(unaddressablePropertyName(`a${NUL}b`)?.reason).toContain('SQL statement text');
   });
 
   it('refuses an unpaired surrogate, and NOT a well-formed pair', () => {
@@ -587,8 +604,9 @@ describe('a property name with no characters at all', () => {
     // returns the value stored under `<name>`. A predicate on the FOLD would refuse every one of
     // them, which is the same defect as passing `a.b`.
     //
-    // `.` and `"` are in this list because THIS rule must not refuse them -- the rule above does,
-    // for its own reasons, and a reader should not mistake this test for a claim that they are safe.
+    // `.`, `"`, `[` and NUL are in this list because THIS rule must not refuse them -- the rule
+    // above does, each for its own reason, and a reader should not mistake this test for a claim
+    // that they are safe. Several of these fold away when canonicalized, which is the whole point.
     for (const name of [
       '.',
       '..',

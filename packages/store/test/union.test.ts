@@ -327,6 +327,27 @@ describe('a property name the union cannot address by JSON path', () => {
     });
   });
 
+  it('refuses a NUL anywhere in the name rather than dying inside its own statement', () => {
+    // asc-bcv.22 (F11). The union builds the path with `literal()`, which escapes `'` and nothing
+    // else, and INTERPOLATES it rather than binding it, so the SQL parser stops at the NUL and the
+    // SELECT is truncated mid-literal. Measured through the real function before the fix:
+    // `unrecognized token: "'$.a"` -- an error naming neither the property nor the project to go
+    // fix. Position matters not at all: the NUL breaks the STATEMENT, not the PATH.
+    const NUL = String.fromCharCode(0);
+    const nuled = projectBypassingTheRegistry(
+      [{ name: 'tool_denial', properties: [{ name: `a${NUL}b`, type: 'string' }] }],
+      [],
+      { fold: false },
+    );
+
+    withConnection((db) => {
+      expect(() => unionEntries(db, 'tool_denial', [nuled])).toThrow(/SQL statement text/);
+      expect(() => unionEntries(db, 'tool_denial', [nuled])).toThrow(
+        /cannot read type 'tool_denial'/,
+      );
+    });
+  });
+
   it('does not refuse a name that reads correctly, so a real store is never blocked', () => {
     // The other half, and the reason it is here: a guard on a READ path that fires on a working
     // store would make a corpus unreadable with no way to repair it. `reviewKind` addresses
@@ -349,10 +370,10 @@ describe('a property name with nothing in it', () => {
   // view generator does, and this is the rule it was missing. It fails differently here than a
   // dotted name does: `$.a.b` reads NULL and the statement runs, so the union would return a
   // plausible wrong number, but `$.` is not a path at all -- SQLite REJECTS it, and the union dies
-  // with `bad JSON path: '$.'` raised from inside a statement it generated itself. Measured through
-  // the real function: `unrecognized token: "'$.a"` for a name with a NUL, and a raw
-  // `bad JSON path` for the empty one -- an error naming neither the property nor the store to go
-  // fix, which is the failure mode the refusal exists to replace.
+  // with `bad JSON path: '$.'` raised from inside a statement it generated itself -- an error naming
+  // neither the property nor the store to go fix, which is the failure mode the refusal exists to
+  // replace. A NUL in the name fails the same way one rule over (`unrecognized token: "'$.a"`,
+  // asc-bcv.22) and is refused by the guard above, not by this one.
 
   it('refuses an empty property name rather than dying inside its own statement', () => {
     const nameless = projectBypassingTheRegistry(
