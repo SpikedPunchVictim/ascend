@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -78,6 +78,27 @@ function repo(): string {
 
 function gitignore(dir: string): string {
   return readFileSync(join(dir, '.gitignore'), 'utf8');
+}
+
+/**
+ * Is there a `.git` at `dir` or anywhere above it?
+ *
+ * Used to state the precondition the "no repository" test rests on, rather than assuming it. The
+ * command's walk for `.git` goes to the filesystem root (asc-bcv.10), so that test asserts the
+ * ABSENCE of a repository above a temp directory -- true on any ordinary machine, since it would
+ * require a `.git` at `/var` or `/private`, but a machine where it is false would make the test
+ * assert the wrong outcome rather than catch a defect. Asserting it makes that visible.
+ *
+ * `dirname('/') === '/'` terminates the walk, the same case the command's own walk terminates on.
+ */
+function repositoryAbove(dir: string): boolean {
+  let current = dir;
+  for (;;) {
+    if (existsSync(join(current, '.git'))) return true;
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
 }
 
 /**
@@ -316,10 +337,51 @@ describe('asc init', () => {
     expect(outcomeOf(asc(['init', '--json'], dir), 'gitignore')).toBe('appended');
   });
 
+  it('ignores the store from a repository subdirectory, where the repository is ABOVE it', () => {
+    // asc-bcv.10 (B6). The command asked whether `.git` was in the working directory, so every
+    // subdirectory of a repository looked like no repository at all and the store was left
+    // untracked. Measured before the fix (/tmp/probe-b6.mjs): `asc init` in `packages/api` exited 0,
+    // reported `skipped: ...no git repository to apply one to`, wrote no `.gitignore`, and
+    // `git status --porcelain` showed `?? packages/` -- the whole subtree one `git add -A` from
+    // being committed, with a database in it.
+    const outer = repo();
+    const dir = join(outer, 'packages', 'api');
+    mkdirSync(dir, { recursive: true });
+
+    const run = asc(['init', '--json'], dir);
+
+    expect(outcomeOf(run, 'gitignore')).toBe('created');
+    // NEXT TO THE STORE, not at the repository root. A scoped file says what it means without a
+    // relative path computed from here to there, and this is the file the store's own directory is
+    // read from. Asserted, because "wrote a .gitignore somewhere" would also pass for the root.
+    expect(gitignore(dir)).toBe('.ascend/\n');
+    expect(existsSync(join(outer, '.gitignore'))).toBe(false);
+  });
+
+  it('finds the repository through a `.git` FILE, which is what a worktree leaves', () => {
+    // The second half of the same detection. In a linked worktree or a submodule `.git` is a file
+    // holding `gitdir: ...`, so a walk that tested `isDirectory` would report "no repository" for
+    // every worktree -- the same defect one layer down. Asserted on the content git actually
+    // writes, so this is the shape being tested and not a stand-in for it.
+    const outer = scratch();
+    const dir = join(outer, 'packages', 'api');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(outer, '.git'), 'gitdir: /somewhere/.git/worktrees/api\n');
+
+    const run = asc(['init', '--json'], dir);
+
+    expect(outcomeOf(run, 'gitignore')).toBe('created');
+    expect(gitignore(dir)).toBe('.ascend/\n');
+  });
+
   it('leaves .gitignore alone when there is no repository to apply it to', () => {
     // A `.gitignore` in a directory git tracks nothing from is a file that does nothing, and
     // creating one is exactly the unrequested edit this command avoids.
     const dir = scratch();
+    // Stated rather than assumed: the walk now reaches the filesystem root, so this assertion is
+    // only about "no repository" while there is genuinely none above the temp directory.
+    expect(repositoryAbove(dir)).toBe(false);
+
     const run = asc(['init', '--json'], dir);
 
     expect(String(outcomeOf(run, 'gitignore'))).toContain('skipped');

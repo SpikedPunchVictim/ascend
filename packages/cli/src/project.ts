@@ -18,7 +18,7 @@
  * visible rather than inferred from silence.
  */
 
-import { statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { openStore, STORE_DIR, type Store } from '@ascend/store';
 
@@ -79,6 +79,39 @@ export interface Project {
   /** The directory holding the store, not necessarily the working directory. */
   readonly root: string;
   readonly store: Store;
+}
+
+/**
+ * The nearest ancestor of `startDir` (inclusive) that is a git working tree, if there is one.
+ *
+ * **The walk goes to the filesystem root and stops there**, which is what git itself does. The
+ * defect this replaces asked a narrower question -- "is there a `.git` right here?" -- and so
+ * answered "no repository" for every subdirectory of one, which is exactly where a monorepo package
+ * is. Measured (`/tmp/probe-b6.mjs`): `asc init` in `packages/api` of a repository reported
+ * `skipped: no .gitignore here and no git repository to apply one to`, wrote nothing, and left
+ * `packages/api/.ascend/ascend.db` untracked -- one `git add -A` from being committed. The same
+ * message is produced outside any repository at all, so the two cases were indistinguishable to the
+ * command; that is the defect, and it is the detection rather than the write target, which was
+ * already the store's own directory.
+ *
+ * `.git` is tested with `existsSync`, not `isDirectory`, because in a linked worktree or a
+ * submodule it is a FILE holding `gitdir: ...` rather than a directory.
+ *
+ * **Deliberately not stopping at `$HOME`.** Git does not, and the case where it would matter -- a
+ * store under `~/projects/x` in a tree whose `$HOME` is a dotfiles repository -- is one where the
+ * ignore is genuinely needed. A ceiling at the home directory would silently skip it.
+ */
+export function findGitRoot(startDir: string): string | undefined {
+  let dir = resolve(startDir);
+
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir;
+
+    // Same terminating case as `findProjectRoot` above: `dirname('/') === '/'`.
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
 }
 
 /**

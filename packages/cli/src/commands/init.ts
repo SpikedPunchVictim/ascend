@@ -38,12 +38,12 @@
  * the gitignore at all.
  */
 
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Flags } from '@oclif/core';
 import { openStore, STORE_DIR, STORE_FILE, withRollback, type Store } from '@ascend/store';
 import { BaseCommand } from '../base.js';
-import { findProjectRoot } from '../project.js';
+import { findGitRoot, findProjectRoot } from '../project.js';
 import { registerDocument } from '../register-document.js';
 import { STARTER_TYPES } from '../starters.js';
 
@@ -80,15 +80,6 @@ function ignoresStore(text: string): boolean {
       [STORE_DIR, `${STORE_DIR}/`].some((name) => trimmed === `${prefix}${name}`),
     );
   });
-}
-
-/** Is `path` a directory? Only used to decide whether `.gitignore` is worth creating. */
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 export default class Init extends BaseCommand {
@@ -212,13 +203,25 @@ export default class Init extends BaseCommand {
    * Creating a `.gitignore` where none exists is only done when there is a repository to apply it
    * to. A `.gitignore` in a directory git does not track anything from is a file that does nothing,
    * and inventing one is the kind of unrequested edit this command exists to avoid.
+   *
+   * **The file is written in the store's own directory, and the repository is looked for ABOVE it
+   * (asc-bcv.10, B6).** Those are two separate decisions and only the second was wrong: the target
+   * was already the directory the store is created in, so a nested `.gitignore` was written
+   * correctly whenever one existed to append to. What failed was the question that decides whether
+   * to create one at all, which asked about `root` alone and so answered "no repository" for every
+   * subdirectory of one. Writing at the repository root instead would have been the other possible
+   * fix and is the worse one: it needs a relative path computed from the store to that root, and it
+   * edits a file the user may have opinions about, to say something a scoped file says locally.
+   *
+   * An existing un-ignored store is repaired by running this command again -- `updateGitignore` runs
+   * on every `asc init`, so the fix reaches stores created before it. That is the whole of the
+   * existing-data plan, and it is why no migration exists for this finding.
    */
   private updateGitignore(root: string, dryRun: boolean): InitRow {
     const path = join(root, '.gitignore');
 
     if (!existsSync(path)) {
-      const repo = isDirectory(join(root, '.git')) || existsSync(join(root, '.git'));
-      if (!repo) {
+      if (findGitRoot(root) === undefined) {
         return {
           action: 'gitignore',
           target: path,
