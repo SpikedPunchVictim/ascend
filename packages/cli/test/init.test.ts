@@ -1,11 +1,14 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -319,6 +322,69 @@ describe('asc init', () => {
     const run = asc(['init', '--json'], dir);
     expect(outcomeOf(run, 'gitignore')).toBe('appended');
     expect(gitignore(dir)).toBe('node_modules/\n*.log\n.ascend/\n');
+  });
+
+  it('follows a symlinked .gitignore instead of replacing the link with a regular file', () => {
+    // asc-bcv.11 (B7). The write is temp-file-then-rename, and renaming onto the LINK's own path
+    // replaces the link. Measured before the fix (/tmp/probe-b7.mjs): `isSymbolicLink` went
+    // true -> false, the content survived, and a second repository pointed at the same target no
+    // longer saw the change -- the sharing was broken silently, and the target path is not
+    // recoverable from the file afterwards.
+    const outer = scratch();
+    const shared = join(outer, 'shared', 'gitignore');
+    mkdirSync(join(outer, 'shared'), { recursive: true });
+    writeFileSync(shared, 'node_modules/\n');
+
+    const dirs = [join(outer, 'alpha'), join(outer, 'beta')];
+    for (const dir of dirs) {
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      symlinkSync('../shared/gitignore', join(dir, '.gitignore'));
+    }
+
+    const run = asc(['init', '--json'], dirs[0] as string);
+
+    expect(outcomeOf(run, 'gitignore')).toBe('appended');
+    // The link survives, and still points at the same place -- asserted on the link itself rather
+    // than on the content, because content is what survived even when the link was destroyed.
+    expect(lstatSync(join(dirs[0] as string, '.gitignore')).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(dirs[0] as string, '.gitignore'))).toBe('../shared/gitignore');
+    expect(readFileSync(shared, 'utf8')).toBe('node_modules/\n.ascend/\n');
+    // And the sharing still WORKS: the sibling that shares the target sees the new entry. This is
+    // the assertion the whole fix is for -- "the link is still a link" would pass for a link
+    // repointed somewhere harmless.
+    expect(readFileSync(join(dirs[1] as string, '.gitignore'), 'utf8')).toBe(
+      'node_modules/\n.ascend/\n',
+    );
+    // The row names the file the user asked about, not the resolved target; the resolved target is
+    // on stderr instead, because `target` is the column a caller joins on across runs. Compared
+    // through `real()` because the command reports the directory as the PROCESS resolved it, which
+    // on macOS is `/private/var/...` for a `join(tmpdir(), ...)` this test wrote as `/var/...`.
+    expect(envelope(run.stdout).find((row) => row['action'] === 'gitignore')?.['target']).toBe(
+      join(real(dirs[0] as string), '.gitignore'),
+    );
+    // `squeeze`, not `flatten`: oclif wraps at the terminal width and breaks MID-TOKEN, so the path
+    // arrives with a space inside it (`asc-init -0DTHfR/alpha`). Measured on this assertion's first
+    // run -- `flatten` fails against output that is correct.
+    expect(squeeze(run.stderr)).toContain(real(shared));
+  });
+
+  it('leaves a DANGLING .gitignore symlink alone, which existsSync cannot tell from no file', () => {
+    // The arm the bead did not name, found by asking what else `existsSync` gets wrong here
+    // (/tmp/probe-b7.mjs). `existsSync` FOLLOWS a link, so a link to nothing answers "no file here",
+    // takes the create branch, and is replaced by a regular file -- the same defect reached through
+    // the branch that looks like it is creating something new.
+    const dir = repo();
+    symlinkSync('../nowhere/gitignore', join(dir, '.gitignore'));
+
+    const run = asc(['init', '--json'], dir);
+
+    expect(String(outcomeOf(run, 'gitignore'))).toContain('skipped');
+    expect(lstatSync(join(dir, '.gitignore')).isSymbolicLink()).toBe(true);
+    // Nothing was created at the link's target either, which is the other way this could have gone
+    // wrong: repairing the link by inventing the file it points at is not this command's call.
+    expect(existsSync(join(dirname(dir), 'nowhere', 'gitignore'))).toBe(false);
+    // The store is still made, as in every other skipped-gitignore case.
+    expect(registry(dir).map((row) => row.name)).toEqual(STARTERS);
   });
 
   it('recognises the store in every spelling git accepts, and does not mistake a re-include', () => {

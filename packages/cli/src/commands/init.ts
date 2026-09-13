@@ -38,7 +38,14 @@
  * the gitignore at all.
  */
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Flags } from '@oclif/core';
 import { openStore, STORE_DIR, STORE_FILE, withRollback, type Store } from '@ascend/store';
@@ -80,6 +87,37 @@ function ignoresStore(text: string): boolean {
       [STORE_DIR, `${STORE_DIR}/`].some((name) => trimmed === `${prefix}${name}`),
     );
   });
+}
+
+/**
+ * Where a symlinked `.gitignore` actually lives, if it is a symlink at all.
+ *
+ * Three answers, and the third is the reason this is not a boolean:
+ *
+ *   - `undefined` -- not a link (or nothing at that path), so the requested path is the real one
+ *   - a path      -- a link, resolved. `realpathSync` and not `readlinkSync`, because a link's
+ *                    target may be relative and may itself be a link; resolving once here means the
+ *                    read and the write cannot disagree about which file they mean
+ *   - `null`      -- a link pointing at nothing
+ *
+ * **`lstatSync`, not `existsSync`**, and that is the point of the third answer: `existsSync` follows
+ * a link, so a dangling `.gitignore` symlink answers "no file here" and the create branch would
+ * replace the link with a regular file -- the same defect as the healthy-link case, reached through
+ * the branch that looks like it is creating something new.
+ */
+function symlinkTarget(path: string): string | null | undefined {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return undefined;
+  } catch {
+    // Nothing at `path` at all. Not an error: this is the ordinary "no .gitignore here" case.
+    return undefined;
+  }
+
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
 }
 
 export default class Init extends BaseCommand {
@@ -216,21 +254,60 @@ export default class Init extends BaseCommand {
    * An existing un-ignored store is repaired by running this command again -- `updateGitignore` runs
    * on every `asc init`, so the fix reaches stores created before it. That is the whole of the
    * existing-data plan, and it is why no migration exists for this finding.
+   *
+   * **A `.gitignore` that is a SYMLINK is followed, not replaced (asc-bcv.11, B7).** The write is a
+   * temp-file-then-rename, and renaming onto the link's own path replaces the LINK with a regular
+   * file -- so a repository that deliberately shares one ignore file with others silently stops
+   * sharing it, with no message and no way back (the target path is not recoverable from the file
+   * afterwards). Measured (`/tmp/probe-b7.mjs`): the link went `isSymbolicLink` true -> false, its
+   * content survived, and a second repository linked at the same target no longer saw the change.
+   * Resolving the path ONCE with `realpathSync` and using the resolved path for BOTH the read and
+   * the write is the fix; the read already followed the link, which is why only the write was wrong.
+   *
+   * The link is detected with `lstatSync`, NOT with `existsSync`. That distinction is the whole
+   * reason this is a second bug and not a detail of the first: `existsSync` FOLLOWS a link, so a
+   * DANGLING `.gitignore` symlink reports "no file here" and takes the create branch -- and gets
+   * silently replaced by a regular file, which the probe's third arm measured. A broken link is
+   * reported and left alone rather than written through.
+   *
+   * The warning is raised only when this run CHANGES the shared file. Re-running `asc init` on a
+   * repository whose `.gitignore` is a link is the ordinary case, and a warning that fires when
+   * nothing happened is noise that trains the warning away.
    */
   private updateGitignore(root: string, dryRun: boolean): InitRow {
-    const path = join(root, '.gitignore');
+    const requested = join(root, '.gitignore');
+    const link = symlinkTarget(requested);
+
+    // A link to nothing is not "no file here": writing would replace the link, which is the defect
+    // this whole branch exists to avoid. Named rather than skipped silently, because a store left
+    // un-ignored by a broken link is the kind of thing a `git add -A` finds later.
+    if (link === null) {
+      return {
+        action: 'gitignore',
+        target: requested,
+        outcome:
+          'skipped: .gitignore is a symlink to a file that does not exist, so it was left alone; ' +
+          `point it at a file or remove it, then add '${IGNORE_ENTRY}' yourself`,
+        dry_run: dryRun,
+      };
+    }
+
+    // The path both read from and written to. `link` is the resolved target when `.gitignore` is a
+    // symlink, and the requested path otherwise.
+    const path = link ?? requested;
 
     if (!existsSync(path)) {
       if (findGitRoot(root) === undefined) {
         return {
           action: 'gitignore',
-          target: path,
+          target: requested,
           outcome: 'skipped: no .gitignore here and no git repository to apply one to',
           dry_run: dryRun,
         };
       }
       if (!dryRun) this.writeAtomically(path, `${IGNORE_ENTRY}\n`);
-      return { action: 'gitignore', target: path, outcome: 'created', dry_run: dryRun };
+      if (link !== undefined) this.warnSharedGitignore(requested, path);
+      return { action: 'gitignore', target: requested, outcome: 'created', dry_run: dryRun };
     }
 
     let existing: string;
@@ -245,14 +322,35 @@ export default class Init extends BaseCommand {
     }
 
     if (ignoresStore(existing)) {
-      return { action: 'gitignore', target: path, outcome: 'already ignores it', dry_run: dryRun };
+      return {
+        action: 'gitignore',
+        target: requested,
+        outcome: 'already ignores it',
+        dry_run: dryRun,
+      };
     }
 
     // A file whose last line has no terminator would otherwise get the new entry glued onto it --
     // turning an unrelated ignore rule into one nobody wrote.
     const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
     if (!dryRun) this.writeAtomically(path, `${existing}${separator}${IGNORE_ENTRY}\n`);
-    return { action: 'gitignore', target: path, outcome: 'appended', dry_run: dryRun };
+    if (link !== undefined) this.warnSharedGitignore(requested, path);
+    return { action: 'gitignore', target: requested, outcome: 'appended', dry_run: dryRun };
+  }
+
+  /**
+   * Say that the entry landed in a file this project does not own.
+   *
+   * Only raised when something was actually written, because the fact worth knowing is not "your
+   * `.gitignore` is a link" -- that is the user's own arrangement -- but "the line ascend just added
+   * is now in every repository that shares this file".
+   */
+  private warnSharedGitignore(requested: string, path: string): void {
+    this.warn(
+      `${requested} is a symlink, so '${IGNORE_ENTRY}' was added to ${path} -- the file it points ` +
+        `at -- rather than replacing the link with a regular file. Every repository sharing that ` +
+        `file now ignores ${STORE_DIR}/ as well.`,
+    );
   }
 
   private writeAtomically(path: string, contents: string): void {
