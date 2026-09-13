@@ -109,6 +109,26 @@ describe('migration', () => {
     expect(() => openStore({ dir })).toThrow(NewerSchemaError);
   });
 
+  it('refuses on its own, so a caller that reaches migrate without that open is still guarded', () => {
+    // asc-bcv.9 (B5). `assertNotAhead` was extracted from this function so that the opens which SKIP
+    // `migrate` -- read-only, and `migrate: false` -- are guarded too. That extraction quietly turned
+    // this call site into a second line of defence the test above no longer reaches, because
+    // `openStore` now refuses before `migrate` is entered. Without this test, deleting the call from
+    // `migrate` would break nothing, and `openStore({ migrate: false })` hands a caller a handle they
+    // can then migrate a store from the future with.
+    const dir = tempDir();
+    const store = openStore({ dir });
+    store.db.exec(`PRAGMA user_version = ${String(SCHEMA_VERSION + 5)}`);
+    const db = store.db;
+
+    expect(() => migrate(db, MIGRATIONS)).toThrow(NewerSchemaError);
+    // And it refused rather than quietly succeeding: a store ahead of this build has no pending
+    // migrations, so the unguarded path applies nothing and returns -- the failure mode that made
+    // the CLI report `0` for a store it could not read.
+    expect(userVersion(db)).toBe(SCHEMA_VERSION + 5);
+    store.close();
+  });
+
   it('leaves no open handle behind when a migration fails', () => {
     // A leaked handle would keep the file locked and make the failure confusing.
     const dir = tempDir();

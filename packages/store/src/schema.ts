@@ -364,6 +364,27 @@ export class NewerSchemaError extends Error {
 }
 
 /**
+ * Refuse a store written by a newer ascend; return normally otherwise.
+ *
+ * **Extracted from `migrate` because the guard was reachable only through it** (`asc-bcv.9`, B5).
+ * The check lived at the top of `migrate`'s body, so an open that skipped `migrate` skipped the
+ * refusal as well -- and there are two ways to skip it. Measured (`/tmp/probe-b5.mjs`, a real store
+ * with `user_version` set to 99):
+ *
+ *   `openStore({ dir })`                    :: `NewerSchemaError`  -- the guard fires
+ *   `openStore({ dir, readOnly: true })`    :: SUCCEEDED           -- the arm the bead named
+ *   `openStore({ dir, migrate: false })`    :: SUCCEEDED           -- a third arm, not named
+ *   and through the real CLI, `asc query`   :: exit 0, prints `0`   -- a future store, queried
+ *
+ * So the rule is not "read-only opens are unguarded", it is **"any open that does not migrate is
+ * unguarded"**, and the fix is to make the guard independent of `migrate` rather than to repeat it
+ * at each skip site. Both callers call this one function, so the two cannot drift.
+ */
+export function assertNotAhead(observed: number, target: number = SCHEMA_VERSION): void {
+  if (observed > target) throw new NewerSchemaError(observed, target);
+}
+
+/**
  * Apply every migration this store has not yet run.
  *
  * Each migration runs in its own transaction together with the `user_version` bump,
@@ -383,7 +404,7 @@ export function migrate(
   const observed = userVersion(db);
   const target = migrations.reduce((highest, m) => Math.max(highest, m.version), 0);
 
-  if (observed > target) throw new NewerSchemaError(observed, target);
+  assertNotAhead(observed, target);
 
   const pending = migrations
     .filter((migration) => migration.version > observed)

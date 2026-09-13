@@ -25,7 +25,13 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { migrate, SCHEMA_VERSION, userVersion, type MigrationResult } from './schema.js';
+import {
+  assertNotAhead,
+  migrate,
+  SCHEMA_VERSION,
+  userVersion,
+  type MigrationResult,
+} from './schema.js';
 
 /** The per-project store directory name. Gitignored; never committed. */
 export const STORE_DIR = '.ascend';
@@ -178,6 +184,9 @@ export interface OpenOptions {
    * because `verifyPragmas` still confirms an already-WAL store reads back as `wal`), and
    * the `meta` version row is not inserted. Migrations cannot run at all, so a store that
    * is behind is refused rather than queried -- see `StaleStoreError`.
+   *
+   * A store that is **ahead** is refused here too, and on every open rather than only this
+   * one -- see `assertNotAhead` and `openStore`'s call site (`asc-bcv.9`, B5).
    */
   readonly readOnly?: boolean;
 }
@@ -558,6 +567,18 @@ export function openStore(options: OpenOptions): Store {
     verifyPragmas(db, { inMemory, busyTimeoutMs });
 
     const before = userVersion(db);
+
+    // A store from the future is refused on EVERY open, not only on the one that migrates
+    // (asc-bcv.9, B5). The guard used to live inside `migrate`, which the read-only path and the
+    // `migrate: false` path both skip -- so `asc query`, the command whose read-only-ness is what
+    // makes it a defensible allowlist entry, would read a store written by a newer ascend and
+    // report whatever the running build made of it. Measured (`/tmp/probe-b5.mjs`): writable threw,
+    // read-only and `migrate: false` both succeeded, and `asc query` exited 0 on a v99 store.
+    //
+    // Unconditional rather than `!inMemory`, because an in-memory database starts at `user_version`
+    // 0 every time -- 0 is never ahead, so the exemption would be a branch that cannot change an
+    // outcome. One rule for every open is the point of moving it here.
+    assertNotAhead(before, SCHEMA_VERSION);
 
     // Refused rather than opened: a read-only handle cannot migrate, and querying a store
     // whose tables predate this build would fail later with `no such table`, naming nothing

@@ -10,6 +10,7 @@ import {
   databaseNames,
   detachStore,
   foldDatabaseName,
+  NewerSchemaError,
   NotAnAscendStoreError,
   openStore,
   recordEntry,
@@ -212,6 +213,41 @@ describe('opening a store read-only', () => {
     // The fix is a DIFFERENT command rather than a newer ascend, which is why this is deliberately
     // not a `NewerSchemaError`. Asserted, because sending the user to upgrade would waste their time.
     expect(stale.message).toContain('asc init');
+  });
+
+  it('refuses a store that is AHEAD this build, which is the guard migrate used to own', () => {
+    // asc-bcv.9 (B5). The ahead check lived at the top of `migrate`, so the read-only path -- which
+    // skips `migrate` -- skipped the refusal too, and this is the path `asc query` uses. Driven
+    // through the real CLI in the report's evidence: exit 0 against a v99 store, printing `0`.
+    const dir = populated();
+    const raw = new DatabaseSync(storeFile(dir));
+    raw.exec('PRAGMA user_version = 99');
+    raw.close();
+
+    const thrown = capture(() => openStore({ dir: storeDir(dir), readOnly: true }));
+
+    expect(thrown).toBeInstanceOf(NewerSchemaError);
+    const newer = thrown as NewerSchemaError;
+    expect(newer.storeVersion).toBe(99);
+    expect(newer.buildVersion).toBe(SCHEMA_VERSION);
+    // And it names the fix, which for a store from the future is a NEWER ascend -- the opposite
+    // advice to `StaleStoreError`'s, and the reason the two are different classes.
+    expect(newer.message).toContain('Upgrade ascend');
+  });
+
+  it('refuses an ahead store when the open merely declines to migrate, which is a third path', () => {
+    // The arm the bead did not name, found by asking what ELSE skips `migrate` (/tmp/probe-b5.mjs).
+    // `asc init --dry-run` against an existing store opens exactly like this, so the guard has to
+    // sit outside `migrate` rather than being repeated at each skip site.
+    const dir = populated();
+    const raw = new DatabaseSync(storeFile(dir));
+    raw.exec('PRAGMA user_version = 99');
+    raw.close();
+
+    const thrown = capture(() => openStore({ dir: storeDir(dir), migrate: false }));
+
+    expect(thrown).toBeInstanceOf(NewerSchemaError);
+    expect((thrown as NewerSchemaError).storeVersion).toBe(99);
   });
 
   it('does not call an in-memory store stale, because it has no history to be behind', () => {

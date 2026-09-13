@@ -36,6 +36,7 @@ export {
 } from './db.js';
 
 export {
+  assertNotAhead,
   migrate,
   MIGRATIONS,
   NewerSchemaError,

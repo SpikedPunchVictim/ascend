@@ -589,6 +589,29 @@ describe('--across', () => {
   });
 });
 
+describe('a store written by a newer ascend', () => {
+  it('is refused by asc query rather than read, which is what the read-only open used to skip', () => {
+    // asc-bcv.9 (B5), and the consequence is a CLI-level one. `asc query` opens read-only, and the
+    // ahead-of-build guard lived inside `migrate`, which the read-only path skips -- so this command
+    // read a store from a future ascend and reported whatever the running build made of it.
+    // Measured before the fix (/tmp/probe-b5.mjs): exit 0, printing `0`.
+    const dir = project();
+    const raw = new DatabaseSync(storeFile(dir));
+    raw.exec('PRAGMA user_version = 99');
+    raw.close();
+
+    const result = asc(['query', 'SELECT count(*) AS n FROM entries'], dir);
+
+    expect(result.status).toBe(1);
+    expect(flatten(result.stderr)).toContain('this store is at schema version 99');
+    // The fix it names, which is the opposite advice to a store that is BEHIND -- the reason the
+    // store has two error classes rather than one.
+    expect(flatten(result.stderr)).toContain('Upgrade ascend');
+    // Nothing was printed as data, because nothing was read.
+    expect(result.stdout.trim()).toBe('');
+  });
+});
+
 describe('outside any project', () => {
   it('queries across named projects with an empty main, and says main is empty', () => {
     const { parent, members } = neighbourhood(1);
