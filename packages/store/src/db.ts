@@ -373,6 +373,21 @@ export function verifyPragmas(
   // assumption about this Node version's `node:sqlite`.
   //
   // The result column is `timeout`, not `busy_timeout` -- see `readSetting`.
+  // The fourth setting: asc-byn guard #1. It is a read-back rather than a one-time `exec` because the
+  // pragma IS the guard -- `entries_cannot_be_deleted` does not fire for REPLACE's implicit delete
+  // without it, so a version of Node that ignored this statement would silently reopen the hole
+  // rather than fail. Same reasoning as `foreign_keys` above, and the same reason this project treats
+  // a check that cannot be shown to fire as no check at all.
+  const recursiveTriggers = readSetting(db, 'recursive_triggers');
+  if (recursiveTriggers !== '1') {
+    throw new PragmaError(
+      'recursive_triggers',
+      '1',
+      recursiveTriggers,
+      'Without it SQLite does not fire delete triggers for the DELETE that `INSERT OR REPLACE` performs, so an entry could be rewritten in place while the immutability triggers stay silent. asc-byn, measured.',
+    );
+  }
+
   const timeout = readSetting(db, 'busy_timeout', 'timeout');
   if (timeout !== String(options.busyTimeoutMs)) {
     throw new PragmaError(
@@ -421,6 +436,37 @@ export function openStore(options: OpenOptions): Store {
     // the constructor itself, before this function's first statement runs (asc-51t, measured).
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec('PRAGMA foreign_keys = ON');
+    // asc-byn guard #1, and this pragma IS the guard. SQLite fires delete triggers for the DELETE
+    // that `INSERT OR REPLACE` performs only when recursive triggers are on -- and they are off by
+    // default. So with the default, `entries_cannot_be_deleted` stays silent while REPLACE rewrites a
+    // recorded entry in place: measured on a real store, an entry's `properties_json` went
+    // ORIGINAL -> TAMPERED through `INSERT OR REPLACE`, past a BEFORE UPDATE trigger and a BEFORE
+    // DELETE trigger that both exist to stop exactly that. With this line the same statement is
+    // refused by the trigger that was already there.
+    //
+    // **Measured, both arms, on real stores** (`/tmp/probe-byn.mjs`):
+    //
+    //   recursive_triggers OFF :: REPLACE SUCCEEDED, verdict TAMPERED, and entries_fts matched BOTH
+    //                             'ORIGINAL' and 'TAMPERED' -- the stale row the AFTER INSERT trigger
+    //                             adds without any delete trigger to clean it up
+    //   recursive_triggers ON  :: refused, "entries are immutable: an entry cannot be deleted once
+    //                             recorded", verdict ORIGINAL, fts 'TAMPERED' 0
+    //
+    // That second row is why this is a pragma and not a new trigger: it needs no migration, so it
+    // protects stores that already exist, and the guard it activates is one that already ships.
+    //
+    // **The global-semantics risk the bead warned about, checked rather than waved away.** Turning
+    // recursion on also lets a trigger fire from its own action. No trigger in this schema writes to
+    // its own table -- `entries_are_immutable` and `entries_cannot_be_deleted` raise without writing,
+    // the two `entry_types` triggers likewise, and `entries_fts_on_insert` writes to `entries_fts` --
+    // so there is nothing here for recursion to reach. That is a property of today's DDL, which is
+    // why the read-back below is the part that matters: a silently-dropped pragma would reopen the
+    // hole without a sound.
+    //
+    // Settable on a read-only handle like the two above, and it needs to be: a read-only caller
+    // cannot write through this hole anyway, but the setting is per connection and the read-back
+    // demands it uniformly.
+    db.exec('PRAGMA recursive_triggers = ON');
 
     verifyPragmas(db, { inMemory, busyTimeoutMs });
 

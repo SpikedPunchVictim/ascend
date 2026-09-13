@@ -144,6 +144,7 @@ describe('pragmas are verified, not assumed', () => {
     // The failure path of the check itself. If this ever stops throwing, the store
     // has two silent-corruption modes and nothing would report either.
     const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA recursive_triggers = ON');
     db.exec('PRAGMA foreign_keys = OFF');
     expect(() => {
       verifyPragmas(db, { inMemory: false, busyTimeoutMs: 0 });
@@ -154,6 +155,7 @@ describe('pragmas are verified, not assumed', () => {
   it('does not demand WAL of an in-memory store, where it cannot exist', () => {
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys = ON');
+    db.exec('PRAGMA recursive_triggers = ON');
     // Journal mode here is 'memory'; failing on that would be a false alarm.
     expect(() => {
       verifyPragmas(db, { inMemory: true, busyTimeoutMs: 0 });
@@ -166,11 +168,35 @@ describe('pragmas are verified, not assumed', () => {
     // A bare handle has a timeout of ZERO, so asking for 5000 must not read back as
     // anything else -- and a store that opened without its timeout refuses instantly
     // under contention instead of waiting, which is the whole defect.
+    //
+    // Every OTHER setting is satisfied first, so the alarm this asserts is the one it names. The
+    // first version of this test left them at their defaults, and adding the fourth setting made it
+    // fail on `recursive_triggers` instead -- a test that goes red for the wrong reason is one that
+    // would hide the setting it is supposed to be watching.
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys = ON');
+    db.exec('PRAGMA recursive_triggers = ON');
     expect(() => {
       verifyPragmas(db, { inMemory: true, busyTimeoutMs: 5000 });
     }).toThrow(/busy_timeout/);
+    db.close();
+  });
+
+  it('SOUNDS THE ALARM when recursive triggers did not take, which is asc-byn', () => {
+    // The fourth setting, and the only one whose absence is a HOLE in another guard rather than a
+    // behaviour change: without it, `entries_cannot_be_deleted` silently does not fire for the DELETE
+    // that `INSERT OR REPLACE` performs, so an entry can be rewritten while the immutability triggers
+    // watch. Measured (`/tmp/probe-byn.mjs`): with the pragma off, REPLACE SUCCEEDED and an entry's
+    // properties_json went ORIGINAL -> TAMPERED.
+    //
+    // So this is the check that has to be shown to fire, per this project's own rule -- a pragma
+    // whose read-back cannot sound is indistinguishable from one that is not checked at all.
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec('PRAGMA recursive_triggers = OFF');
+    expect(() => {
+      verifyPragmas(db, { inMemory: true, busyTimeoutMs: 0 });
+    }).toThrow(/recursive_triggers/);
     db.close();
   });
 });
@@ -237,6 +263,71 @@ describe('records are immutable', () => {
       expect(() => store.db.prepare("DELETE FROM entries WHERE id = 'e1'").run()).toThrow(
         /cannot be deleted/,
       );
+    } finally {
+      store.close();
+    }
+  });
+
+  it('refuses INSERT OR REPLACE, which is the same rewrite wearing a different verb', () => {
+    // asc-byn guard #1. The two tests above are what made this one easy to miss: they prove the
+    // triggers work, and they are both bypassed by REPLACE. SQLite fires delete triggers for the
+    // DELETE that REPLACE performs only when recursive triggers are ON, and they are OFF by default,
+    // so `entries_cannot_be_deleted` stayed silent while the row was rewritten in place.
+    //
+    // Measured on a real store before the fix (`/tmp/probe-byn.mjs`): the statement SUCCEEDED, an
+    // entry's `properties_json` went ORIGINAL -> TAMPERED, and `entries_fts` matched BOTH strings,
+    // because the AFTER INSERT trigger appended without any delete trigger cleaning up after it.
+    //
+    // This test is the one that would go red if `PRAGMA recursive_triggers = ON` were dropped from
+    // `openStore`, which is why it is written against the store's own handle rather than a
+    // hand-opened one.
+    const store = openStore({ dir: tempDir() });
+    try {
+      register(store.db);
+      insertEntry(store.db, 'e1');
+
+      // The pragma itself, read back rather than assumed to have taken.
+      // The result column is `recursive_triggers`, as with the pragma itself -- one of the few that
+      // keeps its own name (`busy_timeout` is the exception, and it reports as `timeout`).
+      expect(store.db.prepare('PRAGMA recursive_triggers').get()?.['recursive_triggers']).toBe(1);
+
+      expect(() => {
+        store.db.exec(`INSERT OR REPLACE INTO entries
+          SELECT id, type_name, type_version, type_hash, recorded_at, run_id, workflow, actor, source,
+                 cwd, repo, git_sha, branch, '{"verdict":"TAMPERED"}', na_json, 'TAMPERED EVIDENCE',
+                 ascend_version, schema_version
+          FROM entries WHERE id = 'e1'`);
+      }).toThrow(/entries are immutable|cannot be deleted/);
+
+      // And the row is untouched -- the refusal is not a partial write.
+      expect(
+        store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE id = 'e1'").get()?.['n'],
+      ).toBe(1);
+      expect(
+        store.db
+          .prepare("SELECT COUNT(*) AS n FROM entries_fts WHERE entries_fts MATCH 'TAMPERED'")
+          .get()?.['n'],
+      ).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('refuses REPLACE INTO, the other spelling of the same statement', () => {
+    // `REPLACE INTO entries ...` is `INSERT OR REPLACE` with the verb moved. Same implicit delete,
+    // same requirement on recursive triggers -- checked separately because a guard that covers one
+    // spelling and not the other is the shape of the scan this bead's second half was about.
+    const store = openStore({ dir: tempDir() });
+    try {
+      register(store.db);
+      insertEntry(store.db, 'e1');
+      expect(() => {
+        store.db.exec(`REPLACE INTO entries
+          SELECT id, type_name, type_version, type_hash, recorded_at, run_id, workflow, actor, source,
+                 cwd, repo, git_sha, branch, '{"verdict":"TAMPERED"}', na_json, 'TAMPERED EVIDENCE',
+                 ascend_version, schema_version
+          FROM entries WHERE id = 'e1'`);
+      }).toThrow(/entries are immutable|cannot be deleted/);
     } finally {
       store.close();
     }
