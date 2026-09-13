@@ -700,9 +700,18 @@ describe('exactly one write path, and no ambient clock', () => {
    * the first draft of this comment justified `(?!\w)` as load-bearing and a mutation run
    * showed it was not; the choice is one of idiom, and a comment that claims a test protects
    * something it does not is the same class as a guard that does not fire.
+   *
+   * The `(?:--[^\n]*\n\s*)*` between `INTO` and the table name is for a SQL LINE comment. This
+   * was the last spelling to evade, and it evaded for a reason worth naming: `stripComments`
+   * above removes JS comments, and a `--` inside the SQL text is not one, so the pattern saw
+   * `INSERT INTO -- c\n entries` and the `\s+` could not reach across it. Measured against the
+   * guard without this clause: 12 of 13 spellings caught, and the line comment the only miss.
+   * Comment text hidden inside a SQL string is exactly the mechanism the report's sixth form is
+   * about, so the guard is now insensitive on both comment axes rather than one.
    */
   const WRITE = new RegExp(
     String.raw`\b(?:INSERT(?:\s+OR\s+(?:REPLACE|IGNORE|ABORT|FAIL|ROLLBACK))?\s+INTO|REPLACE\s+INTO)\s+` +
+      String.raw`(?:--[^\n]*\n\s*)*` +
       String.raw`(?:["'\[]?\w+["'\]]?\s*\.\s*)?["'\[]?entries["'\]]?\b`,
     'i',
   );
@@ -738,6 +747,12 @@ describe('exactly one write path, and no ambient clock', () => {
       // Lowercase, because SQL is case-insensitive and `/i` is the only thing making the
       // guard's own pattern agree with SQLite about that.
       'db.prepare("insert into entries (id) values (?)");',
+      // A comment BETWEEN the verb and the table, which is the sixth form the report named.
+      // Both spellings are here because only one of them is a JS comment: `stripComments`
+      // handles `//`, and the SQL `--` has to be handled by the pattern itself.
+      'db.prepare("INSERT INTO /* c */ entries (id) VALUES (?)");',
+      'db.prepare("INSERT INTO -- c\n entries (id) VALUES (?)");',
+      'db.prepare("INSERT INTO /* c\n */ entries (id) VALUES (?)");',
     ]) {
       expect({ spelling, lines: scan(spelling, WRITE) }).toEqual({ spelling, lines: [1] });
     }
