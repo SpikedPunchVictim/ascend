@@ -23,8 +23,37 @@
  * `bm25()` already ranks by term coverage, so a document matching every term still outranks one
  * matching a single common term: OR widens the candidate pool and lets the ranker discriminate.
  *
- * The trigram tokenizer's floor is 3 characters, so shorter terms cannot match and are dropped --
- * which is also why the token filter is 3 and not 1.
+ * **The term class is Unicode-wide, and the narrow version was a defect (`asc-bcv.8`).** The first
+ * version tokenised with `/[A-Za-z0-9_]+/g`, so a query written in any script that class does not
+ * cover produced no tokens at all, and `searchEntries` answered it with an empty array -- "no such
+ * entry exists" for a term the index had been holding all along. Measured on a real store built
+ * from the real transcripts (`/tmp/probe-b3.mjs`): `ошибка` (146 occurrences in one transcript),
+ * `日本語` (186), `таймаута` (64) and `naïve` (25) each matched through a raw quoted `MATCH`, and
+ * each returned **null** from `toFtsMatch` and **0 hits** from `searchEntries`.
+ *
+ * **It was never a non-ASCII defect; it was a short-run defect, and that is why it went unseen.**
+ * `café` and `Ünicode` *worked*, by accident -- the ASCII class kept the runs `caf` and `nicode`,
+ * each long enough to match, so a hit came back and nothing looked wrong. `naïve` splits into `na`
+ * and `ve`, neither long enough, and returned nothing. Whether a query worked therefore depended on
+ * where the non-ASCII characters happened to fall inside it.
+ *
+ * **The floor is 3 CODE POINTS, measured, and the check now counts in the unit the tokenizer
+ * itself uses.** `日本語` (3 points) matches and `日本` (2) does not; `𐐷𐐷𐐷` (3 points, 6 UTF-16
+ * units) matches and `𐐷a` (2 points, 3 units) does not. `token.length` counts UTF-16 units, so a
+ * single astral letter could carry a 2-point term past the filter as a phrase that can never match
+ * anything. Measured (`/tmp/probe-b3-edge.mjs`): a below-floor phrase does **not** throw -- it
+ * returns 0 rows -- so that half was a silent zero rather than the crash this module exists to
+ * prevent. Which is the class this module refuses, so it is fixed rather than left.
+ *
+ * **Widening the class is safe because every term is still quoted.** The class decides which runs
+ * of the query become terms; it never decides what reaches FTS5 *as syntax*, because each term is
+ * still wrapped in `"` with `"` doubled. `C++ templates` still reduces to `"templates"`, `*` still
+ * reduces to null, and the hostile-input table below is unchanged by this.
+ *
+ * **Three sibling regexes are ASCII-only and stay that way** (`core/src/spec.ts:93,97` and
+ * `cli/src/commands/query.ts:124`). All three derive SQL *identifiers*, where ASCII is a contract
+ * the rest of the system relies on (`union.ts:556` depends on it). This one tokenises user
+ * *prose*, where ASCII was never a contract -- only an accident of the first draft.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -32,8 +61,31 @@ import type { DatabaseSync } from 'node:sqlite';
 /** The FTS5 table migration 2 creates. Named here once so the SQL below cannot drift from it. */
 const FTS_TABLE = 'entries_fts';
 
-/** Trigram tokenizer floor: a term shorter than this cannot match any document. */
+/**
+ * Trigram tokenizer floor, in **code points**: a term shorter than this cannot match any document.
+ * Measured, not read off the docs -- `日本` (2 points) indexes nothing and can never be matched,
+ * `日本語` (3) can (see the module header).
+ */
 const MIN_TERM_LENGTH = 3;
+
+/**
+ * A run of letters, digits or underscores, **in any script**.
+ *
+ * A run and not a word: the trigram tokenizer indexes every contiguous 3-character sequence with no
+ * notion of a word boundary, so what this pattern decides is which stretches of the query get
+ * quoted as phrases. Splitting on punctuation is therefore a query-shaping choice, not a model of
+ * the index -- and it is why `busy-timeout` becomes two terms rather than one.
+ */
+const TERM = /[\p{L}\p{N}_]+/gu;
+
+/**
+ * Length in the unit `MIN_TERM_LENGTH` is expressed in. `.length` counts UTF-16 units, not these.
+ *
+ * `Array.from`, not `Intl.Segmenter`: the unit wanted is the CODE POINT, because that is what
+ * FTS5's own tokenizer counts and what the floor of 3 was measured against. Graphemes would be
+ * wrong here -- `e` + U+0301 is one grapheme and two code points, and SQLite counts the two.
+ */
+const codePointLength = (term: string): number => Array.from(term).length;
 
 export interface SearchOptions {
   /** Cap on returned rows. Defaults to 20. */
@@ -59,8 +111,8 @@ export interface SearchHit {
  * searchable term is the correct answer, not a failure.
  */
 export function toFtsMatch(query: string): string | null {
-  const tokens = (query.match(/[A-Za-z0-9_]+/g) ?? []).filter(
-    (token) => token.length >= MIN_TERM_LENGTH,
+  const tokens = (query.match(TERM) ?? []).filter(
+    (token) => codePointLength(token) >= MIN_TERM_LENGTH,
   );
   if (tokens.length === 0) return null;
   return tokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' OR ');
