@@ -95,7 +95,7 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | B2 | FIXED | `49ffa87` |
 | F1 | FIXED (+ follow-up) | `304915b`, `4ee844a` |
 | B8 | FIXED | `acfec7a` |
-| B11, B12 | FIXED | *phase 2, one commit* |
+| B11, B12 | FIXED | `5237833` |
 
 **A note on the bead IDs, because they do not match this report's B-numbers.** The beads were created in triage order (`asc-bcv.1` … `asc-bcv.21`), so `asc-bcv.<n>` is *not* finding `B<n>`. B8 is **`asc-bcv.4`**; `asc-bcv.8` is B3 (non-ASCII search). I committed B8 naming `asc-bcv.8` and corrected it in `acfec7a` — the first version of that message named a different, still-open finding. Mapping: B1→`.1`, B2→`.2`, F1→`.3`, B8→`.4`, B11→`.5`, B12→`.6`, B4→`.7`, B3→`.8`, B5→`.9`, B6→`.10`, B7→`.11`, B9→`.12`, B10→`.13`, F2→`.14`.
 
