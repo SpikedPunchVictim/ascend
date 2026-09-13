@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it } from 'vitest';
-import { StoreBusyError, isBusyError, openStore } from '../src/index.js';
+import { STORE_FILE, StoreBusyError, isBusyError, openStore } from '../src/index.js';
 
 /**
  * asc-51t: recognising a lock conflict turned out to be the hard half.
@@ -182,6 +183,199 @@ describe('a lock conflict AFTER the constructor is reported the same way', () =>
       other.close();
       first.close();
     }
+  });
+});
+
+/**
+ * asc-9zd: the one statement SQLite refuses to wait for, driven against a real lock.
+ *
+ * Two processes opening the same brand-new store failed **~14%** of the time (50 opens, 7 failed;
+ * the pre-migrated arm 0 of 50), and raising the busy timeout twelvefold changed nothing. The reason
+ * is measured rather than inferred (`/tmp/probe-9zd-journal.mjs`): with a peer holding
+ * `BEGIN IMMEDIATE` and this connection's timeout set to 3000ms, `PRAGMA journal_mode = WAL` returns
+ * `database is locked` after **0ms**, while an `INSERT` against that same held lock -- the control
+ * that proves the timeout is live -- waited **3246ms**. SQLite does not apply the busy handler to a
+ * journal-mode change, so the store has to wait on its own, with a bounded spin, because it may not
+ * read a clock.
+ *
+ * The lock here is held by a real second THREAD rather than stubbed, for the same reason the tests
+ * above drive the real driver: a retry tested against a fake that throws once proves only that the
+ * loop counts.
+ */
+const WORKER_SOURCE = `
+  const { parentPort, workerData } = require('node:worker_threads');
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(workerData.file, { timeout: 0 });
+  if (workerData.lock === 'read') {
+    // A READER, which is the peer class only an exclusive wait covers: the switch needs exclusive
+    // access, and \`BEGIN IMMEDIATE\` does not conflict with a reader at all. The SELECT is the
+    // statement that takes the SHARED lock and, inside a transaction, holds it.
+    db.exec('CREATE TABLE holder (x INTEGER)');
+    db.exec('BEGIN');
+    db.prepare('SELECT * FROM holder').all();
+  } else {
+    db.exec('BEGIN IMMEDIATE');
+    db.exec('CREATE TABLE holder (x INTEGER)');
+  }
+  parentPort.postMessage('locked');
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, workerData.holdMs);
+  db.exec('ROLLBACK');
+  db.close();
+`;
+
+/** A second thread locking `file` for `holdMs`, resolved once the lock is really held. */
+const lockHeldByAnotherThread = (
+  file: string,
+  holdMs: number,
+  lock: 'write' | 'read' = 'write',
+): Promise<Worker> =>
+  new Promise((resolve, reject) => {
+    const worker = new Worker(WORKER_SOURCE, { eval: true, workerData: { file, holdMs, lock } });
+    worker.once('message', (message: unknown) => {
+      if (message === 'locked') resolve(worker);
+      else reject(new Error(`unexpected message from the locking thread: ${String(message)}`));
+    });
+    worker.once('error', reject);
+  });
+
+/** A fresh directory whose store file exists and is NOT yet in WAL. */
+const freshStoreFile = (): { dir: string; file: string } => {
+  const dir = tempDir();
+  mkdirSync(dir, { recursive: true });
+  return { dir, file: join(dir, STORE_FILE) };
+};
+
+describe('asc-9zd: the switch to WAL is waited out, because SQLite will not wait for it', () => {
+  it('is a real lock: ONE attempt at the switch fails while a peer holds the write lock', async () => {
+    // The control, and the reason the tests below mean anything. If a single attempt did not fail
+    // here, they would pass without the retry existing -- which is what a guard that never fires
+    // looks like from the outside.
+    const { file } = freshStoreFile();
+    const worker = await lockHeldByAnotherThread(file, 300);
+    const raw = new DatabaseSync(file, { timeout: 0 });
+    try {
+      let caught: unknown;
+      try {
+        raw.exec('PRAGMA journal_mode = WAL');
+      } catch (error) {
+        caught = error;
+      }
+      expect(isBusyError(caught)).toBe(true);
+      expect((caught as Error).message).toBe('database is locked');
+      expect(raw.prepare('PRAGMA journal_mode').get()?.['journal_mode']).not.toBe('wal');
+    } finally {
+      raw.close();
+      await worker.terminate();
+    }
+  });
+
+  it('and the WAIT the fix uses is governed, and takes the lock the switch actually needs', async () => {
+    // The load-bearing half of the fix, and the reason it is not a retry loop: the wait is a statement
+    // the busy handler DOES cover, so its budget is the caller's own timeout rather than an invented
+    // attempt count.
+    //
+    // Both halves are asserted against a real lock, because the arms differ and only one of them is
+    // the arm that matters. Measured (`/tmp/probe-9zd-wait.mjs`, timeout 300ms):
+    //
+    //   peer holds SHARED (a reader)   :: BEGIN IMMEDIATE SUCCEEDED 0ms -- too weak
+    //                                     BEGIN EXCLUSIVE waited 343ms, then busy
+    //                                     PRAGMA journal_mode = WAL waited 360ms, then busy
+    //   peer holds RESERVED (a writer) :: BEGIN IMMEDIATE waited 352ms, then busy
+    //                                     BEGIN EXCLUSIVE waited 356ms, then busy
+    //                                     PRAGMA journal_mode = WAL refused at 0ms
+    //
+    // So EXCLUSIVE is governed in both arms where the pragma is not, and it is the stronger lock
+    // because a reader blocks the switch. An IMMEDIATE wait would have passed the writer arm and
+    // silently returned instantly for a reader, handing back the same 0ms refusal one lock class over.
+    const { file } = freshStoreFile();
+    const worker = await lockHeldByAnotherThread(file, 3_000, 'read');
+    const raw = new DatabaseSync(file, { timeout: 300 });
+    try {
+      const started = Date.now();
+      let caught: unknown;
+      try {
+        raw.exec('BEGIN EXCLUSIVE');
+      } catch (error) {
+        caught = error;
+      }
+      const elapsed = Date.now() - started;
+
+      expect(isBusyError(caught)).toBe(true);
+      // It waited for the timeout it was given, against a peer that holds only a READ lock.
+      expect(elapsed).toBeGreaterThanOrEqual(200);
+    } finally {
+      raw.close();
+      await worker.terminate();
+    }
+  });
+
+  it('waits for a READER out too, which is the peer an IMMEDIATE wait would not have waited for', async () => {
+    // The scenario the arm above implies, driven through the real `openStore`: a peer with the store
+    // open for reading blocks the switch, and the outcome must be the honest lock conflict -- not a
+    // store opened without WAL, and not a `PragmaError` describing a setting. Those two are what a
+    // swallowed second attempt produces, and they would name the wrong problem to the caller.
+    const { dir, file } = freshStoreFile();
+    const worker = await lockHeldByAnotherThread(file, 5_000, 'read');
+    const started = Date.now();
+    let caught: unknown;
+    try {
+      openStore({ dir, busyTimeoutMs: 300 });
+    } catch (error) {
+      caught = error;
+    }
+    const elapsed = Date.now() - started;
+    await worker.terminate();
+
+    expect(caught).toBeInstanceOf(StoreBusyError);
+    expect((caught as StoreBusyError).file).toBe(file);
+    // It spent the timeout it was given trying, rather than failing at once.
+    expect(elapsed).toBeGreaterThanOrEqual(200);
+  });
+
+  it('opens the store once the peer releases it, where that one attempt would have failed', async () => {
+    const { dir, file } = freshStoreFile();
+    // A peer holding its lock for 10ms: microseconds too long for the single attempt, which is the
+    // case the wait exists for. Measured, 3,300 spins on the pragma were needed for this same hold --
+    // which is why the fix waits on a governed statement instead of counting attempts.
+    const worker = await lockHeldByAnotherThread(file, 10);
+    const started = Date.now();
+    let store: ReturnType<typeof openStore> | undefined;
+    let caught: unknown;
+    try {
+      store = openStore({ dir });
+    } catch (error) {
+      caught = error;
+    }
+    const elapsed = Date.now() - started;
+    await worker.terminate();
+
+    expect(caught).toBeUndefined();
+    expect(store?.file).toBe(file);
+    // It waited rather than got lucky: the peer held the lock while this call ran.
+    expect(elapsed).toBeGreaterThanOrEqual(3);
+    expect(store?.db.prepare('PRAGMA journal_mode').get()?.['journal_mode']).toBe('wal');
+    store?.close();
+  });
+
+  it('still gives up when the lock outlasts the timeout, rather than waiting forever', async () => {
+    const { dir, file } = freshStoreFile();
+    const worker = await lockHeldByAnotherThread(file, 5_000);
+    const started = Date.now();
+    let caught: unknown;
+    try {
+      // The caller's own timeout, and zero here so the wait is measured rather than sat through. The
+      // point is which error comes out and that it comes out promptly, not how long 5000ms feels.
+      openStore({ dir, busyTimeoutMs: 0 });
+    } catch (error) {
+      caught = error;
+    }
+    const elapsed = Date.now() - started;
+    await worker.terminate();
+
+    expect(caught).toBeInstanceOf(StoreBusyError);
+    expect((caught as StoreBusyError).file).toBe(file);
+    // The peer would have released at 5000ms if this had been content to wait it out.
+    expect(elapsed).toBeLessThan(1_000);
   });
 });
 

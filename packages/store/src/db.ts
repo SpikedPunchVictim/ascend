@@ -285,6 +285,88 @@ const asStoreBusy = (error: unknown, file: string): never => {
   throw error;
 };
 
+/**
+ * Wait for the exclusive access the switch needs, using a statement the busy handler DOES cover.
+ *
+ * asc-9zd, and this is the whole trick. The switch needs exclusive access to the database -- no other
+ * connection at all, a reader included -- and `PRAGMA journal_mode` does not reliably wait for it.
+ * Measured both ways (`/tmp/probe-9zd-wait.mjs`, timeout 300ms, a peer holding a real lock):
+ *
+ *   peer holds SHARED (a reader)   :: `BEGIN IMMEDIATE` SUCCEEDED 0ms -- too weak, takes only RESERVED
+ *                                     `BEGIN EXCLUSIVE` waited **343ms**, then busy
+ *                                     `PRAGMA journal_mode = WAL` waited **360ms**, then busy
+ *   peer holds RESERVED (a writer) :: `BEGIN IMMEDIATE` waited **352ms**, then busy
+ *                                     `BEGIN EXCLUSIVE` waited **356ms**, then busy
+ *                                     `PRAGMA journal_mode = WAL` **refused at 0ms**
+ *
+ * So the pragma is the one statement here that is *not* dependably governed -- in the writer arm it
+ * refused without consulting the handler at all, which is the arm the real race produces (two
+ * processes both switching a fresh store, whose failures return in 0-2ms at `busyTimeoutMs` 5000 and
+ * at 60000 alike). `BEGIN EXCLUSIVE` is governed in **both** arms, so it is the wait that can be
+ * relied on to spend the caller's timeout.
+ *
+ * **EXCLUSIVE rather than IMMEDIATE, and the reason is a principle rather than a failure.** The two
+ * are not distinguishable by outcome here: in the reader arm the pragma is itself governed, so an
+ * IMMEDIATE wait that returns instantly is still followed by the pragma spending the timeout, and the
+ * caller sees the same `StoreBusyError` after roughly the same wait (measured; a mutation swapping
+ * one for the other survives the suite, and is recorded in the harness as a limitation rather than
+ * papered over). What EXCLUSIVE buys is that the wait takes the lock the switch needs, so a wait that
+ * SUCCEEDS is followed by a switch that succeeds -- instead of by a second wait inside the pragma.
+ * The reader arm is why the stronger lock is the correct one to name: a reader blocks the switch and
+ * `BEGIN IMMEDIATE` does not conflict with a reader at all.
+ *
+ * **Why a wait and not a retry loop.** The first version of this fix spun on the pragma itself, up to
+ * a fixed number of attempts, and both halves of that were wrong, both measured. A failed attempt
+ * costs ~5us against a sleeping peer and ~20us against another process, so an attempt count is not a
+ * time budget on any machine; and the bound read off one contention run (183 attempts) was 3,300
+ * attempts short of what a peer holding its lock for a mere 10ms needed (`/tmp/probe-9zd-worker.mjs`).
+ * Waiting replaces both: the budget is the caller's own `busyTimeoutMs`, the same one every other
+ * statement in the store already spends, and no number has to be invented. A spin also burns a core;
+ * this does not.
+ */
+const waitForExclusiveLock = (db: DatabaseSync): void => {
+  db.exec('BEGIN EXCLUSIVE');
+  db.exec('ROLLBACK');
+};
+
+/**
+ * Switch the store to WAL, waiting out a lock conflict -- because SQLite will not wait for this one.
+ *
+ * asc-9zd. A brand-new store opened by two processes at once failed **~14%** of the time (50 opens, 7
+ * failed; the pre-migrated arm 0 of 50, through the real CLI), and raising the busy timeout twelvefold
+ * changed nothing. That is this function's reason to exist: the switch is attempted once, and if it
+ * loses, the wait happens on `waitForExclusiveLock` and the switch is attempted once more.
+ *
+ * The second attempt's failure is not swallowed -- it propagates to `openStore`'s catch and becomes
+ * the honest `StoreBusyError`, after the caller has waited the timeout they asked for. So the cost of
+ * a genuinely held lock is one `busyTimeoutMs`, which is what the rest of the store charges, rather
+ * than the instant refusal this statement used to give. Swallowing it instead would open the store
+ * NON-WAL and leave it to `verifyPragmas` to refuse -- a PragmaError about a setting, for what is
+ * really a lock conflict, after every concurrent writer has already been promised serialisation the
+ * store does not have.
+ *
+ * **The site was located before the fix was designed, not assumed** (`/tmp/probe-9zd-step.mjs`:
+ * openStore's own sequence, labelled, two processes against one fresh directory). Of 60 opens, 18 lost
+ * the lock at this statement. A further 12 were reported by that probe as a `CREATE TABLE` collision
+ * and are **the probe's own artifact**: it reproduced the sequence without `migrate`'s re-read of
+ * `user_version` inside the lock, which asc-zjy fixed. Recorded because the wrong half of that result
+ * would otherwise have been designed for.
+ *
+ * Only a busy failure is waited out and retried. A `readonly database` failure is not a lock, and is
+ * rethrown by the first attempt rather than reported as contention.
+ */
+function setJournalModeWal(db: DatabaseSync): void {
+  try {
+    db.exec('PRAGMA journal_mode = WAL');
+    return;
+  } catch (error) {
+    if (!isBusyError(error)) throw error;
+  }
+
+  waitForExclusiveLock(db);
+  db.exec('PRAGMA journal_mode = WAL');
+}
+
 /** Thrown when a required pragma did not take effect. */
 export class PragmaError extends Error {
   constructor(pragma: string, expected: string, actual: string, why: string) {
@@ -423,7 +505,12 @@ export function openStore(options: OpenOptions): Store {
     // store through, because `verifyPragmas` below reads the setting back and still refuses
     // anything that is not `wal`; a store that is already WAL reports `wal` on a read-only
     // handle (measured against a real store, not assumed).
-    if (!inMemory && !readOnly) db.exec('PRAGMA journal_mode = WAL');
+    //
+    // It is also the statement that cannot be waited for: the switch itself is the last of asc-9zd's
+    // failures, and SQLite refuses it without consulting the busy handler at all. Hence the retry
+    // inside `setJournalModeWal` rather than a longer `busyTimeoutMs`, which was measured to change
+    // nothing.
+    if (!inMemory && !readOnly) setJournalModeWal(db);
     // WAL with synchronous=NORMAL is the standard pairing: durable across process
     // crashes, which is the failure this store actually faces.
     //
