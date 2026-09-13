@@ -639,32 +639,153 @@ describe('exactly one write path, and no ambient clock', () => {
    * in any string or expression here -- and the two tests below are what keep that
    * assumption honest: one proves a REAL violation is still caught, the other proves a
    * comment mentioning the token is not a false positive.
+   *
+   * A block comment is replaced by its own newlines rather than by the empty string, so the
+   * line numbers `scan` reports stay true to the file a reader would open. Collapsing them
+   * would shift every line after a multi-line comment.
    */
   const stripComments = (source: string): string =>
-    source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    source
+      .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ''))
+      .replace(/\/\/[^\n]*/g, '');
 
-  const scan = (source: string, pattern: RegExp): number[] =>
-    stripComments(source)
-      .split('\n')
-      .map((line, index) => ({ line, index }))
-      .filter(({ line }) => pattern.test(line))
-      .map(({ index }) => index + 1);
+  /**
+   * Every line on which `pattern` matches, scanned over the WHOLE comment-stripped source.
+   *
+   * Whole-source, not line-by-line, and that is the fix, not a detail. Measured against this
+   * guard's previous per-line form, five of six spellings of "write to entries" walked past it:
+   *
+   * | spelling                          | per-line guard |
+   * |-----------------------------------|----------------|
+   * | `INSERT INTO entries` (one line)  | caught         |
+   * | `INSERT OR REPLACE INTO entries`  | EVADED         |
+   * | `INSERT OR IGNORE INTO entries`   | EVADED         |
+   * | `REPLACE INTO entries`            | EVADED         |
+   * | `INSERT INTO entries` wrapped     | EVADED         |
+   * | `INSERT INTO "entries"`           | EVADED         |
+   *
+   * The wrapped form is the one that matters most, because it is not exotic: it is what this
+   * repository's own formatter does to a long statement, and `recorder.ts` itself already
+   * breaks its statement immediately after the table name -- the guard was passing on where
+   * that break happened to fall, not on the statement being absent. A guard that a reformat
+   * silently disarms is the "reports success wrongly" class this file exists to prevent.
+   *
+   * `g` is added here rather than required of every caller, and a FRESH regex is built per
+   * call so no `lastIndex` survives between them -- a shared stateful regex would report the
+   * first match only on the first call and nothing on the next.
+   */
+  const scan = (source: string, pattern: RegExp): number[] => {
+    const stripped = stripComments(source);
+    const global = new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`);
+    return [...stripped.matchAll(global)].map(
+      (match) => stripped.slice(0, match.index).split('\n').length,
+    );
+  };
 
   const CLOCK =
     /Date\.now\s*\(|new Date\s*\(|Math\.random\s*\(|randomUUID\s*\(|performance\.now|hrtime/;
-  const WRITE = /INSERT\s+INTO\s+entries\b/i;
+
+  /**
+   * Every spelling of a write to `entries`, with the table's identifier optionally quoted or
+   * schema-qualified -- `main.entries`, `"main"."entries"`, `[entries]`.
+   *
+   * `INSERT OR <conflict-clause> INTO` covers all five clauses SQLite defines, and `REPLACE
+   * INTO` is SQLite's separate upsert spelling for the same write -- both were invisible.
+   *
+   * The trailing `\b` is what keeps the FTS sync trigger in `schema.ts` from being read as a
+   * second write path: `\b` after a literal that ends in a word character requires a NON-word
+   * character next, and `_` IS a word character, so `entries_fts` does not match. Measured
+   * while writing this: `(?!\w)` behaves identically at this position -- after `entries`, the
+   * two differ only when a quote was consumed, and `"entries"x` is not SQL. Recorded because
+   * the first draft of this comment justified `(?!\w)` as load-bearing and a mutation run
+   * showed it was not; the choice is one of idiom, and a comment that claims a test protects
+   * something it does not is the same class as a guard that does not fire.
+   */
+  const WRITE = new RegExp(
+    String.raw`\b(?:INSERT(?:\s+OR\s+(?:REPLACE|IGNORE|ABORT|FAIL|ROLLBACK))?\s+INTO|REPLACE\s+INTO)\s+` +
+      String.raw`(?:["'\[]?\w+["'\]]?\s*\.\s*)?["'\[]?entries["'\]]?\b`,
+    'i',
+  );
 
   it('catches a real violation, in code, not in a comment', () => {
     // The detection logic itself, shown to fire and shown not to over-fire. Without this,
     // the two assertions below would be indistinguishable from a scan that matches nothing.
     expect(scan('const t = Date.now();', CLOCK)).toEqual([1]);
     expect(scan('const r = Math.random();', CLOCK)).toEqual([1]);
-    expect(scan('db.prepare("INSERT INTO entries (id) VALUES (?)");', WRITE)).toEqual([1]);
     expect(scan('// we never call Date.now() here\nconst ok = 1;', CLOCK)).toEqual([]);
     expect(
       scan('/* INSERT INTO entries is banned outside the recorder */\nconst ok = 1;', WRITE),
     ).toEqual([]);
-    expect(scan('const sql = "SELECT * FROM entries";', WRITE)).toEqual([]);
+  });
+
+  it('catches every spelling of a write to entries, not just the one it was written for', () => {
+    // The enumerated spellings from the measurement above, each driven through the real
+    // `scan`. Every one of these is a statement that CREATES A SECOND WRITE PATH, so every
+    // one of them must be caught -- and a guard tested only against the form it was written
+    // for is precisely how four of these went unnoticed.
+    for (const spelling of [
+      'db.prepare("INSERT INTO entries (id) VALUES (?)");',
+      'db.prepare("INSERT OR REPLACE INTO entries (id) VALUES (?)");',
+      'db.prepare("INSERT OR IGNORE INTO entries (id) VALUES (?)");',
+      'db.prepare("INSERT OR ABORT INTO entries (id) VALUES (?)");',
+      'db.prepare("INSERT OR FAIL INTO entries (id) VALUES (?)");',
+      'db.prepare("INSERT OR ROLLBACK INTO entries (id) VALUES (?)");',
+      'db.prepare("REPLACE INTO entries (id) VALUES (?)");',
+      'db.prepare(\'INSERT INTO "entries" (id) VALUES (?)\');',
+      "db.prepare('INSERT INTO [entries] (id) VALUES (?)');",
+      "db.prepare('INSERT INTO main.entries (id) VALUES (?)');",
+      'db.prepare(`INSERT INTO entries (id) VALUES (?)`);',
+      // Lowercase, because SQL is case-insensitive and `/i` is the only thing making the
+      // guard's own pattern agree with SQLite about that.
+      'db.prepare("insert into entries (id) values (?)");',
+    ]) {
+      expect({ spelling, lines: scan(spelling, WRITE) }).toEqual({ spelling, lines: [1] });
+    }
+
+    // Wrapped across lines -- the form this guard's per-line predecessor could not see. The
+    // line number is the line the statement STARTS on, which is what a reader needs.
+    expect(scan('db.prepare(`INSERT INTO\n  entries (id) VALUES (?)`);', WRITE)).toEqual([1]);
+    expect(
+      scan(
+        'const a = 1;\nconst b = 2;\ndb.prepare(`INSERT\n  OR REPLACE\n  INTO\n  entries (id) VALUES (?)`);',
+        WRITE,
+      ),
+    ).toEqual([3]);
+    // And a multi-line block comment does not shift the line number reported after it.
+    expect(
+      scan('/* one\ntwo\nthree */\nconst ok = 1;\nconst bad = "INSERT INTO entries";', WRITE),
+    ).toEqual([5]);
+  });
+
+  it('does NOT fire on the statements that mention entries without writing a row', () => {
+    // The other half of a guard: one that fires on the FTS trigger, or on a read, is a guard
+    // someone turns off. `schema.ts` contains most of these, so a loosened pattern would make
+    // the "exactly one module" assertion below fail for the wrong reason.
+    for (const untouched of [
+      'SELECT * FROM entries;',
+      'CREATE TABLE entries (id TEXT PRIMARY KEY);',
+      'CREATE INDEX idx_entries_recorded_at ON entries (recorded_at);',
+      // The FTS sync trigger: it writes `entries_fts`, and a pattern whose table name was
+      // anchored with `\b` instead of `(?!\w)` would flag the schema module as a second writer.
+      'INSERT INTO entries_fts (evidence_text, entry_id) VALUES (NEW.evidence_text, NEW.id);',
+      'CREATE TRIGGER entries_fts_on_insert AFTER INSERT ON entries BEGIN SELECT 1; END;',
+      'INSERT INTO entry_types (name, version) VALUES (?, ?);',
+      'INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?);',
+    ]) {
+      expect({ untouched, lines: scan(untouched, WRITE) }).toEqual({ untouched, lines: [] });
+    }
+
+    // `UPDATE entries` and `DELETE FROM entries` are NOT in the list above, and deliberately:
+    // both are writes, and the reason this guard does not cover them is not that they are
+    // harmless. They are refused by the store's own immutability triggers --
+    // `entries_are_immutable` (schema.ts:170-174) and `entries_cannot_be_deleted`
+    // (schema.ts:176-180) -- so a module containing one is a runtime failure in the module
+    // that added it, not a SILENT second write path, which is the failure this scan exists to
+    // catch. Measured, against a schema carrying those two triggers verbatim: both statements
+    // raise ('entries are immutable: ...') and the row survives. That guard is itself pinned
+    // by schema.test.ts:205-225. Recorded here so the omission reads as a decision.
+    expect(scan('UPDATE entries SET source = ? WHERE id = ?;', WRITE)).toEqual([]);
+    expect(scan('DELETE FROM entries WHERE id = ?;', WRITE)).toEqual([]);
   });
 
   it('writes entries from exactly one module', () => {
