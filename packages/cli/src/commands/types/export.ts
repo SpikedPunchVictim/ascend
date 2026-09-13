@@ -59,12 +59,19 @@ export default class TypesExport extends BaseCommand {
     }
 
     await this.withProject(({ store }) => {
-      const documents = this.documentsFor(store, args.name);
-      // No output for an empty registry rather than a bare `[]`: `output.ts` makes the same
-      // call for an empty rendering, and stdout carries data, not punctuation.
-      if (documents.length === 0) return;
-
-      this.log(serializeDocuments(documents));
+      // An empty registry writes `[]`, not nothing (asc-bcv.13, B10). The early return here was
+      // reasoned from `output.ts`, where an empty *rendering* is silent because stdout carries data
+      // rather than punctuation -- and that reasoning is right for a table and wrong for this
+      // command, whose output is a document another command PARSES. Zero bytes is not JSON:
+      // `asc types export | asc types import -`, the pipeline this command's own `--help` offers,
+      // failed every time on a registry with no types, reporting at restore time rather than at
+      // backup time. `[]` is the same answer the registry gives and the one `import` accepts.
+      //
+      // The caller-contract cost is one line in a consumer that treated 0 bytes as "no types";
+      // `import` is the consumer, and it already accepts `[]` (`printf '[]' | asc types import -`
+      // exits 0, measured). `asc types brief` keeps its silent empty rendering and is untouched:
+      // nothing pipes it into anything.
+      this.log(serializeDocuments(this.documentsFor(store, args.name)));
     });
   }
 

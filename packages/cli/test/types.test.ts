@@ -460,6 +460,38 @@ describe('asc types export and import', () => {
     expect(registry(target)).toEqual(registry(source));
   });
 
+  it('writes `[]` for an empty registry, so the pipeline its own help offers works', () => {
+    // asc-bcv.13 (B10). `project()` here is a bare `.ascend/` directory -- the store exists and
+    // migrates on first open, and no type was ever registered into it -- which is the empty
+    // registry, reachable through the library and through any adapter that opens a store without
+    // `asc init`'s starters.
+    //
+    // The command returned early for this case and wrote NOTHING, which is not JSON. Its own
+    // `--help` offers `asc types export | asc types import -` as an example, and that pipeline
+    // failed on an empty registry with `standard input is not valid JSON: Unexpected end of JSON
+    // input` -- a failure that surfaces at restore time, which is the worst moment for a backup to
+    // turn out not to have been readable. Measured before the fix (/tmp/probe-b10.mjs):
+    // export exit=0 bytes=0, import exit=1.
+    const dir = project();
+
+    const run = asc(['types', 'export'], dir);
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe('[]\n');
+    expect(documents(run.stdout)).toEqual([]);
+
+    // The round trip is the reason this command exists, so it is asserted rather than inferred
+    // from the bytes above: `[]` is only the right answer because `import` accepts it.
+    const piped = shell('( "$NODE" "$BIN" types export ) | ( "$NODE" "$BIN" types import - )', {
+      cwd: dir,
+      src: dir,
+      dst: dir,
+    });
+    expect(piped.status).toBe(0);
+    expect(piped.stderr).not.toContain('not valid JSON');
+    // And nothing was registered by importing nothing: the round trip is still a round trip.
+    expect(registry(dir)).toEqual([]);
+  });
+
   it('reads a document from a pipe that is still empty when the read starts', () => {
     const dir = project();
     // The producer waits before writing, so the pipe has nothing in it at the moment `import`
