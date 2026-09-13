@@ -866,8 +866,10 @@ admits everything. **At a 0.300 signal, similarity cannot separate "same concept
 threshold at all** — it reports a known name when it shares a **whole token** (`review_kind` against
 `kind`), which is a *certain* relation, so there is no floor to pick and therefore no number to
 invent. What genuinely can be refused is already refused elsewhere and needed no threshold to get
-there: a name colliding with a reserved envelope column (`spec.ts`), and two properties folding to
-one name inside a single spec.
+there: a name colliding with a reserved envelope column (`reservedPropertyName`), and two properties
+folding to one name inside a single spec (`canonicalizeTypeSpec`). The second of those two was
+asserted here before it was true -- the collision warn-and-registered until asc-4if moved it to
+`errors` -- which is the reason both sites are now named rather than described.
 
 **The bead's proposed mechanism was not built, and the rejection is on measured grounds.** `asc-2gy`
 suggested the cheap version be *"FTS5 trigram (mast precedent)"*. A trigram index answers "which

@@ -95,16 +95,39 @@ describe('canonicalizeProperty', () => {
 });
 
 describe('canonicalizeTypeSpec', () => {
-  it('catches two properties that canonicalize to the same name', () => {
-    // The drift failure mode itself, caught at define time rather than months later.
-    const { warnings } = canonicalizeTypeSpec({
+  it('REFUSES two properties that canonicalize to the same name, rather than warning', () => {
+    // The drift failure mode itself, caught at define time rather than months later -- and caught
+    // is the word. It was a warning until asc-4if, and a warning did not catch it: the registry
+    // kept the last declaration, so the store's own record disagreed with the submitted document.
+    const { errors, warnings } = canonicalizeTypeSpec({
       name: 'review-completed',
       properties: [
         { name: 'reviewKind', type: 'string' },
         { name: 'review_kind', type: 'string' },
       ],
     });
-    expect(warnings.some((w) => w.includes("both canonicalize to 'review_kind'"))).toBe(true);
+    expect(errors).toHaveLength(1);
+    expect(warnings.some((w) => w.includes('canonicalize to'))).toBe(false);
+  });
+
+  it('names both declarations as the author SPELLED them, in the order they submitted them', () => {
+    // The fold is the reason the two are one name, so a message quoting only 'review_kind' twice
+    // would name a string the author typed once and leave them hunting for the other. The PAIRING
+    // and the ORDER are both part of the claim: index 0 is the declaration the author wrote first,
+    // and a message that quoted the folded name, or listed the two backwards, would send them to
+    // the wrong line of their own document. Asserted as one clause because both halves are the
+    // claim -- mutation-tested by quoting the fold, and separately by swapping the two.
+    const { errors } = canonicalizeTypeSpec({
+      name: 'review-completed',
+      properties: [
+        { name: 'reviewKind', type: 'string' },
+        { name: 'review_kind', type: 'string' },
+      ],
+    });
+    expect(errors[0]).toContain(
+      "properties 0 ('reviewKind') and 1 ('review_kind') are the same name",
+    );
+    expect(errors[0]).toContain('Rename one of them');
   });
 
   it('makes an empty TYPE name an error, where the store could only say CHECK constraint failed', () => {

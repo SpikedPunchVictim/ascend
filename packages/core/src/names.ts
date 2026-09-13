@@ -13,8 +13,13 @@
  * same-concept score and refuse legitimate work; one low enough to admit same-concept definitions
  * would admit everything. A similarity gate cannot separate "same concept, new name" from "different
  * concept" at a 0.300 signal. What genuinely can be refused needs no threshold at all, and is
- * already refused elsewhere: a name colliding with a reserved envelope column (`spec.ts`), and two
- * properties canonicalizing to one name inside a single spec.
+ * already refused elsewhere, and each names its site so this sentence can be checked rather than
+ * believed: a name colliding with a reserved envelope column (`reservedPropertyName`) and two
+ * properties canonicalizing to one name inside a single spec (`canonicalizeTypeSpec`, which pushes
+ * that collision to `errors`). The second half of this sentence was FALSE for a while and this
+ * comment was the reason nobody found out -- it asserted a guard that did not exist, and the
+ * collision it described warn-and-registered instead. That is asc-4if, and it is why the site is
+ * named here rather than left as "`spec.ts`".
  *
  * **So the mechanism here carries no threshold, by construction.** A name is reported when it shares
  * a whole token with a known name -- `review_kind` against `kind`, `code_review` against

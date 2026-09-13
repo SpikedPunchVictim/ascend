@@ -732,6 +732,72 @@ describe('a name that canonicalizes to empty is refused, not registered', () => 
   });
 });
 
+describe('two properties that are one name are refused, not silently thinned to one', () => {
+  // asc-4if. Measured on the real binary before the fix, this exact document exited 0, registered
+  // ONE property, kept the NUMBER, and dropped the author's text declaration. `asc types show`
+  // then printed only the survivor, so the store's own record contradicted the document that had
+  // been submitted -- and nothing said a declaration had been discarded. A stored shape that
+  // disagrees with the submitted document is the false-green class, so this is a refusal now.
+
+  it('refuses a mixed-type collision, so the LAST declaration cannot silently win', () => {
+    withStore((store) => {
+      expect(() =>
+        registerType(
+          store.db,
+          {
+            name: 'rc',
+            properties: [
+              { name: 'review_kind', type: 'text' },
+              { name: 'reviewKind', type: 'number' },
+            ],
+          },
+          { registeredAt: AT },
+        ),
+      ).toThrow(UnusableDefinitionError);
+
+      // No row and no view, so there is no surviving shape left to disagree with the document.
+      // The view is the assertion that matters: it is what would have carried the winning type
+      // out to `entries`.
+      expect(rowCount(store)).toBe(0);
+      expect(findType(store.db, 'rc')).toBeUndefined();
+      const views = store.db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'view'")
+        .all() as unknown as { name: string }[];
+      expect(views).toEqual([]);
+    });
+  });
+
+  it('tells the author that two of their declarations were one name, naming both spellings', () => {
+    withStore((store) => {
+      let thrown: unknown;
+      try {
+        registerType(
+          store.db,
+          {
+            name: 'rc',
+            properties: [
+              { name: 'review_kind', type: 'text' },
+              { name: 'reviewKind', type: 'number' },
+            ],
+          },
+          { registeredAt: AT },
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(UnusableDefinitionError);
+      const refused = thrown as UnusableDefinitionError;
+      // Both spellings, because the fold that made them one name is exactly what is invisible to
+      // the person who typed only one of them.
+      expect(refused.message).toContain("'review_kind'");
+      expect(refused.message).toContain("'reviewKind'");
+      expect(refused.message).toContain('Rename one of them');
+      expect(rowCount(store)).toBe(0);
+    });
+  });
+});
+
 describe('deprecation is a status, not a version', () => {
   it('marks the type deprecated without adding a version', () => {
     // Entries recorded under a deprecated type stay valid and stay queryable. Deleting

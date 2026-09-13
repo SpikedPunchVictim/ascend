@@ -342,7 +342,11 @@ export function canonicalizeTypeSpec(spec: TypeSpec): Canonicalized<TypeSpec> {
   }
 
   const properties: PropertySpec[] = [];
-  const byName = new Map<string, number>();
+  // Keyed by canonical name, and the value carries the spelling the author actually WROTE. The
+  // whole point of this check is that two different spellings are one name, so a message quoting
+  // only the canonical form would name a string the author never typed -- and `reviewKind` versus
+  // `review_kind` is unguessable from the fold alone.
+  const byName = new Map<string, { index: number; spelling: string }>();
 
   for (const property of spec.properties) {
     const result = canonicalizeProperty(property);
@@ -352,13 +356,28 @@ export function canonicalizeTypeSpec(spec: TypeSpec): Canonicalized<TypeSpec> {
 
     const existing = byName.get(result.spec.name);
     if (existing !== undefined) {
-      // Two properties that canonicalize to the same name is the drift failure mode
-      // itself, caught at define time rather than discovered months later.
-      warnings.push(
-        `properties ${String(existing)} and ${String(properties.length)} both canonicalize to '${result.spec.name}'`,
+      // An ERROR, and it was a WARNING until asc-4if. Two properties that canonicalize to one name
+      // is the drift failure mode itself -- but warning about it here did not catch the drift, it
+      // *preserved* it. The registry keeps the LAST declaration, so measured end to end on the real
+      // binary:
+      //
+      //   {"name":"rc","properties":[{"name":"review_kind","type":"text"},
+      //                               {"name":"reviewKind","type":"number"}]}
+      //
+      // exited 0, registered ONE property, kept the NUMBER, and silently dropped the author's text
+      // declaration. `asc types show` then printed the survivor alone, so the store's own record
+      // contradicted the document that had been submitted, and nothing told the author that one of
+      // their two declarations had been discarded. A stored shape that disagrees with the submitted
+      // document is the false-green class this project treats as severity-zero, so this is refused
+      // -- the same branch the reserved-name check above takes, for the same reason.
+      errors.push(
+        `properties ${String(existing.index)} ('${existing.spelling}') and ` +
+          `${String(properties.length)} ('${property.name}') are the same name: both canonicalize ` +
+          `to '${result.spec.name}', so the generated view would project one column for two ` +
+          `declarations and only one of them could ever be recorded. Rename one of them.`,
       );
     }
-    byName.set(result.spec.name, properties.length);
+    byName.set(result.spec.name, { index: properties.length, spelling: property.name });
     properties.push(result.spec);
   }
 
