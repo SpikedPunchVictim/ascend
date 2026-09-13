@@ -12,6 +12,8 @@ import {
   UnusableDefinitionError,
   typeVersions,
   updateTypeProse,
+  withRollback,
+  withTransaction,
   type Store,
 } from '../src/index.js';
 
@@ -183,6 +185,172 @@ describe('registering a type', () => {
       };
       const result = registerType(store.db, reversed, { registeredAt: LATER });
       expect(result.outcome).toBe('unchanged');
+      expect(rowCount(store)).toBe(1);
+    });
+  });
+});
+
+/**
+ * asc-odh: the version read and the version insert are one decision, so they are one
+ * transaction -- and a transaction that begins AFTER the read does not make them atomic.
+ *
+ * The race itself is not observable from a single-process unit test: with one connection there is
+ * no second writer to invalidate the read. It was measured instead with two processes driving this
+ * function from a shared wall-clock barrier (`/tmp/probe-race.mjs`): **10 trials, 10 UNIQUE
+ * collisions** with the BEGIN below the reads; **20 trials, 0** with it above. What these tests
+ * cover is the other half of the restructure -- the transaction now spans the whole body, so every
+ * exit from it has to give the lock back, and the paths that must NOT commit must not commit.
+ * Stated rather than implied: the read's placement inside the lock is verified by the probe and by
+ * reading the function, not by anything below.
+ */
+describe('the transaction registerType opens spans its whole body', () => {
+  /** Fails if the handle still has a transaction open, which is what a leaked lock looks like. */
+  const assertNoOpenTransaction = (store: Store): void => {
+    expect(store.db.isTransaction).toBe(false);
+    // The property is not trusted on its own: a nested BEGIN is an error, so this succeeds only if
+    // the transaction really is closed. An open one here would silently adopt the caller's next
+    // statement -- and would turn their own BEGIN into a nested one.
+    store.db.exec('BEGIN');
+    store.db.exec('ROLLBACK');
+  };
+
+  it('releases the lock after creating a version', () => {
+    withStore((store) => {
+      const result = registerType(store.db, spec(), { registeredAt: AT });
+      expect(result.outcome).toBe('created');
+      assertNoOpenTransaction(store);
+    });
+  });
+
+  it('releases the lock on the unchanged path, which now takes one', () => {
+    // The cost this restructure accepted, paid in the one place a caller could notice it: an
+    // idempotent re-registration used to touch no lock at all, and now takes the write lock because
+    // the BEGIN sits above the idempotence check rather than below it. Taking it is safe only
+    // because the early return gives it back.
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      const again = registerType(store.db, spec(), { registeredAt: LATER });
+
+      expect(again.outcome).toBe('unchanged');
+      expect(again.version).toBe(1);
+      assertNoOpenTransaction(store);
+    });
+  });
+
+  it('releases the lock after a preview', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT, dryRun: true });
+      expect(rowCount(store)).toBe(0);
+      assertNoOpenTransaction(store);
+    });
+  });
+
+  it("joins a caller's transaction instead of committing it", () => {
+    withStore((store) => {
+      withTransaction(store.db, () => {
+        registerType(store.db, spec(), { registeredAt: AT });
+        // Still open, because it is the caller's to end. A `COMMIT` here would be registerType
+        // deciding the fate of work it did not open.
+        expect(store.db.isTransaction).toBe(true);
+      });
+      expect(store.db.isTransaction).toBe(false);
+      expect(rowCount(store)).toBe(1);
+    });
+  });
+
+  it("a caller's ROLLBACK takes the registration with it", () => {
+    // The strongest form of the previous test, and the one a wrong `ownsTransaction` cannot pass:
+    // if registerType committed its own work, the row would survive the caller's rollback. This is
+    // why `finish` is conditional rather than a bare `db.exec(statement)`.
+    withStore((store) => {
+      withRollback(store.db, () => {
+        registerType(store.db, spec(), { registeredAt: AT });
+        expect(rowCount(store)).toBe(1);
+      });
+      expect(rowCount(store)).toBe(0);
+      expect(store.db.isTransaction).toBe(false);
+    });
+  });
+
+  it("a failure inside a caller's transaction is theirs to unwind, not ours", () => {
+    // Found by mutation, not by imagination: replacing the catch's `ownsTransaction` with a bare
+    // `!ended` survived the rest of this suite, because every other failure test uses a store where
+    // registerType owns the transaction. That mutation is not cosmetic -- a callee that rolls back a
+    // transaction it merely joined discards work the caller did BEFORE calling it, and the caller
+    // then commits an empty transaction believing otherwise.
+    let stored = '';
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      stored = (
+        store.db
+          .prepare("SELECT spec_json FROM entry_types WHERE name = 'review_completed'")
+          .get() as { spec_json: string }
+      ).spec_json;
+    });
+
+    withStore((store) => {
+      store.db
+        .prepare(
+          `INSERT INTO entry_types
+             (name, version, major, type_hash, spec_json, description, record_when, prose_json, created_at)
+           VALUES (?, ?, ?, ?, ?, NULL, NULL, '{}', ?)`,
+        )
+        .run('review_completed', 1, 1, 'not-the-hash-this-spec-produces', stored, AT);
+
+      withTransaction(store.db, () => {
+        // The caller's own work, done before the callee fails.
+        registerType(store.db, { name: 'audit_finished', properties: [] }, { registeredAt: AT });
+
+        let threw = false;
+        try {
+          registerType(store.db, spec(), { registeredAt: LATER });
+        } catch {
+          threw = true;
+          // Caught and swallowed, so this transaction commits. Still open at this moment: ending it
+          // here would be the callee deciding the fate of the caller's earlier registration.
+          expect(store.db.isTransaction).toBe(true);
+        }
+        expect(threw).toBe(true);
+      });
+
+      // And the caller's work is really there, which is what a stray rollback destroys.
+      expect(findType(store.db, 'audit_finished')).toBeDefined();
+    });
+  });
+
+  it('rolls back, and holds no lock, when the registration fails partway', () => {
+    // The one throw reachable from inside the transaction. It is a corruption guard ("hashes
+    // differently but the shapes match"), so the only way to arrive at it is a store whose
+    // `type_hash` disagrees with the `spec_json` beside it. Nothing in the public API can build that
+    // state -- the identity trigger refuses the UPDATE -- so it is built with an INSERT, the one
+    // mutation the triggers do not intercept.
+    let stored = '';
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      stored = (
+        store.db
+          .prepare("SELECT spec_json FROM entry_types WHERE name = 'review_completed'")
+          .get() as { spec_json: string }
+      ).spec_json;
+    });
+
+    withStore((store) => {
+      store.db
+        .prepare(
+          `INSERT INTO entry_types
+             (name, version, major, type_hash, spec_json, description, record_when, prose_json, created_at)
+           VALUES (?, ?, ?, ?, ?, NULL, NULL, '{}', ?)`,
+        )
+        .run('review_completed', 1, 1, 'not-the-hash-this-spec-produces', stored, AT);
+
+      expect(() => registerType(store.db, spec(), { registeredAt: LATER })).toThrow(
+        /hashes differently/,
+      );
+
+      // Before the restructure this throw escaped with the transaction still open, because it was
+      // raised above the BEGIN and the BEGIN never ran. Now it is raised inside, and unwinds.
+      assertNoOpenTransaction(store);
+      // The failed registration wrote nothing: the bogus row is the only one there.
       expect(rowCount(store)).toBe(1);
     });
   });

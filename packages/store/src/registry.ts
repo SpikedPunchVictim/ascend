@@ -351,90 +351,35 @@ export function registerType(
   const { shape, proseJson } = toStorage(canonical.spec, options);
   const hash = specHash(shape);
 
-  const known = db
-    .prepare('SELECT version, major FROM entry_types WHERE name = ? AND type_hash = ?')
-    .get(shape.name, hash) as { version: number; major: number } | undefined;
-
-  if (known !== undefined) {
-    return {
-      name: shape.name,
-      version: known.version,
-      major: known.major,
-      typeHash: hash,
-      outcome: 'unchanged',
-      bump: 'none',
-      changes: [],
-      renames: canonical.renames,
-      warnings: canonical.warnings,
-    };
-  }
-
-  const latest = db
-    .prepare(
-      'SELECT version, major, spec_json FROM entry_types WHERE name = ? ORDER BY version DESC LIMIT 1',
-    )
-    .get(shape.name) as { version: number; major: number; spec_json: string } | undefined;
-
-  let version = 1;
-  let major = 1;
-  let bump: Bump = 'major';
-  let changes: readonly SpecChange[] = [];
-
-  if (latest !== undefined) {
-    // Both sides are already the stored projection: prose-free, canonical, and with the
-    // fields that constrain nothing normalized out.
-    const previous = JSON.parse(latest.spec_json) as TypeSpec;
-    const diff = diffTypeSpec(previous, shape);
-
-    // Verified, not assumed: core's diff classifies every shape difference, and a test
-    // enumerates the variations to prove it. If this ever fires, two specs hashed
-    // differently while the diff saw no change -- which would mean the hash covers a
-    // field the diff does not know about, and the bump below would be a guess.
-    if (diff.bump === 'none') {
-      throw new Error(
-        `type '${shape.name}' hashes differently from version ${String(latest.version)} but the ` +
-          `shape comparison found no difference. This is a bug in @ascend/core's diff: ` +
-          `definitionShape and diffTypeSpec disagree about what a definition is.`,
-      );
-    }
-
-    version = latest.version + 1;
-    // A major bump starts a new family, which generated views must NOT union across.
-    // A minor bump stays in the family. There is no third case: `none` is unreachable
-    // above, and `minor`/`major` are the only other members of Bump.
-    major = diff.bump === 'major' ? latest.major + 1 : latest.major;
-    bump = diff.bump;
-    changes = diff.changes;
-  }
-
-  // Computed BEFORE the insert, and that ordering is load-bearing rather than tidy. The check reads
-  // the registered vocabulary out of `entry_types`; run after the insert, this spec's own
-  // properties would already be in that set, every one of them would be skipped as "already
-  // registered", and the property half would be silently inert -- a check that reports nothing
-  // while appearing to have run. Read before, it answers the question it exists for: what did the
-  // registry hold when this definition was proposed?
-  const notes = vocabularyNotes(db, shape);
-
-  // The version row and the views derived from it are one unit. A committed version whose
-  // views are missing is a store where `asc query` fails on a type that registered fine, so
-  // both go in one transaction. `isTransaction` means a caller's transaction is joined
-  // rather than nested into -- SQLite rejects a nested BEGIN outright.
+  // ONE transaction around the whole body, beginning ABOVE the version reads. That placement is
+  // the entire fix, and the reason is worth stating because the transaction mode alone was not
+  // enough (asc-odh).
   //
-  // `IMMEDIATE`, matching the store's own `withTransaction` (B4). What that buys here is narrower
-  // than it first looks, and the narrowness is written down because the alternative was a comment
-  // claiming more than the code does. Every version read above -- `known`, `latest`, and
-  // `vocabularyNotes` -- happens BEFORE this line, outside any transaction, so this does NOT close
-  // the check-then-act race between them and the INSERT below: two concurrent registrations can
-  // still both compute version N, and the loser still fails on the `(name, version)` UNIQUE
-  // constraint. Closing that needs the BEGIN moved above the reads, the `unchanged` early return
-  // turned into a COMMIT, and a rollback on the `diff.bump === 'none'` throw -- one transaction
-  // around the whole body, which is a restructure rather than a transaction mode (asc-odh).
+  // The version reads below are the CHECK and the INSERT at the end is the ACT. They are one
+  // decision -- "which version number is this definition?" -- so they have to be atomic with each
+  // other, and a transaction that starts after the check does not make them so. Measured with two
+  // processes driving this very function from a shared wall-clock barrier
+  // (`/tmp/probe-race.mjs`): with the BEGIN below the reads, **10 trials produced 10 UNIQUE
+  // collisions** on `(name, version)`. Both processes computed version N, both inserted it, and
+  // the loser got a raw SQLite message for a registration that was perfectly legal.
   //
-  // What IMMEDIATE does close is the snapshot window inside the INSERT itself: the statement
-  // probes the unique index before it writes, and under a deferred BEGIN that probe is what
-  // establishes the read snapshot, so a concurrent commit landing after it would fail the insert
-  // with `SQLITE_BUSY_SNAPSHOT` -- which no busy timeout can wait out. See `db.ts`'s
-  // `withTransaction` for the mechanism and the measurement.
+  // `IMMEDIATE` rather than deferred, for the reason `db.ts`'s `withTransaction` records: a
+  // deferred BEGIN takes no lock, so the first read establishes a WAL snapshot that a concurrent
+  // commit can invalidate, and the ensuing `SQLITE_BUSY_SNAPSHOT` cannot be waited out. Taking the
+  // write lock here means a concurrent registration **waits** at this line -- there, where the busy
+  // timeout applies -- and then reads the version the other one committed. That is the behaviour
+  // the probe now measures: no collisions, and the second registration takes version N+1.
+  //
+  // The cost is real and is not hidden: the idempotent re-registration path -- a spec already
+  // known, which returns `unchanged` below -- now takes the write lock too, where it previously
+  // took none. It was weighed against a retry-on-UNIQUE design and chosen because retrying cannot
+  // work inside a caller's transaction (the failed statement's snapshot is already stale) and
+  // because "several ascend processes sharing one store" is the scenario the whole store is built
+  // for, so serialising an idempotence check behind a write lock is consistent with it.
+  //
+  // `isTransaction` means a caller's transaction is JOINED rather than nested into -- SQLite
+  // rejects a nested BEGIN outright -- and a caller who opened one with `withTransaction` is
+  // already holding the write lock, so the check-then-act window is closed for them too.
   const ownsTransaction = !db.isTransaction;
   if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
 
@@ -445,7 +390,94 @@ export function registerType(
   // while guarding the thing it exists for.
   let ended = false;
 
+  // Ends the transaction this function owns. A no-op when a caller's transaction was joined, and
+  // that is what keeps every `return` below from committing a caller's work.
+  const finish = (statement: 'COMMIT' | 'ROLLBACK'): void => {
+    if (ownsTransaction) db.exec(statement);
+    ended = true;
+  };
+
+  // Whether there is still a transaction of ours to unwind from the catch below.
+  //
+  // A function rather than the inline `ownsTransaction && !ended` it started as, and not for
+  // tidiness. TypeScript's flow analysis does not model a closure assigning to a captured `let`, so
+  // at the catch it narrows `ended` to the `false` it was initialised with and reports the guard as
+  // always-true -- `@typescript-eslint/no-unnecessary-condition`, measured. The condition is not
+  // dead: the dry-run path sets `ended` and can then throw, and unwinding a transaction that is
+  // already closed raises its own error, masking the one being reported. Inside a function body the
+  // analysis uses the declared type instead, so the guard reads as live -- which it is. Deleting it
+  // to satisfy the linter would reintroduce the double-rollback it exists to prevent.
+  const hasOpenTransaction = (): boolean => ownsTransaction && !ended;
+
   try {
+    const known = db
+      .prepare('SELECT version, major FROM entry_types WHERE name = ? AND type_hash = ?')
+      .get(shape.name, hash) as { version: number; major: number } | undefined;
+
+    if (known !== undefined) {
+      // The lock is released before returning, not left to the caller. An open transaction on this
+      // handle would silently adopt every later statement the caller runs -- including their own
+      // BEGIN, which would then be a nested one -- so the early return has to end what it started.
+      finish('COMMIT');
+      return {
+        name: shape.name,
+        version: known.version,
+        major: known.major,
+        typeHash: hash,
+        outcome: 'unchanged',
+        bump: 'none',
+        changes: [],
+        renames: canonical.renames,
+        warnings: canonical.warnings,
+      };
+    }
+
+    const latest = db
+      .prepare(
+        'SELECT version, major, spec_json FROM entry_types WHERE name = ? ORDER BY version DESC LIMIT 1',
+      )
+      .get(shape.name) as { version: number; major: number; spec_json: string } | undefined;
+
+    let version = 1;
+    let major = 1;
+    let bump: Bump = 'major';
+    let changes: readonly SpecChange[] = [];
+
+    if (latest !== undefined) {
+      // Both sides are already the stored projection: prose-free, canonical, and with the
+      // fields that constrain nothing normalized out.
+      const previous = JSON.parse(latest.spec_json) as TypeSpec;
+      const diff = diffTypeSpec(previous, shape);
+
+      // Verified, not assumed: core's diff classifies every shape difference, and a test
+      // enumerates the variations to prove it. If this ever fires, two specs hashed
+      // differently while the diff saw no change -- which would mean the hash covers a
+      // field the diff does not know about, and the bump below would be a guess.
+      if (diff.bump === 'none') {
+        throw new Error(
+          `type '${shape.name}' hashes differently from version ${String(latest.version)} but the ` +
+            `shape comparison found no difference. This is a bug in @ascend/core's diff: ` +
+            `definitionShape and diffTypeSpec disagree about what a definition is.`,
+        );
+      }
+
+      version = latest.version + 1;
+      // A major bump starts a new family, which generated views must NOT union across.
+      // A minor bump stays in the family. There is no third case: `none` is unreachable
+      // above, and `minor`/`major` are the only other members of Bump.
+      major = diff.bump === 'major' ? latest.major + 1 : latest.major;
+      bump = diff.bump;
+      changes = diff.changes;
+    }
+
+    // Computed BEFORE the insert, and that ordering is load-bearing rather than tidy. The check
+    // reads the registered vocabulary out of `entry_types`; run after the insert, this spec's own
+    // properties would already be in that set, every one of them would be skipped as "already
+    // registered", and the property half would be silently inert -- a check that reports nothing
+    // while appearing to have run. Read before, it answers the question it exists for: what did
+    // the registry hold when this definition was proposed?
+    const notes = vocabularyNotes(db, shape);
+
     db.prepare(
       `INSERT INTO entry_types
          (name, version, major, type_hash, spec_json, description, record_when, prose_json, created_at)
@@ -463,41 +495,40 @@ export function registerType(
     );
 
     // Derived, never authored: the view and index set are a pure function of the registered
-    // versions, so they are rebuilt from the registry rather than accumulated.
+    // versions, so they are rebuilt from the registry rather than accumulated. They go in the same
+    // transaction as the version row because a committed version whose views are missing is a store
+    // where `asc query` fails on a type that registered fine.
     refreshTypeViews(db, shape.name);
 
     // A dry run still runs all of the above -- that is what makes it a preview of this
     // registration rather than of a description of it -- and then throws the work away.
     // `ownsTransaction` is necessarily true for a dry run: the guard at the top of this
     // function refuses one that would join a caller's transaction.
-    if (options.dryRun === true) {
-      db.exec('ROLLBACK');
-      ended = true;
-    } else if (ownsTransaction) {
-      db.exec('COMMIT');
-      ended = true;
-    }
+    finish(options.dryRun === true ? 'ROLLBACK' : 'COMMIT');
+
+    return {
+      name: shape.name,
+      version,
+      major,
+      typeHash: hash,
+      outcome: 'created',
+      bump,
+      changes,
+      renames: canonical.renames,
+      warnings: [...canonical.warnings, ...notes],
+    };
   } catch (error) {
     // `ended` as well as `ownsTransaction`, so a rollback that has already run -- the dry-run
     // path's, when the rollback of a rollback is what failed -- is not attempted twice.
     // Rolling back a transaction that is no longer open is its own error, and it would mask
     // the one being reported. Set after the statement rather than before, so a rollback that
     // itself threw still gets cleaned up by this path.
-    if (ownsTransaction && !ended) db.exec('ROLLBACK');
+    //
+    // This path now covers more than it used to: the `diff.bump === 'none'` throw above is inside
+    // the transaction, so it unwinds rather than escaping with the lock still held.
+    if (hasOpenTransaction()) db.exec('ROLLBACK');
     throw error;
   }
-
-  return {
-    name: shape.name,
-    version,
-    major,
-    typeHash: hash,
-    outcome: 'created',
-    bump,
-    changes,
-    renames: canonical.renames,
-    warnings: [...canonical.warnings, ...notes],
-  };
 }
 
 const rowToVersion = (row: VersionRowShape): TypeVersionRow => ({
