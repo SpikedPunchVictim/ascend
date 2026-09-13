@@ -19,7 +19,7 @@
  * precisely how the fold corpus acquired its ambiguity.
  */
 
-import { describeProperty, exampleValue, isDeclaredProperty, propertySchema } from './schema.js';
+import { describeProperty, isDeclaredProperty, propertySchema, runnableValue } from './schema.js';
 import type { PropertySpec, TypeSpec } from './spec.js';
 
 /** The three states. `not_measured` is the default and needs no encoding at all. */
@@ -118,12 +118,15 @@ export function validateEntry(spec: TypeSpec, input: EntryInput): ValidatedEntry
     const parsed = propertySchema(property).safeParse(value);
     if (!parsed.success) {
       const detail = parsed.error.issues[0]?.message ?? 'invalid value';
+      const example = runnableValue(property);
       errors.push({
         field: name,
         problem: detail,
         fix:
           `'${name}' expects ${describeProperty(property)}. ` +
-          `Re-record with: ${recordCommand(spec, name, exampleValue(property))}`,
+          (example === undefined
+            ? `Re-record with --prop=${name}=<value>, or --na ${name} if it does not apply.`
+            : `Re-record with: ${recordCommand(spec, name, example)}`),
       });
       continue;
     }
@@ -187,13 +190,21 @@ export function validateEntry(spec: TypeSpec, input: EntryInput): ValidatedEntry
   for (const property of spec.properties) {
     if (property.required !== true) continue;
     if (states[property.name] !== 'not_measured') continue;
+    const example = runnableValue(property);
     errors.push({
       field: property.name,
       problem: `'${property.name}' is required and has no decision recorded`,
       fix:
         `Required means a value OR an explicit N/A -- not necessarily a value. ` +
-        `Record: ${recordCommand(spec, property.name, exampleValue(property))}, ` +
-        `or: asc record ${spec.name} --na ${property.name}`,
+        (example === undefined
+          ? // No runnable `--prop` command: ascend has nothing to put in it, and printing a
+            // placeholder would be printing a command that stores the placeholder. Naming the
+            // flag without a command line is the honest half -- a recorder supplies the value,
+            // which is the whole point of the property being required.
+            `Supply the value with --prop=${property.name}=<value>; ascend cannot invent one. ` +
+            `Or record that it does not apply: asc record ${spec.name} --na ${property.name}`
+          : `Record: ${recordCommand(spec, property.name, example)}, ` +
+            `or: asc record ${spec.name} --na ${property.name}`),
     });
   }
 

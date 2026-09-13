@@ -161,17 +161,29 @@ export function describeProperty(spec: PropertySpec): string {
 }
 
 /**
- * A value that would satisfy the declared type, for use in a corrected command.
+ * A value to put in a `--prop=` command that ascend can STAND BEHIND, or `undefined`.
  *
- * Only an enum yields a genuinely runnable example, because its accepted values are
- * the one thing the spec actually names. For every other type this returns a
- * placeholder -- inventing `--prop=count=1` would be a fabricated measurement dressed
- * up as advice, which is the failure mode this whole product exists to prevent.
+ * Only an enum yields one, because its accepted values are the one thing the spec actually
+ * NAMES. Every other type has no value ascend can vouch for: it would have to be observed from
+ * the thing being recorded, which is precisely what ascend does not have.
+ *
+ * `undefined` is not a nicer placeholder -- it is the absence of a command. This function used
+ * to return `<${type}>` for every non-enum type, and that was a false-green generator, measured:
+ * for the 7-type vocabulary, the placeholder STORES AND VALIDATES for `string`, `text` and
+ * `ref` (and for `enum` it is a real member, so that case was always correct), and is rejected
+ * for `number`, `integer`, `boolean` and `json`. So `--prop=summary=<string>` printed by ascend
+ * as its own recommendation ran, exited 0, and wrote the literal six characters `<string>` into
+ * the ledger as a measurement -- a fabricated value with ascend's endorsement on it, which is
+ * the failure this whole product exists to prevent.
+ *
+ * That a placeholder happens to be REJECTED for four of the seven types is not a property to
+ * lean on: it makes the defect intermittent, not absent. The answer for all seven is to print
+ * no `--prop` command unless there is a value behind it.
  */
-export function exampleValue(spec: PropertySpec): string {
-  if (spec.type === 'enum') {
-    const [first] = spec.enum_values ?? [];
-    if (first !== undefined) return first;
-  }
-  return `<${spec.type}>`;
+export function runnableValue(spec: PropertySpec): string | undefined {
+  if (spec.type !== 'enum') return undefined;
+  // `undefined` for an enum with no `enum_values` too: it is legal to define and impossible to
+  // satisfy (`canonicalizeProperty` warns), and ascend has no member to name there either.
+  const [first] = spec.enum_values ?? [];
+  return first;
 }

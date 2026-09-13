@@ -274,6 +274,41 @@ describe('asc record', () => {
     expect(stored(dir)).toHaveLength(1);
   });
 
+  it('does NOT print a runnable command whose value ascend had to invent', () => {
+    // The end-to-end receipt for the defect the unit-level invariant in `core/state.test.ts`
+    // pins. Before the fix, recording nothing for a required `string` property produced this
+    // suggested repair -- and it RAN: exit 0, and `{"missing":"<string>"}` in the ledger. The
+    // placeholder was `<${type}>`, which stores and validates for `string`, `text` and `ref`,
+    // so ascend's own advice was writing a fabricated measurement into the ledger with ascend's
+    // endorsement on it. That is the failure the whole product exists to prevent, so the check
+    // is not "the suggestion validates" (it did) but "ascend never suggested it".
+    const dir = project();
+    writeFileSync(
+      join(dir, 'pair.json'),
+      JSON.stringify({
+        name: 'pair',
+        properties: [{ name: 'missing', type: 'string', required: true }],
+      }),
+    );
+    expect(asc(['types', 'define', join(dir, 'pair.json')], dir).status).toBe(0);
+
+    // An empty document, not bare `record pair`: no document and no entry flag is a usage
+    // error (exit 2) and never reaches validation, so it would prove nothing about the message.
+    const run = asc(['record', 'pair', '-'], dir, '{}');
+
+    expect(run.status).toBe(1);
+    const message = flatten(run.stderr);
+    // It still refuses, and still names the flag -- a recorder is told the shape to supply.
+    expect(message).toContain('--prop=missing=<value>');
+    // And it still offers the half ascend CAN stand behind: an explicit N/A is a real command.
+    expect(message).toContain('asc record pair --na missing');
+    // What it must never again do is hand back a `--prop=` COMMAND LINE for a value ascend has
+    // no way to know. Asserted on the command form rather than on the placeholder text, because
+    // the next placeholder would not be spelled `<string>`.
+    expect(message).not.toMatch(/asc record \S+ --prop=/);
+    expect(stored(dir)).toEqual([]);
+  });
+
   it('refuses an unregistered type, and lists the ones that exist', () => {
     const dir = project();
     const run = asc(['record', 'review', '--prop=x=y'], dir);
