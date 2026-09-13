@@ -323,6 +323,127 @@ describe('warnings never block, errors always do', () => {
   });
 });
 
+describe('measured means the value is IN THE ROW', () => {
+  /**
+   * asc-bcv.12 (B9). Validation and storage were two implementations of one invariant, and only
+   * one of them decided whether a value could be stored. The other one -- `canonicalJson`, which
+   * the recorder calls at the write -- was never consulted here, so it could disagree.
+   *
+   * Measured before the fix (`/tmp/probe-b9.mjs`, against the real store): a `Date` offered for
+   * a `json` property came back `ok: true`, resolved `measured`, and the row held `{"v":[{}]}`.
+   * Nothing downstream could tell that from a genuinely empty object, and the recorder was never
+   * told. NaN and its siblings were refused, but only after validation had passed, as a
+   * `TypeError` out of the serializer rather than an error naming the value offered.
+   */
+  const JSON_SPEC: TypeSpec = { name: 'probe', properties: [{ name: 'v', type: 'json' }] };
+
+  const offer = (value: unknown) => validateEntry(JSON_SPEC, { properties: { v: value } });
+
+  const cyclic = (): Record<string, unknown> => {
+    const value: Record<string, unknown> = { a: 1 };
+    value['self'] = value;
+    return value;
+  };
+
+  // The six kinds `canonicalJson` refuses, plus the ones it does not refuse and should (B9's
+  // stated failure mode: the loud refusals must not become silent passes, and the silent ones
+  // must become loud).
+  const CANNOT_BE_STORED: readonly (readonly [string, unknown])[] = [
+    ['a Date', new Date('2026-09-13T00:00:00Z')],
+    ['a RegExp', /x/g],
+    ['a Map', new Map([['a', 1]])],
+    ['a Set', new Set([1])],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['a bigint', 10n],
+    ['a function', () => 1],
+    ['a symbol', Symbol('s')],
+    ['undefined', undefined],
+    ['a cycle', cyclic()],
+    ['a symbol-keyed member', { a: 1, [Symbol('meta')]: 2 }],
+  ];
+
+  // The NESTED form is the one that matters and the one the bead measured. `z.record` already
+  // refuses a Date/Map/Set at the top level -- which is exactly why the bead's evidence line
+  // reads `{"v":[{}]}` and not `{"v":{}}`. It is `z.unknown()` as an array element or a record
+  // value that waves anything through, so a top-level-only check would miss every real instance.
+  it.each(CANNOT_BE_STORED)(
+    'refuses %s nested in a value, and says what and where',
+    (_label, value) => {
+      const result = offer([value]);
+
+      expect(result.ok).toBe(false);
+      expect(result.states['v']).toBe('not_measured');
+      expect(Object.hasOwn(result.properties, 'v')).toBe(false);
+      // The error has to name the problem and the repair, like every other error here does.
+      expect(result.errors[0]?.problem).toMatch(/cannot store/);
+      expect(result.errors[0]?.fix).toContain('--na v');
+    },
+  );
+
+  it.each(CANNOT_BE_STORED)('also refuses %s offered at the top level', (_label, value) => {
+    // A different guard catches most of these, and the assertion is deliberately only that the
+    // entry is refused -- not which layer refused it. Claiming the new check owns this case
+    // would be a claim the code does not support: for NaN the message is still zod's.
+    const result = offer(value);
+
+    expect(result.ok).toBe(false);
+    expect(result.states['v']).toBe('not_measured');
+    expect(Object.hasOwn(result.properties, 'v')).toBe(false);
+  });
+
+  it('refuses one nested inside a value that is otherwise fine', () => {
+    const result = offer({ ok: [1, 2], when: new Date(0) });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]?.problem).toContain('at v.when');
+  });
+
+  it('points at the member, so the recorder does not have to re-read the whole value', () => {
+    const result = validateEntry(JSON_SPEC, { properties: { v: [1, { deep: [new Date(0)] }] } });
+    expect(result.errors[0]?.problem).toContain('at v[1].deep[0]');
+  });
+
+  it.each([
+    ['an empty object', {}],
+    ['an empty array', []],
+    ['nested plain values', { outer: { inner: [1, 'two', null, true] } }],
+    // A measured 0 inside a json value is a real measurement, not an absence.
+    ['a zero nested in a list', [0, false, '']],
+  ])('still accepts %s, so the check did not become a blanket refusal', (_label, value) => {
+    const result = offer(value);
+    expect(result.ok).toBe(true);
+    expect(result.states['v']).toBe('measured');
+  });
+
+  it('accepts a value a shared reference appears in twice, which is not a cycle', () => {
+    const shared = { a: 1 };
+    const result = offer({ left: shared, right: shared });
+
+    expect(result.ok).toBe(true);
+    expect(canonicalJson(result.properties)).toBe('{"v":{"left":{"a":1},"right":{"a":1}}}');
+  });
+
+  it('cannot disagree with the serializer: everything it accepts, the row gets back whole', () => {
+    // The property the fix exists to establish, asserted directly rather than inferred from the
+    // two implementations happening to share a source. For every value the validator accepts,
+    // the bytes the recorder would write parse back to a structurally identical value.
+    const ACCEPTED: readonly unknown[] = [
+      {},
+      [],
+      [1, 'two', null, true, { nested: [0, '', false] }],
+      { a: 1, b: [2, { c: null }] },
+      { left: { a: 1 }, right: { a: 1 } },
+    ];
+
+    for (const value of ACCEPTED) {
+      const result = offer(value);
+      const stored = result.properties['v'];
+      expect(JSON.parse(canonicalJson(stored)) as unknown).toEqual(value);
+    }
+  });
+});
+
 describe('purity', () => {
   it('does not mutate the input it was given', () => {
     const properties = { comments: 1, surprise: true };

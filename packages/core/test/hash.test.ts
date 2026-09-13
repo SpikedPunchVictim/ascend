@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalJson, canonicalizeTypeSpec, sha256Hex, typeHash } from '../src/index.js';
+import {
+  canonicalJson,
+  canonicalizeTypeSpec,
+  nonJsonReason,
+  sha256Hex,
+  typeHash,
+} from '../src/index.js';
 
 /**
  * The vectors below are the PUBLISHED SHA-256 test values (FIPS 180-4 / NIST examples).
@@ -115,6 +121,152 @@ describe('canonicalJson', () => {
 
   it('refuses values that are not JSON', () => {
     expect(() => canonicalJson({ f: () => 1 })).toThrow(/cannot canonically serialize/);
+  });
+});
+
+describe('nonJsonReason', () => {
+  /**
+   * Every value here has one property in common: `canonicalJson` does not round-trip it.
+   * The table says how each one fails rather than that each one fails, because the families
+   * differ -- a `Date` serializes to `{}` WITHOUT throwing, which is why a `try`/`catch`
+   * around the serializer was never going to find it (asc-bcv.12, B9).
+   */
+  const UNREPRESENTABLE: readonly (readonly [string, unknown, RegExp])[] = [
+    // Silent: `canonicalJson` succeeds and the value is gone.
+    ['a Date', new Date('2026-09-13T00:00:00Z'), /a Date/],
+    ['a Map', new Map([['a', 1]]), /a Map/],
+    ['a Set', new Set([1]), /a Set/],
+    ['a RegExp', /x/g, /a RegExp/],
+    // Loud, but only after validation has already said the entry is fine.
+    ['NaN', Number.NaN, /NaN/],
+    ['Infinity', Number.POSITIVE_INFINITY, /Infinity/],
+    ['a bigint', 10n, /a bigint/],
+    ['a function', () => 1, /a function/],
+    ['a symbol', Symbol('s'), /a symbol/],
+    ['undefined', undefined, /undefined/],
+    // Not even loud: `canonicalJson` recurses until the stack overflows.
+    [
+      'a cycle',
+      (() => {
+        const c: Record<string, unknown> = { a: 1 };
+        c['self'] = c;
+        return c;
+      })(),
+      /a cycle/,
+    ],
+    // The same loss one step in: a member neither `Object.entries` nor a zod record walk lists.
+    ['a symbol-keyed member', { a: 1, [Symbol('meta')]: 2 }, /a symbol-keyed member/],
+    [
+      'a non-enumerable member',
+      Object.defineProperty({ a: 1 }, 'hidden', { value: 2, enumerable: false }),
+      /a non-enumerable member/,
+    ],
+  ];
+
+  it.each(UNREPRESENTABLE)('names %s', (_label, value, expected) => {
+    expect(nonJsonReason(value)).toMatch(expected);
+  });
+
+  it('is not vacuous: every value it flags is one canonicalJson cannot round-trip', () => {
+    // Without this, `nonJsonReason` returning `'a Date'` for EVERYTHING would pass the table
+    // above. The witness is the serializer's own behaviour, and it had to be built twice:
+    //
+    //   - Comparing two canonical STRINGS reports agreement precisely where the value was lost,
+    //     because `canonicalJson({v: date})` and `canonicalJson({v: {}})` are the same text.
+    //   - Comparing the value and its round trip with a deep-equality helper reports agreement
+    //     again, for the non-enumerable member: `toEqual` compares enumerable own keys, which is
+    //     the same view that dropped it.
+    //
+    //   - Comparing the round trip to the original misses the `Map`, whose contents live in an
+    //     internal slot rather than in own keys: `JSON.stringify(new Map([['a',1]]))` and
+    //     `JSON.stringify({})` are both `{}`, and neither has an own key.
+    //
+    // So the witness asks three independent questions -- prototype, bytes, and own keys -- and
+    // requires at least one of them to say the value did not survive. A witness that cannot see
+    // a `Map` vanish cannot vouch for the check that is supposed to catch it.
+    const survived = (before: unknown, after: unknown): boolean =>
+      typeof before === 'object' &&
+      before !== null &&
+      Object.getPrototypeOf(before) === Object.getPrototypeOf(after) &&
+      JSON.stringify(before) === JSON.stringify(after) &&
+      Reflect.ownKeys(before).length === Reflect.ownKeys(after as object).length;
+
+    for (const [label, value] of UNREPRESENTABLE) {
+      let text: string;
+      try {
+        text = canonicalJson(value);
+      } catch {
+        continue; // Threw: unrepresentable, confirmed independently.
+      }
+      expect([label, survived(value, JSON.parse(text) as unknown)]).toEqual([label, false]);
+    }
+  });
+
+  it('returns undefined for every value JSON can represent', () => {
+    const REPRESENTABLE: readonly unknown[] = [
+      null,
+      true,
+      false,
+      0,
+      -0,
+      1.5,
+      'text',
+      '',
+      [],
+      {},
+      [1, 'two', null, { nested: [true, false] }],
+      { list: [{ z: 1, a: 2 }], name: 'x' },
+      // A null-prototype object, which is what `validateEntry` accumulates into.
+      Object.assign(Object.create(null) as Record<string, unknown>, { a: 1 }),
+    ];
+
+    for (const value of REPRESENTABLE) {
+      const reason = nonJsonReason(value);
+      expect(`${canonicalJson(value)} -> ${String(reason)}`).toBe(
+        `${canonicalJson(value)} -> undefined`,
+      );
+    }
+  });
+
+  it('points at the offending member rather than at the whole value', () => {
+    // A `json` property holding a large object: naming only the property sends the recorder
+    // back to re-read all of it. The path is the difference between a usable error and a hunt.
+    expect(nonJsonReason({ ok: [1, 2], bad: { when: new Date(0) } }, 'v')).toBe(
+      'a Date at v.bad.when',
+    );
+    expect(nonJsonReason([1, new Date(0)], 'v')).toBe('a Date at v[1]');
+    // At the root there is nothing to disambiguate, so the path is not repeated.
+    expect(nonJsonReason(new Date(0), 'v')).toBe('a Date');
+  });
+
+  it('does not call a value repeated across siblings a cycle', () => {
+    // A DAG is not a cycle: `canonicalJson` writes the shared value twice and round-trips it.
+    const shared = { a: 1 };
+    expect(nonJsonReason({ left: shared, right: shared })).toBeUndefined();
+    expect(canonicalJson({ left: shared, right: shared })).toBe('{"left":{"a":1},"right":{"a":1}}');
+  });
+
+  it('refuses undefined, which canonicalJson DROPS inside an object', () => {
+    // The one place the two deliberately disagree, so it is asserted rather than left implicit:
+    // dropping is right for a type spec (`typeHash` must not see an absent optional field and an
+    // explicit undefined as two definitions) and wrong for an entry property, where the property
+    // would resolve `measured` and the key would not be in the row.
+    expect(canonicalJson({ a: 1, b: undefined })).toBe('{"a":1}');
+    expect(nonJsonReason({ a: 1, b: undefined }, 'v')).toBe('undefined at v.b');
+  });
+
+  it('does not invoke a hostile constructor getter', () => {
+    // `objectKind` reads `.constructor.name` to name the offender. That read runs on whatever a
+    // caller offered, so a throwing getter must degrade to a message, not to a thrown error --
+    // the whole point of this function is to turn a crash into a validation problem.
+    const hostile = Object.create(
+      Object.defineProperty({}, 'constructor', {
+        get() {
+          throw new Error('hostile');
+        },
+      }),
+    ) as object;
+    expect(nonJsonReason(hostile, 'v')).toBe('a non-plain object');
   });
 });
 

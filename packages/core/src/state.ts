@@ -19,6 +19,7 @@
  * precisely how the fold corpus acquired its ambiguity.
  */
 
+import { nonJsonReason } from './hash.js';
 import { describeProperty, isDeclaredProperty, propertySchema, runnableValue } from './schema.js';
 import type { PropertySpec, TypeSpec } from './spec.js';
 
@@ -127,6 +128,44 @@ export function validateEntry(spec: TypeSpec, input: EntryInput): ValidatedEntry
           (example === undefined
             ? `Re-record with --prop=${name}=<value>, or --na ${name} if it does not apply.`
             : `Re-record with: ${recordCommand(spec, name, example)}`),
+      });
+      continue;
+    }
+
+    // A value zod accepts is not necessarily a value ascend can STORE, and the gap between the
+    // two was a false green: a `Date` offered for a `json` property passed this loop, resolved
+    // `measured`, and was written as `{}` -- so the ledger held a measurement nothing could
+    // distinguish from a genuinely empty object (asc-bcv.12, B9). NaN and its siblings were
+    // loud, but late: `canonicalJson` threw out of `recordEntry`, after validation had said
+    // `ok`, with a serializer error rather than one naming the value the recorder offered.
+    //
+    // The check is on EVERY type's value rather than on `json` alone. `json` is the only type
+    // whose schema accepts arbitrary values today, so it is the only one that reaches this
+    // line -- but "every value that gets in can be stored" is the invariant, and writing it as
+    // a property of one type would leave the next type to widen the schema to rediscover it.
+    //
+    // It reads `value`, the RAW thing the recorder offered, and not `parsed.data`. Measured:
+    // `z.record` accepts a `RegExp` (zod's own type detection calls it a plain object), walks
+    // its zero own enumerable keys, and returns a fresh `{}` -- so by the time `parsed.data`
+    // exists the `RegExp` is gone and no check downstream of zod can see it. Reading the raw
+    // value is also what makes the message about the right thing: an error that names what the
+    // recorder offered, rather than what a schema library turned it into.
+    //
+    // Nothing that zod DOES transform is refused by mistake, because zod's only transformations
+    // are copies of containers and pass-through of leaves -- `parsed.data` is deep-equal to
+    // `value` for every input both agree on, and the RegExp case above is the one where they do
+    // not, and where the transformation is the loss.
+    const unrepresentable = nonJsonReason(value, name);
+    if (unrepresentable !== undefined) {
+      errors.push({
+        field: name,
+        problem:
+          `'${name}' holds ${unrepresentable}, which JSON cannot store, so it cannot be ` +
+          `recorded as measured.`,
+        fix:
+          `'${name}' expects ${describeProperty(property)}. Convert the value to JSON first ` +
+          `(a Date to an ISO string, a Map to Object.fromEntries, a Set to an array), or ` +
+          `re-record with --na ${name} if it does not apply.`,
       });
       continue;
     }

@@ -212,6 +212,149 @@ export function canonicalJson(value: unknown): string {
 }
 
 /**
+ * Why `value` is not something JSON can represent, or `undefined` when it is.
+ *
+ * `canonicalJson` above answers "what bytes does this value have?". This answers the prior
+ * question -- "does it have any, and is the value that comes back out the value that went in?"
+ * Those are different questions, and only the second is the safety property an entry write needs.
+ *
+ * **Measured, before this existed** (`/tmp/probe-b9.mjs`, against the real store): a `Date`
+ * offered for a `json` property validated `ok`, resolved to `measured`, and was stored as `{}`.
+ * The row was indistinguishable from a genuinely empty object and the recorder was never told --
+ * a fabricated measurement with ascend's own state column vouching for it. A `try`/`catch`
+ * around `canonicalJson` cannot catch it, because a `Date` has no own enumerable properties and
+ * so serializes successfully, as `{}`.
+ *
+ * Three families reach the ledger three different ways, and only one of them is loud:
+ *
+ * | offered                              | `canonicalJson`     | today                  |
+ * |--------------------------------------|---------------------|------------------------|
+ * | `Date`, `Map`, `Set`, `RegExp`, a    | silently `{}`       | recorded `measured`    |
+ * | class instance                       |                     | holding `{}`           |
+ * | `NaN`, `Infinity`, bigint, function, | throws a `TypeError`| recorded only AFTER   |
+ * | symbol, `undefined` in an array      | naming the kind     | validation said `ok`   |
+ * | a cycle                              | recurses until the  | a `RangeError` from    |
+ * |                                      | stack overflows     | inside the serializer  |
+ *
+ * The rule is one rule -- a value JSON cannot represent -- stated once and applied to all three.
+ *
+ * **`undefined` is refused here but dropped by `canonicalJson`, deliberately.** Dropping it is
+ * what makes `typeHash` treat an absent optional field and an explicit `undefined` as one
+ * definition (see `canonicalJson` above), which is right for a spec. For an ENTRY property the
+ * same drop is a silent loss: the property resolves `measured` and the key is not in the row. Two
+ * contracts, two answers, and this paragraph is where the difference is decided rather than
+ * inherited by accident.
+ *
+ * `path` is the label to name the offending value by -- the property name, for a caller checking
+ * a property. The path of a nested offender is appended, so the message can point at the member
+ * rather than at the whole value.
+ */
+export function nonJsonReason(value: unknown, path = ''): string | undefined {
+  return walkJson(value, path, path, new Set<unknown>());
+}
+
+function walkJson(
+  value: unknown,
+  path: string,
+  root: string,
+  onPath: Set<unknown>,
+): string | undefined {
+  // Naming the root again would read as `'v' holds a Date at v`, so the location is only
+  // spelled out once the walk has left the value the caller handed us.
+  const at = path === root ? '' : ` at ${path}`;
+
+  if (value === null) return undefined;
+
+  switch (typeof value) {
+    case 'boolean':
+    case 'string':
+      return undefined;
+    case 'number':
+      return Number.isFinite(value) ? undefined : `${String(value)}${at}`;
+    case 'bigint':
+      return `a bigint${at}`;
+    case 'function':
+      return `a function${at}`;
+    case 'symbol':
+      return `a symbol${at}`;
+    case 'undefined':
+      return `undefined${at}`;
+    case 'object':
+      break;
+    default:
+      return `a ${typeof value}${at}`;
+  }
+
+  // A value reachable from itself. `canonicalJson` does not detect this; it recurses until the
+  // stack overflows, so the recorder sees a `RangeError` naming no value at all.
+  if (onPath.has(value)) return `a cycle${at}`;
+  onPath.add(value);
+
+  try {
+    if (Array.isArray(value)) {
+      for (const [index, item] of value.entries()) {
+        const problem = walkJson(item, `${path}[${String(index)}]`, root, onPath);
+        if (problem !== undefined) return problem;
+      }
+      return undefined;
+    }
+
+    const kind = objectKind(value);
+    if (kind !== undefined) return `${kind}${at}`;
+
+    // The same loss one step in: a member that is an own property but not an ENUMERABLE STRING
+    // key is listed by neither `canonicalJson` (`Object.entries`) nor by zod's record walk, so a
+    // member the recorder attached is silently absent from the row. `Reflect.ownKeys` sees both
+    // kinds, and they are reported separately because they are dropped for different reasons --
+    // JSON has no non-string key, and no enumeration-based writer visits a non-enumerable one.
+    // Arrays returned above, which matters: an array's own `length` is non-enumerable.
+    if (Reflect.ownKeys(value).some((key) => typeof key === 'symbol')) {
+      return `a symbol-keyed member${at}`;
+    }
+    if (Reflect.ownKeys(value).length !== Object.keys(value).length) {
+      return `a non-enumerable member${at}`;
+    }
+
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const problem = walkJson(item, path === '' ? key : `${path}.${key}`, root, onPath);
+      if (problem !== undefined) return problem;
+    }
+    return undefined;
+  } finally {
+    // Removed rather than left in place: a value appearing twice in a DAG is not a cycle, and
+    // `canonicalJson` writes it twice without complaint. Only a value reachable from ITSELF is
+    // the case it cannot survive.
+    onPath.delete(value);
+  }
+}
+
+/**
+ * The noun for an object JSON cannot represent, or `undefined` for a plain one.
+ *
+ * Prototype identity, not `instanceof`: a `Date` from another realm fails `instanceof` but is
+ * still a `Date`, and a class instance is exactly as unrepresentable as the built-ins are.
+ */
+function objectKind(value: object): string | undefined {
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype === null || prototype === Object.prototype) return undefined;
+
+  let name: unknown;
+  try {
+    // Reading `constructor` invokes a getter when one is defined, and this runs on whatever a
+    // caller offered -- so a hostile or merely careless object must not turn a validation error
+    // into a thrown one.
+    name = (value as { constructor?: { name?: unknown } }).constructor?.name;
+  } catch {
+    return 'a non-plain object';
+  }
+
+  // `Object.create(somePrototype)` has no name to report and is still unrepresentable.
+  return typeof name === 'string' && name !== '' && name !== 'Object'
+    ? `a ${name}`
+    : 'a non-plain object';
+}
+
+/**
  * The stable identity of a type definition.
  *
  * Callers must pass an ALREADY-CANONICALIZED spec (`canonicalizeTypeSpec`). Hashing a

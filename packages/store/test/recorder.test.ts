@@ -299,6 +299,50 @@ describe('a rejected recording writes NOTHING', () => {
     });
   });
 
+  it('refuses a value JSON cannot store, rather than recording it as measured', () => {
+    // asc-bcv.12 (B9). Measured before the fix, through this exact path (`/tmp/probe-b9.mjs`):
+    // a `Date` in a `json` property was WRITTEN -- `{"v":[{}]}` -- and the state column said
+    // `measured`, so the ledger held a measurement nothing could tell from an empty object.
+    // NaN got as far as a `TypeError` out of the serializer, which is loud but arrives after
+    // validation has already said the entry is fine.
+    //
+    // The nested shape is the one that reaches here: `z.record` already refuses a Date at the
+    // top level, and it is `z.unknown()` as an array element that waves it through.
+    const spec: TypeSpec = { name: 'probe', properties: [{ name: 'v', type: 'json' }] };
+
+    withStore((store) => {
+      for (const value of [
+        [new Date('2026-09-13T00:00:00Z')],
+        [Number.NaN],
+        [10n],
+        [() => 1],
+        [{ when: new Date(0) }],
+        [undefined],
+      ]) {
+        expect(() =>
+          recordEntry(store.db, { type: 'probe', properties: { v: value } }, context()),
+        ).toThrow(EntryRejectedError);
+      }
+      expect(countEntries(store)).toBe(0);
+    }, spec);
+  });
+
+  it('still records a json value it CAN store, and the row reads back whole', () => {
+    // The mirror of the test above. A check that refused everything would pass that one.
+    const spec: TypeSpec = { name: 'probe', properties: [{ name: 'v', type: 'json' }] };
+    const value = { nested: [1, 'two', null, false], empty: {}, zero: 0 };
+
+    withStore((store) => {
+      const entry = recordEntry(store.db, { type: 'probe', properties: { v: value } }, context());
+
+      expect(entry.entry.states['v']).toBe('measured');
+      expect(entry.entry.properties['v']).toEqual(value);
+      expect(findEntry(store.db, 'e1')?.properties['v']).toEqual(value);
+      // The row itself, not just the in-memory value: `measured` has to mean the bytes are there.
+      expect(JSON.parse(storedRow(store).properties_json) as unknown).toEqual({ v: value });
+    }, spec);
+  });
+
   it('refuses a required property with no decision', () => {
     // Required means a VALUE OR AN EXPLICIT N/A. Only silence is refused -- if it meant
     // "must have a value", a model facing an inapplicable property would invent one.

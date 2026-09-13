@@ -57,4 +57,4 @@ export {
   type SpecDiff,
 } from './diff.js';
 
-export { canonicalJson, sha256Hex, typeHash, type Json } from './hash.js';
+export { canonicalJson, nonJsonReason, sha256Hex, typeHash, type Json } from './hash.js';
