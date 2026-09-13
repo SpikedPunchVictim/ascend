@@ -45,6 +45,13 @@
  * the second line -- but the union reads specs from attached stores the local registry never saw,
  * so `union.ts` asks the same question at its own boundary.
  *
+ * **A property name may not be empty either** (`asc-0w9`), and that one is the worst of the three
+ * to miss: the path the view builds is `$.`, which is not a path, and because the index sits on
+ * `entries` rather than on one type, SQLite evaluates it for EVERY insert -- so one hand-inserted
+ * version row stops the store accepting entries of any type at all. `registerType` refuses it, and
+ * has since `asc-0w9`; this guard did not, which is the gap `asc-bcv.21` closed. `assertProjectable`
+ * refuses it below, before any DDL runs.
+ *
  * **Indexes**, per EV-4's required addition: one composite expression index per property,
  * `(type_name, json_extract(properties_json, '$.<prop>'))`. The bare-expression form is
  * *worse than no index* (449.6 ms vs 231.0 ms) because it cannot carry the `type_name`
@@ -64,7 +71,12 @@
  * by running the refresh again rather than by a migration.
  */
 
-import { reservedPropertyName, unaddressablePropertyName, type TypeSpec } from '@ascend/core';
+import {
+  emptyPropertyName,
+  reservedPropertyName,
+  unaddressablePropertyName,
+  type TypeSpec,
+} from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
 import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
 
@@ -87,15 +99,19 @@ import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
 function assertProjectable(versions: readonly TypeVersion[]): void {
   const problems: string[] = [];
 
-  // Two rules, and BOTH may be reported for one property: `reservedPropertyName` folds the name
-  // before answering while `unaddressablePropertyName` deliberately does not, so `'source.'` is
+  // Three rules, and all of them may be reported for one property: `reservedPropertyName` folds the
+  // name before answering while `unaddressablePropertyName` deliberately does not, so `'source.'` is
   // reserved AND unaddressable, and the author needs both sentences to fix it in one edit. A
   // `continue` between them would report whichever was asked first and hide the other.
+  // `emptyPropertyName` is the one rule that cannot overlap either: it fires only on a name with no
+  // characters in it at all, so there is nothing for the other two to find.
   //
-  // Each problem cites ITS OWN finding rather than the function citing one. The two rules came from
-  // two different bugs (`asc-865.1` reserved a name a view claims, `asc-bcv.16` refused a name the
-  // path cannot address), and a shared citation would send a reader holding the second one to the
-  // bead for the first -- which is a wrong answer that looks like a right one.
+  // Each problem cites ITS OWN finding rather than the function citing one. The three rules came
+  // from three different bugs (`asc-865.1` reserved a name a view claims, `asc-bcv.16` refused a
+  // name the path cannot address, `asc-0w9` refused a name with no path to address), and a shared
+  // citation would send a reader holding one to the bead for another -- which is a wrong answer
+  // that looks like a right one. `asc-0w9` in particular matters: its bead is where the empty name
+  // was measured bricking every insert, and the other two describe a NULL column instead.
   const refuse = (problem: {
     readonly version: number;
     readonly name: string;
@@ -121,6 +137,11 @@ function assertProjectable(versions: readonly TypeVersion[]): void {
       const unaddressable = unaddressablePropertyName(property.name);
       if (unaddressable !== undefined) {
         refuse({ version, ...unaddressable, reference: 'asc-bcv.16' });
+      }
+
+      const nameless = emptyPropertyName(property.name);
+      if (nameless !== undefined) {
+        refuse({ version, ...nameless, reference: 'asc-0w9' });
       }
     }
   }

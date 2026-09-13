@@ -210,9 +210,15 @@ export function reservedPropertyName(raw: string): ReservedName | undefined {
   return undefined;
 }
 
-/** Why a name cannot be addressed by the JSON path a view builds for it, and a name that can. */
+/**
+ * Why a name cannot be addressed by the JSON path a view builds for it, and a name that can.
+ *
+ * Returned by both `unaddressablePropertyName` and `emptyPropertyName`: the two predicates ask
+ * about different strings (the characters in a name, and whether there is a name), but they answer
+ * the same question and their callers report them identically.
+ */
 export interface UnaddressableName {
-  /** The name as written. Deliberately NOT canonicalized -- see `unaddressablePropertyName`. */
+  /** The name as written -- neither function folds it. See `unaddressablePropertyName`. */
   readonly name: string;
   /** One sentence: what the name does to the path, and what a reader gets instead. */
   readonly reason: string;
@@ -307,6 +313,13 @@ const PATH_BREAKERS: readonly {
  * the value. All 12 come from the four characters above. Two things that grammar would suggest are
  * refuted by that: `]` is harmless on its own (`$.a]b` finds `a]b`), and both `"` and NUL are
  * harmless away from the start. Refusing either would be a false refusal.
+ *
+ * **The sweep's scope, stated because the claim was once wider than the evidence.** "Every code
+ * point" is every NON-EMPTY name: an empty name has no code point to probe, so it is outside a
+ * per-character scan by construction. It is also the one raw name that makes the path malformed
+ * without containing anything a scan could find, and it bricks the store rather than nulling a
+ * column. It is therefore its own rule -- see `emptyPropertyName`, which is a separate predicate
+ * and not an oversight of this one.
  */
 export function unaddressablePropertyName(raw: string): UnaddressableName | undefined {
   const folded = canonicalName(raw);
@@ -330,7 +343,42 @@ export function unaddressablePropertyName(raw: string): UnaddressableName | unde
   return undefined;
 }
 
-/** A single canonicalization applied to a spec, so the caller can surface it. */
+/**
+ * Why the path a view builds for a property is not a path at all -- the one case a per-character
+ * scan cannot reach, because there is nothing there to scan.
+ *
+ * **A separate predicate from `unaddressablePropertyName`, and the two LINES enforce different
+ * predicates on purpose, because they are about different strings.** The registry stores a
+ * property's CANONICAL name, so it refuses anything that folds to the empty string -- measured,
+ * `'-'`, `' '`, `'*'`, `'/'`, `','`, `'='` and 19 more all do -- which is `asc-0w9`. A view
+ * interpolates the name AS WRITTEN, so what it must refuse is the raw string that makes its own
+ * path malformed, and measured that is only the empty one: SQLite rejects `$.` while `$.-`, `$. `,
+ * `$.*` and `$./` all address their literal key correctly. Refusing `'-'` here would be exactly
+ * the false refusal this module's other rule was corrected to avoid.
+ *
+ * **Worth its own rule rather than a branch, because the consequence is a size class worse than a
+ * NULL column.** The index is built on `entries`, not on one type, so SQLite evaluates a malformed
+ * expression for EVERY insert. Measured end to end through the real CLI: hand-insert a version
+ * declaring a property named `''`, then register a CLEAN second version to trigger the refresh --
+ * `asc types define` exited 0 and created the index, after which `asc record review_completed
+ * --prop verdict=approved`, a different and perfectly healthy type, exited 1 with
+ * `bad JSON path: '$.'`. Dropping that one index made the same command exit 0 again.
+ *
+ * Cited to `asc-0w9` rather than to the guard's own finding: that is the bead where this
+ * consequence was measured and refused on the registry side, and a reader sent to the wrong one
+ * would be told about a NULL column instead of a store that cannot be written to.
+ */
+export function emptyPropertyName(raw: string): UnaddressableName | undefined {
+  if (raw !== '') return undefined;
+  return {
+    name: raw,
+    reason:
+      'it is empty, so the path the view builds for it is `$.`, which is not a path at all -- and ' +
+      'since the index sits on `entries` rather than on one type, every insert fails from then on, ' +
+      'not just this property',
+    suggestion: 'value',
+  };
+}
 export interface Rename {
   readonly from: string;
   readonly to: string;

@@ -57,7 +57,12 @@
  * question the caller did not ask.
  */
 
-import { unaddressablePropertyName, type TypeSpec, type UnaddressableName } from '@ascend/core';
+import {
+  emptyPropertyName,
+  unaddressablePropertyName,
+  type TypeSpec,
+  type UnaddressableName,
+} from '@ascend/core';
 import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
@@ -624,17 +629,37 @@ export function unionEntries(
   // measured reading NULL while the value sits in the row -- and the union would report a null
   // column as a measured absence, which is the plausible-wrong-number failure this module exists
   // to avoid. Refused rather than projected, and the message names the store to go fix.
-  const unaddressable = definition.properties
-    .map((property) => unaddressablePropertyName(property.name))
-    .filter((problem): problem is UnaddressableName => problem !== undefined);
+  //
+  // TWO rules, and the empty name is not a milder case of the dotted one -- it fails differently
+  // (`asc-0w9`). A dotted name reads NULL and lets the union's statement run, producing a wrong
+  // answer; `$.` is not a path at all, so SQLite REJECTS the statement and the union dies with
+  // `bad JSON path: '$.'` from inside a generated query -- a raw error naming neither the property
+  // nor the store. That is why the guard has to catch it here: this path has no view to build and
+  // therefore no earlier boundary to fail at.
+  //
+  // Each problem cites ITS OWN finding, for the reason the generator does: a shared citation would
+  // send a reader holding one of these to the bead for the other, which is a wrong answer that
+  // looks like a right one.
+  const unaddressable: { readonly problem: UnaddressableName; readonly reference: string }[] = [];
+  for (const property of definition.properties) {
+    // Both asked, with no `continue` between them, so a name is refused for every reason that
+    // applies: the two cannot overlap today (an empty name has no character for the scan to find),
+    // but the shape is the generator's, where they can.
+    const dotted = unaddressablePropertyName(property.name);
+    if (dotted !== undefined) unaddressable.push({ problem: dotted, reference: 'asc-bcv.16' });
+
+    const nameless = emptyPropertyName(property.name);
+    if (nameless !== undefined) unaddressable.push({ problem: nameless, reference: 'asc-0w9' });
+  }
+
   if (unaddressable.length > 0) {
     throw new Error(
       `cannot read type '${type}' across these projects faithfully:\n` +
         unaddressable
           .map(
-            (problem) =>
+            ({ problem, reference }) =>
               `  property '${problem.name}': ${problem.reason}. Rename it in its own project -- ` +
-              `'${problem.suggestion}' is addressable.`,
+              `'${problem.suggestion}' is addressable (${reference}).`,
           )
           .join('\n'),
     );

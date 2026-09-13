@@ -46,7 +46,7 @@ Located before hunting. Steps 4 and 5 grepped **these** files, not just the flag
 
 | Class | Count |
 |---|---|
-| **BUG** — real risk, no guard, realistic, reachable | **12** |
+| **BUG** — real risk, no guard, realistic, reachable | **13** |
 | **FRAGILE** — correct today, breaks under a foreseeable change | **9** |
 | **OK** — guarded, intentional, or dead | 8 |
 | **Needs human review** | 3 |
@@ -54,6 +54,8 @@ Located before hunting. Steps 4 and 5 grepped **these** files, not just the flag
 | Unverified sub-claims carried forward as `Suspected` | 3 |
 
 The last four findings (B11, B12, F8, F9) came from a supplementary read-only CLI pass, verified by me before inclusion — see §5b. Three of the four are concentrated in `--across`, which now carries four separate defects (F2, B11, B12, and F2's sibling in `union.ts`); that command is the least-tested surface in the repository and should be treated as one unit of work rather than four.
+
+**F10 was found while building F5's fix, and by measurement rather than by reading.** F5's reconciliation swept non-empty names only — a per-character scan has no code point to look at in an empty one — and that blind spot hid a name whose consequence is strictly worse than F5's: `$.` is not a path, so instead of a NULL column the whole store stops accepting entries of any type. It is filed as its own finding (§5, after F5) because it is a different defect with a different blast radius, not a footnote to F5.
 
 ---
 
@@ -78,7 +80,8 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | F3 | Per-property prose keys are stored **verbatim** while the contract says canonical, so `reviewKind` is written and never found | 9 | Confirmed (empirical) | Medium | Low | Low | Medium | 2 files / **existing rows may hold bad keys** / none | S |
 | F4 | A duplicated property name registers with only a warning, and the two enforcers **disagree in opposite directions** (`validateEntry` refuses `k=5`; `buildSchema` accepts it) | 8, 4 | Confirmed (empirical) | Medium | Low | Low | Medium | 1 file / **existing ambiguous types cannot be deleted** / none | S |
 | F5 | `assertProjectable` misses a **dotted** property name: the view column reads NULL and the index never matches, while `properties_json` holds the value | 3, 8 | Confirmed (empirical) | Medium | Low | Medium | Medium | 1 file / none (hand-insert only) / none | S |
-| F5 | FIXED — and the report's own predicate is **PARTLY REFUTED**: rejecting `"` and a lone `$` would refuse names that measure returning their literal key, which is the same defect as passing `a.b`. The shipped guard's character set is **measured across all of Unicode** (4,448,256 probes → 12 failures from 4 characters) and reconciled against SQLite for **4,456,448 names → 0 false negatives, 0 false positives**. The union's independent read path now asks the same question, and its false comment was corrected rather than deleted. `asc-bcv.16` CLOSED. See F5's Status | this commit |
+| F5 | FIXED — and the report's own predicate is **PARTLY REFUTED**: rejecting `"` and a lone `$` would refuse names that measure returning their literal key, which is the same defect as passing `a.b`. The shipped guard's character set is **measured across all of Unicode** (4,448,256 probes → 12 failures from 4 characters) and reconciled against SQLite for **4,456,448 names → 0 false negatives, 0 false positives**. **That number is scoped by F10 below: the reconciled set is non-empty, NUL-free names.** The union's independent read path now asks the same question, and its false comment was corrected rather than deleted. `asc-bcv.16` CLOSED. See F5's Status and its scope correction | this commit |
+| F10 | An **empty** property name makes `$.`, which is not a path: `assertProjectable` and `union.ts` both pass it, and because the index sits on `entries` every insert of **every type** then fails while `types list` still exits 0 | 3, 8 | Confirmed (empirical) | Medium | Low | High | High | 4 files / none (hand-insert only) / none | S |
 | F6 | `indexName` **collides** (`test`+`run_count` vs `test_run`+`count`) and the second index is silently never created | 8, 1 | Confirmed (empirical) | Low | Low | Low | Low | 1 file / none / none | S |
 | F7 | `unit` is not trimmed, so `" ms "` forces a **MAJOR** version bump | 3, 9 | Confirmed (empirical) | Low | Medium | Low | Low | 1 file / **hash of existing rows** / none | S |
 | B11 | A project directory named `temp` (or `Temp` / `main`) makes `--across` fail with a **raw driver error**, despite a comment claiming the alias is seeded against exactly this | 1, 7 | Confirmed (empirical) | Medium | Low | Medium | Medium | 1 file / none / none | S |
@@ -100,6 +103,8 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | F2 | FIXED — the report's own suggested fix is **refuted**; F9's leak is closed with it. See F2's Status | `1ac8075` |
 | F9 | FIXED as a side effect of F2 (the release moved inside `attachScope`; the false comment is deleted). No CLI-observable test exists — see its Status | `1ac8075` |
 | F3 | FIXED — the report's stated reason is **refuted** (`canonicalName` folds `reviewKind` → `review_kind`, not `reviewkind`); the shape survives. 386 stores / 1,063 rows scanned read-only: **1** row held the defect, **0** would be refused. Its data half is **closed by measurement, not by a migration**: the bead's own `type_hash` objection is refuted, and a round trip repairs the one real row. `asc-bcv.15` CLOSED. See F3's Status | this commit |
+| F10 | FIXED — found **while building F5's fix**, by a reconciliation sweep rather than by reading. The predicate is `raw === ''`, not `canonicalName(raw) === ''`: 24 of the 25 names that fold to empty were measured addressing their literal key, and refusing them would be F5's defect wearing the other hat. `asc-bcv.21` CLOSED. See F10's Status | this commit |
+| F11 | **FILED, not fixed here** — found by F10's own reconciliation: a NUL anywhere in a property name is passed by both rules (`unaddressablePropertyName('a\0b')` is `undefined`) and truncates the generated statement, measured as `unrecognized token: "'$.a"` from `unionEntries` and from `refreshTypeViews`. `asc-bcv.22` | F11's commit |
 | `asc-4if` (NR3, answered) | FIXED | `bfb7786` |
 | B4 | FIXED (3 sites; `registry.ts`/`schema.ts` not mutation-testable — see its Status) | `15947f8` |
 | F4 (first half) | FIXED as a side effect of `asc-4if`; residual divergence untouched | `bfb7786` |
@@ -759,11 +764,18 @@ $.a$b   ->  returns the VALUE
 $.a]b   ->  returns the key `a]b`
 ```
 
-A guard that refuses those is **the same defect as one that passes `a.b`**: it reports a name broken when it works, which sends an author to rename a property for no reason. So the two mutations that deliberately attack the over-refusal direction — *refuse a quote anywhere* (the report's own fix) and *refuse a name that folds to a reserved word* — are both in the harness, and both are **caught**. `.` and `[` are the only characters that break anywhere; `"` and NUL break only at the **start**.
+A guard that refuses those is **the same defect as one that passes `a.b`**: it reports a name broken when it works, which sends an author to rename a property for no reason. So the two mutations that deliberately attack the over-refusal direction — *refuse a quote anywhere* (the report's own fix) and *refuse a name that folds to a reserved word* — are both in the harness, and both are **caught**. `.` and `[` are the only characters that break anywhere; `"` breaks only at the **start**. *(This sentence also said NUL breaks only at the start. That is what the sweep measured and it is not what the shipped code does — see the scope correction below and F11. Corrected rather than deleted, so the next reader sees what it claimed.)*
 
-**The character set is MEASURED, not read off the JSON path grammar.** Every Unicode code point U+0000–U+10FFFF probed in 4 positions (leading, middle, trailing, alone) against a real SQLite `json_extract`: **4,448,256 probes, exactly 12 failures**, from 4 characters — `.` (anywhere), `[` (anywhere), `"` (leading only), NUL (leading only). BMP-only sweep: 253,440 probes in 444 ms; full sweep 7.4 s. Lone surrogates (U+D800–U+DFFF) are unsafe and were measured separately, because the sweep skips them: `json_valid` still returns 1 and a sibling property (`$.ok`) still reads — so it is a **per-property** defect, not a whole-row blast radius. (That last was my own worry, and measuring killed it.) The decisive reconciliation ran the shipped guard against SQLite's actual behaviour for **4,456,448 names across all of Unicode: 0 false negatives, 0 false positives.** The guard refuses exactly what breaks and nothing that works.
+**The character set is MEASURED, not read off the JSON path grammar.** Every Unicode code point U+0000–U+10FFFF probed in 4 positions (leading, middle, trailing, alone) against a real SQLite `json_extract`: **4,448,256 probes, exactly 12 failures**, from 4 characters — `.` (anywhere), `[` (anywhere), `"` (leading only), NUL (leading only). *(The NUL clause is what the sweep's model reports; it is not what the shipped code does, and the scope correction two paragraphs down says why.)* BMP-only sweep: 253,440 probes in 444 ms; full sweep 7.4 s. Lone surrogates (U+D800–U+DFFF) are unsafe and were measured separately, because the sweep skips them: `json_valid` still returns 1 and a sibling property (`$.ok`) still reads — so it is a **per-property** defect, not a whole-row blast radius. (That last was my own worry, and measuring killed it.) The decisive reconciliation ran the shipped guard against SQLite's actual behaviour for **4,456,448 names across all of Unicode: 0 false negatives, 0 false positives.** The guard refuses exactly what breaks and nothing that works.
 
 **Two facts keep the guard from being the wrong shape.** (a) `canonicalName`'s output alphabet is `[a-z0-9_]` only, so any canonical name is addressable and `registerType` can never store an unaddressable one — measured: `a.b`→`a_b`, `a"b`→`a_b`, `a$b`→`a_b`, `a[b]`→`a_b`, `.a`→`a`, `a.`→`a`. The guard is therefore the second line, exactly as its doc comment claims, and the union is where it is load-bearing. (b) The recorder does **not** canonicalize property keys — it stores keys as given and validates against the spec — so a hand-inserted camelCase spec round-trips correctly through the view (`$.reviewKind` addresses it). **This is why the guard must NOT use the "name must equal its canonical form" predicate**, which would have refused a working name.
+
+**Scope correction to this section's headline number, made when F10 was built.** *"Reconciled for 4,456,448 names across all of Unicode: 0 false negatives, 0 false positives"* is true of the set that sweep covered and was stated as a claim about the shipped code. Two classes sit outside that set, and both were found by measurement afterwards rather than by review:
+
+- **The empty name** (`asc-bcv.21`, F10 below). The sweep is per-code-point, and an empty name has no code point to probe — it is outside a character scan *by construction*, not by oversight. It is the one raw name that makes the path malformed while containing nothing a scan could find, so it needed its own rule.
+- **A NUL anywhere in a name** (`asc-bcv.22`, F11). The sweep modelled whether the **path** addresses the key, and the shipped generator does not pass the path as a value: `views.ts` and `union.ts` interpolate it into a SQL string literal through `literal()`, which escapes `'` and nothing else. A NUL anywhere in a name therefore truncates the statement text before `json_extract` ever sees it. Measured through the real functions: a property named `a\0b` makes `refreshTypeViews` throw `unrecognized token: ""idx_entries_nulprop_a"` and makes `unionEntries` throw `unrecognized token: "'$.a"`, while `unaddressablePropertyName('a\0b')` returns `undefined`.
+
+The claim that survives measurement, and the one this section should be read as making: **among the non-empty, NUL-free names a generated statement can actually carry, 0 false negatives and 0 false positives.** The sweep's model of *addressing* was right; its model of *transport* was missing, and the second gap is the more dangerous one — a guard that is right about JSON paths and silent about the statement that contains them looks exactly like one that is right about both.
 
 **The mirror path was found and closed.** `union.ts` assembles the same `$.<property>` paths at QUERY time from specs the local registry never accepted, and it did **not** call `assertProjectable` — its comment at `:623-625` asserted the invariant in prose instead (*"a property name is canonical (`[A-Za-z0-9_]` only, see @ascend/core), so neither prefix can occur inside one"*). That sentence is true of every name the registry accepts and unenforced for the specs this path actually reads. It now asks the same question, and **that comment was corrected rather than deleted**, so the next reader sees what it used to claim.
 
@@ -785,6 +797,54 @@ AFTER: `asc types define` on the same document **exits 1**, naming the property,
 **Limit, stated:** the `assertProjectable` half is reachable **only** through a spec that bypassed the registry — this remains a gap in a defense-in-depth guard, not an open door, exactly as the audit rated it. The union half is the reachable one. And the whole fix is scoped to **addressing** a property: `ident` and `literal` in `sql.ts` correctly double `"` and `'`, so SQL injection was never the defect and is not claimed to be fixed here.
 
 **Gate:** `pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && align check` — **658 passed / 28 files**, `architecture green`, `security green (19 baselined)`, `verdict: green`.
+
+---
+
+### F10 — An empty property name makes `$.`, which is not a path, and **every insert of every type fails from then on**
+
+**Lens:** 3 (boundary — the empty string), 8 (cross-implementation divergence — the two lines of the same guard)
+**Confidence:** Confirmed (empirical) · **Urgency:** Medium
+**Found:** while building F5's fix, by the reconciliation sweep rather than by reading. Filed as `asc-bcv.21`.
+
+**What the two lines are.** `canonicalizeProperty` refuses an empty property name (`spec.ts`, `asc-0w9`) — it folds to the empty string, so the registry's first line catches every spelling of it. `assertProjectable` is the second line, for a spec that bypassed the registry, and it asked only two questions: is the name **reserved** (`asc-865.1`), and is it **one JSON path segment** (`asc-bcv.16`, F5). Neither is about whether there is a name at all. Measured: `unaddressablePropertyName('')` is `undefined` and `reservedPropertyName('')` is `undefined`, so an empty name passed both and went straight into the DDL.
+
+**The consequence is the worst of the three rules, and it is not the property's own column.** The path the generator builds is `$.`, which is not a path — and the index is built on `entries`, not on one type, so SQLite evaluates that expression for **every** insert. Driven end to end through the real binary:
+
+```
+hand-insert a version declaring a property named ''
+asc types define <a clean SECOND version of the same type>   -> exit 0
+  and it creates: idx_entries_byhand_ ON entries (type_name, json_extract(properties_json, '$.'))
+asc record review_completed --prop verdict=approved          -> exit 1
+  Error: bad JSON path: '$.'                     <-- a DIFFERENT, perfectly healthy type
+drop that one index; the same command                        -> exit 0
+asc types list / types brief, throughout                     -> exit 0, nothing reported wrong
+```
+
+So one hand-inserted row stops the store accepting entries of **any** type, while the commands a user would reach for to diagnose it report nothing. Nothing repairs such a store: entries are immutable, types cannot be deleted, and no command drops an index.
+
+**Reachability, stated honestly:** `canonicalName('<any of 25 spellings>')` is the empty string, so `registerType` can never store one — this is reachable only through a spec that bypassed the registry, the same class F5 is in, and for the union path the same foreign-spec route. It is a gap in a defense-in-depth guard, not an open door.
+
+**Blast radius:** code — `packages/core/src/spec.ts`, `packages/core/src/index.ts`, `packages/store/src/views.ts`, `packages/store/src/union.ts` (4 files); data — none (only a hand-inserted version row can hold one; no existing store in the 152 scanned for F6 has one); coordination — none.
+
+**Fix (as shipped), and why the predicate is `raw === ''` rather than `canonicalName(raw) === ''`.** A third named predicate in `@ascend/core` beside `reservedPropertyName` and `unaddressablePropertyName`, with its own citation (`asc-0w9`, **not** `asc-bcv.16`: a reader sent to the wrong bead would be told about a renamed column instead of a store that cannot be written to). `assertProjectable` and `union.ts` both ask it.
+
+The predicate was **derived by measurement, and my first version of it was wrong in the over-refusal direction**, which is recorded on the bead rather than quietly corrected. I wrote that it must be `canonicalName(raw) === ''` "because `canonicalName('.')` is also empty" — but the view interpolates the name **as written**, so what it must refuse is the raw string that makes its own path malformed, and measured that is only the empty one:
+
+```
+$.-   -> returns the value stored under `-`      $.    -> REJECTED: bad JSON path: '$.'
+$.    -> returns the value stored under ` `      $.a.b -> accepted, reads NULL  (F5)
+$.*   -> returns the value stored under `*`      $.<U+4E2D U+6587> -> returns its value
+```
+
+25 of 31 probed names fold to the empty string, and every one of them **except the empty string itself** addresses its literal key. A predicate on the fold would have refused 24 working names — the same defect as passing `a.b`, wearing the other hat.
+
+**Boundary check (1):** the sweep above, plus the two mutation entries that deliberately attack the over-refusal direction (fold-based predicate; whitespace-only predicate) — both **caught**. **Mirror-path check (2):** the union assembles the same `$.<property>` paths at query time from specs the local registry never accepted, and it was missing the same rule; measured, `$.` there raises a raw `bad JSON path: '$.'` from inside a statement the union generated — an error naming neither the property nor the store — and the guard replaces it with the union's own refusal. **Existing-data check (3):** an already-bricked store is **not** repaired by this fix, and cannot be by any command; the fix prevents the condition. Stated rather than smoothed over. **Constraint-value check (4):** the constraint is emptiness, read from the string itself — `''` is the only string with no characters, so the scan and the predicate partition the domain. **Fix failure modes (5):** the guard refuses (loud), and it runs **before** any DDL — measured, no view and no index is built. **Interaction check (6):** none with F5 or `asc-865.1`; the three rules cannot overlap, asserted rather than assumed. **Caller-contract check (7):** `assertProjectable` still throws the same error type with a longer message; `refreshTypeViews` and `unionEntries` signatures are unchanged. **Empirical re-test (8):** the CLI drive above, and the harness below.
+
+**Mutation:** `/tmp/mutate-f10.mjs`, 10 mutations — **8 caught, 0 survived as test weaknesses, 0 known gaps, 2 equivalent, 0 not applied.** Both equivalents are provably behaviour-preserving with the proof written into the harness: spelling the emptiness test as a length check (a string is empty iff its length is zero), and skipping the empty check when the path check already fired (the two rules cannot both fire on one name — the claim itself is tested by an overlap test in `spec.test.ts`; the mutant only shows the comment beside the code is honest).
+
+**Reconciliation, and the second finding it produced.** `/tmp/f10-reconcile.mjs` asked the two predicates together against a real SQLite over **63,881 raw names** — every ASCII code point in four positions, every BMP code point alone, the 25 fold-away names, and a set of realistic ones. Result: **13 rejected, 4 accepted-but-NULL, 63,864 addressed; 0 false positives, and 2 false negatives** — both a NUL inside a name, which the two predicates pass and the generated statement cannot carry. That is **F11** (`asc-bcv.22`), filed from this measurement and fixed in its own commit; `emptyPropertyName` by itself refuses exactly one name, and it is `''`.
+
+**Gate:** `pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && align check` — **666 passed / 28 files**, `architecture green`, `security green (19 baselined)`, `verdict: green`.
 
 ---
 
@@ -973,9 +1033,11 @@ The same pass independently traced two findings already in this report, and adds
 
 This section exists because the fix work changed the report's own contents in three ways. All three are recorded here rather than edited silently into §2–§5, so a reader can see what moved.
 
-### The count was 17 when you approved it, and is 21
+### The count was 17 when you approved it, and is 22
 
 **This is the correction owed to you.** You approved a plan to *"fix all 17 bugs, phase by phase"*, from a report whose §2 then read **10 BUG + 7 FRAGILE = 17**. Four further findings — **B11, B12, F8, F9** — were verified *after* that answer and added in §5b, which brought the totals to **12 BUG + 9 FRAGILE = 21**. §2, §3, §4 and §5b have said 21 since §5b was written; this note is so the number you were shown and the number the report states are reconcilable rather than contradictory. The four are not a scope change you did not agree to: they came from the same supplementary pass the report already describes, and they are all in `--across`, which §4 already treats as one unit of work.
+
+**The number moved again, to 22, and the movement is the fix work doing its job.** **F10** (§5, after F5) was found *while building F5's fix* — by the reconciliation sweep, not by review — and it is a genuine finding, not a footnote: same guard, different rule, and a strictly worse blast radius. **F11** (`asc-bcv.22`), found by F10's own reconciliation moments later, takes it to **23**; it is filed here and fixed in the commit that follows this one, so this section will read 23 once that lands. Both are recorded rather than absorbed because *"the count was 17"* is the number you approved, and a report that quietly grows its own findings is the failure this section exists to prevent.
 
 ### Corrections to the report's own findings, made while building the fixes
 

@@ -798,6 +798,94 @@ describe('a property name the view cannot address by JSON path', () => {
   });
 });
 
+describe('a property name with nothing in it', () => {
+  // asc-bcv.21, and the second line of `asc-0w9`. `registerType` has refused an empty property name
+  // since that bead; this generator did not, and the gap is the worst of the three to miss, because
+  // it is the one whose blast radius is not the property. The path is `$.`, which is not a path, and
+  // the index is built on `entries` rather than on one type -- so SQLite evaluates it for EVERY
+  // insert. Measured end to end through the real CLI: a hand-inserted version declaring `''` plus a
+  // clean sibling version made `asc types define` exit 0 and create
+  // `idx_entries_byhand_ ON entries (type_name, json_extract(properties_json, '$.'))`, after which
+  // `asc record review_completed --prop verdict=approved` -- a DIFFERENT, healthy type -- exited 1
+  // with `bad JSON path: '$.'`, while `asc types list` still exited 0 and reported nothing wrong.
+  // Dropping that one index made the same command exit 0 again. Nothing repairs such a store:
+  // entries are immutable, types cannot be deleted, and no command drops an index.
+
+  it('refuses an empty property name, and builds NOTHING -- which is what keeps the store writable', () => {
+    withStore((store) => {
+      insertVersionRow(
+        store,
+        { name: 'byhand', properties: [{ name: '', type: 'string' }] },
+        { fold: false },
+      );
+
+      // Named, and citing its own finding rather than the reserved rule's: a reader sent to
+      // `asc-865.1` would be told about a renamed column instead of a store that cannot be written.
+      expect(() => refreshTypeViews(store.db, 'byhand')).toThrow(/property ''/);
+      expect(() => refreshTypeViews(store.db, 'byhand')).toThrow(/'value' projects faithfully/);
+      expect(() => refreshTypeViews(store.db, 'byhand')).toThrow(/\(asc-0w9\)/);
+
+      const objects = store.db
+        .prepare("SELECT name FROM sqlite_master WHERE type IN ('view', 'index')")
+        .all() as unknown as { name: string }[];
+      expect(objects.filter((object) => object.name.includes('byhand'))).toEqual([]);
+
+      // The consequence, driven rather than asserted in prose: the refusal is the reason the index
+      // above does not exist, and its absence is the reason this insert succeeds. A healthy,
+      // unrelated type is what a user would actually be doing when the bricking hit them.
+      registerType(store.db, V1, { registeredAt: AT });
+      expect(() =>
+        recordEntry(
+          store.db,
+          { type: 'review_completed', properties: { count: 1 } },
+          context('e1'),
+        ),
+      ).not.toThrow();
+    });
+  });
+
+  it('DOES NOT refuse the names that fold away to nothing and still address their own key', () => {
+    // The over-refusal boundary, and the reason this rule is `raw === ''` rather than
+    // `canonicalName(raw) === ''`. Measured against a real SQLite: 25 of 31 probed names fold to the
+    // empty string, and every one of them EXCEPT the empty string itself addresses its literal key
+    // -- `$.-`, `$. `, `$.*`, `$./` and `$.[U+4E2D U+6587]` all return the value stored under that
+    // name. A predicate on the FOLD would refuse all of them, and types are immutable, so a store
+    // holding one would be unrefreshable with no way back out. Driven end to end here rather than
+    // unit-tested on the predicate: hand-inserted, refreshed, recorded into, and read back THROUGH
+    // the view, which is the surface a false refusal would break.
+    withStore((store) => {
+      const cases = ['-', '*', '中文'];
+      cases.forEach((name, index) => {
+        const type = `folded${String(index)}`;
+        insertVersionRow(
+          store,
+          { name: type, properties: [{ name, type: 'string' }] },
+          { fold: false },
+        );
+        refreshTypeViews(store.db, type);
+        recordEntry(
+          store.db,
+          { type, properties: { [name]: 'from-the-llm' } },
+          context(`e${String(index)}`),
+        );
+
+        expect(
+          store.db
+            .prepare(`SELECT properties_json FROM entries WHERE id = ?`)
+            .get(`e${String(index)}`),
+          name,
+        ).toEqual({ properties_json: JSON.stringify({ [name]: 'from-the-llm' }) });
+
+        // Read back through the VIEW, by the raw name -- the surface a false refusal would break.
+        const row = store.db
+          .prepare(`SELECT * FROM ${viewName(type, 1)} WHERE id = ?`)
+          .get(`e${String(index)}`) as unknown as Record<string, unknown>;
+        expect(row[name], name).toBe('from-the-llm');
+      });
+    });
+  });
+});
+
 describe('the view carries the envelope through', () => {
   it('exposes provenance and evidence beside the projected columns', () => {
     withStore((store) => {

@@ -4,6 +4,7 @@ import {
   canonicalizeProperty,
   canonicalizeTypeSpec,
   definitionShape,
+  emptyPropertyName,
   ENVELOPE_PROPERTY_NAMES,
   reservedPropertyName,
   STATE_COLUMN_SUFFIX,
@@ -542,6 +543,104 @@ describe('a property name the view can address by JSON path', () => {
     }).spec;
     for (const property of spec.properties) {
       expect(unaddressablePropertyName(property.name), property.name).toBeUndefined();
+    }
+  });
+});
+
+describe('a property name with no characters at all', () => {
+  // `asc-0w9`, on this second line (`asc-bcv.21`). The rule above asks what is IN a name; this one
+  // asks whether there is a name. They are separate predicates because they are about different
+  // strings and refuse different sets -- see the overlap test below -- and the split is deliberate
+  // rather than an oversight of the character scan.
+  //
+  // It is not a milder case of the rule above. A dotted name projects a path that reads NULL and
+  // lets the statement run, so the consequence is a wrong NUMBER; `$.` is not a path, SQLite
+  // REJECTS it, and because the index sits on `entries` rather than on one type it is evaluated for
+  // EVERY insert -- measured end to end through the real CLI: one hand-inserted version declaring
+  // `''` plus a clean sibling version made `asc types define` exit 0 and create
+  // `idx_entries_byhand_ ON entries (type_name, json_extract(properties_json, '$.'))`, after which
+  // `asc record review_completed --prop verdict=approved` -- a different, healthy type -- exited 1
+  // with `bad JSON path: '$.'`. Dropping that one index made it exit 0 again.
+
+  const NUL = String.fromCharCode(0);
+
+  it('refuses the empty name, which is the only name whose path is not a path', () => {
+    expect(emptyPropertyName('')).toBeDefined();
+    expect(emptyPropertyName('')?.reason).toContain('`$.`');
+    // The reason has to name the whole blast radius, because it is the surprising part: this
+    // property is not the one that stops working first.
+    expect(emptyPropertyName('')?.reason).toContain('every insert fails');
+  });
+
+  it('reports the name as written, with a suggestion that is itself a name', () => {
+    // `reservedPropertyName` folds before answering; this one must not, for the same reason the
+    // rule above must not: the view interpolates the RAW name. And the suggestion cannot be the
+    // canonical folding, which for `''` is `''` -- an empty string would print as `Rename it -- ''`.
+    expect(emptyPropertyName('')?.name).toBe('');
+    expect(emptyPropertyName('')?.suggestion).toBe('value');
+  });
+
+  it('refuses NOTHING else -- including the names that fold away and still address their key', () => {
+    // THE over-refusal boundary, and the reason this predicate is `raw === ''` rather than
+    // `canonicalName(raw) === ''`. 25 of 31 probed names fold to the empty string, and 24 of them
+    // were measured addressing their literal key correctly against a real SQLite -- `$.<name>`
+    // returns the value stored under `<name>`. A predicate on the FOLD would refuse every one of
+    // them, which is the same defect as passing `a.b`.
+    //
+    // `.` and `"` are in this list because THIS rule must not refuse them -- the rule above does,
+    // for its own reasons, and a reader should not mistake this test for a claim that they are safe.
+    for (const name of [
+      '.',
+      '..',
+      '...',
+      '-',
+      '_',
+      ' ',
+      '  ',
+      NUL,
+      '"',
+      "'",
+      '\\',
+      '/',
+      ',',
+      ';',
+      ':',
+      '*',
+      '!',
+      '?',
+      '#',
+      '%',
+      '&',
+      '(',
+      ')',
+      '+',
+      '=',
+      '@',
+      '|',
+      '~',
+      '^',
+      '$',
+      '[',
+      ']',
+      '{',
+      '}',
+      '\t',
+      '中文',
+    ]) {
+      expect(emptyPropertyName(name), JSON.stringify(name)).toBeUndefined();
+    }
+  });
+
+  it('never overlaps the character rule, so the pair covers a name for every reason at once', () => {
+    // Asserted because both guards run on every property and the comment beside them says they
+    // cannot both report. `''` has no character for a scan to find, so only this rule can fire; a
+    // name with a character in it is never empty, so only the other can. If a future rule breaks
+    // that, the pair still reports BOTH (there is no `continue` between them) -- but this claim is
+    // what makes the current shape correct rather than merely harmless.
+    for (const name of ['', '.', 'a.b', '"', 'ab', '-', ' ', '中文', `a${NUL}b`]) {
+      const empty = emptyPropertyName(name) !== undefined;
+      const unaddressable = unaddressablePropertyName(name) !== undefined;
+      expect(empty && unaddressable, JSON.stringify(name)).toBe(false);
     }
   });
 });

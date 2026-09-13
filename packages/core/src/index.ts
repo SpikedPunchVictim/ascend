@@ -21,6 +21,7 @@ export {
   canonicalizeTypeSpec,
   definitionShape,
   reservedPropertyName,
+  emptyPropertyName,
   unaddressablePropertyName,
   type Canonicalized,
   type PropertySpec,

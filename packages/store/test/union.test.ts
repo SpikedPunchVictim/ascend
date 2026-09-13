@@ -344,6 +344,60 @@ describe('a property name the union cannot address by JSON path', () => {
   });
 });
 
+describe('a property name with nothing in it', () => {
+  // asc-bcv.21, the empty name, on this boundary too. The union asks the same two questions the
+  // view generator does, and this is the rule it was missing. It fails differently here than a
+  // dotted name does: `$.a.b` reads NULL and the statement runs, so the union would return a
+  // plausible wrong number, but `$.` is not a path at all -- SQLite REJECTS it, and the union dies
+  // with `bad JSON path: '$.'` raised from inside a statement it generated itself. Measured through
+  // the real function: `unrecognized token: "'$.a"` for a name with a NUL, and a raw
+  // `bad JSON path` for the empty one -- an error naming neither the property nor the store to go
+  // fix, which is the failure mode the refusal exists to replace.
+
+  it('refuses an empty property name rather than dying inside its own statement', () => {
+    const nameless = projectBypassingTheRegistry(
+      [{ name: 'tool_denial', properties: [{ name: '', type: 'string' }] }],
+      [],
+      { fold: false },
+    );
+
+    withConnection((db) => {
+      let error: unknown;
+      try {
+        unionEntries(db, 'tool_denial', [nameless]);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      // The union's OWN refusal, not SQLite's: this is the whole difference the guard makes.
+      expect(message).toContain("cannot read type 'tool_denial'");
+      expect(message).toContain("property ''");
+      expect(message).toContain("'value' is addressable");
+      // Citing the finding where the blast radius was measured, not the one about a renamed column.
+      expect(message).toContain('(asc-0w9)');
+    });
+  });
+
+  it('does not refuse a name that folds away to nothing yet addresses its own key', () => {
+    // The over-refusal half. `canonicalName('-')` is empty, so a predicate written on the FOLD
+    // would refuse this -- and `$.-` was measured returning the value stored under `-`. A union
+    // cannot rename what it reads, so refusing a working name here would make a corpus unreadable
+    // with nothing the reader could do about it.
+    const folded = projectBypassingTheRegistry(
+      [{ name: 'tool_denial', properties: [{ name: '-', type: 'string' }] }],
+      [{ id: 'a1', properties: { '-': 'from-the-llm' } }],
+      { fold: false },
+    );
+
+    withConnection((db) => {
+      const result = unionEntries(db, 'tool_denial', [folded]);
+      expect(result.rows.map((row) => row.properties['-'])).toEqual(['from-the-llm']);
+    });
+  });
+});
+
 describe('incompatible definitions are refused, not unioned', () => {
   it('refuses when one name means two definitions, and returns no rows', () => {
     const first = project([DENIAL], [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }]);
