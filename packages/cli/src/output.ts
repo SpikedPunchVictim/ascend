@@ -93,6 +93,50 @@ export function renderJson(output: Output): string {
  */
 const MAX_CELL_WIDTH = 60;
 
+/** The first half of a surrogate pair -- the only way to write a character above U+FFFF. */
+const isHighSurrogate = (unit: number): boolean => unit >= 0xd800 && unit <= 0xdbff;
+
+/** The second half. A high surrogate that is not followed by one of these is unpaired. */
+const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdfff;
+
+/**
+ * Where to stop a cell, given the last UTF-16 unit index its budget allows.
+ *
+ * `slice` counts UTF-16 code units, and a character above U+FFFF -- an emoji, a CJK
+ * extension-B ideograph -- occupies two of them. A cut between the two halves leaves a
+ * string no encoder can represent: every UTF-8 encoder, `Buffer.from` included, writes
+ * U+FFFD in its place. Measured on the real CLI rather than on the renderer alone, because
+ * a lone surrogate is only a defect once it reaches the wire: `asc query` on a value with
+ * one emoji at unit 58 printed `aaaa�…`, and the same value one unit shorter printed
+ * the emoji intact.
+ *
+ * Backing off one unit is exact rather than a heuristic. The only unpaired surrogate a cut
+ * can create is the last unit it keeps, and that unit is unpaired exactly when the next
+ * unit is its other half -- so that test is the whole rule.
+ *
+ * A value that ALREADY held an unpaired surrogate passes through unchanged, deliberately:
+ * it is malformed in the store, where `--json` escapes it and `--csv` carries it verbatim,
+ * and the table is not the layer that should be hiding that. The claim here is the narrow
+ * one a truncation can actually be blamed for -- this never CREATES one.
+ *
+ * The clamp is part of the same rule rather than defensive noise. `maxCellWidth` below 1
+ * makes the budget negative, and a negative index is a slice from the END: `slice(0, -1)`
+ * drops the last unit, which creates a lone surrogate whenever that unit was a low half.
+ * No caller passes such a width today; the arithmetic should not depend on that.
+ */
+function lastUnitToKeep(text: string, budget: number): number {
+  const end = Math.max(0, budget);
+  if (
+    end >= 1 &&
+    end < text.length &&
+    isHighSurrogate(text.charCodeAt(end - 1)) &&
+    isLowSurrogate(text.charCodeAt(end))
+  ) {
+    return end - 1;
+  }
+  return end;
+}
+
 /** What a value looks like in a table or a CSV cell. */
 function cellText(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -114,7 +158,8 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
       // CSV and JSON keep the value verbatim -- the table is the lossy view, and it is
       // the one a human reads with the other two available beside it.
       const text = cellText(row[column]).replace(/\s+/g, ' ').trim();
-      return text.length > maxCellWidth ? `${text.slice(0, maxCellWidth - 1)}…` : text;
+      if (text.length <= maxCellWidth) return text;
+      return `${text.slice(0, lastUnitToKeep(text, maxCellWidth - 1))}…`;
     }),
   );
 

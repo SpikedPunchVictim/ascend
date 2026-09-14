@@ -193,6 +193,38 @@ describe('running one statement', () => {
     expect(result.stdout.split('\n')[1]).toBe('"a,b",c');
   });
 
+  it('does not corrupt a value it has to truncate, which is a claim about the bytes', () => {
+    const dir = project();
+    // `char(128512)` is U+1F600, built in SQL so the renderer can be driven with a two-unit
+    // character at an exact offset without writing anything to the store. 58 a's put it at units
+    // 58-59, which is where the 60-unit budget's cut lands, and the trailing b's exist only to
+    // push the value past 60 so that a cut happens at all -- without them the value is exactly 60
+    // units, `> maxCellWidth` is false, and there is nothing to corrupt. That is why the audit's
+    // stated repro did not reproduce through the rendered cell.
+    const value = (pad: number): string =>
+      `SELECT '${'a'.repeat(pad)}' || char(128512) || '${'b'.repeat(20)}' AS v`;
+    const split = asc(['query', value(58)], dir);
+    const intact = asc(['query', value(57)], dir);
+
+    expect(split.status).toBe(0);
+    expect(intact.status).toBe(0);
+
+    // The old renderer emitted EF BF BD here -- U+FFFD, which is the encoder saying it was handed
+    // a lone surrogate. Asserted on the decoded stdout because that is the same fact seen from the
+    // other side: the replacement character can only come from the bytes that were written.
+    expect(split.stdout).not.toContain('�');
+    // And the half-character is dropped rather than half-written: backing off the high surrogate
+    // takes the whole character with it, so the ellipsis follows the last a.
+    expect(split.stdout.split('\n')[2]).toBe(`${'a'.repeat(58)}…`);
+    // The control is the proof that the assertion above is about the CUT and not about emoji:
+    // one unit earlier and nothing is split, so the character survives intact.
+    expect(intact.stdout).toContain('😀');
+    expect(intact.stdout).not.toContain('�');
+    // Both views agree about the row; only the table elides (`output.ts`).
+    expect(asc(['query', value(58), '--csv'], dir).stdout).toContain('😀');
+    expect(asc(['query', value(58), '--json'], dir).stdout).toContain('😀');
+  });
+
   it('refuses two output flags at once', () => {
     const dir = project();
     const result = asc(['query', 'SELECT 1', '--json', '--table'], dir);

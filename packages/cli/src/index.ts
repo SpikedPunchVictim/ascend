@@ -34,3 +34,19 @@ export type { ErrorEmitting, PipeGuardDeps } from './streams.js';
  * command succeeds and the test sees nothing.
  */
 export { statementCount } from './sql.js';
+
+/**
+ * Re-exported for the same reason again, and here the case is a boundary rather than a case.
+ *
+ * The defect `asc-bcv.19` fixed lives in the CUT, and the cut is a function of one number:
+ * the index the cell's budget lands on. Proving it fixed means walking that index -- every
+ * offset an astral character can occupy relative to the cut, both surrogate halves on both
+ * sides of it, and widths at and below the clamp. Driving that through the binary would be
+ * one spawned process per offset to re-measure the same arithmetic, and the offsets that
+ * matter are exactly the ones no command can be talked into producing.
+ *
+ * `renderTable` also takes its width as a parameter, so the whole boundary sweep runs
+ * against the real function with no fixture and no mock.
+ */
+export { renderTable, renderCsv, renderJson, render, OUTPUT_CONTRACT_VERSION } from './output.js';
+export type { Output, OutputFormat, Row, JsonEnvelope } from './output.js';
