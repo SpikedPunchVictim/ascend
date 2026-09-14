@@ -114,7 +114,11 @@ function envelope(stdout: string): readonly Record<string, unknown>[] {
   return (JSON.parse(stdout) as { rows: Record<string, unknown>[] }).rows;
 }
 
-/** Read the array `types export` writes, which is a bare list rather than an envelope. */
+/**
+ * Read the array `types export` writes for its DEFAULT output, which is a bare list rather than
+ * an envelope -- because a round trip is this command's purpose and `import` parses this array.
+ * `--json` is the envelope and is read with `envelope()` above, like every other command's.
+ */
 function documents(stdout: string): readonly Record<string, unknown>[] {
   return JSON.parse(stdout) as Record<string, unknown>[];
 }
@@ -743,6 +747,95 @@ describe('asc types export and import', () => {
     expect(document).toMatchObject({ name: 'review_completed', record_when: REVIEW.record_when });
     const roundTripped = json(project(), 'again.json', [document]);
     expect(readFileSync(roundTripped, 'utf8')).toContain('review_completed');
+  });
+});
+
+/**
+ * What `--json` means on `types export` -- the one command whose default is the machine format.
+ *
+ * asc-qmn measured the defect: `asc types export --json` was byte-identical to the bare form
+ * (the bead's fixture hashed `61b313eca9b75758b1dc6ba1b15d5219c07ec8ce` both ways), so a consumer
+ * asking for "a versioned JSON envelope on stdout, the stable contract for scripts" -- `base.ts`'s
+ * description of the flag -- received a bare array it could not tell from a future format change.
+ * Every other command's `--json` is the envelope; this one now is too, which is `brief`'s rule
+ * applied to the command that had not applied it: the line format is the command's own table, and
+ * `--json` is where the rows become a contract.
+ *
+ * The four tests below are the four halves of that decision, including its cost. The cost one is
+ * asserted rather than described, because a deliberately accepted regression that nothing tests is
+ * indistinguishable from one nobody noticed.
+ */
+describe('asc types export, and what --json means', () => {
+  it('renders the versioned envelope, as every other command does', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+
+    const parsed = JSON.parse(asc(['types', 'export', '--json'], dir).stdout) as Record<
+      string,
+      unknown
+    >;
+
+    expect(Array.isArray(parsed)).toBe(false);
+    expect(Object.keys(parsed).sort()).toEqual(['ascend_output', 'row_count', 'rows']);
+    expect(parsed['ascend_output']).toBe(1);
+    expect(parsed['row_count']).toBe(1);
+  });
+
+  it('keeps the bare form a document list, and wraps without losing a field', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+    // A real shape change, not a prose edit: prose-only differences update the existing version
+    // rather than minting one (`updates prose when the shape is already known`), so this fixture
+    // is what makes the export two documents deep and gives the order something to preserve.
+    asc(['types', 'define', json(dir, 'r2.json', REVIEW_V2)], dir);
+
+    const bare = asc(['types', 'export'], dir);
+    const wrapped = asc(['types', 'export', '--json'], dir);
+
+    // The default is still the array `import` parses -- that is why the envelope is behind the
+    // flag rather than around the default.
+    expect(documents(bare.stdout).length).toBe(2);
+    expect(bare.stdout).not.toBe(wrapped.stdout);
+    // Not "the same definitions" -- the same bytes per document, in the same order. `rows` is
+    // built from the same `documentsFor` the bare path writes, so a wrapper that reordered or
+    // dropped a version would break the round trip it is meant to preserve.
+    expect(envelope(wrapped.stdout)).toEqual(documents(bare.stdout));
+  });
+
+  it('counts the rows, so an empty registry is not a truncated answer', () => {
+    // `project()` is a bare `.ascend/` with nothing registered -- the empty registry, and the case
+    // where the bare form alone cannot say whether it is empty or cut short.
+    const dir = project();
+
+    expect(asc(['types', 'export'], dir).stdout).toBe('[]\n');
+    const parsed = JSON.parse(asc(['types', 'export', '--json'], dir).stdout) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed['rows']).toEqual([]);
+    expect(parsed['row_count']).toBe(0);
+  });
+
+  it('refuses the envelope at import, which is the accepted cost of distinct spellings', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+    const exported = asc(['types', 'export'], dir);
+
+    // The control first: the documented pipeline -- no flag -- still round-trips. Without this,
+    // the assertion below would pass for a project where `import` was broken outright.
+    expect(asc(['types', 'import', '-'], dir, exported.stdout).status).toBe(0);
+
+    // And the cost, named. `import` is deliberately not taught to unwrap an envelope: that would
+    // give one pipeline two spellings differing only by a wrapper, which is the ambiguity this
+    // change removes. The message has to name the field, because a caller who reached for
+    // `--json` out of habit has to be able to see what they actually piped.
+    const refused = asc(
+      ['types', 'import', '-'],
+      dir,
+      asc(['types', 'export', '--json'], dir).stdout,
+    );
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain('ascend_output');
   });
 });
 
