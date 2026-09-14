@@ -2,6 +2,13 @@
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
+# A SQLite database is up to three files: the `-shm` and `-wal` siblings are written next to it
+# and are NOT matched by `*.db`, because the name ends in `-shm` or `-wal`. The spike harness
+# left 28 of them untracked and unignored, which made `git status` noisy enough to skim past --
+# and a dirty-looking tree nobody reads is how a real untracked file gets missed. Same hazard as
+# `*.db` below: this would also ignore a committed `-wal` fixture, and the same negation applies.
+*.db-shm
+*.db-wal
 .beads-credential-key
 .beads/proxieddb/
 
