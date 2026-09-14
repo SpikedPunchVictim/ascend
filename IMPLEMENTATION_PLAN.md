@@ -608,6 +608,10 @@ asserted. The brief is **1,189 bytes over 4 lines**, asserted against ARCHITECTU
   view stores the integer. Not a wrong answer — `1` does mean true — but the renderer has to know a
   column is boolean to print `true`, and only the declared type says so. `asc query` (`asc-6ct`) owns
   that decision, and it is the first command with a spec in hand at render time.
+  **[CORRECTED at E4.5 — the last clause is false. `asc query` does not have a spec in hand and
+  never consults `entry_types.spec_json`: `StatementSync.columns()` reports `type: null` for every
+  property-derived column of a generated view, so there is no declared type to render from. The
+  problem is re-filed as `asc-6wn` and belongs where the spec IS available — `asc explore` (E6).]**
 - **EPIPE installation is still unproven** (`E4.1`'s surviving M8). `asc init` prints more than
   `types list` does but still nowhere near a 64 KiB pipe buffer. The trigger remains `asc query`.
 
@@ -743,6 +747,8 @@ provenance is `cwd` = the process's resolved directory and `source` = `self`; an
   a consumer must `JSON.parse` it. `1` and `"[…]"` are the same defect shape: **the view holds
   SQLite's representation of a value, and the declared type is the only place the intended one
   exists.** `asc query` is the first command with a spec in hand at render time, so it owns both.
+  **[CORRECTED at E4.5 — "has a spec in hand" is false; see the same correction under E4.3. The
+  declared-type question is `asc-6wn`, and the fix belongs in `asc explore` (E6).]**
 - **EPIPE installation is still unproven** (E4.1's surviving M8). `asc record` prints one row per
   entry — nowhere near a 64 KiB pipe buffer. The trigger remains `asc query`.
 
