@@ -67,9 +67,13 @@ export default class TypesImport extends BaseCommand {
   ];
 
   static override args = {
+    // `ignoreStdin` for the same reason as `define` above: the arg is a path, and without this
+    // oclif would fill it from stdin and then fail with `ENOENT` quoting the document back.
+    // `asc types export | asc types import -` is unaffected -- the `-` is the operand.
     file: Args.string({
       description: 'Path to a document or list of documents, or `-` to read from standard input.',
       required: true,
+      ignoreStdin: true,
     }),
   };
 

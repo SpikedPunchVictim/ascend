@@ -60,11 +60,15 @@ const env = (dir: string): NodeJS.ProcessEnv => ({
   XDG_CACHE_HOME: join(dir, '.cache'),
 });
 
-function asc(args: readonly string[], cwd: string): Run {
+function asc(args: readonly string[], cwd: string, input?: string): Run {
   const result = spawnSync(process.execPath, [bin, ...args], {
     cwd,
     encoding: 'utf8',
     env: env(cwd),
+    // Optional, so every existing call site is unchanged. It exists for the stdin tests: an
+    // omitted `input` leaves the child with an empty stdin, which is a different case from a
+    // pipe carrying a value, and the two must not be confused.
+    ...(input === undefined ? {} : { input }),
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -277,6 +281,25 @@ describe('running one statement', () => {
 
     // And the caller is told, because `x_2` is not the alias they typed.
     expect(flatten(result.stderr)).toContain("two result columns are named 'x'");
+  });
+});
+
+describe('a piped value is never taken for an operand', () => {
+  it('refuses SQL from stdin, which was never a documented input', () => {
+    // `sql` is `required: true`, and before `ignoreStdin` oclif satisfied that requirement from
+    // stdin -- so `printf 'SELECT 1 AS x' | asc query` RAN the statement, with nothing in
+    // `--help` saying stdin was an input. It contradicted `input.ts`: "a command that reads stdin
+    // when given no operand looks like it is waiting for input when it is actually waiting for a
+    // keypress".
+    //
+    // It was also a RACE, which is why nothing caught it. oclif's reader aborts after 10 ms, so
+    // the same pipeline ran with `printf` and refused with `( sleep 0.3; printf ... )`. A missing
+    // operand is now a usage error every time, naming the operand.
+    const dir = project();
+    const run = asc(['query'], dir, 'SELECT 1 AS x');
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('Missing 1 required arg');
   });
 });
 

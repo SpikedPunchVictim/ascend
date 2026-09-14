@@ -72,9 +72,13 @@ export default class TypesShow extends BaseCommand {
   ];
 
   static override args = {
+    // `ignoreStdin`: the arg names a type, and oclif would otherwise take the name from stdin.
+    // Measured: `printf 'decision' | asc types show` succeeded (exit 0) on a name nobody typed
+    // on the command line. See `record.ts` for the long form.
     name: Args.string({
       description: 'The type to show.',
       required: true,
+      ignoreStdin: true,
     }),
   };
 

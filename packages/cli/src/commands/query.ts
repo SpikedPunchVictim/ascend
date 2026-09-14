@@ -306,9 +306,17 @@ export default class Query extends BaseCommand {
     'hex literal, and an integer too large for a JavaScript number as a decimal string.';
 
   static override args = {
+    // `ignoreStdin` because `sql` is `required: true` and oclif would otherwise satisfy that
+    // requirement from stdin -- so `printf 'SELECT 1 AS x' | asc query` RAN the statement, with
+    // nothing documenting that stdin is an input to this command. It also contradicts
+    // `input.ts`: "a command that reads stdin when given no operand looks like it is waiting for
+    // input when it is actually waiting for a keypress". Whether it worked was a race against
+    // oclif's 10 ms stdin abort, so the same pipeline could run or refuse depending on how fast
+    // the producer was. A missing operand is now always a usage error naming the operand.
     sql: Args.string({
       required: true,
       description: 'One SQL statement. Quote it so your shell does not split it.',
+      ignoreStdin: true,
     }),
   };
 

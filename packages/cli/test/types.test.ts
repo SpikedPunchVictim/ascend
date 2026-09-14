@@ -306,6 +306,75 @@ describe('asc types define', () => {
   });
 });
 
+describe('a piped value is never taken for an operand', () => {
+  /**
+   * oclif fills a MISSING positional argument from stdin unless the arg declares `ignoreStdin`
+   * (`@oclif/core/lib/parser/parse.js`, `tryStdin`). Every operand in this file is a path or a
+   * type name, so the fill read a document as a filename and a name as whatever a shell happened
+   * to leave on stdin.
+   *
+   * **The suite was green before this fix, and why is worth recording.** Every test that pipes
+   * into these commands passes `-` explicitly, and the one test that names this exact case -- the
+   * "refuses a missing operand as a usage error rather than waiting on stdin" case just above --
+   * passes no stdin at all. It asserts the right thing about a setup that cannot produce the bug.
+   */
+  const DOCUMENT = JSON.stringify(REVIEW);
+
+  it('refuses a piped document instead of reading it as a path', () => {
+    const dir = project();
+    const run = asc(['types', 'define'], dir, DOCUMENT);
+
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('Missing 1 required arg');
+    // The defect in one assertion: `ENOENT` is what "read as a path" looks like from outside.
+    expect(run.stderr).not.toContain('ENOENT');
+    expect(run.stderr).not.toContain('could not be read');
+    // And nothing was registered, so the refusal is not merely a message.
+    expect(registry(dir)).toEqual([]);
+  });
+
+  it('refuses a piped document for `import` too, which shares the operand shape', () => {
+    const dir = project();
+    const run = asc(['types', 'import'], dir, DOCUMENT);
+
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('Missing 1 required arg');
+    expect(run.stderr).not.toContain('ENOENT');
+  });
+
+  it('reads the same document when the caller says `-`, which is the whole difference', () => {
+    const dir = project();
+    const run = asc(['types', 'define', '-'], dir, DOCUMENT);
+
+    expect(run.status).toBe(0);
+    expect(registry(dir)).toHaveLength(1);
+  });
+
+  it('refuses a piped NAME where the operand is required', () => {
+    // `deprecate` is a WRITE, which makes guessing its operand worse than guessing a read's.
+    for (const command of ['show', 'deprecate']) {
+      const run = asc(['types', command], project(), 'review');
+      expect(run.status, `types ${command}`).toBe(2);
+      expect(run.stderr, `types ${command}`).toContain('Missing 1 required arg');
+    }
+  });
+
+  it('does not let an unrelated pipe narrow an export', () => {
+    // The worst instance of the class, because it is the only silent one. `name` here is
+    // `required: false`, so the fill did not fail -- it produced a DIFFERENT ANSWER. Measured
+    // before the fix, in a project exporting 7 type entries: unpiped emitted all 7, `printf
+    // 'decision' | asc types export` emitted 2, exit 0 both times, with nothing on stderr to say
+    // a pipe had narrowed the result.
+    const dir = project();
+    const unpiped = asc(['types', 'export'], dir);
+    const piped = asc(['types', 'export'], dir, 'review');
+
+    expect(unpiped.status).toBe(0);
+    expect(piped.status).toBe(0);
+    expect(piped.stdout).toBe(unpiped.stdout);
+  });
+});
+
 describe('asc types define, and how a prose key is spelled', () => {
   /**
    * End to end, because the store's fold is only half the fix: `define` of an already-known shape

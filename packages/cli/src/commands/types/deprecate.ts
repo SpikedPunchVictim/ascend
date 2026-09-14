@@ -31,9 +31,13 @@ export default class TypesDeprecate extends BaseCommand {
   ];
 
   static override args = {
+    // `ignoreStdin`: same class as `show`. Measured: `printf 'decision' | asc types deprecate`
+    // ran against a type named only on stdin. Deprecating is a WRITE, which makes guessing the
+    // operand here worse than guessing it on a read.
     name: Args.string({
       description: 'The type to deprecate.',
       required: true,
+      ignoreStdin: true,
     }),
   };
 

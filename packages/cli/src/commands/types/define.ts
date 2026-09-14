@@ -31,9 +31,14 @@ export default class TypesDefine extends BaseCommand {
   ];
 
   static override args = {
+    // `ignoreStdin` because oclif otherwise fills a missing positional from stdin, and `file` is
+    // a PATH: `cat review.json | asc types define` read the document as a filename and failed
+    // with `ENOENT` quoting the document back. The long form of this is in `record.ts`; the
+    // short form is that stdin is reached by `-`, deliberately and only.
     file: Args.string({
       description: 'Path to a type document, or `-` to read one from standard input.',
       required: true,
+      ignoreStdin: true,
     }),
   };
 

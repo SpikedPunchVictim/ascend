@@ -38,9 +38,15 @@ export default class TypesExport extends BaseCommand {
   ];
 
   static override args = {
+    // `ignoreStdin`, and this is the arg where the omission was worst. It is `required: false`,
+    // so oclif filling it from stdin does not produce an error -- it produces a DIFFERENT ANSWER.
+    // Measured in a project with 7 exported type entries: `asc types export` emitted all 7, while
+    // `printf 'decision' | asc types export` emitted 2, exit 0 both times, with nothing on stderr
+    // to say a pipe had narrowed the result. Every other arg in this class at least failed loudly.
     name: Args.string({
       description: 'Export this type only. Omit to export every type in the project.',
       required: false,
+      ignoreStdin: true,
     }),
   };
 

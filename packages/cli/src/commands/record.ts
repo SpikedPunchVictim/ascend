@@ -294,16 +294,40 @@ export default class RecordEntry extends BaseCommand {
     '<%= config.bin %> <%= command.id %> stuck_event batch.json --dry-run',
   ];
 
+  /**
+   * `ignoreStdin` on BOTH args, and it is load-bearing rather than hygiene.
+   *
+   * oclif fills a MISSING positional argument from stdin unless the arg says otherwise
+   * (`@oclif/core/lib/parser/parse.js`, `tryStdin`, gated only on `arg.ignoreStdin`), so
+   * `cat doc.json | asc record decision` handed the document to `readInput` as a **path** and
+   * failed with `ENOENT` naming the document -- or, once the document exceeded `NAME_MAX`, with
+   * the whole document echoed into stderr twice. That echo was measured at **2.164x** the
+   * document, holding across 40,034 and 100,034 bytes, and `evidence_text` is exactly the field
+   * `ARCHITECTURE` routes through stdin. With no operand at all, oclif assigned the document to
+   * `type` and advised `asc types show {"name":...}` -- a command that cannot work.
+   *
+   * The bug was also a RACE, which is why the suite was green: oclif's reader aborts after 10 ms
+   * and returns nothing, so a producer slower than that never hit it. Measured with the same
+   * `types define`: `printf '%s' "$doc"` piped in used the document as a path, while
+   * `( sleep 0.3; printf '%s' "$doc" )` gave `Missing 1 required arg: file`. This fix does not
+   * introduce the good behaviour -- it makes the good behaviour the only one.
+   *
+   * `-` is ascend's stdin path (`input.ts`), so nothing is lost by refusing to guess: the arg
+   * keeps its documented meaning and the refusal written for the implicit case -- "nothing to
+   * record", below -- is the one that now fires.
+   */
   static override args = {
     type: Args.string({
       description: 'The entry type to record. It must be registered in this project.',
       required: true,
+      ignoreStdin: true,
     }),
     document: Args.string({
       description:
         'Path to an entry document, or `-` for standard input. A single object records one ' +
         'entry; an array records a batch. Omit it when using --prop/--na/--evidence.',
       required: false,
+      ignoreStdin: true,
     }),
   };
 

@@ -957,3 +957,57 @@ describe('asc record', () => {
     expect(view(dir, 'v_stuck_event_v1')[0]?.['error_text']).toBe('EACCES: permission denied');
   });
 });
+
+describe('a piped value is never taken for an operand', () => {
+  /**
+   * `asc record` has two positional args, and oclif would fill either one from stdin. The guard
+   * this makes reachable already existed -- "nothing to record: give a document to read (a path,
+   * or - for standard input)", above -- and the bead that found this recorded that it "cannot fire
+   * when stdin is piped". It could not: the fill assigned the piped document to `document`, and
+   * the guard's first condition is `args.document === undefined`.
+   *
+   * The consequence was not only a wrong error. A document past `NAME_MAX` was echoed into stderr
+   * **twice** -- measured at 2.164x the document, holding across 40,034 and 100,034 bytes -- and
+   * `evidence_text` is exactly the field `ARCHITECTURE` routes through stdin.
+   */
+  const DOCUMENT = JSON.stringify({ properties: { chosen: 'piped' } });
+
+  it('reaches the "nothing to record" guard when a document is piped with no operand', () => {
+    const dir = project();
+    const run = asc(['record', 'decision'], dir, DOCUMENT);
+
+    expect(run.status).toBe(2);
+    const message = flatten(run.stderr);
+    expect(message).toContain('nothing to record');
+    // A refusal is a dead end unless it names the spelling that works.
+    expect(message).toContain('- for standard input');
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('refuses a pipe where the TYPE is the missing operand', () => {
+    // Before the fix this assigned the piped value to `type` and advised
+    // `Run 'asc types show decision'` -- a runnable-looking command built from a value nobody
+    // typed on the command line.
+    const run = asc(['record'], project(), 'decision');
+
+    expect(run.status).toBe(2);
+    const message = flatten(run.stderr);
+    expect(message).toContain('Missing 1 required arg');
+    expect(message).not.toContain('types show');
+  });
+
+  it('still records the document when the operand says `-`', () => {
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '-', '--json'],
+      dir,
+      JSON.stringify({ properties: { chosen: 'operand', rationale: 'one convention for stdin' } }),
+    );
+
+    expect(run.status).toBe(0);
+    expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      chosen: 'operand',
+      rationale: 'one convention for stdin',
+    });
+  });
+});
