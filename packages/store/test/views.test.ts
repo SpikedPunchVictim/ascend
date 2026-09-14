@@ -105,6 +105,37 @@ const one = (store: Store, view: string, id: string): Row => {
   return row;
 };
 
+/**
+ * The name of the one index whose definition is `(type_name, json_extract(...,'$.<property>'))`,
+ * or `undefined` when no index covers that property.
+ *
+ * By DEFINITION and not by name, because the name is one of the two things that were wrong here:
+ * a test that asked for the expected name would have passed under the collision, which reported
+ * a property as indexed while no index for it existed anywhere.
+ */
+const indexedBy = (store: Store, property: string): string | undefined => {
+  const row = store.db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'entries'
+         AND sql LIKE ?`,
+    )
+    .get(`%json_extract(properties_json, '$.${property}')%`) as { name: string } | undefined;
+  return row?.name;
+};
+
+/** What SQLite says it will do with a query, as one line. */
+const plan = (store: Store, sql: string): string =>
+  (store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as unknown as { detail: string }[])
+    .map((row) => row.detail)
+    .join(' | ');
+
+/** The stored definition of one object, for asserting a change did NOT happen. */
+const sqlOf = (store: Store, name: string): string =>
+  (
+    store.db.prepare('SELECT sql FROM sqlite_master WHERE name = ?').get(name) as
+      { sql: string } | undefined
+  )?.sql ?? '';
+
 /** The envelope columns every view carries, in order. Duplicated deliberately: a test that
  * imported the list from the module under test could not notice it changing. */
 const ENVELOPE = [
@@ -162,7 +193,29 @@ const insertVersionRow = (
 describe('naming', () => {
   it('names a view per major family and an index per property', () => {
     expect(viewName('review_completed', 2)).toBe('v_review_completed_v2');
-    expect(indexName('review_completed', 'count')).toBe('idx_entries_review_completed_count');
+    expect(indexName('count')).toBe('idx_prop_count');
+  });
+
+  it('gives two pairs that used to share a name two names that cannot collide', () => {
+    // The bead, as arithmetic. `idx_entries_<type>_<property>` is not injective: this pair of
+    // pairs was ONE string, so the second property was reported as already indexed and never
+    // indexed at all. The new name is a bijection on the property, so it cannot be.
+    expect(indexName('run_count')).not.toBe(indexName('count'));
+
+    // And it is not merely different for these two -- distinct properties give distinct names,
+    // because the name is the property and nothing else. A `_` in either operand no longer moves
+    // the boundary, since there is no boundary left to move.
+    const properties = ['count', 'run_count', 'a_b', 'a', 'b', 'a_b_c', 'ab_c'];
+    expect(new Set(properties.map(indexName)).size).toBe(properties.length);
+  });
+
+  it('does not spell the schema index names the store already has', () => {
+    // `type{time}` used to spell `idx_entries_type_time`, which the schema holds on
+    // `(type_name, recorded_at)` -- a name that was taken by an index over a different
+    // expression, so the property got no index and nothing said so.
+    for (const property of ['time', 'run']) {
+      expect(indexName(property)).not.toContain('idx_entries_');
+    }
   });
 });
 
@@ -381,11 +434,6 @@ describe('a major version NEVER unions with the old family', () => {
 });
 
 describe('the index is chosen by the planner, not merely present', () => {
-  const plan = (store: Store, sql: string): string =>
-    (store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as unknown as { detail: string }[])
-      .map((row) => row.detail)
-      .join(' | ');
-
   it('drives a group-by from the composite expression index, applying the type filter', () => {
     // EV-4's required addition, asserted as behaviour. The failure it guards against is
     // measured: a BARE expression index makes SQLite scan the entire index instead, and
@@ -396,7 +444,7 @@ describe('the index is chosen by the planner, not merely present', () => {
       const detail = plan(store, `SELECT count, COUNT(*) FROM ${view} GROUP BY count`);
 
       expect(detail).toContain('USING INDEX');
-      expect(detail).toContain(indexName('review_completed', 'count'));
+      expect(detail).toContain(indexName('count'));
       // `type_name=?` is the point of the composite form: the predicate is usable.
       expect(detail).toContain('type_name=?');
       expect(detail).not.toMatch(/SCAN entries/);
@@ -410,20 +458,166 @@ describe('the index is chosen by the planner, not merely present', () => {
 
       const names = (
         store.db
-          .prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_entries_review%'",
-          )
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_prop_%'")
           .all() as unknown as { name: string }[]
       ).map((row) => row.name);
 
       // `reviewer` came in with the minor version and still gets an index -- a property
       // added later is exactly the one new queries filter on.
       expect(names.sort()).toEqual([
-        indexName('review_completed', 'count'),
-        indexName('review_completed', 'outcome'),
-        indexName('review_completed', 'reviewer'),
-        indexName('review_completed', 'summary'),
+        indexName('count'),
+        indexName('outcome'),
+        indexName('reviewer'),
+        indexName('summary'),
       ]);
+    });
+  });
+
+  it('indexes a property the two colliding pairs share, rather than reporting it done', () => {
+    // The bead, driven. `('test','run_count')` and `('test_run','count')` spelled one index
+    // name, so the second pair found the name taken and got no index -- and `refreshTypeViews`
+    // said nothing about it, because "the name is taken" read as "you are covered".
+    withStore((store) => {
+      registerType(
+        store.db,
+        { name: 'test', properties: [{ name: 'run_count', type: 'integer' }] },
+        { registeredAt: AT },
+      );
+      registerType(
+        store.db,
+        { name: 'test_run', properties: [{ name: 'count', type: 'integer' }] },
+        { registeredAt: AT },
+      );
+
+      // Both properties are indexed, and each one's OWN view is answered by its own index --
+      // which is the claim the old code made falsely, so it is the one driven here.
+      for (const [type, view, property] of [
+        ['test', 'v_test_v1', 'run_count'],
+        ['test_run', 'v_test_run_v1', 'count'],
+      ] as const) {
+        expect(indexedBy(store, property), `${type}{${property}}`).toBe(indexName(property));
+        expect(
+          plan(store, `SELECT ${property}, COUNT(*) FROM ${view} GROUP BY ${property}`),
+          `${type}{${property}}`,
+        ).toContain(`USING INDEX ${indexName(property)}`);
+      }
+    });
+  });
+
+  it('indexes a property whose name the schema index already spelled', () => {
+    // `type{time}` used to spell `idx_entries_type_time`, which the schema holds on
+    // `(type_name, recorded_at)`. The name was taken, so the property got no index at all and
+    // `refreshTypeViews` reported the type as fully indexed.
+    withStore((store) => {
+      registerType(
+        store.db,
+        { name: 'type', properties: [{ name: 'time', type: 'text' }] },
+        { registeredAt: AT },
+      );
+
+      expect(indexedBy(store, 'time')).toBe(indexName('time'));
+      expect(plan(store, 'SELECT time, COUNT(*) FROM v_type_v1 GROUP BY time')).toContain(
+        `USING INDEX ${indexName('time')}`,
+      );
+      // The schema's own index is untouched: it was never ours to move.
+      expect(sqlOf(store, 'idx_entries_type_time')).toContain('recorded_at');
+    });
+  });
+});
+
+describe('a store built by an earlier version is migrated in place', () => {
+  /**
+   * The pre-`asc-bcv.17` spelling, written out here rather than imported. A test that asked the
+   * module under test what the old name was could not notice the old name changing, and the whole
+   * point of the migration is that the string on disk is the string an earlier version wrote.
+   */
+  const legacyIndex = (store: Store, typeName: string, property: string): void => {
+    store.db.exec(
+      `CREATE INDEX "idx_entries_${typeName}_${property}" ON entries (type_name, json_extract(properties_json, '$.${property}'))`,
+    );
+  };
+
+  it('retires the pre-rename index for the property it covered, and reports it', () => {
+    withStore((store) => {
+      legacyIndex(store, 'review_completed', 'count');
+      const before = sqlOf(store, 'idx_entries_review_completed_count');
+      expect(before).toContain(`'$.count'`);
+
+      insertVersionRow(store, V1);
+      const report = refreshTypeViews(store.db, 'review_completed');
+
+      // The same index, under the name that says what it indexes -- and the old name is gone
+      // rather than left beside it, because it is the SAME index on the SAME expression.
+      expect(indexedBy(store, 'count')).toBe(indexName('count'));
+      expect(sqlOf(store, 'idx_entries_review_completed_count')).toBe('');
+
+      // Removal from a store the user already had is reported, not done quietly. Only the one
+      // property had a legacy index; the other three were created fresh.
+      expect(report.renamed).toEqual(['idx_entries_review_completed_count']);
+      expect(report.indexes).toHaveLength(3);
+
+      // A repeat is a no-op: the migration happened once, and it says so once.
+      const second = refreshTypeViews(store.db, 'review_completed');
+      expect(second.indexes).toEqual([]);
+      expect(second.renamed).toEqual([]);
+    });
+  });
+
+  it('retires only the index it recreated, leaving a different expression alone', () => {
+    // The collision, as a store on disk. `idx_entries_test_run_count` was ONE name for two pairs,
+    // so whichever type was registered first put an index there -- and the other one found the
+    // name taken. Refreshing the other must not delete its sibling's index: the name matches and
+    // the expression does not, which is exactly why the check is by definition and not by name.
+    withStore((store) => {
+      legacyIndex(store, 'test', 'run_count');
+      registerType(
+        store.db,
+        { name: 'test_run', properties: [{ name: 'count', type: 'integer' }] },
+        { registeredAt: AT },
+      );
+
+      expect(indexedBy(store, 'count')).toBe(indexName('count'));
+      expect(sqlOf(store, 'idx_entries_test_run_count')).toContain(`'$.run_count'`);
+
+      // And the type that index DOES belong to retires it when its own turn comes.
+      registerType(
+        store.db,
+        { name: 'test', properties: [{ name: 'run_count', type: 'integer' }] },
+        { registeredAt: AT },
+      );
+      expect(indexedBy(store, 'run_count')).toBe(indexName('run_count'));
+      expect(sqlOf(store, 'idx_entries_test_run_count')).toBe('');
+    });
+  });
+
+  it('gives two types that share a property one index between them', () => {
+    // Measured, not assumed: with two types declaring `stage`, SQLite answered BOTH views with
+    // `USING INDEX idx_entries_beta_stage`, and kept answering that after the first type's index
+    // was dropped. A per-type index was never per-type; it was a second copy of one index.
+    withStore((store) => {
+      for (const name of ['alpha', 'beta']) {
+        registerType(
+          store.db,
+          { name, properties: [{ name: 'stage', type: 'text' }] },
+          { registeredAt: AT },
+        );
+      }
+
+      const stageIndexes = store.db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND sql LIKE '%''$.stage''%'")
+        .all() as unknown as { name: string }[];
+      expect(stageIndexes.map((row) => row.name)).toEqual([indexName('stage')]);
+
+      // One index, and both types' views are answered by it -- which is the only thing that
+      // makes "one index between them" correct rather than merely smaller.
+      for (const [name, view] of [
+        ['alpha', 'v_alpha_v1'],
+        ['beta', 'v_beta_v1'],
+      ] as const) {
+        expect(plan(store, `SELECT stage, COUNT(*) FROM ${view} GROUP BY stage`), name).toContain(
+          `USING INDEX ${indexName('stage')}`,
+        );
+      }
     });
   });
 });
@@ -436,12 +630,16 @@ describe('refresh is derived and idempotent', () => {
 
       expect(second.views).toEqual([viewName('review_completed', 1)]);
       expect(second.indexes).toEqual([]);
+      expect(second.renamed).toEqual([]);
     });
   });
 
   it('is safe to run after a view was dropped by hand -- the repair path', () => {
-    // A store whose views are missing must be recoverable without a migration. This is what
-    // `asc doctor` calls.
+    // A store whose views are missing must be recoverable without a migration. There is no
+    // `asc doctor` command (`asc-12a` is unbuilt), and `refreshTypeViews`'s only production caller
+    // is `registerType` -- which returns early on an unchanged spec and never reaches here -- so
+    // today this path is reachable only through the library API, and only for a REAL re-definition
+    // of the type. Called directly, as below, it repairs.
     withStore((store) => {
       registerType(store.db, V1, { registeredAt: AT });
       recordEntry(store.db, { type: 'review_completed', properties: { count: 7 } }, context('e1'));

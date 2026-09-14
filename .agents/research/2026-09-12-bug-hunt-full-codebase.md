@@ -82,7 +82,6 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | F3 | Per-property prose keys are stored **verbatim** while the contract says canonical, so `reviewKind` is written and never found | 9 | Confirmed (empirical) | Medium | Low | Low | Medium | 2 files / **existing rows may hold bad keys** / none | S |
 | F4 | A duplicated property name registers with only a warning, and the two enforcers **disagree in opposite directions** (`validateEntry` refuses `k=5`; `buildSchema` accepts it) | 8, 4 | Confirmed (empirical) | Medium | Low | Low | Medium | 1 file / **existing ambiguous types cannot be deleted** / none | S |
 | F5 | `assertProjectable` misses a **dotted** property name: the view column reads NULL and the index never matches, while `properties_json` holds the value | 3, 8 | Confirmed (empirical) | Medium | Low | Medium | Medium | 1 file / none (hand-insert only) / none | S |
-| F5 | FIXED — and the report's own predicate is **PARTLY REFUTED**: rejecting `"` and a lone `$` would refuse names that measure returning their literal key, which is the same defect as passing `a.b`. The shipped guard's character set is **measured across all of Unicode** (4,448,256 probes → 12 failures from 4 characters) and reconciled against SQLite for **4,456,448 names → 0 false negatives, 0 false positives**. **That number is scoped by F10 below: the reconciled set is non-empty, NUL-free names.** The union's independent read path now asks the same question, and its false comment was corrected rather than deleted. `asc-bcv.16` CLOSED. See F5's Status and its scope correction | this commit |
 | F10 | An **empty** property name makes `$.`, which is not a path: `assertProjectable` and `union.ts` both pass it, and because the index sits on `entries` every insert of **every type** then fails while `types list` still exits 0 | 3, 8 | Confirmed (empirical) | Medium | Low | High | High | 4 files / none (hand-insert only) / none | S |
 | F11 | A **NUL anywhere** in a property name is passed by every rule and truncates the generated statement — `literal()` escapes `'` and nothing else and the path is *interpolated*, not bound — so the CLI exits 1 with a raw `unrecognized token` naming neither the property nor the store | 3, 8 | Confirmed (empirical) | Low | Low | Low | Low | 1 file / none (hand-insert only) / none | S |
 | F6 | `indexName` **collides** (`test`+`run_count` vs `test_run`+`count`) and the second index is silently never created | 8, 1 | Confirmed (empirical) | Low | Low | Low | Low | 1 file / none / none | S |
@@ -105,19 +104,23 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | B11, B12 | FIXED | `5237833` |
 | F2 | FIXED — the report's own suggested fix is **refuted**; F9's leak is closed with it. See F2's Status | `1ac8075` |
 | F9 | FIXED as a side effect of F2 (the release moved inside `attachScope`; the false comment is deleted). No CLI-observable test exists — see its Status | `1ac8075` |
-| F3 | FIXED — the report's stated reason is **refuted** (`canonicalName` folds `reviewKind` → `review_kind`, not `reviewkind`); the shape survives. 386 stores / 1,063 rows scanned read-only: **1** row held the defect, **0** would be refused. Its data half is **closed by measurement, not by a migration**: the bead's own `type_hash` objection is refuted, and a round trip repairs the one real row. `asc-bcv.15` CLOSED. See F3's Status | this commit |
+| F3 | FIXED — the report's stated reason is **refuted** (`canonicalName` folds `reviewKind` → `review_kind`, not `reviewkind`); the shape survives. 386 stores / 1,063 rows scanned read-only: **1** row held the defect, **0** would be refused. Its data half is **closed by measurement, not by a migration**: the bead's own `type_hash` objection is refuted, and a round trip repairs the one real row. `asc-bcv.15` CLOSED. See F3's Status | `7fcb57f` |
+| F5 | FIXED — and the report's own predicate is **PARTLY REFUTED**: rejecting `"` and a lone `$` would refuse names that measure returning their literal key, which is the same defect as passing `a.b`. The shipped guard's character set is **measured across all of Unicode** (4,448,256 probes → 12 failures from 4 characters) and reconciled against SQLite for **4,456,448 names → 0 false negatives, 0 false positives**. **That number is scoped by F10 below: the reconciled set is non-empty, NUL-free names.** The union's independent read path now asks the same question, and its false comment was corrected rather than deleted. `asc-bcv.16` CLOSED. See F5's Status and its scope correction | `5434fc4` |
 | F10 | FIXED — found **while building F5's fix**, by a reconciliation sweep rather than by reading. The predicate is `raw === ''`, not `canonicalName(raw) === ''`: 24 of the 25 names that fold to empty were measured addressing their literal key, and refusing them would be F5's defect wearing the other hat. `asc-bcv.21` CLOSED. See F10's Status | `d7d99f7` |
-| F11 | FIXED — found by F10's own reconciliation, which reported exactly **2 false negatives over 63,881 names**. The rule was right about **addressing** and silent about **transport**: the sweep bound the path as a value, the generator interpolates it. Now `anywhere`, and the reconciliation re-run reads **0 false negatives, 0 false positives**. `asc-bcv.22` CLOSED. See F11's Status | this commit |
+| F11 | FIXED — found by F10's own reconciliation, which reported exactly **2 false negatives over 63,881 names**. The rule was right about **addressing** and silent about **transport**: the sweep bound the path as a value, the generator interpolates it. Now `anywhere`, and the reconciliation re-run reads **0 false negatives, 0 false positives**. `asc-bcv.22` CLOSED. See F11's Status | `087442f` |
+| F6 | FIXED — and the audit's **framing and its blast radius are both REFUTED**: the index was never per-type (`type_name` is a column of it, measured — alpha's view was served from beta's index while alpha's own existed), and "additive and benign" measures at **111 of 156 stores holding a redundant copy, 138 objects, 9.7 MB**, with `idx_entries%` bytes at **60.6% of those stores' total** (`/tmp/f6-dup.mjs`, `/tmp/f6-blast.mjs`). One index per **property** (`idx_prop_<property>`, a bijection), matched by **exact definition text** rather than by name, with the pre-rename name retired in place and reported. `asc-bcv.17` CLOSED. See F6's Status | this commit |
 | `asc-4if` (NR3, answered) | FIXED | `bfb7786` |
 | B4 | FIXED (3 sites; `registry.ts`/`schema.ts` not mutation-testable — see its Status) | `15947f8` |
 | F4 (first half) | FIXED as a side effect of `asc-4if`; residual divergence untouched | `bfb7786` |
 | F4-data | ANSWERED — 83 stores scanned, 4 ambiguous, all this audit's own probes: **no migration needed** | `15947f8` |
-| `asc-51t` (not a hunt finding — the OPEN-path sibling of B4) | FIXED, and its inferred cause refuted. See §5c | this commit |
-| `asc-odh` (the race R-F4 proved B4 does **not** close) | **FIXED.** One transaction around `registerType`'s whole body; 0 collisions in 20 real-CLI trials where there were 18. See §9 R-F4 | this commit |
-| `asc-zjy` (found while fixing `asc-odh`) | **FIXED.** `migrate()` read `user_version` with no lock; 14 of 20 real-CLI store creations failed. See §5d | this commit |
-| `asc-6rx` (found while verifying `asc-51t`) | **FIXED.** `StoreBusyError` printed the configured timeout as an elapsed wait, and named a two-site step of which one site never fired. See §5d | this commit |
-| `asc-9zd` (found while verifying the above) | **FIXED.** A brand-new store opened by two processes failed 15% of the time; the switch to WAL is now waited out on a statement SQLite *does* govern. 60/60, 120/120, and 160/160 under 8-way contention, where the bead's own retry design reached 154/160. See §5d | this commit |
-| `asc-byn` (E4 review, P1) | **FIXED.** Both guards closed: the pragma, with a read-back, plus the source scan. See §5e | this commit |
+| `asc-51t` (not a hunt finding — the OPEN-path sibling of B4) | FIXED, and its inferred cause refuted. See §5c | `63469c5` |
+| `asc-odh` (the race R-F4 proved B4 does **not** close) | **FIXED.** One transaction around `registerType`'s whole body; 0 collisions in 20 real-CLI trials where there were 18. See §9 R-F4 | `00d73a0` |
+| `asc-zjy` (found while fixing `asc-odh`) | **FIXED.** `migrate()` read `user_version` with no lock; 14 of 20 real-CLI store creations failed. See §5d | `00d73a0` |
+| `asc-6rx` (found while verifying `asc-51t`) | **FIXED.** `StoreBusyError` printed the configured timeout as an elapsed wait, and named a two-site step of which one site never fired. See §5d | `00d73a0` |
+| `asc-9zd` (found while verifying the above) | **FIXED.** A brand-new store opened by two processes failed 15% of the time; the switch to WAL is now waited out on a statement SQLite *does* govern. 60/60, 120/120, and 160/160 under 8-way contention, where the bead's own retry design reached 154/160. See §5d | `00d73a0` |
+| `asc-byn` (E4 review, P1) | **FIXED.** Both guards closed: the pragma, with a read-back, plus the source scan. See §5e | `00d73a0` |
+
+**The Commit column used to say `this commit` on every row.** That was the convention while each row's report update shipped *inside* its own fix commit — true when written, unreadable afterwards, and after two rows were resolved and six were not it meant two different things in one column. Every row now carries the commit that introduced it, resolved with `git log -S` against this file rather than from memory. **F6's row is the deliberate exception and still reads `this commit`:** it was written in the commit that carries it, and a commit cannot name itself without the hash changing the moment it does.
 
 **A note on the bead IDs, because they do not match this report's B-numbers.** The beads were created in triage order (`asc-bcv.1` … `asc-bcv.21`), so `asc-bcv.<n>` is *not* finding `B<n>`. B8 is **`asc-bcv.4`**; `asc-bcv.8` is B3 (non-ASCII search). I committed B8 naming `asc-bcv.8` and corrected it in `acfec7a` — the first version of that message named a different, still-open finding. Mapping: B1→`.1`, B2→`.2`, F1→`.3`, B8→`.4`, B11→`.5`, B12→`.6`, B4→`.7`, B3→`.8`, B5→`.9`, B6→`.10`, B7→`.11`, B9→`.12`, B10→`.13`, F2→`.14`.
 
@@ -924,8 +927,11 @@ AFTER   asc types define type.json -> exit 1
 
 **Lens:** 8, 1
 **Confidence:** Confirmed (empirical) · **Urgency:** Low
+**Found:** by the audit. Its stated mechanism is **confirmed**; its stated *framing* and its stated *blast radius* are both **refuted**, and the refutations changed the design — which is the first thing this Status has to say.
 
-**Evidence:**
+**Status: FIXED.** `packages/store/src/views.ts` — `indexName`, `indexDefinition`, `holdsDefinition`, `legacyIndexName`, `ensurePropertyIndex`, `RefreshReport.renamed`. 7 new tests in `packages/store/test/views.test.ts`, which is at 45. What the eight checks changed:
+
+**Evidence, as the audit found it:**
 
 ```
 indexName('test','run_count') === indexName('test_run','count') === 'idx_entries_test_run_count'
@@ -933,12 +939,86 @@ indexName('test','run_count') === indexName('test_run','count') === 'idx_entries
 
 Only one index is created; there is no index on the other property's path. Registering `type{time}` created nothing at all, because the schema's own `idx_entries_type_time` already occupies the name.
 
-**Mechanism.** `views.ts:102-104` builds the name by joining with `_`. `ensurePropertyIndex` (`views.ts:127-134`) short-circuits on a name it already finds in `sqlite_master` and returns `false` — "already there" — so the missing index is never created, and `refreshTypeViews`'s report does not distinguish "already existed" from "never created because the name was taken."
+**Mechanism, confirmed as stated.** The name was built by joining with `_`. `ensurePropertyIndex` short-circuited on a name it already found in `sqlite_master` and returned `false` — "already there" — so the missing index was never created, and `refreshTypeViews`'s report did not distinguish "already existed" from "never created because the name was taken."
 
-**Consequence:** a silently missing index. A performance defect, not a wrong answer — I did not find a case where the collision changes a result.
+**Refutation 1 — the index was never per-type, so the frame "a name collision between two types" was wrong.** The generated index is `(type_name, json_extract(properties_json, '$.p'))`: **`type_name` is a COLUMN of the index, not a part of its identity.** Two types declaring the same property therefore produce two *byte-identical* indexes, and SQLite answers either type's view from either one. Measured (`/tmp/f6-shared.mjs`, two arms — the first version of this file had only the legacy arm and stopped running the moment the fix shipped, which is why the legacy rule is now reproduced in one labelled line rather than by reverting the source, and the shipped code is driven in its own arm):
 
-**Blast radius:** code — `packages/store/src/views.ts` (1 file); data — **renaming leaves the old index in place** (`IF NOT EXISTS`, never dropped), so the fix is additive and benign; coordination — none.
-**Verified fix:** make the name injective — append a short hash of the `(typeName, property)` pair. **Note:** no separator character can be safe here, because both operands draw from `[a-z0-9_]`; a hash (or a length prefix) is the only injective option. **Empirical re-test (8):** register both colliding pairs and assert two distinct indexes exist.
+```
+=== ARM A -- the legacy rule, reproduced: one index per (type, property) ===
+definitions identical once the name is removed: true
+-- ask ALPHA, which has its own index --
+  alpha: SEARCH e USING INDEX idx_entries_beta_stage (type_name=?)
+-- drop ALPHA's index, whose name says it is alpha's --
+  alpha: SEARCH e USING INDEX idx_entries_beta_stage (type_name=?)
+  beta : SEARCH e USING INDEX idx_entries_beta_stage (type_name=?)
+
+=== ARM B -- the shipped code, driven through `registerType` ===
+indexes: idx_prop_stage
+alpha: SEARCH e USING INDEX idx_prop_stage (type_name=?)
+beta : SEARCH e USING INDEX idx_prop_stage (type_name=?)
+copies of `$.stage`: 1   <-- was 2, is 1
+```
+
+Alpha's own view was served from **beta's** index *while alpha's own index existed*, and went on being served from it after alpha's was dropped. The second copy was never anything but a second insert to pay for. So the defect is not "two types want one name"; it is "one index per (type, property) was never what the store needed."
+
+**Refutation 2 — "renaming leaves the old index in place, so the fix is additive and benign" is measurable, and it is neither.** An additive rename cannot retire anything: every property the old code indexed ends up with a second, byte-identical index beside the first, forever. Measured on the stores the old code actually built (`/tmp/f6-dup.mjs`) — and this is better evidence than a reverted-code arm, because those 156 stores *are* the old code's output:
+
+```
+stores with a property index        : 156
+stores holding a duplicate          : 111
+redundant index objects (copies >1) : 138
+bytes those redundant copies occupy : 9682944 (9.7 MB)
+
+this repo's own store: 18 property indexes over 17 distinct expressions
+   $.stage   idx_entries_review_completed_stage, idx_entries_stage_transition_stage  <-- two byte-identical copies
+```
+
+Across all such stores the `idx_entries%` index bytes are **34,242,560 (34.243 MB) — 60.6% of those stores' total bytes** (`/tmp/f6-blast.mjs`, 157 stores — 156 plus this audit's own fixture — 7,904 distinct `(type, property)` pairs, 408 distinct generated names). **10 pairs have no index anywhere**, and the collision is not hypothetical: `tool{denial_count}` + `tool_denial{count}` spell one name in `/private/tmp/asc_p6/ascend.db`, a store this audit did not create. "Benign" was a claim about an object count that no one had counted.
+
+**Refutation 3 — a hash suffix is a probabilistic fix to a defect that has a proof, and it stays in the occupied namespace.** A short hash of `(typeName, property)` is injective *with high probability*; the failure mode is the defect itself, silently, at a rate nobody can state. It also keeps the `idx_entries_<...>` prefix, where the audit's own second example lives: `type{time}` spelled the schema's literal `idx_entries_type_time`. A pre-rename index under a hash-scheme name would be indistinguishable from one under the new scheme, so the "is this name taken?" question stays unanswerable by inspection.
+
+**The fix as shipped.** `indexName(property) => 'idx_prop_<property>'` — one index per **PROPERTY**, which is a bijection, so "an index with this name exists" is finally the same question as "this property is indexed". `holdsDefinition` then asks the *real* question by comparing `sqlite_master.sql` **byte for byte** against the statement this file would emit (measured in `/tmp/f6-sql.mjs`: SQLite stores the CREATE text exactly as written), rather than by name. `legacyIndexName` preserves the old spelling only long enough to retire it: when a store built by an earlier version is refreshed, the pre-rename index covering the same property is `DROP`ped and the fact is reported in the new `RefreshReport.renamed` — reported rather than done quietly, because it removes an object from a store the user already had.
+
+**Namespace check (4), both halves.** The source-side argument is that every name this codebase has ever created is `idx_entries_*`, `idx_entry_types_*`, or `idx_annotations_*`, and the schema's DDL is literal. The empirical half (`/tmp/f6-namespace.mjs`): across **157 stores, 418 distinct index names**, every name is `sqlite_autoindex_*` (6), `idx_entries_*` (405), `idx_annotations_*` (2), `idx_entry_types_*`, or one of the 4 `idx_prop_*` names **this audit's own fixture holds** — i.e. the namespace is unoccupied by anything pre-existing.
+
+**Mirror-path check (2).** There is one index path, `ensurePropertyIndex`, called only from `refreshTypeViews`'s loop; the loop now dedupes by property name, so a property declared by two versions of one type is indexed once. **Existing-data check (3):** answered by Refutation 2 — the population is 111 stores, and it is closed **by in-place migration during a real re-definition, not by a batch pass**; see the limits below. **Fix failure modes (5):** measured (`/tmp/f6-failmode.mjs`) — a hand-written `idx_prop_stage` over a *different* expression is not mistaken for the wanted one, so the plain `CREATE INDEX` runs and fails **loudly**: `registerType` throws `index idx_prop_stage already exists`, the squatter is untouched, `objects named alpha*: []`, `entry_types rows: 0`. The `IF NOT EXISTS` form would have silently kept the foreign definition and reported the property indexed; the fix does not use it. **Interaction check (6):** the `renamed` field is additive to `RefreshReport`, whose only consumer is a test — no CLI command prints it. **Caller-contract check (7):** `refreshTypeViews`'s only production caller is `registry.ts` (inside `registerType`), which ignores the return value beyond its own bookkeeping; `ensurePropertyIndex` is module-private. **Boundary check (1):** see the mutation entries below.
+
+**Mutation:** `/tmp/mutate-f6.mjs`, 10 mutations — **10 caught, 0 survived, 0 not applied**, restore byte-identical: true. The mutation that re-enacts the audit's own proposal is the one named *"the legacy twin is never retired (the audit's 'additive and benign')"* — **caught**, which is the check that the refutation is enforced by a test and not only by a paragraph.
+
+**Driven through the real CLI, before and after** (`/tmp/f6-drive.sh before|after`). The BEFORE arm is the shipped implementation at `HEAD~` rebuilt — not a replica — and the fixture is the bead itself, `test{run_count}` + `test_run{count}`:
+
+```
+BEFORE  17 property indexes; no index for `$.count` anywhere
+        v_test_run_v1.count:
+          SEARCH e USING INDEX idx_entries_test_run_count (type_name=?) | USE TEMP B-TREE FOR GROUP BY
+
+AFTER   20 property indexes; idx_entries_test_run_count retired;
+        idx_prop_count / idx_prop_label / idx_prop_note / idx_prop_run_count created
+        v_test_run_v1.count:
+          SEARCH e USING INDEX idx_prop_count (type_name=?)
+        v_review_completed_v1.stage:
+          SEARCH e USING INDEX idx_entries_stage_transition_stage (type_name=?)
+```
+
+The last line is the property-level sharing visible in a real store: a `review_completed` view planned onto an index named after `stage_transition`, because there is only one index over `$.stage` and the name no longer pretends otherwise.
+
+**Cost of the missing index (8), measured on real rows rather than argued** (`/tmp/f6-viewcost.mjs`; 5,000 rows written through the real recorder, n = 5 after a warm-up, the generated view's own `GROUP BY` query):
+
+```
+WITH idx_prop_count  (the AFTER plan)   SEARCH e USING INDEX idx_prop_count (type_name=?)
+    groups: 977   best 1.10 ms   median 1.18 ms
+WITHOUT it          (the BEFORE state: the sibling index + a temp B-tree)
+    groups: 977   best 2.05 ms   median 2.06 ms
+ratio: best 1.9x   median 1.7x
+```
+
+The BEFORE arm there drops one index from an otherwise-fixed store, which isolates the single variable; the temp B-tree is the part that costs, and it is what the missing index left behind.
+
+**Blast radius (corrected):** code — `packages/store/src/views.ts` (1 file); data — **111 stores hold a redundant copy and are migrated in place, one type at a time**, the first time each type is genuinely re-defined; coordination — none.
+
+**Limits, stated rather than smoothed over.** The migration is **not a batch pass and there is no command that runs one**: `refreshTypeViews`'s only caller is `registerType`, and `registerType` **early-returns on an unchanged spec without calling it**, so a store is repaired only when a type is *actually re-defined* (a real new version, as the AFTER arm above does). Four of the fixture's types were never re-defined and kept their pre-rename names, which is that boundary made visible. **There is no `asc doctor` command** — `views.test.ts` said "This is what `asc doctor` calls", which is stale and has been corrected — and **no command prints `RefreshReport`**, so `renamed` is visible only through the library API. This finding was a **performance** defect throughout: the audit found no case where the collision changed a result, and neither did I.
+
+**Gate:** `pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && align check` — **676 passed / 28 files** (was 669; 7 added in `views.test.ts`), `architecture green 0`, `security green 0 (19 baselined)`, `baselined debt: 19 → 19 (0)`, `verdict: green`. Two gate failures were caught on the first pass and fixed rather than waived: the new `for (const [name, view] of [...])` inferred `string[]`, so `view` was `string | undefined` inside a template literal (`restrict-template-expressions`), and the new doc comment broke `prettier --check`.
 
 ---
 
@@ -1120,6 +1200,7 @@ This section exists because the fix work changed the report's own contents in th
 | **B1** | The "extend the reserved-name vocabulary once" remedy is wrong for B1 | Adding `constructor` to `reservedPropertyName` would refuse a name the store can store |
 | **B4** | The Fix Plan's claim that *"the transaction mode is the fix"* for `registerType`'s check-then-act version selection is **refuted** — by reading (`registry.ts:354` precedes `:439`) and by measurement (10 collisions in 10 trials) | The instruction to confirm rather than assume was followed, and it overturned the premise. B4 is a genuine fix for the snapshot failure it was written for; it never covered this race, and `asc-odh` now tracks that separately |
 | **F4** | Its suggested fix was already delivered by `asc-4if` — recorded as a side effect rather than as F4 work | Both findings are one defect reached from two lenses, and counting one change twice would overstate what was fixed |
+| **F6** | **Framing refuted and blast radius refuted.** The finding said two *types* collide on a name; the index is `(type_name, expr)` and `type_name` is a column of it, so the index was never per-type and the second copy was pure cost — measured, alpha's view was served from beta's index **while alpha's own existed**. And *"renaming leaves the old index in place, so the fix is additive and benign"* measures at **111 of 156 stores holding a redundant copy, 138 objects, 9.7 MB**, with `idx_entries%` bytes at **60.6%** of those stores' total. The proposed hash suffix was **rejected**: probabilistic where a proof exists, and still inside the occupied `idx_entries_*` namespace. One index per **property**, matched by exact definition text | Same shape as B4 and `asc-51t`: the finding's *conclusion* — a silently missing index — was right, and its *mechanism* was wrong, which changed the fix rather than the severity |
 | **`asc-51t`** | The bead's inferred cause — pragma **ordering** — is **refuted**; the failing step is the **constructor** itself, one step earlier. Its recommendation 1 (reorder the pragmas) would not have fixed it | A step-labelled probe replaced the inference with the failing step's name, exactly as the bead's own "suggestive at n=3, not proof" asked to be tested. The recommendation's *goal* was right and its *mechanism* was not — the same shape as R6 |
 
 ### `asc-51t` — the OPEN-path sibling of B4, and its recorded cause was wrong

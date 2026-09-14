@@ -159,8 +159,70 @@ export function viewName(typeName: string, major: number): string {
   return `v_${typeName}_v${String(major)}`;
 }
 
-/** The composite expression index for one property of one type. */
-export function indexName(typeName: string, property: string): string {
+/**
+ * The composite expression index for one property of the store.
+ *
+ * **One index per PROPERTY, not per (type, property), and this was measured rather than
+ * preferred** (`asc-bcv.17`, F6). The index is `(type_name, json_extract(properties_json,
+ * '$.<property>'))`: `type_name` is a COLUMN of that index, not part of its identity. Two types
+ * declaring the same property therefore produce two byte-identical indexes, and SQLite takes
+ * either for either type. Measured (`/tmp/f6-shared.mjs`, with `alpha` and `beta` both declaring
+ * `stage`): the planner answered `alpha`'s view with `USING INDEX idx_entries_beta_stage`, and
+ * went on answering that after `idx_entries_alpha_stage` had been dropped. A second copy buys no
+ * query anything; it costs an insert every time, forever.
+ *
+ * The name is a bijection on the property, which is the point: it cannot collide, so "an index
+ * with this name exists" is finally the same question as "this property is indexed". `idx_prop_`
+ * is also a namespace no name this codebase has ever created can occupy -- every property index
+ * used to be `idx_entries_<type>_<property>`, and the schema's own indexes are `idx_entries_*`,
+ * `idx_entry_types_*` and `idx_annotations_*`. So a pre-rename index cannot be mistaken for one
+ * of these, and the pair that collided before cannot collide now.
+ */
+export function indexName(property: string): string {
+  return `idx_prop_${property}`;
+}
+
+/**
+ * The one `CREATE INDEX` statement this file emits for a property, so that "is this index the
+ * one I am looking for?" can be asked by DEFINITION rather than by name.
+ *
+ * Measured (`/tmp/f6-sql.mjs`): `sqlite_master.sql` holds the statement text byte for byte as it
+ * was written -- same quoting, same doubled `'` inside the JSON path, same spacing. That is what
+ * makes an exact string comparison a sound test of "these two names are the same index".
+ */
+function indexDefinition(name: string, property: string): string {
+  return `CREATE INDEX ${ident(name)} ON entries (type_name, json_extract(properties_json, ${literal(`$.${property}`)}))`;
+}
+
+/**
+ * Whether `name` is an index on `entries` whose definition is exactly this one for `property`.
+ *
+ * This is the question `ensurePropertyIndex` has to answer, and for four versions of this file it
+ * answered a different one: "is this NAME taken?". Those differ wherever a name means more than
+ * one thing, and both of the ways they differed were real. `('test','run_count')` and
+ * `('test_run','count')` spelled one name, so the second property was reported as already indexed
+ * and never indexed at all. And `type{time}` spelled the schema's `idx_entries_type_time`, which
+ * is on `(type_name, recorded_at)` -- a name that was taken by an index over a different
+ * expression, answered "yes, you are covered" to a property with no index anywhere.
+ */
+function holdsDefinition(db: DatabaseSync, name: string, property: string): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
+    .get(name) as { sql: string } | undefined;
+
+  return row !== undefined && row.sql === indexDefinition(name, property);
+}
+
+/**
+ * The name this index was spelled with before `asc-bcv.17`, when it was per TYPE:
+ * `idx_entries_<type>_<property>`.
+ *
+ * It is not injective -- `('test','run_count')` and `('test_run','count')` are the same string --
+ * which is the defect that bead was filed for. Kept here because every store built by an earlier
+ * version holds its indexes under this spelling and is migrated in place by the next refresh of
+ * each of its types; after that nothing uses it again.
+ */
+function legacyIndexName(typeName: string, property: string): string {
   return `idx_entries_${typeName}_${property}`;
 }
 
@@ -186,22 +248,44 @@ function versionsOf(db: DatabaseSync, typeName: string): readonly TypeVersion[] 
 }
 
 /**
- * Create the composite expression index for one property, if it is not already there.
+ * Create the expression index for one property, if it is not already there, and retire the twin
+ * an earlier version left under the per-type spelling.
  *
- * `IF NOT EXISTS` and never a drop: an index is not derived state that can go stale, and a
- * property dropped in a later major still has old rows an analysis query may group by.
+ * **It drops exactly one thing, and only when that thing is provably the same index.** An index
+ * is not derived state that can go stale, and a property dropped in a later major still has old
+ * rows an analysis query may group by -- so nothing is dropped for being unused, and the legacy
+ * name is only retired when `holdsDefinition` says the index under it is the very index being
+ * created, on the very same expression. The audit's note that a rename here is "additive and
+ * benign" is not supported by a number: leaving the twin doubles the index bytes of every store
+ * that is refreshed, and measured across the 156 stores on this machine that is 34,165,736 bytes
+ * of `idx_entries%` indexes -- 60.7% of those stores' total bytes -- with every insert afterwards
+ * maintaining two copies of one index.
+ *
+ * The twin is retired BEFORE the check for the new name rather than after it, so a store that
+ * already has the new index still loses the old one. If the `CREATE` then failed, the index would
+ * be gone until the next refresh -- this function is idempotent, and a missing index is a
+ * performance defect rather than a wrong answer, which is the class this bead is in.
+ *
+ * A `CREATE` can only fail on the new name if something else already holds it. `idx_prop_` is
+ * disjoint from every name this codebase creates, so the only way there is a hand-written index;
+ * that fails loudly rather than being read as "already indexed", which is the direction this
+ * bead was filed about.
  */
-function ensurePropertyIndex(db: DatabaseSync, typeName: string, property: string): boolean {
-  const name = indexName(typeName, property);
-  const existing = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
-    .get(name);
-  if (existing !== undefined) return false;
+function ensurePropertyIndex(
+  db: DatabaseSync,
+  typeName: string,
+  property: string,
+): { created: boolean; renamed: string | undefined } {
+  const name = indexName(property);
 
-  db.exec(
-    `CREATE INDEX ${ident(name)} ON entries (type_name, json_extract(properties_json, ${literal(`$.${property}`)}))`,
-  );
-  return true;
+  const legacy = legacyIndexName(typeName, property);
+  const renamed = holdsDefinition(db, legacy, property) ? legacy : undefined;
+  if (renamed !== undefined) db.exec(`DROP INDEX ${ident(renamed)}`);
+
+  if (holdsDefinition(db, name, property)) return { created: false, renamed };
+
+  db.exec(indexDefinition(name, property));
+  return { created: true, renamed };
 }
 
 /**
@@ -219,6 +303,7 @@ export function refreshTypeViews(db: DatabaseSync, typeName: string): RefreshRep
   assertProjectable(versions);
 
   const indexesCreated: string[] = [];
+  const indexesRenamed: string[] = [];
 
   // One index per property, across ALL versions -- a property introduced in a later minor is
   // exactly the one a new query will filter on, and old rows simply have no key to index.
@@ -227,9 +312,9 @@ export function refreshTypeViews(db: DatabaseSync, typeName: string): RefreshRep
     for (const property of spec.properties) {
       if (indexed.has(property.name)) continue;
       indexed.add(property.name);
-      if (ensurePropertyIndex(db, typeName, property.name)) {
-        indexesCreated.push(indexName(typeName, property.name));
-      }
+      const { created, renamed } = ensurePropertyIndex(db, typeName, property.name);
+      if (created) indexesCreated.push(indexName(property.name));
+      if (renamed !== undefined) indexesRenamed.push(renamed);
     }
   }
 
@@ -282,7 +367,12 @@ export function refreshTypeViews(db: DatabaseSync, typeName: string): RefreshRep
     viewsCreated.push(name);
   }
 
-  return { type: typeName, views: viewsCreated, indexes: indexesCreated };
+  return {
+    type: typeName,
+    views: viewsCreated,
+    indexes: indexesCreated,
+    renamed: indexesRenamed,
+  };
 }
 
 export interface RefreshReport {
@@ -291,4 +381,11 @@ export interface RefreshReport {
   readonly views: readonly string[];
   /** Only the indexes actually created by THIS call. Empty on a repeat. */
   readonly indexes: readonly string[];
+  /**
+   * The pre-`asc-bcv.17` names of indexes THIS call retired, having recreated the same index
+   * under the name above. Empty unless the store was built by an earlier version -- this is the
+   * one-time migration, and it is reported rather than done quietly because it removes an object
+   * from a store the user already had.
+   */
+  readonly renamed: readonly string[];
 }
