@@ -172,20 +172,112 @@ describe('the stream contract', () => {
 });
 
 /**
- * NOT TESTED HERE, and stated rather than left to be assumed: **EPIPE end to end**.
+ * Enough rows that the output clears a 64 KiB pipe with room to spare, and no more.
  *
- * `asc ... | head -1` must exit 0 rather than print a stack trace. The DECISION behind that
- * is covered by `streams.test.ts`, which feeds the guard an EPIPE and watches the exit code.
- * What no test here can prove is that the OS ever delivers that event to this process: a
- * pipe buffer on this platform holds 64 KiB, and the largest thing any command can currently
- * print is a table with one row per registered type, so a test written against `types list`
- * would pass whether or not the guard existed. That is the false-green `TASKS.md` #5 and
- * this project's whole evidence discipline exist to reject, so the test is not written.
+ * `asc query` runs raw SQL, so this needs no fixture and no stored entries -- which is the whole
+ * point of `asc-6ct` no longer being a prerequisite. Each row renders at about 49 bytes (a small
+ * integer, a tab, and the 40-character pad), so 5,000 rows is roughly 245 KB: comfortably past the
+ * pipe, and a fraction of the work the note above was waiting for.
+ */
+const BIG_QUERY =
+  `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<5000) ` +
+  `SELECT x, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' AS pad FROM c`;
+
+describe('a reader that closes the pipe early', () => {
+  /**
+   * A project with the store CREATED, which is not `project()` above.
+   *
+   * Measured, because the difference is not visible from the helper's name: `asc query` against a
+   * bare `.ascend/` directory fails with *unable to open database file* and exits 1, so the query
+   * never runs and this whole block would be testing a startup failure. `asc init` applies the
+   * schema, and the same query then succeeds with 235,057 bytes.
+   */
+  function initialized(): string {
+    const dir = scratch();
+    mkdirSync(join(dir, '.git'));
+    expect(asc(['init'], dir).status).toBe(0);
+    return dir;
+  }
+
+  it('is a reader the output actually overruns', () => {
+    // The precondition, and the reason it is asserted rather than assumed: if this query ever
+    // stopped exceeding the pipe, `head -1` would read everything, no EPIPE would be delivered,
+    // and the test below would pass while proving nothing. That is the false-green this project
+    // treats as severity-zero, so the trigger is checked before the behaviour is.
+    //
+    // Compared as character counts against a byte capacity, which is exact here because every byte
+    // of this output is ASCII (integers, tabs, and a row of `a`). A payload with a multi-byte
+    // character in it would need `Buffer.byteLength`, and this says so rather than leaving the
+    // next reader to notice.
+    const run = asc(['query', BIG_QUERY], initialized());
+    expect(run.status).toBe(0);
+    expect(
+      run.stdout.length,
+      `the query produced ${String(run.stdout.length)} bytes, which does not exceed a ` +
+        `64 KiB pipe -- raise the row count, or the test below cannot fail`,
+    ).toBeGreaterThan(65_536);
+  });
+
+  it('exits 0 without a stack trace', () => {
+    // The contract: `asc query ... | head -1` is an ordinary, successful pipeline. A reader that
+    // took its one line and left is not an error, and printing a stack trace at it is the failure
+    // the guard exists to prevent.
+    //
+    // `bash` and `pipefail` so the status measured is ASCEND's, not `head`'s -- a pipeline reports
+    // the last command, which here is 0 whatever ascend did.
+    const dir = initialized();
+    const script = [
+      'set -o pipefail',
+      `"${process.execPath}" "${bin}" query ${JSON.stringify(BIG_QUERY)} | head -1 >/dev/null`,
+      'echo "ascend=$?"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', script], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, HOME: dir, XDG_CACHE_HOME: join(dir, '.cache') },
+      timeout: 30_000,
+    });
+
+    // Asserted before the exit code, because a hang would otherwise show up as a confusing
+    // mismatch rather than as a hang.
+    expect(result.error, 'the pipeline was killed at the timeout').toBeUndefined();
+
+    // stdout is inherited from bash through spawnSync, NOT piped into `head`, so a stack trace
+    // would land here and be caught. (In the stderr twin in `8pp-truncation.test.ts` it cannot:
+    // ascend's stderr goes into a pipe `head` has already closed, so a trace would be discarded
+    // rather than observed -- which is why that arm asserts a different property.)
+    expect(result.stderr).not.toMatch(/\n\s+at .*:\d+:\d+/);
+    expect(result.stdout.trim()).toBe('ascend=0');
+  });
+});
+
+/**
+ * **EPIPE end to end**: `asc ... | head -1` must exit 0 rather than print a stack trace.
  *
- * The trigger arrives with `asc query` (`asc-6ct`), the first command whose output scales
- * with the entry count. Until then the install step is **unproven**, and measured to be so
- * rather than assumed: replacing `installPipeGuards()` in `src/bin.ts` with `void 0` leaves
- * this suite green (mutation M8, 2026-09-12). What IS covered is that the entry point loads
- * the module at all -- pointing its import at a nonexistent file fails every test here (M7)
- * -- so the gap is one call wide, not the whole wiring.
+ * The DECISION behind that is covered by `streams.test.ts`, which feeds the guard an EPIPE and
+ * watches the exit code. This block covers what that file cannot: that the OS delivers the event
+ * to this process at all, and that the ordinary pipeline stays quiet when it does.
+ *
+ * **The earlier claim, and what replaced it.** This note used to say no test here could prove
+ * that, because a pipe holds 64 KiB and *"the largest thing any command can currently print is a
+ * table with one row per registered type"*, so a test would pass whether or not the guard existed.
+ * That was wrong, and measurably so: `asc query` takes raw SQL, and a recursive CTE produces
+ * **9,800,061 bytes** with no stored data at all -- far past the pipe. What the earlier note got
+ * right is that `types list` would have been the wrong command to write it against.
+ *
+ * **What this block does NOT prove, corrected 2026-09-14.** It used to end by saying that removing
+ * `installPipeGuards()` from `src/bin.ts` (mutation M8) "now fails here". It does not, and the
+ * reason is a fact about the dependency rather than about the test: **oclif installs its own EPIPE
+ * handler on stdout** -- `@oclif/core/lib/command.js:57`, `process.stdout.on('error', err => { if
+ * (err.code === 'EPIPE') return; throw err })`, registered when the `Command` class module loads.
+ * That is the same decision `guardBrokenPipes` makes, reached independently of ascend. Measured
+ * with a tap on the event: `TAP-stdout EPIPE` fires during `asc query ... | head -c 1`, and the
+ * exit status and stderr are identical with the guard installed and with the call removed. So this
+ * block pins the contract -- the pipeline is quiet and exits 0 -- and it cannot distinguish the
+ * guard's presence on stdout, because something else already provides it.
+ *
+ * **And the same tap says why the guard stays.** At exit the stdout stream had 3 `error` listeners
+ * and stderr had exactly the tap's own one: oclif covers stdout and **not** stderr. The stderr half
+ * of `guardBrokenPipes` therefore has no equivalent underneath it, which is where the guard is
+ * load-bearing rather than duplicative.
  */

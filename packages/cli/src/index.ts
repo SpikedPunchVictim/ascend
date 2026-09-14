@@ -20,8 +20,8 @@ export const BIN = 'asc';
  * (`src/bin.ts`) imports the module directly instead, so that starting `asc` loads one
  * function to install a stream handler rather than whatever the index grows to include.
  */
-export { guardBrokenPipes, installPipeGuards } from './streams.js';
-export type { ErrorEmitting, PipeGuardDeps } from './streams.js';
+export { guardBrokenPipes, installPipeGuards, makeWritesSynchronous } from './streams.js';
+export type { BlockingCapable, ErrorEmitting, PipeGuardDeps } from './streams.js';
 
 /**
  * Re-exported for the same reason, and here the reason is sharper than convenience.

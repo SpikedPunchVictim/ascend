@@ -7,11 +7,11 @@
  * hand-written `bin/run.js` next to the source. Two reasons for the deviation:
  *
  *   1. **Everything the entry point does is typed and testable.** The one thing it does
- *      beyond handing over to oclif is the broken-pipe guard (`streams.ts`), and that
- *      decision is covered by a unit test. A plain-JS `bin/run.js` would put it out of
- *      reach of the typechecker: `checkJs` is off, so the error object there is `any`, and
- *      a stream error handler that guesses at the shape of what it was handed is exactly
- *      what must not happen.
+ *      beyond handing over to oclif is install the stream guards (`streams.ts`) -- the
+ *      broken-pipe handler and synchronous writes -- and both decisions are covered by unit
+ *      tests. A plain-JS `bin/run.js` would put them out of reach of the typechecker: `checkJs`
+ *      is off, so the error object there is `any`, and a stream error handler that guesses at
+ *      the shape of what it was handed is exactly what must not happen.
  *   2. **No file has to reach into `dist/`.* A hand-written entry point in `bin/` cannot
  *      import the typed source at runtime -- `bin/` is not compiled -- so it would have to
  *      import `../dist/streams.js`. That edge is invisible to every architecture rule,
