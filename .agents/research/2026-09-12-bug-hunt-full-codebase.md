@@ -108,7 +108,8 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | F5 | FIXED — and the report's own predicate is **PARTLY REFUTED**: rejecting `"` and a lone `$` would refuse names that measure returning their literal key, which is the same defect as passing `a.b`. The shipped guard's character set is **measured across all of Unicode** (4,448,256 probes → 12 failures from 4 characters) and reconciled against SQLite for **4,456,448 names → 0 false negatives, 0 false positives**. **That number is scoped by F10 below: the reconciled set is non-empty, NUL-free names.** The union's independent read path now asks the same question, and its false comment was corrected rather than deleted. `asc-bcv.16` CLOSED. See F5's Status and its scope correction | `5434fc4` |
 | F10 | FIXED — found **while building F5's fix**, by a reconciliation sweep rather than by reading. The predicate is `raw === ''`, not `canonicalName(raw) === ''`: 24 of the 25 names that fold to empty were measured addressing their literal key, and refusing them would be F5's defect wearing the other hat. `asc-bcv.21` CLOSED. See F10's Status | `d7d99f7` |
 | F11 | FIXED — found by F10's own reconciliation, which reported exactly **2 false negatives over 63,881 names**. The rule was right about **addressing** and silent about **transport**: the sweep bound the path as a value, the generator interpolates it. Now `anywhere`, and the reconciliation re-run reads **0 false negatives, 0 false positives**. `asc-bcv.22` CLOSED. See F11's Status | `087442f` |
-| F6 | FIXED — and the audit's **framing and its blast radius are both REFUTED**: the index was never per-type (`type_name` is a column of it, measured — alpha's view was served from beta's index while alpha's own existed), and "additive and benign" measures at **111 of 156 stores holding a redundant copy, 138 objects, 9.7 MB**, with `idx_entries%` bytes at **60.6% of those stores' total** (`/tmp/f6-dup.mjs`, `/tmp/f6-blast.mjs`). One index per **property** (`idx_prop_<property>`, a bijection), matched by **exact definition text** rather than by name, with the pre-rename name retired in place and reported. `asc-bcv.17` CLOSED. See F6's Status | this commit |
+| F6 | FIXED — and the audit's **framing and its blast radius are both REFUTED**: the index was never per-type (`type_name` is a column of it, measured — alpha's view was served from beta's index while alpha's own existed), and "additive and benign" measures at **111 of 156 stores holding a redundant copy, 138 objects, 9.7 MB**, with `idx_entries%` bytes at **60.6% of those stores' total** (`/tmp/f6-dup.mjs`, `/tmp/f6-blast.mjs`). One index per **property** (`idx_prop_<property>`, a bijection), matched by **exact definition text** rather than by name, with the pre-rename name retired in place and reported. `asc-bcv.17` CLOSED. See F6's Status | `6514994` |
+| F7 | FIXED — the audit's **mechanism is confirmed and its extent is not**, and **the bead's title is refuted**: `asc-bcv.18` names *enum values*, which are trimmed before hashing and therefore mint nothing (`["a"]` and `[" a "]` hash **equal**), while the defect is in `unit`, as the bead's own description said. The sweep of all five fields in `definitionShape` found `unit` is the **only** member of the class, and found the audit had named half of it: `unit: ""` and an absent unit both name no unit and hash differently too. Refusal kept over trimming, measured: the trimmed hash of a stored `" ms "` row is **not** its stored hash, so trimming would mint the version the rule prevents. **0 of 573** stored versions declare a unit — no data half, no migration. Mutation-tested **12/12**, including the wrong fix. `asc-bcv.18` CLOSED. See F7's Status | this commit |
 | `asc-4if` (NR3, answered) | FIXED | `bfb7786` |
 | B4 | FIXED (3 sites; `registry.ts`/`schema.ts` not mutation-testable — see its Status) | `15947f8` |
 | F4 (first half) | FIXED as a side effect of `asc-4if`; residual divergence untouched | `bfb7786` |
@@ -120,7 +121,7 @@ Blast radius is the three-axis notation: **code / data / coordination**.
 | `asc-9zd` (found while verifying the above) | **FIXED.** A brand-new store opened by two processes failed 15% of the time; the switch to WAL is now waited out on a statement SQLite *does* govern. 60/60, 120/120, and 160/160 under 8-way contention, where the bead's own retry design reached 154/160. See §5d | `00d73a0` |
 | `asc-byn` (E4 review, P1) | **FIXED.** Both guards closed: the pragma, with a read-back, plus the source scan. See §5e | `00d73a0` |
 
-**The Commit column used to say `this commit` on every row.** That was the convention while each row's report update shipped *inside* its own fix commit — true when written, unreadable afterwards, and after two rows were resolved and six were not it meant two different things in one column. Every row now carries the commit that introduced it, resolved with `git log -S` against this file rather than from memory. **F6's row is the deliberate exception and still reads `this commit`:** it was written in the commit that carries it, and a commit cannot name itself without the hash changing the moment it does.
+**The Commit column used to say `this commit` on every row.** That was the convention while each row's report update shipped *inside* its own fix commit — true when written, unreadable afterwards, and after two rows were resolved and six were not it meant two different things in one column. Every row now carries the commit that introduced it, resolved with `git log -S` against this file rather than from memory. **Exactly one row still reads `this commit`: whichever fix is being written right now** — today, F7's. It says `this commit` because a commit cannot name itself without the hash changing the moment it does, and it is resolved to a real hash by the *next* fix's report update, which is how F6's row became `6514994`.
 
 **A note on the bead IDs, because they do not match this report's B-numbers.** The beads were created in triage order (`asc-bcv.1` … `asc-bcv.21`), so `asc-bcv.<n>` is *not* finding `B<n>`. B8 is **`asc-bcv.4`**; `asc-bcv.8` is B3 (non-ASCII search). I committed B8 naming `asc-bcv.8` and corrected it in `acfec7a` — the first version of that message named a different, still-open finding. Mapping: B1→`.1`, B2→`.2`, F1→`.3`, B8→`.4`, B11→`.5`, B12→`.6`, B4→`.7`, B3→`.8`, B5→`.9`, B6→`.10`, B7→`.11`, B9→`.12`, B10→`.13`, F2→`.14`.
 
@@ -1024,19 +1025,167 @@ The BEFORE arm there drops one index from an otherwise-fixed store, which isolat
 
 ### F7 — `unit` is not trimmed, so `" ms "` forces a MAJOR bump
 
+**Found:** by the audit. Its stated mechanism is **confirmed, and its stated extent is not**.
+**Status: FIXED.**
+
 **Lens:** 3 (boundary), 9 (write/read asymmetry)
 **Confidence:** Confirmed (empirical) · **Urgency:** Low
 
-**Evidence:**
+**The audit's evidence, reproduced on the production identity path (`specHash`):**
 
 ```
-unit "ms" vs " ms " :: "ms" vs " ms " | hashEqual=false | bump=major
+unit        "ms" vs " ms "    :: hashEqual=false  bump=major  unit_changed@major
+enum_values ["a"] vs [" a "]  :: hashEqual=true   bump=n/a
+unit        absent vs ""      :: hashEqual=false  bump=major  unit_changed@major
+name        "a b" vs "a_b"    :: hashEqual=true   bump=n/a      <- the control: canonicalized
 ```
 
-Names are canonicalized (`a.b` → `a_b`, `café` → `caf`); `unit` is copied through. The whitespace difference changes the type hash, and the diff classifies it as **`major`** — the most expensive bump, reserved for changes that invalidate stored entries — for a change that alters no meaning.
+Names are canonicalized (`a.b` → `a_b`); `unit` on a unit-bearing type is copied through into
+`definitionShape` and therefore into `type_hash`. The whitespace difference changes the hash, and the
+diff classifies it **`unit_changed` / `major`** — the bump reserved for a magnitude that now means
+something else (`diff.ts:140-149`) — for a change that means nothing. (`/tmp/f7-probe.mjs`.)
 
-**Blast radius:** code — `packages/core/src/spec.ts` (1 file); data — **a spec already stored as `" ms "` has a hash that trimming would change**, minting a new version on re-registration; coordination — none.
-**Verified fix — and the obvious fix is wrong:** do **not** trim. Trim changes the hash of an already-stored spec, and `entry_types`' composite FK keyed on `type_hash` (`schema.ts:53-58`) is what makes drift impossible. **Reject** leading/trailing whitespace as a definition error instead — a rejection never changes a hash that has already been computed and stored. **Empirical re-test (8):** assert `unit: " ms "` fails canonicalization with a legible error and that `unit: "ms"` is unaffected.
+**Two things the audit did not say, both measured, and one of them changes the fix.**
+
+**1. `unit:` and an empty `unit` are the same defect in the same field** — both name no unit, and
+`definitionShape` keeps `unit: ""` because it is not `undefined`, so the two hash differently and a
+`major` is minted between two definitions that say the same thing. Measured above. The audit named
+only the whitespace half; a fix for the spelling alone leaves this one open.
+
+**2. The class has exactly one member, and finding it needed a sweep of every field in the hash.**
+`definitionShape` keeps five fields — `name`, `type`, `required`, `enum_values`, `unit` — so each one
+was asked whether it admits two spellings of one meaning:
+
+| Field | Two spellings of one meaning? | Why |
+|---|---|---|
+| `name` | No | `canonicalName` folds separators and edges, **and reports the fold** in `renames` |
+| `type` | No | a closed vocabulary, refused at the document boundary (`document.ts:97`) before it reaches the hash |
+| `required` | No | boolean, and kept only when `true` |
+| `enum_values` | Not in identity | trimmed **and** sorted (`spec.ts:490`), so two spellings hash **equal** — the *opposite* of this defect |
+| `unit` | **Yes** | nothing folds it. This is F7, and it is the only member |
+
+**The bead's title is therefore refuted, and its description is confirmed.** `asc-bcv.18` is titled
+*"enum values differing only in surrounding whitespace mint a major version"* and described as
+*"'ms' vs ' ms ' -> hashEqual=false, bump=major"*. Measured, those are two different claims about two
+different fields, and the title's claim is **false**: `enum_values` are trimmed before hashing, so
+`["a"]` and `[" a "]` are one definition and mint nothing. The description's claim is F7, in `unit`.
+The title is not left standing as a curiosity — a bead titled after a refuted mechanism is how a fixed
+defect gets re-filed — but the field it names is *not* defect-free either, and its real behaviour is
+recorded below rather than passed over.
+
+**Blast radius (corrected):** code — `packages/core/src/spec.ts` (1 file, as the audit said); data —
+**none in observed data, and the argument does not rest on that**: **0 of 573** stored type versions
+across **157** real stores declare a `unit` at all (`/tmp/f7-stores.mjs`), so no store can be holding
+a value this rule refuses — and rejection is hash-preserving whether or not one is, which is the point
+below; coordination — none.
+
+**The fix: REFUSE, and the audit's argument for it survived its own re-derivation.** The obvious fix is
+to trim, and it is wrong for a reason that is measurable rather than merely argued: the canonical form
+**is** the hash input, so trimming changes the identity of a definition already stored with the padded
+spelling. Measured on a constructed pre-fix row (`/tmp/f7-hashes.mjs`):
+
+```
+stored row      : {"name":"timing","properties":[{"name":"elapsed","type":"duration","unit":" ms "}]}
+stored hash     : d2cfd912583fb9fa
+the shipped refusal reproduces it : true
+the REJECTED fix (trim) yields    : d38bd96e70c819ba    <- not the stored hash
+```
+
+So trimming would mint exactly the version the rule exists to prevent. The shipped rule refuses a
+`unit` that has surrounding whitespace **or** names no unit, as an **error** in
+`canonicalizeProperty` — the one place every spec already passes through, and the channel `registerType`
+refuses on (`registry.ts:435`).
+
+**Gated exactly where `definitionShape` keeps the field**, so the guard and the hash agree by
+construction rather than by convention. On a `string` the unit is dropped from both the stored shape and
+the hash — measured, a `string` with `unit: " ms "` and one with no unit hash **equal** — so the existing
+warning is the whole finding there, and refusing the spelling of a field the store is about to discard
+would be a refusal with nothing behind it. Asserted as an invariant, not as prose: the test walks six
+types × five spellings and requires `refused === (reaches the hash AND the spelling is not canonical)`.
+
+**What the guard does NOT cover, measured rather than assumed.** `trim()` implements the ECMAScript
+whitespace set, which is **16 of the 23 characters a reader would call invisible**
+(`/tmp/f7-invisible.mjs`). These seven are **not** refused — ZWSP, ZWNJ, ZWJ, soft hyphen, word joiner,
+Mongolian vowel separator, combining grapheme joiner. They are not whitespace, so catching them is a
+different rule about *invisible characters*, and ZWJ and ZWNJ are orthographically meaningful in
+Persian, Arabic and Indic scripts, so that rule would refuse a correctly written unit. Internal
+whitespace is deliberately allowed for the same reason in the other direction: `'flight hours'` is a
+unit, and the defect is whitespace at the **edges**.
+
+**Checks (Step 6).**
+
+1. **Boundary** — asserted separately for leading-only and trailing-only, because a `trimStart`-only
+   rule passes a test built from `' ms '` (both ends move, so either half-trim still sees a
+   difference). That gap was found while *writing the mutations*, not while writing the test.
+2. **Mirror path** — `unit` has one write path (`canonicalizeProperty` → `toStorage` → `spec_json`) and
+   no read path that normalizes; `diffTypeSpec` canonicalizes both sides itself, so classification sees
+   the same strings the hash does.
+3. **Existing data** — **0 of 573** versions declare a unit (`/tmp/f7-stores.mjs`); the constructed
+   pre-fix row above is the only case on this machine, and it is a fixture. **No migration.**
+4. **Constraint value** — the constraint is `spec.unit.trim() !== ''` **and** `spec.unit === spec.unit.trim()`,
+   cited to `spec.ts` itself; the *gate* (`UNIT_BEARING_TYPES`) is read from the same constant
+   `definitionShape` uses, so the two cannot drift.
+5. **Failure modes** — loud (`UnusableDefinitionError`, exit 1, nothing registered) and **total**: no
+   input reintroduces the class, because the guard refuses every spelling that is not the one the store
+   hashes. No silent default anywhere on this path.
+6. **Interaction** — none. Driven through `asc types import` too, where the refusal names the failing
+   document and registers 0 of 2.
+7. **Caller contract** — `canonical.errors` has exactly **one** reader in the codebase
+   (`registry.ts:435`), so the only behaviour change is one more refusal there. `specHash` and
+   `diffTypeSpec` read `.spec`, never `.errors`, so **no hash moves and no diff changes.**
+8. **Empirical re-test** — the real CLI, exit codes verbatim (`/tmp/f7-drive.sh`):
+
+```
+unit: " ms "   -> exit 1   "property 'elapsed' has unit ' ms ', which has surrounding whitespace.
+                            ... Write it as 'ms'."
+unit: "ms"     -> exit 0   timing v1 created, stored as unit="ms"
+unit: " ms "   again, now that v1 exists -> exit 1, and entry_types still holds exactly 1 row
+unit: ""       -> exit 1   "which names no unit ... Omit the field."
+unit: "  "     -> exit 1   same message
+unit: "flight hours", "req/s" -> exit 0   (internal whitespace and non-ASCII still accepted)
+unit: " ms " on a `string`    -> exit 0   warning only; stored shape has no unit at all
+```
+
+**Mutation-tested 12/12, 0 survived** (`/tmp/mutate-f7.mjs`, restore byte-identical). The two that
+matter most are the decision rather than the code: **mutation 1 is the wrong fix** — trim the unit,
+refuse nothing — and the suite **catches** it, which is what makes this fix's central claim a tested
+claim rather than a comment. The rest attack the gate (fire on every type; invert it), the halves
+(drop the empty branch; drop the whitespace branch), the trim's symmetry (`trimStart`-only,
+`trimEnd`-only), the channel (warn instead of refuse — the `asc-0w9` mistake), the boundary (also refuse
+internal whitespace; also refuse the seven invisible characters), and the message (refuse without naming
+the spelling to write). All caught.
+
+**Hash-neutrality, on real data.** Every stored `type_hash` on this machine was recomputed from its own
+`spec_json` (`/tmp/f7-mismatches.mjs`): **549 of 549** rows whose `spec_json` is its own canonical shape
+*and* whose stored hash is a real sha256 reproduce it — **0 failures**. Nine further canonical rows do
+not reproduce, and all nine carry a hand-typed placeholder in `type_hash` (`"h"`, `"h1"`, `"h_e"`,
+`"hash_hand_empty"`, or 64 repeated characters) from the fixture rows earlier phases inserted by hand;
+`sha256Hex` output being 32 identical bytes has probability ≈ 2⁻²⁵⁰. The audit's claim that *"a spec
+already stored as `" ms "` has a hash that trimming would change"* is therefore **confirmed empirically**,
+not merely by reading: the trimmed hash differs from the stored one (above), and no canonical row's hash
+moved under the shipped fix.
+
+**Limits, stated plainly.**
+
+- **The refusal costs the author a round trip on a document that used to register.** A store holding
+  `' ms '` now refuses to re-register that same document, loudly (`exit 1`, `entry_types` untouched)
+  instead of answering `unchanged` — because `registerType` refuses *before* its idempotence check
+  deliberately, so a store that already holds an unusable definition cannot be told it just accepted
+  this one. Same shape as the F5, F10 and F11 refusals. Measured cost on real data: **0 stores** hold
+  such a row, so the cost is currently paid by nobody.
+- **`enum_values` are still trimmed silently.** The trim is deliberate and right for identity (it makes
+  two spellings hash equal), and it is *unreported*: a document writing `[" a "]` is stored as `["a"]`
+  with no `renames` entry, unlike a property name, whose fold is reported. It is **not** a bug by this
+  report's definition — it prevents a version mint rather than causing one — and it is recorded here as
+  the one asymmetry the sweep found and did not change, because rejecting it would refuse documents that
+  register correctly today.
+- **The seven invisible non-whitespace characters are unguarded**, for the reason given above. They mint
+  the same `major` bump as whitespace does.
+
+**Gate:** `pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && align check` — **683 passed /
+28 files** (was 676; 7 added in `spec.test.ts`), `architecture green 0`, `security green 0 (19
+baselined)`, `baselined debt: 19 → 19 (0)`, `verdict: green`. One gate failure was caught on the first
+pass and fixed rather than waived: the new tests were unformatted (`prettier --warn`, then `--write`).
 
 ---
 
@@ -1202,6 +1351,7 @@ This section exists because the fix work changed the report's own contents in th
 | **F4** | Its suggested fix was already delivered by `asc-4if` — recorded as a side effect rather than as F4 work | Both findings are one defect reached from two lenses, and counting one change twice would overstate what was fixed |
 | **F6** | **Framing refuted and blast radius refuted.** The finding said two *types* collide on a name; the index is `(type_name, expr)` and `type_name` is a column of it, so the index was never per-type and the second copy was pure cost — measured, alpha's view was served from beta's index **while alpha's own existed**. And *"renaming leaves the old index in place, so the fix is additive and benign"* measures at **111 of 156 stores holding a redundant copy, 138 objects, 9.7 MB**, with `idx_entries%` bytes at **60.6%** of those stores' total. The proposed hash suffix was **rejected**: probabilistic where a proof exists, and still inside the occupied `idx_entries_*` namespace. One index per **property**, matched by exact definition text | Same shape as B4 and `asc-51t`: the finding's *conclusion* — a silently missing index — was right, and its *mechanism* was wrong, which changed the fix rather than the severity |
 | **`asc-51t`** | The bead's inferred cause — pragma **ordering** — is **refuted**; the failing step is the **constructor** itself, one step earlier. Its recommendation 1 (reorder the pragmas) would not have fixed it | A step-labelled probe replaced the inference with the failing step's name, exactly as the bead's own "suggestive at n=3, not proof" asked to be tested. The recommendation's *goal* was right and its *mechanism* was not — the same shape as R6 |
+| **F7** | The finding's mechanism is **confirmed** and its **extent was halved**: `unit: ""` and an absent unit are the same defect in the same field (both name no unit, and `definitionShape` keeps the empty string, so they hash differently and mint a `major`), which the finding did not mention. Separately, the bead's **title** — *"enum values differing only in surrounding whitespace mint a major version"* — is **refuted**: `enum_values` are trimmed before hashing and the two spellings hash equal | Same shape as F6's: the conclusion held, the reach did not. The sweep of all five fields in `definitionShape` is what bounded it — `unit` is the class's only member, and `enum_values` is its opposite (a trim that *prevents* a version mint rather than causing one), which is why a title naming the wrong field had to be measured rather than assumed either way |
 
 ### `asc-51t` — the OPEN-path sibling of B4, and its recorded cause was wrong
 

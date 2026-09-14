@@ -506,6 +506,52 @@ export function canonicalizeProperty(spec: PropertySpec): Canonicalized<Property
     warnings.push(`property '${name}' has a unit but its type is '${spec.type}'`);
   }
 
+  // A unit that is not already in the one spelling the store would hash is REFUSED, and the
+  // refusal is the whole of this rule (asc-bcv.18, F7).
+  //
+  // `unit` is kept by `definitionShape` and so sits inside `type_hash`, which means the store
+  // hashes the SPELLING. Measured on the production identity path (`specHash`): `'ms'` and
+  // `' ms '` hash differently and `diffTypeSpec` classifies the change `unit_changed` / MAJOR --
+  // the bump reserved for a magnitude that now means something else, reported for a change that
+  // means nothing. `''` is the same defect one size smaller: an empty unit and an absent one both
+  // name no unit, and they hash differently too. `'"  "'` is both. The seven other characters a
+  // reader would call invisible but ECMAScript does not call whitespace (ZWSP, ZWNJ, ZWJ, soft
+  // hyphen, word joiner, Mongolian vowel separator, combining grapheme joiner) are NOT refused --
+  // they are a rule about invisible characters rather than about whitespace, and ZWJ and ZWNJ are
+  // orthographically meaningful in Persian, Arabic and Indic scripts, so refusing them would
+  // refuse a correctly written unit. Named as a limit rather than left unstated.
+  //
+  // TRIMMING IS THE OBVIOUS FIX AND IT IS WRONG. Trimming changes the canonical form, and the
+  // canonical form is the hash input -- so a definition already stored as `' ms '` would hash
+  // differently the next time that same document was submitted, and the store would mint exactly
+  // the MAJOR version this rule exists to prevent. Refusing costs the author one round trip and
+  // cannot change a hash that has already been computed. Every other canonicalization in this file
+  // rewrites and reports (`canonicalName` above, and the enum trim below); this is the one field
+  // that cannot be rewritten, because here a rewrite is not free.
+  //
+  // Gated on a unit-bearing type because that is exactly where `definitionShape` keeps the field,
+  // so the guard and the hash agree by construction. On a `string` the unit is dropped from the
+  // stored shape and from the hash -- measured, a `string` with `unit: ' ms '` and one with no unit
+  // hash equal -- so the warning above is the whole finding there, and refusing the spelling of a
+  // field the store is about to discard would be a refusal with nothing behind it.
+  if (spec.unit !== undefined && UNIT_BEARING_TYPES.includes(spec.type)) {
+    const unit = spec.unit.trim();
+    if (unit === '') {
+      errors.push(
+        `property '${name}' has unit '${spec.unit}', which names no unit. A unit is part of the ` +
+          `definition's identity and is hashed, so an empty unit and an absent one are two ` +
+          `definitions, and the change between them is classified a MAJOR bump. Omit the field.`,
+      );
+    } else if (unit !== spec.unit) {
+      errors.push(
+        `property '${name}' has unit '${spec.unit}', which has surrounding whitespace. A unit is ` +
+          `part of the definition's identity and is hashed, so '${spec.unit}' and '${unit}' are two ` +
+          `definitions, and the change between them is classified a MAJOR bump. ` +
+          `Write it as '${unit}'.`,
+      );
+    }
+  }
+
   // exactOptionalPropertyTypes is on, so build the object conditionally rather than
   // passing explicit `undefined` -- the two are different types under that flag.
   const canonical: PropertySpec = {

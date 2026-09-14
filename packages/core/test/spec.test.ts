@@ -431,6 +431,116 @@ describe('definitionShape normalizes the fields that constrain nothing', () => {
   });
 });
 
+describe('a unit that is not in canonical form is REFUSED, not rewritten', () => {
+  // asc-bcv.18 (F7), and the counterpart to the block above. Those fields can be normalized
+  // because `definitionShape` drops or folds them; `unit` on a bearing type is KEPT, so its
+  // spelling is inside `type_hash` and there is no rewrite available. Trimming would change the
+  // canonical form, which is the hash input -- so a definition already stored as `' ms '` would
+  // hash differently the next time the same document was submitted and the store would mint the
+  // very MAJOR version this rule exists to prevent. Refusing cannot change a hash already
+  // computed, which is why this is an error and not a normalization.
+
+  const errorsFor = (unit: string, type = 'duration'): readonly string[] =>
+    canonicalizeProperty({ name: 'elapsed', type: type as never, unit }).errors;
+
+  it('refuses surrounding whitespace, naming both spellings and the one to write', () => {
+    const errors = errorsFor(' ms ');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("unit ' ms '");
+    expect(errors[0]).toContain("' ms ' and 'ms' are two definitions");
+    expect(errors[0]).toContain("Write it as 'ms'");
+  });
+
+  it('refuses leading and trailing whitespace each on its own, not only both at once', () => {
+    // Asserted separately because a `trimStart`-only or `trimEnd`-only rule passes a test built
+    // from `' ms '` alone -- both ends move, so either half-trim still sees a difference. The two
+    // one-sided spellings are what make each half observable.
+    for (const unit of [' ms', 'ms ', '\tms', 'ms\n']) {
+      expect(errorsFor(unit)).toHaveLength(1);
+    }
+  });
+
+  it('refuses a unit that names no unit, whether empty or only whitespace', () => {
+    // `''` and `'  '` are one problem stated twice: both name no unit, and an absent unit names
+    // no unit too -- so all three spellings of the same meaning must not be three definitions.
+    for (const unit of ['', '   ', '\t']) {
+      const errors = errorsFor(unit);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('names no unit');
+      expect(errors[0]).toContain('Omit the field');
+    }
+  });
+
+  it('covers the whole ECMAScript whitespace set, not just the ASCII space', () => {
+    // Measured before it was asserted: 16 of the 23 characters a reader might call invisible are
+    // whitespace by the ECMAScript definition, and `trim()` removes exactly those. The other
+    // seven (ZWSP, ZWNJ, ZWJ, soft hyphen, word joiner, Mongolian vowel separator, combining
+    // grapheme joiner) are NOT refused -- that is a rule about invisible characters rather than
+    // about whitespace, and ZWJ and ZWNJ are orthographically meaningful in Persian, Arabic and
+    // Indic scripts, so refusing them would refuse a correctly written unit.
+    for (const code of [
+      0x20, 0x09, 0x0a, 0x0d, 0x0b, 0x0c, 0xa0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+      0xfeff,
+    ]) {
+      expect(errorsFor(`ms${String.fromCodePoint(code)}`)).toHaveLength(1);
+    }
+    for (const code of [0x200b, 0x200c, 0x200d, 0x00ad, 0x2060, 0x180e, 0x034f]) {
+      expect(errorsFor(`ms${String.fromCodePoint(code)}`)).toEqual([]);
+    }
+  });
+
+  it('refuses NOTHING else, because a false refusal here is the same size of defect', () => {
+    // Every one of these is a unit someone could have meant. Internal whitespace is the
+    // interesting one: 'flight hours' is a unit, and the defect is whitespace at the EDGES.
+    for (const unit of ['ms', 's', 'flight hours', 'µm', 'km/h', 'req/s', 'MB']) {
+      expect(errorsFor(unit)).toEqual([]);
+    }
+  });
+
+  it('leaves a whitespace unit on a NON-bearing type alone, where it is dropped anyway', () => {
+    // The gate is not `unit !== canonical`; it is "the field is inside the hash". Measured: a
+    // `string` with `unit: ' ms '` and one with no unit hash EQUAL, because `definitionShape`
+    // drops the field. The warning above is the whole finding there, and refusing the spelling of
+    // a field the store is about to discard would be a refusal with nothing behind it.
+    const { errors, warnings } = canonicalizeProperty({
+      name: 'elapsed',
+      type: 'string',
+      unit: ' ms ',
+    });
+    expect(errors).toEqual([]);
+    expect(warnings.some((w) => w.includes('has a unit'))).toBe(true);
+  });
+
+  it('refuses exactly where definitionShape keeps the field, so guard and hash agree', () => {
+    // The invariant the rule rests on, asserted rather than assumed. `unit` has ONE canonical
+    // form -- non-empty and equal to its own trim -- and "names no unit" has exactly one spelling:
+    // omitting the field. So the rule is `refused iff the field reaches the hash AND the spelling
+    // is not canonical`. A guard firing wider would refuse a definition the store hashes
+    // identically either way; one firing narrower would leave a hashed field unguarded, which is
+    // the defect itself.
+    const canonicalUnit = (unit: string): boolean => unit !== '' && unit === unit.trim();
+    const reachesTheHash = (property: Record<string, unknown>): boolean => {
+      const shape = definitionShape({ name: 't', properties: [property as never] });
+      return 'unit' in (shape.properties[0] as object);
+    };
+
+    const mismatches: string[] = [];
+    for (const type of ['duration', 'integer', 'number', 'string', 'text', 'boolean']) {
+      for (const unit of ['ms', ' ms ', '', '  ', 'flight hours']) {
+        const property = { name: 'x', type, unit };
+        const refused = canonicalizeProperty(property as never).errors.length > 0;
+        const expected = reachesTheHash(property) && !canonicalUnit(unit);
+        if (refused !== expected) {
+          mismatches.push(
+            `${type} ${JSON.stringify(unit)}: refused=${String(refused)} expected=${String(expected)}`,
+          );
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
+
 describe('a property name the view can address by JSON path', () => {
   // asc-bcv.16 (F5). A view projects `json_extract(properties_json, '$.<name>')`, so a name that
   // is not ONE path segment addresses something else and the column reads NULL while the value sits
