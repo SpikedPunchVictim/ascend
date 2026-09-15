@@ -1,0 +1,3 @@
+Not a transcript. The walk must ignore it: only `.jsonl` is collected, and a
+reader that picked this up would then have to decide what to do with a file it
+cannot decode line by line.
