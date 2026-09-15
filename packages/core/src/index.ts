@@ -61,3 +61,18 @@ export {
 } from './diff.js';
 
 export { canonicalJson, nonJsonReason, sha256Hex, typeHash, type Json } from './hash.js';
+
+export {
+  assertCursorScope,
+  CURSOR_ORDER,
+  CURSOR_PREFIX,
+  CursorError,
+  DEFAULT_PAGE_SIZE,
+  decodeCursor,
+  encodeCursor,
+  PageSizeError,
+  scopeFingerprint,
+  type Cursor,
+  type CursorPosition,
+  type CursorScope,
+} from './cursor.js';

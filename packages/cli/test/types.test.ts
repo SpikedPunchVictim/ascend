@@ -776,9 +776,19 @@ describe('asc types export, and what --json means', () => {
     >;
 
     expect(Array.isArray(parsed)).toBe(false);
-    expect(Object.keys(parsed).sort()).toEqual(['ascend_output', 'row_count', 'rows']);
+    // The exact key set, not a subset: an envelope that grew a field nobody declared is a shape
+    // change a consumer has to discover. `coverage` joined it ADDITIVELY at `ascend_output` 1
+    // (`asc-wsa`), so the version does not move and this list is where that is stated.
+    expect(Object.keys(parsed).sort()).toEqual(['ascend_output', 'coverage', 'row_count', 'rows']);
     expect(parsed['ascend_output']).toBe(1);
     expect(parsed['row_count']).toBe(1);
+    // One exported document, and the export withheld none of it.
+    expect(parsed['coverage']).toStrictEqual({
+      shown: 1,
+      total: 1,
+      has_more: false,
+      percent: 100,
+    });
   });
 
   it('keeps the bare form a document list, and wraps without losing a field', () => {

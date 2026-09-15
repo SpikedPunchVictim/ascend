@@ -21,6 +21,7 @@
  */
 
 import { Errors } from '@oclif/core';
+import { CursorError, PageSizeError } from '@ascend/core';
 import { isBusyError } from '@ascend/store';
 import { NoProjectError } from './project.js';
 
@@ -55,6 +56,21 @@ export function describeFailure(error: unknown, debug: boolean): Failure {
 
   if (error instanceof NoProjectError) {
     return withDetail({ message: error.message, exitCode: 1 });
+  }
+
+  // An operand ascend was handed and could not use as given. Exit 2, per the 1-vs-2 rule below.
+  //
+  // Matched by CLASS rather than by message, because these are thrown from deep inside a query
+  // where the store cannot know the value came from argv. A cursor arrives as text a caller
+  // round-tripped -- out of a model's context, a shell variable, a file written by an older run --
+  // and a page size as a number the caller typed, and both are the rule's "operand that cannot be
+  // read": the fix is a different command line, not a retry of this one. `CursorError` also covers
+  // the cross-scope replay, which is a caller having mixed two queries up -- still a bad operand.
+  //
+  // What is deliberately NOT here: `UnknownTypeError` and `EntryRejectedError`. Those are refusals
+  // -- the command line was fine and the world said no -- so they fall through to the default 1.
+  if (error instanceof CursorError || error instanceof PageSizeError) {
+    return withDetail({ message: error.message, exitCode: 2 });
   }
 
   const oclifExit = error instanceof Error ? oclifExitCode(error) : undefined;

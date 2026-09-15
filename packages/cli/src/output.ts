@@ -29,6 +29,100 @@ export const OUTPUT_CONTRACT_VERSION = 1;
 
 export type OutputFormat = 'json' | 'table' | 'csv';
 
+/**
+ * How much of the population an output accounts for.
+ *
+ * WHY THIS EXISTS AT ALL. Handed the first page of a corpus, a reader concludes something about
+ * the whole of it: forty reviews out of five hundred and twelve is 7.8%, and a reader that does
+ * not know that writes "most reviews show X". The coverage line is the cheapest thing that stops
+ * it, and it has to be on the output itself -- an annotation or a side channel is one the reader
+ * has to remember to look for.
+ *
+ * WHY `total` IS REQUIRED AND NEVER ESTIMATED. "Showing 40 of about 512" is a fabricated
+ * denominator in the one place a reader is being asked to trust a proportion, so the store counts
+ * rather than samples. See the measurement note in `packages/store/src/pages.ts`.
+ *
+ * WHY EVERY OUTPUT CARRIES ONE, INCLUDING THE COMPLETE ONES. A consumer that has to handle the
+ * field's absence will get it wrong somewhere; a consumer that can always read `coverage` and
+ * compare `shown` against `total` cannot. The complete case is not a stand-in value -- `shown`
+ * and `total` are both the real row count and `has_more` is genuinely false, which is the true
+ * statement that this output withheld nothing. `complete()` below is how a command says that.
+ */
+export interface Coverage {
+  /** How many rows this output shows. */
+  readonly shown: number;
+  /** The size of the population this output is drawn from. */
+  readonly total: number;
+  /** Whether rows exist beyond the ones shown. */
+  readonly has_more: boolean;
+  /**
+   * `shown / total` as a percentage, ROUNDED to one decimal place, omitted when `total` is zero.
+   *
+   * Rounded in the value rather than only in the rendering, so that `--json` and the table footer
+   * state the same number. Handing a consumer `66.66666666666666` and printing `66.7` beside it is
+   * two renderings of one fact that differ, which is the failure this project rejects ratios for
+   * elsewhere (`packages/store/src/profile.ts`) -- and the rounding is lossless here because
+   * `shown` and `total` are both on the same object, so a consumer that wants the exact ratio can
+   * still divide them.
+   *
+   * Omitted rather than reported as `0` or `100`, because there is no fraction of nothing and
+   * either number would be an invention (`TASKS.md` #7). A reader seeing an empty population
+   * gets "showing 0 of 0" with no percentage, which is the whole truth about it.
+   */
+  readonly percent?: number;
+}
+
+/**
+ * The share, to one decimal place, or `undefined` when there is no population to be a share of.
+ *
+ * The single owner of both decisions above, so `complete` and `subset` cannot round differently or
+ * disagree about what an empty population reports.
+ */
+function percentOf(shown: number, total: number): number | undefined {
+  if (total === 0) return undefined;
+  return Math.round((shown / total) * 1000) / 10;
+}
+
+function coverageOf(shown: number, total: number, hasMore: boolean): Coverage {
+  const percent = percentOf(shown, total);
+  return {
+    shown,
+    total,
+    has_more: hasMore,
+    ...(percent === undefined ? {} : { percent }),
+  };
+}
+
+/**
+ * The coverage of an output that withheld nothing.
+ *
+ * A function rather than a constant so the numbers come from the rows actually being emitted --
+ * a caller cannot pass a total it did not count. `shown` and `total` are both the real row count
+ * and `has_more` is genuinely false, which is the true statement that this output withheld nothing.
+ */
+export function complete(rows: readonly Row[]): Coverage {
+  return coverageOf(rows.length, rows.length, false);
+}
+
+/**
+ * The coverage of an output that showed part of a larger result.
+ *
+ * Named for the case rather than for its arguments, because it is the case that needs stating: a
+ * command that emits everything it produced says so with `complete`, and a command that pages is
+ * the one that owes the reader a denominator. Taking three numbers rather than an `Output` keeps
+ * the caller's own type out of the signature -- a page's rows and its total come from the store
+ * and are not the same value.
+ */
+export function subset(shown: number, total: number, hasMore: boolean): Coverage {
+  return coverageOf(shown, total, hasMore);
+}
+
+/** The coverage line as a person reads it: `showing 40 of 512, 7.8%`. */
+export function renderCoverage(coverage: Coverage): string {
+  const of = `showing ${String(coverage.shown)} of ${String(coverage.total)}`;
+  return coverage.percent === undefined ? of : `${of}, ${coverage.percent.toFixed(1)}%`;
+}
+
 /** One result row. Keys are the column names, in the order the command chose. */
 export type Row = Readonly<Record<string, unknown>>;
 
@@ -50,6 +144,39 @@ export interface Output {
    */
   readonly columns: readonly string[];
   readonly rows: readonly Row[];
+  /**
+   * How much of the population these rows account for.
+   *
+   * **Omitted means complete over the rows present**, which is the right answer for every command
+   * that emits everything it produced -- and the normalizer below supplies it, so a command only
+   * writes this field when it is reporting a SUBSET. That is the one case where the value cannot
+   * be inferred, and therefore the one case worth making a command state explicitly.
+   */
+  readonly coverage?: Coverage;
+
+  /**
+   * Where to resume, for an output that showed part of a larger result. Absent otherwise.
+   *
+   * Absence here is not a stand-in value and does not need the `complete()` treatment: a command
+   * that never pages has no next page, and "there is no cursor" and "this command does not do
+   * cursors" lead a caller to the same action. `--json` omits the key entirely rather than
+   * reporting `null`, so `json_type(...) IS NULL` and a missing key are the same read.
+   */
+  readonly next_cursor?: string;
+}
+
+/**
+ * An `Output` with its coverage settled.
+ *
+ * The defaulting lives here, once, rather than as a `coverage: complete(rows)` line in each of the
+ * thirteen commands that emit. Those lines would all say the same thing, and four of the commands
+ * build their rows as an inline array literal -- so stating it per command would have meant
+ * restructuring four of them to name an array purely to hand it to a function that already has it.
+ * One rule in one place is also the version that cannot drift: a command that pages supplies its
+ * own coverage, and nothing else can accidentally report the wrong one.
+ */
+function withCoverage(output: Output): Output & { readonly coverage: Coverage } {
+  return { ...output, coverage: output.coverage ?? complete(output.rows) };
 }
 
 /**
@@ -71,13 +198,31 @@ export interface JsonEnvelope {
    * between a real zero and a partial answer.
    */
   readonly row_count: number;
+  /**
+   * How much of the population `rows` accounts for.
+   *
+   * Additive at `ascend_output` 1: a consumer that predates this key reads `rows` and
+   * `row_count` unchanged, and one that knows the key can tell a page from a whole answer --
+   * which is the difference the whole field exists to make legible.
+   */
+  readonly coverage: Coverage;
+  /**
+   * Where to resume, present only when the output showed part of a larger result.
+   *
+   * Part of the contract rather than a note on stderr: a cursor IS data -- it is the operand of
+   * the next command -- and stdout is where data goes (`cli-best-practices` rule 1).
+   */
+  readonly next_cursor?: string;
 }
 
 export function renderJson(output: Output): string {
+  const settled = withCoverage(output);
   const envelope: JsonEnvelope = {
     ascend_output: OUTPUT_CONTRACT_VERSION,
-    rows: output.rows,
-    row_count: output.rows.length,
+    rows: settled.rows,
+    row_count: settled.rows.length,
+    coverage: settled.coverage,
+    ...(settled.next_cursor === undefined ? {} : { next_cursor: settled.next_cursor }),
   };
   return JSON.stringify(envelope);
 }
@@ -152,6 +297,8 @@ function cellText(value: unknown): string {
 export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): string {
   if (output.columns.length === 0) return '';
 
+  const coverage = withCoverage(output).coverage;
+
   const rows = output.rows.map((row) =>
     output.columns.map((column) => {
       // Newlines and tabs would break the grid, so a table flattens whitespace runs.
@@ -182,14 +329,41 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
       .join('  ')
       .trimEnd();
 
-  return [
+  const body = [
     line([...output.columns]),
     widths.map((width) => '-'.repeat(width)).join('  '),
     ...rows.map((row) => line(row)),
-  ].join('\n');
+  ];
+
+  // The footer appears only when the output is a SUBSET. On a complete output "showing 3 of 3,
+  // 100%" is noise on every command in the CLI, and the table is explicitly the lossy view --
+  // the JSON envelope carries `coverage` on every output regardless, so nothing is concealed
+  // by leaving it out here. On a page it is the opposite: it is the one line that stops a
+  // reader concluding something about five hundred rows from forty of them.
+  if (coverage.has_more || coverage.shown < coverage.total) {
+    body.push('', renderCoverage(coverage));
+    // The cursor goes on stdout beside the coverage line, as a SECOND line rather than appended
+    // to the first. It is data -- the operand of the next command -- and stdout is where data
+    // goes (`cli-best-practices` rule 1); stderr would put it out of reach of a pipe, and a
+    // caller that has to tee stderr to resume is a caller that will not.
+    //
+    // It is rendered verbatim, unwrapped and untruncated. `renderTable` elides cells past
+    // `MAX_CELL_WIDTH` because a table cell is a display of a value that exists elsewhere; this
+    // line IS the value, and a cursor with an ellipsis in it is a cursor that cannot be pasted
+    // back. It is also base64url-free (`encodeURIComponent` of canonical JSON), so it carries no
+    // whitespace that a table's own flattening would disturb.
+    if (output.next_cursor !== undefined) body.push(output.next_cursor);
+  }
+
+  return body.join('\n');
 }
 
 /**
+ * CSV carries NO coverage footer, at any size, and that is deliberate rather than an omission.
+ * The table is read by a person and can afford a trailing line; CSV is parsed, and a footer after
+ * the last record is a row with the wrong number of fields in it. The `--json` envelope is where
+ * a script reads `coverage`, and `--csv` is not the format a consumer asks for a proportion in.
+ *
  * Quote a CSV field per RFC 4180 when it needs it.
  *
  * `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` are on repo-wide, but this

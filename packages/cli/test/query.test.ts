@@ -181,10 +181,14 @@ describe('running one statement', () => {
     expect(table.status).toBe(0);
     expect(table.stdout.split('\n')[0]).toBe('one  two');
     // The envelope is the contract (`output.ts`), so its shape is pinned rather than the rendering.
+    // `coverage` joined it as an ADDITIVE key at `ascend_output` 1 (`asc-wsa`): a consumer that
+    // predates it reads `rows` and `row_count` unchanged, and this query emitted everything it
+    // produced, so its coverage says exactly that.
     expect(JSON.parse(json.stdout)).toEqual({
       ascend_output: 1,
       rows: [{ one: 1, two: 2 }],
       row_count: 1,
+      coverage: { shown: 1, total: 1, has_more: false, percent: 100 },
     });
   });
 

@@ -349,7 +349,7 @@ trigram over `evidence_text`; `sqlite-vec` stays unused.
 | Mode | Purpose |
 |---|---|
 | **profile** (default) | Map before data: count, date range, per-property cardinality, top-K values w/ counts, three-state ratios. The LLM plans its own drill-down instead of reading from row 1. |
-| `--page/--cursor` | Stable deterministic cursors; every page reports `total` and `has_more`. |
+| `--page/--cursor` | Stable deterministic cursors; every page reports `total`, `has_more` and its coverage, and `--json` adds `next_cursor`. Keyset on `(recorded_at, id)`, never `LIMIT/OFFSET`: offset shifts under a concurrent insert, so a reader silently sees a row twice or never. |
 | `--sample random\|stratified\|diverse\|outlier` | Pagination shows twenty near-identical entries; sampling shows spread. **Stratified** (proportional across an enum) most improves classification accuracy — rare categories are guaranteed to appear. |
 | `--select`, `--filter`, `--group-by a,b` | Projection, row filter, and crosstabs (contingency tables, not just counts). |
 | `--max-tokens N` | First-class context budget. Fits output to N and **reports what it dropped**. |
@@ -359,6 +359,15 @@ trigram over `evidence_text`; `sqlite-vec` stays unused.
 one and writes "most reviews show X". Any annotation carries the coverage it was derived from.
 **Stable entry IDs in every output**, so the LLM cites what it saw and then `asc annotate --ids` —
 closing explore → classify → annotate into a loop.
+
+> **As built (`asc-wsa`): coverage is stated in the `--json` envelope on every output, and in the
+> table only when the output is a subset.** "Every output" above is read as a claim about the
+> contract rather than about each rendering, and `--csv` is the precedent: it carries no footer at
+> any size, ever, because a footer after the last CSV record is a row with the wrong field count.
+> So the rule the code implements is "the envelope always states it; a rendering states it where the
+> format allows". On a complete table the footer is omitted -- `showing 3 of 3, 100.0%` on all
+> thirteen commands is a line every reader pays for, and the subset case, which is the one the
+> paragraph above is about, is exactly the case that still prints it.
 
 ### Statistical layer (full, per decision)
 
