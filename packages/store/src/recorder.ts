@@ -14,7 +14,7 @@
  * A caller names a type and offers values; it cannot supply a `type_version` or a
  * `type_hash`. That is deliberate: those three columns are one foreign key, and letting
  * a caller pass them independently is exactly how an entry ends up claiming a definition
- * whose shape it does not have (fold's confound #1). The caller supplies intent; the
+ * whose shape it does not have. The caller supplies intent; the
  * recorder supplies identity.
  *
  * Time and identifiers are INJECTED, never read. `id`, `recordedAt`, `runId` and the

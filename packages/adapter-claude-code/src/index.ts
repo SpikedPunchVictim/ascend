@@ -19,7 +19,7 @@
  *   - Self-healing: a malformed line is counted and skipped, never fatal. One
  *     bad line must not abort a sweep of hundreds of files.
  *   - Omit absent values. Never write a sentinel -- see ARCHITECTURE.md on the
- *     fold corpus, which lost the absent-vs-zero distinction permanently.
+ *     three states, and why a corpus that loses the distinction never gets it back.
  *
  * Three layers, and the split is the design:
  *

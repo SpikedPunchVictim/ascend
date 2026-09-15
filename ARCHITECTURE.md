@@ -16,8 +16,6 @@ Classification happens retrospectively, once a pattern becomes visible. This is 
 time-series system; there is no baseline-comparison requirement. Those framings were considered and
 explicitly rejected.
 
-`/Users/<user>/projects/ascend` (currently `<project-G>/`) is empty. Greenfield, not a git repo yet.
-
 ### Terminology (settled)
 
 | Term | Meaning |
@@ -51,15 +49,14 @@ Rejected: *metric* (implies a scalar trended against a baseline — wrong frame)
 
 ## Prior art on this machine (study before building)
 
-Three local systems each cover a different third of this. None is what we're building.
+Two local systems each cover a different third of this. Neither is what we're building.
 
 | Source | Covers | Key files |
 |---|---|---|
 | **`align`** | How to *record* | `packages/core/src/telemetry/{types,diff,serialize}.ts`, `packages/cli/src/telemetry/*`, `docs/adr/015-2026-07-13-telemetry.md` |
+| **`mast`** | How to *find* | `src/search/{fused,fts}.ts` |
 
-`align` and `mast` are **also installed here as devDependencies** — see *Local tooling* below.
-| **`fold` build reports** | How comparison *goes wrong* | `<project-F>-workbench/apps/COLLECTIVE_BUILD_REPORT.md`, 29× `apps/*/.fold/<runId>/build-report.json` |
-| **`<project-E>`** | Modelling sessions/work units in SQLite | `<project-E>/.todos/issues.db` (`sessions`, `work_sessions` w/ `start_sha`/`end_sha`, `action_log`) |
+Both are **also installed here as devDependencies** — see *Local tooling* below.
 
 Reuse specifically:
 
@@ -68,10 +65,16 @@ Reuse specifically:
 - **align's `rulesetIrHash`** → our `type_hash`: a content hash of the type definition, on every entry.
 - **align's "dead rules" report** → `asc doctor` flags types defined but never recorded.
 - **align's omission doctrine** — a field is *omitted, never fabricated*, when no real value exists.
-  ADR 015 legislates it; the fold corpus is the naturally-occurring counterexample.
-- **<project-E>'s `start_sha`/`end_sha`** — bind a unit of work to a git range.
-- **<project-E>'s `issues.parent_id` trap** — no FK, because `''` was used as a "no parent" sentinel and
-  SQLite treats it as a real FK value. **Never use empty-string sentinels.**
+  ADR 015 legislates it; the counterexample is a real corpus that lost the distinction permanently.
+- **mast's `toFtsMatch`** — the query sanitizer, ported in `packages/store/src/search.ts`.
+
+Two failure modes carried forward as rules, both from real corpora that lost data permanently:
+
+- **Never use empty-string sentinels.** `''` sat in a column that also held a foreign key, so SQLite
+  matched it as a real value and the table acquired rows pointing at a "parent" that was the absence
+  of one. "Unknown" is `NULL`, never `''`.
+- **Never let `0` mean more than one thing.** A single `0` came to mean "measured zero", "unknown"
+  and "doesn't apply" at once, and no downstream statistic could recover which.
 
 ---
 
@@ -163,7 +166,7 @@ small enough for an LLM to invent correctly at runtime.
 
 `required` means **"must have a decision"** — a measured value *or* an explicit N/A — not "must have
 a value." Otherwise `required` pressures the LLM into fabricating a number when the honest answer is
-"doesn't apply," which is exactly how the fold corpus ended up with `0` meaning three different things.
+"doesn't apply," which is exactly how a corpus ends up with `0` meaning three different things.
 Optional is the default.
 
 Generated views project both `<prop>` and `<prop>_state` so queries can filter on state.
@@ -184,7 +187,7 @@ columns no view projects, and `_state` canonicalizes to `state`, which nothing c
 - Retyping, removing, or making a property required → **major** bump. New type version, not unioned.
 
 Definitions are immutable; a new shape is a new row, never an `UPDATE`. This is the direct fix for
-fold's confound #1 (schema drifting under the data).
+the schema-drift confound: schema moving under the data with nothing recording that it moved.
 
 ### Storage
 
@@ -310,8 +313,8 @@ Non-zero, and friction matters more than tokens:
 
 "Search before you define" as prose will fail. `asc types define` runs a similarity check on type
 name and property names before creating, and refuses or warns with nearest existing matches.
-Cheap version: FTS5 trigram (precedent: `mast`). Expensive version: `sqlite-vec` (precedent:
-<org-B>). Without this you get `review-completed`, `review_complete`, and `code-review-done` as
+Cheap version: FTS5 trigram, already built and proven here for `asc search`. Expensive version:
+`sqlite-vec`. Without this you get `review-completed`, `review_complete`, and `code-review-done` as
 three unusable half-corpora.
 
 ---

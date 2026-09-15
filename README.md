@@ -38,8 +38,8 @@ pnpm install          # runs `prepare`, which builds every package
 `pnpm install` builds; there is no separate build step to remember. If `dist/` is ever missing,
 `pnpm build` restores it.
 
-Nothing links an `asc` binary onto your `PATH` — this repo is private and the package isn't
-installed globally. Run it by path:
+Nothing links an `asc` binary onto your `PATH` — the package is not published to npm, and this
+repo does not install itself globally. Run it by path:
 
 ```bash
 node packages/cli/dist/bin.js --help
@@ -291,4 +291,4 @@ Design documents: `ARCHITECTURE.md` (what and why), `KICKOFF.md` and `TASKS.md` 
 
 ## License
 
-Unpublished and private.
+Apache-2.0. See `LICENSE`.

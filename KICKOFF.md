@@ -95,10 +95,15 @@ ascend indexes *prose*. `asc-spike-fts` measures that choice against real data.
 - **`~/projects/mast`** — `src/search/{fused,fts}.ts`. FTS5 + BM25 + RRF, the query sanitizer you
   must port (`toFtsMatch`), and zero-result assist. Note mast *deleted* its vector store; ascend
   uses no embeddings.
-- **`~/projects/<project-F>-workbench/apps/COLLECTIVE_BUILD_REPORT.md`** — read the confounds section.
-  It is a real corpus that lost the absent-vs-zero distinction permanently. Do not repeat it.
-- **`~/projects/<project-E>/.todos/issues.db`** — session/work-unit modelling in SQLite. Note the
-  `issues.parent_id` trap: never use empty-string sentinels.
+
+Two rules come from real corpora that lost data permanently, and nothing in this repo may
+reintroduce either:
+
+- **Never use empty-string sentinels.** `''` sitting in a column that also holds a foreign key is
+  matched by SQLite as a real value, so the table acquires rows pointing at a "parent" that is the
+  absence of one. "Unknown" is `NULL`, never `''`.
+- **Never let `0` mean more than one thing.** A `0` that means both "measured zero" and "unknown" has
+  lost the distinction forever, and no downstream statistic can recover which one any row meant.
 
 ## Reporting
 

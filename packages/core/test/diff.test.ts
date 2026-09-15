@@ -13,7 +13,7 @@ import {
 /**
  * The bump classification decides whether two shapes may be UNIONED into one view.
  * A change wrongly classified minor would union incompatible data and call it one
- * type -- fold's confound #1 (schema drifting under the data) rebuilt from scratch.
+ * type -- the schema-drift confound rebuilt from scratch.
  *
  * So the central test is not "does it produce a bump" but: does every rule agree with
  * the single question the axis is built on -- *can an entry recorded against the old

@@ -392,7 +392,7 @@ describe('a minor version unions into the same view', () => {
 
 describe('a major version NEVER unions with the old family', () => {
   it('gives each family its own view, each holding only its own rows', () => {
-    // Unioning across a major bump is fold's confound #1 rebuilt: `count` means findings in
+    // Unioning across a major bump is the schema-drift confound rebuilt: `count` means findings in
     // v1 and milliseconds in v2, and one result set mixing them is a plausible wrong answer
     // with nothing marking where the boundary was.
     withStore((store) => {

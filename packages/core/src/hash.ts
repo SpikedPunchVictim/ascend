@@ -3,7 +3,7 @@
  *
  * WHY A HASH AT ALL: each entry stores the `type_hash` of the definition it was
  * recorded against. That is what makes "did the schema drift under this data?"
- * answerable after the fact -- the direct fix for fold's confound #1, where the
+ * answerable after the fact -- the direct fix for the schema-drift confound, where the
  * schema moved while the rows stayed put and no one could tell which shape any
  * given row meant.
  *

@@ -4,7 +4,7 @@
  * The rule this module exists to enforce: **a shape change INSERTS a new version row;
  * it never UPDATEs.** A registered definition is what an entry's properties were
  * validated against, so rewriting one would silently reinterpret every entry already
- * recorded under it -- fold's confound #1, where the schema drifted under the data and
+ * recorded under it -- the schema-drift confound, where the schema drifted under the data and
  * nothing recorded that it had. The database enforces it with triggers, but callers
  * must never be *asking* for an update in the first place, which is what this does.
  *

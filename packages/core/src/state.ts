@@ -9,14 +9,14 @@
  * | not applicable | name listed in `na`          | meaningless in this context  |
  * | not measured   | absent from both             | default; silence never = 0   |
  *
- * The whole product turns on these being three distinct things. The fold corpus
- * collapsed them into one, so `0` meant "measured zero", "unknown" and "doesn't
- * apply" simultaneously, and no downstream statistic could recover which.
+ * The whole product turns on these being three distinct things. A corpus that
+ * collapses them into one has `0` meaning "measured zero", "unknown" and "doesn't
+ * apply" simultaneously, and no downstream statistic can recover which.
  *
  * `required` therefore means "must have a DECISION" -- a value or an explicit N/A --
  * never "must have a value". If it meant the latter, it would pressure a recorder
  * into fabricating a number when the honest answer is "doesn't apply", which is
- * precisely how the fold corpus acquired its ambiguity.
+ * precisely how that ambiguity gets acquired.
  */
 
 import { nonJsonReason } from './hash.js';

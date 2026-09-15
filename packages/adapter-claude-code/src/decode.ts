@@ -9,8 +9,8 @@
  *
  * Deliberately shallow. A decoded record is a JSON object and nothing more: no
  * per-field validation lives here. Every field a derived type needs is optional
- * in the corpus and its absence is meaningful (see ARCHITECTURE.md on the fold
- * corpus, which destroyed absent-vs-zero permanently), so a validator at this
+ * in the corpus and its absence is meaningful (see ARCHITECTURE.md on the three
+ * states, which exist because absent-vs-zero cannot be recovered once destroyed), so a validator at this
  * layer could only guess at which fields matter. Guessing here would silently
  * drop records that a type registered tomorrow would have used.
  */

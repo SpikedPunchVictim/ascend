@@ -13,7 +13,7 @@
  *   | major | new type version, NOT unioned -- old rows are a different shape |
  *
  * A wrong classification is not a cosmetic bug. Calling a major change minor would
- * union two incompatible shapes into one view, which is fold's confound #1 rebuilt
+ * union two incompatible shapes into one view, which is the schema-drift confound rebuilt
  * from scratch: schema moving under data with nothing recording that it moved.
  *
  * The axis for every rule below is the same question: **can an entry recorded against

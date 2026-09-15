@@ -235,7 +235,7 @@ describe('an entry cannot reference a definition that is not there', () => {
   });
 
   it('REJECTS an entry carrying the wrong type_hash', () => {
-    // This is fold's confound #1 made impossible: a row cannot claim a definition
+    // This is the schema-drift confound made impossible: a row cannot claim a definition
     // whose shape it does not have.
     const store = openStore({ dir: tempDir() });
     try {

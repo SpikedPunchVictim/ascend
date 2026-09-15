@@ -13,7 +13,7 @@
  * **One view per MAJOR family** (`v_<type>_v<major>`), unioning the minor versions inside it.
  * Never across majors: a major bump means an entry recorded against the old definition cannot
  * be read correctly under the new one (`@ascend/core`'s `diffTypeSpec` classifies exactly
- * that), so unioning them would rebuild fold's confound #1 -- two incompatible shapes in one
+ * that), so unioning them would rebuild the schema-drift confound -- two incompatible shapes in one
  * result set with nothing marking the boundary.
  *
  * **The `_state` column carries FOUR values, and the fourth is not in the three-state model.**

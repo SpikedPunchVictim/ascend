@@ -25,7 +25,7 @@ first; it is the source of truth for every design decision. This file never over
    `align` is installed locally as a devDependency (`./node_modules/.bin/align`). See
    `asc-align-rules`.
 7. **Omitted, never fabricated.** When a value does not exist, omit it. Never write `0` for unknown.
-   This is the single most expensive mistake available (see ARCHITECTURE.md, fold corpus).
+   This is the single most expensive mistake available (see ARCHITECTURE.md, three states).
 8. **Dogfood from the moment it runs.** See "Dogfooding" below.
 9. **Update `IMPLEMENTATION_PLAN.md`** stage status as you go; delete it when all stages are done.
 
@@ -157,7 +157,7 @@ GO-WITH-CHANGES** and the list of ARCHITECTURE.md decisions the evidence overtur
 
 ## E1 -- Repo foundation
 
-**asc-rename** - chore - P0 -- Rename `projects/<project-G>` -> `projects/ascend`. Verify beads still
+**asc-rename** - chore - P0 -- Rename the project directory to `ascend`. Verify beads still
 resolves (`bd where`, `bd status`) -- config was checked to contain no absolute paths, confirm.
 
 **asc-workspace** - task - P0 - deps: rename -- pnpm workspace, TypeScript strict, Vitest,
@@ -209,7 +209,7 @@ constructed.
 encoding.
 *Accept*: all three round-trip distinctly. `required` means "must have a decision" -- a value **or**
 an explicit N/A. A required property left silently absent is an error.
-*Tests*: the fold-corpus failure mode -- a real `0` and a not-applicable must never compare equal.
+*Tests*: the lost-distinction failure mode -- a real `0` and a not-applicable must never compare equal.
 
 **asc-validation-errors** - task - P0 - deps: build-schema -- compact, prescriptive errors.
 *Accept*: output names the offending field, its expected type, and a corrected command. Zod's raw
@@ -227,7 +227,8 @@ property added) or major (retype / remove / newly required).
 ## E3 -- Store
 
 **asc-schema** - task - P0 - deps: E2 -- SQLite schema per ARCHITECTURE.md, WAL, `busy_timeout`,
-migrations, `schema_version`. **No empty-string sentinels** (<project-E>'s `parent_id` trap).
+migrations, `schema_version`. **No empty-string sentinels** -- `''` in a column that also holds a
+foreign key is matched by SQLite as a real value.
 
 **asc-registry** - task - P0 - deps: schema -- immutable versioned type rows. A shape change inserts;
 it never updates.
@@ -298,7 +299,7 @@ Read-only, memory-bounded, tolerant of malformed lines (self-healing, never fata
 **asc-derived-types** - task - P0 - deps: transcript-reader -- derived type definitions:
 `user-correction`, `tool-denial`, `verification-run`, `skill-activation`, `context-compaction`.
 All carry `source='derived:claude-code'`.
-**Token fields must distinguish absent from zero** -- the fold corpus lost that distinction forever.
+**Token fields must distinguish absent from zero** -- once a corpus loses that distinction it is gone.
 
 **asc-ingest** - task - P0 - deps: derived-types -- `asc ingest claude-code [--since]`.
 *Accept*: idempotent, keyed on transcript uuid; re-running creates no duplicates.

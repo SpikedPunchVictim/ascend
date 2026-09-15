@@ -48,8 +48,8 @@ describe('classifyTranscript: the two shapes the corpus actually has', () => {
     // Decoding is not injective: `-Users-a-b` could be `/Users/a/b` or
     // `/Users/a-b`. Grouping on a decoded path would merge two real projects and
     // report the merged figure with no indication that it happened.
-    const file = classifyTranscript(ROOT, `${ROOT}/-Users-me-projects-<org-B>-exp/${UUID}.jsonl`);
-    expect(file.project).toBe('-Users-me-projects-<org-B>-exp');
+    const file = classifyTranscript(ROOT, `${ROOT}/-Users-me-projects-demo-exp/${UUID}.jsonl`);
+    expect(file.project).toBe('-Users-me-projects-demo-exp');
   });
 });
 

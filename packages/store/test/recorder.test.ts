@@ -191,7 +191,7 @@ describe('the three states survive the round trip', () => {
   it('stores a MEASURED ZERO as a value', () => {
     // The single most important case in the store. `count: 0` is a measured zero, and an
     // implementation that treats a falsy value as absent would drop it -- which is how
-    // the fold corpus ended up unable to distinguish "zero findings" from "not looked at".
+    // a corpus ends up unable to distinguish "zero findings" from "not looked at".
     withStore((store) => {
       const { entry } = recordEntry(
         store.db,

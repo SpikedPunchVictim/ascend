@@ -12,6 +12,12 @@
 .beads-credential-key
 .beads/proxieddb/
 
+# The beads issue-change log: an append-only export of this checkout's issue history, the same
+# kind of artifact as `.beads/issues.jsonl`, which bd already treats as local. It is not the
+# product, and it grows on every `bd` command, so a repo that tracks it puts a diff in every
+# commit that touches an issue.
+.beads/interactions.jsonl
+
 # Node
 node_modules/
 
@@ -45,6 +51,11 @@ node_modules/
 # VS Code or JetBrains settings are ever wanted, add a negation for them here.
 .vscode/
 .idea/
+
+# What a skill WROTE, as opposed to what it IS. `.agents/skills/` is configuration and stays
+# tracked; this is a report about one codebase at one moment, which is evidence about a session
+# rather than part of the product — the same reason `.align/`'s scan record is ignored above.
+.agents/research/
 
 # Build and test output.
 #

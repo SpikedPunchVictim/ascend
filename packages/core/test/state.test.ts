@@ -8,7 +8,7 @@ import {
 } from '../src/index.js';
 
 /**
- * The three-state model is the reason this product exists. The fold corpus it was
+ * The three-state model is the reason this product exists. The corpus it was
  * derived from collapsed "measured zero", "unknown" and "doesn't apply" into a single
  * `0`, and no downstream statistic could recover which one any row meant.
  *

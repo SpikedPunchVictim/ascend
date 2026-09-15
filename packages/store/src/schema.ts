@@ -13,13 +13,14 @@
  * 2. **A recorded entry cannot reference a definition that does not exist.** The
  *    composite foreign key on `(type_name, type_version, type_hash)` means an entry
  *    can only ever be attached to a definition whose identity EXACTLY matches. This
- *    is fold's confound #1 -- schema drifting under the data with nothing recording
+ *    is the schema-drift confound -- schema drifting under the data with nothing recording
  *    it -- made structurally impossible rather than merely detected.
  *
  * No empty-string sentinels: "unknown" is NULL, never `''`. SQLite treats `''` as a
  * real value, so an empty string in a foreign key or a filter matches and compares
- * as though it meant something (the `<project-E>` issues.parent_id trap). Every optional
- * text column carries a CHECK rejecting `''` for that reason.
+ * as though it meant something -- a column that also holds a foreign key then has
+ * rows pointing at a "parent" that is the absence of one. Every optional text column
+ * carries a CHECK rejecting `''` for that reason.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
