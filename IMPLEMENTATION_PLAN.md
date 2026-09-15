@@ -982,8 +982,18 @@ openers in 12,818. `user_correction`'s non-independence is stated in the type's 
 **Safety constraint (verbatim from `TASKS.md`):** *"Read-only on the transcripts — never write
 there."*
 
+**`EV-ingest` (EV-10), 2026-09-15 — the store needed no change to make the ingest idempotent.**
+`recordEntry` takes a caller-supplied `id` and throws `DuplicateEntryError` on a repeat, so a
+deterministic id (the deriver's per-event key) plus catching that error gives idempotency with no
+upsert, no new `INSERT` site and no time-of-check gap — the alternative would have had to decide
+what to do with an existing row that differs, and the answer would be "overwrite an immutable
+entry". One `withTransaction` for the whole run, measured twice with the same probe deriving once
+and replaying the identical buffer through both arms: **460 vs 678 ms**, then **240 vs 356 ms**. The
+atomic choice is also the faster one, on both runs.
+
 **Status: In Progress** (`asc-dh0`) — `asc-ct3` (streaming reader) **complete**; `asc-qib` (derived
-type definitions) **complete**; `asc-ycl` (`asc ingest claude-code`) and `asc-sx7` next.
+type definitions) **complete**; `asc-ycl` (`asc ingest claude-code`) **complete**; `asc-sx7`
+(backfill across stores) next.
 
 ---
 

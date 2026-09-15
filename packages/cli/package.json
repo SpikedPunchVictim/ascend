@@ -35,6 +35,9 @@
     "commands": "./dist/commands",
     "topicSeparator": " ",
     "topics": {
+      "ingest": {
+        "description": "Derive entries from sources outside this project, and write them into the store."
+      },
       "types": {
         "description": "Inspect and manage the entry types registered in this project."
       }
