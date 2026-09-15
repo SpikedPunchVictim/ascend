@@ -991,9 +991,34 @@ entry". One `withTransaction` for the whole run, measured twice with the same pr
 and replaying the identical buffer through both arms: **460 vs 678 ms**, then **240 vs 356 ms**. The
 atomic choice is also the faster one, on both runs.
 
-**Status: In Progress** (`asc-dh0`) — `asc-ct3` (streaming reader) **complete**; `asc-qib` (derived
-type definitions) **complete**; `asc-ycl` (`asc ingest claude-code`) **complete**; `asc-sx7`
-(backfill across stores) next.
+**`EV-baseline` (EV-11), 2026-09-15 — the day-one dataset, and three things wrong with what was
+assumed about it.** `asc-sx7`'s accept is a report, not a command: N per type, date range, per-field
+population rate. Measured by ingesting into a fresh store and reading it back — **1,491 entries**
+(`verification_run` 486, `tool_denial` 457, `context_compaction` 441, `skill_activation` 87,
+`user_correction` 20), **44 days** (2026-08-02 … 2026-09-15), 34 sessions, 12 projects, 1 clock
+reading. Three findings change what E6/E7 must be built against:
+
+- **The corpus is 44 days deep, not two years** — `derived-types.ts:69`'s *"backfill of two years"*
+  is off by ~17×, which matters because E7's changepoint work is sized in days.
+- **`na` is 0 for every field of every derived type**, so `asc explore` reporting a 0.0% N/A ratio
+  on a derived corpus is correct rather than broken.
+- **Three fields are unmeasured *structurally*** — `previous_verdict` 72.4% absent means "first
+  verified pass", not "unknown" (the 134 present split exactly 67/67). Informative missingness:
+  dropping nulls or imputing will bias E7.
+
+Also measured, and filed as `asc-5hs`: no derived entry carries envelope provenance (0/1,491 for
+`cwd`, `repo`, `git_sha`, `branch`), and `project` collapses **282 distinct real working
+directories into 15 labels** — while the true `cwd` and `gitBranch` sit on **100%** of the records
+that trigger every derived event. `EV-write-cost.md:58`'s ~16.6k-entry backfill is also **11×**
+the real yield; the decision it supports is unaffected and conservative.
+
+**Status: In Progress** (`asc-dh0`) — the E5 chain is done: `asc-ct3` (streaming reader)
+**complete**; `asc-qib` (derived type definitions) **complete**; `asc-ycl` (`asc ingest
+claude-code`) **complete**; `asc-sx7` (day-one dataset) **complete**. The epic itself stays open:
+five children remain (`asc-5fo` profile mode, `asc-1bd` sampling modes, `asc-wsa` paging and
+coverage, `asc-52u` `--max-tokens`, `asc-hg3` `--dump`), and all five are E6 work that was parented
+here. `asc-sx7` was the last thing blocking them.
+
 
 ---
 

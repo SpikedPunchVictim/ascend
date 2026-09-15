@@ -237,8 +237,10 @@ Honest about what exists, because a README that overstates is worse than one tha
 three-state model are complete. FTS5 search exists in `packages/store` and is tested, but **no
 command exposes it yet** — that's `asc search`.
 
-**Not built yet:** the cross-project backfill over many stores; `asc explore` and `asc search`;
-`asc doctor`; `asc install-hook`; the annotation layer; the analysis skill and its slash command.
+**Not built yet:** `asc explore` and `asc search`; `asc doctor`; `asc install-hook`; the annotation
+layer; the analysis skill and its slash command. Nothing distributes derived entries *across*
+projects either — the ingest reads the whole transcript corpus and writes it into the store of the
+project you run it in, so a second project's store gets its own full copy.
 
 ### What `asc ingest claude-code` does
 
@@ -257,6 +259,14 @@ not of transcript lines — a skill active across 54 consecutive messages is one
 under the shipped rule, 6,940 if every newline ended a command, and 16,352 under a broader one.
 The rules, the five-way comparison and what each choice cost are in `docs/evidence/EV-derived.md`
 (EV-9); the ingest design and its measurements are `docs/evidence/EV-ingest.md` (EV-10).
+
+On the corpus this machine holds, the ingest yields **1,491 entries** (486 `verification_run`,
+457 `tool_denial`, 441 `context_compaction`, 87 `skill_activation`, 20 `user_correction`) spanning
+**44 days**. The full census — N per type, date range, per-field population rate, value cardinality,
+and three things about that data that would otherwise be mistaken for bugs — is
+`docs/evidence/EV-baseline.md` (EV-11). Worth knowing before you query it: no derived entry carries
+`cwd`, `repo`, `git_sha` or `branch`, and `project` is Claude Code's *encoded* directory name, so it
+is the only locality signal and it is a lossy one.
 
 ## Development
 
