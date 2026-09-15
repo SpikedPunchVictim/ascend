@@ -88,6 +88,18 @@ export {
 } from './search.js';
 
 export {
+  profileType,
+  TOP_K,
+  type ProfileOptions,
+  type PropertyProfile,
+  type PropertySummary,
+  type PropertyValueCount,
+  type StateCounts,
+  type TypeProfile,
+  type VersionProfile,
+} from './profile.js';
+
+export {
   AliasInUseError,
   attachStore,
   attachHeadroom,
