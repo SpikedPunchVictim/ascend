@@ -89,7 +89,19 @@ export abstract class BaseCommand extends Command {
 
   /** Write a result to stdout in the requested format. */
   protected emit(format: OutputFormat, output: Output): void {
-    const text = render(format, output);
+    this.emitText(render(format, output));
+  }
+
+  /**
+   * Write text that has already been rendered.
+   *
+   * Split out for `--max-tokens`, and the reason is not code reuse. A fitted output is MEASURED as
+   * text and then written; re-rendering it here would mean the bytes on stdout are produced by a
+   * second call, so the budget claim would rest on the render being a pure function of its arguments
+   * rather than on the measurement itself. `budget.ts` hands back the exact string it measured, and
+   * this is the door it goes out through.
+   */
+  protected emitText(text: string): void {
     // An empty rendering is not a blank line: stdout carries data, and a stray newline
     // is data a consumer has to learn to ignore.
     if (text !== '') this.log(text);

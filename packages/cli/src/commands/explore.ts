@@ -66,6 +66,7 @@ import {
   signatures,
   type PropertyProfile,
   type RecordedEntry,
+  type PageResult,
   type StateCounts,
   type VersionProfile,
 } from '@ascend/store';
@@ -79,7 +80,8 @@ import {
   type SampleMode,
   type SampleRequest,
 } from '../explore-sample.js';
-import { subset, type Row } from '../output.js';
+import { render, subset, type Row, type SampleReport } from '../output.js';
+import { fitToBudget, BudgetFloorError, type BudgetRequest } from '../budget.js';
 
 /** The state names, in the order they are rendered and counted. */
 const STATES = ['measured', 'not_applicable', 'not_measured', 'not_declared'] as const;
@@ -247,11 +249,66 @@ export default class Explore extends BaseCommand {
     seed: Flags.string({
       description: 'Vary the draw. Omitted, the seed is fixed so a sample is reproducible.',
     }),
+    'max-tokens': Flags.integer({
+      description:
+        'Fit the output to a context budget, dropping rows and reporting what it dropped.',
+    }),
   };
+
+  /**
+   * Build a value, fit it to the budget when there is one, and write it.
+   *
+   * **One path, not two.** The unfitted branch below renders the very same `toOutput` the fitted one
+   * does, so a change to what this command emits cannot land in one mode and miss the other. The
+   * alternative -- an `if (budget) {...} else {...}` around each of the three modes -- is six places
+   * that build an `Output`, and the failure it invites is silent: the budgeted output would drift
+   * from the plain one and both would still look right on their own.
+   *
+   * A floor the budget cannot reach is a `usageError`, not a `refusal`. The caller typed the number,
+   * so the world is not the thing that said no -- and the fix is always on the command line: raise
+   * `--max-tokens` to the figure the message names, or narrow the scope.
+   */
+  private emitBuilt<T>(
+    budget: number | undefined,
+    request: Omit<BudgetRequest<T>, 'maxTokens'>,
+  ): void {
+    if (budget === undefined) {
+      this.emitText(request.render(request.build(request.requested), undefined));
+      return;
+    }
+    try {
+      // The fitted text, not a re-render of it -- see `Fitted.text`.
+      this.emitText(fitToBudget({ ...request, maxTokens: budget }).text);
+    } catch (error) {
+      if (error instanceof BudgetFloorError) throw usageError(error.message);
+      throw error;
+    }
+  }
 
   public async run(): Promise<void> {
     const { args, flags } = await this.parse(Explore);
     const format = this.resolveFormat(flags);
+    const budget = this.optionalFlag(flags['max-tokens']);
+
+    if (budget !== undefined && (!Number.isInteger(budget) || budget < 1)) {
+      throw usageError(
+        `--max-tokens must be a whole number of tokens, at least 1. Got ${String(budget)}.`,
+      );
+    }
+
+    // CSV is refused rather than silently trimmed, and the reason is the shape of the format. Every
+    // other output has somewhere to say that rows went missing -- `--json` has the `trim` block,
+    // `--table` prints a line -- and CSV has only records. A trimmed CSV and a complete CSV are the
+    // same kind of file, so a consumer parsing one would read a truncated answer as the whole of it,
+    // which is the "reports success wrongly" class this project refuses outright. Refusing here
+    // costs a caller one flag; allowing it would cost a caller an answer they cannot tell is short.
+    if (budget !== undefined && format === 'csv') {
+      throw usageError(
+        '--max-tokens cannot be combined with --csv: a CSV has nowhere to record that rows were ' +
+          'dropped, so a consumer parsing it cannot tell a trimmed file from a complete one. Use ' +
+          '--json or --table, which both state what the budget cost.',
+      );
+    }
 
     // Any of the three means the caller wants entries rather than the map. `--limit` and
     // `--cursor` implying `--page` is what keeps the common cases to one flag while leaving
@@ -325,28 +382,53 @@ export default class Explore extends BaseCommand {
         };
 
         const resolved = resolveSample(profile, request);
-        const chosen = chooseSample(
-          signatures(store.db, args.type, resolved.properties),
-          resolved,
-          request,
-        );
 
-        // Hydrated in the sample's own order, so the rows a reader sees are in the order the
-        // sampler reported rather than in whatever order a second query returned them.
-        const rows: Row[] = [];
-        for (const id of chosen.ids) {
-          const entry = findEntry(store.db, id);
-          if (entry === undefined) continue;
-          rows.push(entryRow(entry));
-        }
+        // Read ONCE, outside `build`: the projection is a function of the type and the properties
+        // chosen, not of the sample size, and a budget makes this command build the sample several
+        // times over. Re-reading per candidate would repeat a scan of the whole type for an answer
+        // that cannot have changed.
+        const entries = signatures(store.db, args.type, resolved.properties);
 
-        this.emit(format, {
-          columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
-          rows,
-          // A sample has no remainder to resume, so `has_more` is false however small the share --
-          // there is no cursor to hand back, and saying "more" would promise one.
-          coverage: subset(rows.length, profile.count, false),
-          sample: chosen.sample,
+        // Rebuilt for each candidate size rather than truncated from the full draw, and that is the
+        // design rather than an implementation detail. A stratified sample of 40 cut to 25 is not a
+        // stratified sample of 25 -- the allocation that produced it was computed for 40, so the
+        // proportions in the report would describe a draw that no longer exists. Asking the sampler
+        // for 25 gives a real 25-row sample, and the report that comes with it is true of the rows
+        // on stdout.
+        const build = (
+          size: number,
+        ): { readonly rows: readonly Row[]; readonly sample: SampleReport } => {
+          const chosen = chooseSample(entries, resolved, { ...request, size });
+
+          // Hydrated in the sample's own order, so the rows a reader sees are in the order the
+          // sampler reported rather than in whatever order a second query returned them.
+          const rows: Row[] = [];
+          for (const id of chosen.ids) {
+            const entry = findEntry(store.db, id);
+            if (entry === undefined) continue;
+            rows.push(entryRow(entry));
+          }
+          return { rows, sample: chosen.sample };
+        };
+
+        this.emitBuilt(budget, {
+          requested: request.size,
+          // One row is the smallest sample the sampler accepts (`SampleSizeError` below that), and a
+          // sample of zero would say nothing about the population while still costing a report.
+          floor: 1,
+          build,
+          rowsOf: (built) => built.rows.length,
+          noun: ['entry', 'entries'],
+          render: (built, trim) =>
+            render(format, {
+              columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
+              rows: built.rows,
+              // A sample has no remainder to resume, so `has_more` is false however small the share
+              // -- there is no cursor to hand back, and saying "more" would promise one.
+              coverage: subset(built.rows.length, profile.count, false),
+              sample: built.sample,
+              ...(trim === undefined ? {} : { trim }),
+            }),
         });
         return;
       }
@@ -357,17 +439,36 @@ export default class Explore extends BaseCommand {
       if (paging) {
         if (findType(store.db, args.type) === undefined) throw noSuchType();
 
-        const page = pageEntries(store.db, {
+        const ask = {
           type: args.type,
           ...(flags.cursor === undefined ? {} : { cursor: flags.cursor }),
-          ...(flags.limit === undefined ? {} : { limit: flags.limit }),
-        });
+        };
 
-        this.emit(format, {
-          columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
-          rows: page.rows.map(entryRow),
-          coverage: subset(page.rows.length, page.total, page.hasMore),
-          ...(page.nextCursor === null ? {} : { next_cursor: page.nextCursor }),
+        // A TRIMMED PAGE RE-QUERIES AT THE SMALLER LIMIT; IT DOES NOT SLICE. Slicing would leave the
+        // page's `next_cursor` pointing past the rows that were cut, so every row between the last
+        // one shown and the cursor would be skipped by every caller that followed it -- a hole in
+        // the corpus, in the one output whose contract is that it tells you what it did not show.
+        // Asking the store for fewer rows makes it compute the cursor for the boundary actually on
+        // screen, which costs one query per search step and cannot be wrong.
+        const build = (limit: number): PageResult => pageEntries(store.db, { ...ask, limit });
+
+        this.emitBuilt(budget, {
+          requested: flags.limit ?? DEFAULT_PAGE_SIZE,
+          // Pages cannot be empty: `pageEntries` refuses a limit below one with a `PageSizeError`,
+          // so a budget too small for a single entry has no legal page to fall back to.
+          floor: 1,
+          build,
+          rowsOf: (page) => page.rows.length,
+          keysOf: (page) => page.rows.map((row) => row.id),
+          noun: ['entry', 'entries'],
+          render: (page, trim) =>
+            render(format, {
+              columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
+              rows: page.rows.map(entryRow),
+              coverage: subset(page.rows.length, page.total, page.hasMore),
+              ...(page.nextCursor === null ? {} : { next_cursor: page.nextCursor }),
+              ...(trim === undefined ? {} : { trim }),
+            }),
         });
         return;
       }
@@ -382,6 +483,12 @@ export default class Explore extends BaseCommand {
         { field: 'version_count', value: profile.versions.length },
       ];
 
+      // The floor: these four rows are what the map IS, and a budget that cannot afford them is a
+      // budget that cannot afford a map at all -- dropping them would leave property rows with no
+      // type name, no count, and no denominator, which is not a smaller answer but a different and
+      // misleading one. `emitBuilt` refuses in that case rather than emitting the remainder.
+      const header = rows.length;
+
       // Omitted entirely when there are no entries, rather than rendered as an empty range: a
       // `recorded_at_min` of `null` and a `recorded_at_min` of `''` are both fabrications
       // (`TASKS.md` #7), and the only truthful statement is that no entry exists to have one.
@@ -394,9 +501,30 @@ export default class Explore extends BaseCommand {
 
       rows.push(...profile.versions.map(versionRow), ...profile.properties.map(propertyRow));
 
-      this.emit(format, {
-        columns: ['field', 'value', 'type', 'tally', 'distinct', 'values'],
-        rows,
+      // Everything past the header is droppable, and the ORDER it is dropped in is the row order:
+      // properties first -- from the end, which is where a reader is least likely to have got to --
+      // and only once they are gone, the version rows. That is the cheap-to-expensive order: a
+      // property the budget could not afford is one `--json` lookup away, while the counts and the
+      // range are what the map was asked for.
+      this.emitBuilt(budget, {
+        requested: rows.length,
+        floor: header,
+        build: (keep) => rows.slice(0, keep),
+        rowsOf: (kept) => kept.length,
+        keysOf: (kept) => kept.map((row) => String(row['field'])),
+        noun: ['row', 'rows'],
+        render: (kept, trim) =>
+          render(format, {
+            columns: ['field', 'value', 'type', 'tally', 'distinct', 'values'],
+            rows: kept,
+            // Coverage only when something went: an untrimmed map shows every row it built, and
+            // `complete` is the honest statement of that. A trimmed one is a subset of its own row
+            // list, which is a fact `coverage` is exactly the right shape to carry.
+            ...(trim === undefined || trim.dropped === 0
+              ? {}
+              : { coverage: subset(kept.length, rows.length, true) }),
+            ...(trim === undefined ? {} : { trim }),
+          }),
       });
     });
   }

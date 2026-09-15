@@ -25,6 +25,7 @@
  */
 
 import type { EntryState } from '@ascend/store';
+import { renderTrim, type Trim } from './budget.js';
 
 /** The `--json` contract version. Increment only for a breaking shape change. */
 export const OUTPUT_CONTRACT_VERSION = 1;
@@ -175,6 +176,16 @@ export interface Output {
    * is WHICH rows, and therefore whether they are the rows the caller meant.
    */
   readonly sample?: SampleReport;
+
+  /**
+   * What a token budget cost, for an output that was fitted to one.
+   *
+   * The fourth member of the family `coverage`, `next_cursor` and `sample` belong to, under the same
+   * rule: absent means "no budget was applied", which every command that does not budget says by
+   * saying nothing. It is present whenever `--max-tokens` was passed, `dropped: 0` included, because
+   * the absence of this block is how a consumer tells those two cases apart.
+   */
+  readonly trim?: Trim;
 }
 
 /**
@@ -307,6 +318,15 @@ export interface JsonEnvelope {
    * reproduce the selection from `seed` instead of taking the membership on faith.
    */
   readonly sample?: SampleReport;
+  /**
+   * What a token budget cost, when one was applied.
+   *
+   * Additive at `ascend_output` 1, like the three before it. It is on the envelope and not only in
+   * the table footer because this block is what makes a trimmed output distinguishable from a
+   * complete one to a script -- and a script is the consumer most likely to be handed one, since
+   * `--max-tokens` exists to feed a model.
+   */
+  readonly trim?: Trim;
 }
 
 export function renderJson(output: Output): string {
@@ -318,6 +338,7 @@ export function renderJson(output: Output): string {
     coverage: settled.coverage,
     ...(settled.next_cursor === undefined ? {} : { next_cursor: settled.next_cursor }),
     ...(settled.sample === undefined ? {} : { sample: settled.sample }),
+    ...(settled.trim === undefined ? {} : { trim: settled.trim }),
   };
   return JSON.stringify(envelope);
 }
@@ -459,6 +480,17 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
   if (output.sample !== undefined) {
     if (body[body.length - 1] !== '') body.push('');
     body.push(renderSample(output.sample));
+  }
+
+  // The trim line is last, and it is unconditional for the same reason the sample line is: a fitted
+  // output can be a COMPLETE one -- a map whose property rows all fit -- and a reader still needs to
+  // know a budget was in play, because that is what makes `dropped: 0` a measurement rather than an
+  // absence. Putting it after the coverage line also makes the two read as a unit: "showing 12 of
+  // 486" and "dropped 28 rows to fit 2000 tokens" are the same fact from two directions, and a
+  // reader who reads only the second still learns that rows went missing.
+  if (output.trim !== undefined) {
+    if (body[body.length - 1] !== '') body.push('');
+    body.push(renderTrim(output.trim));
   }
 
   return body.join('\n');
