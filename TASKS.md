@@ -47,7 +47,7 @@ Every **[EMPIRICAL]** task produces a numbered evidence record, committed, in th
 Rules:
 - **Name the questions before running.** An experiment that decides its own question post hoc proves
   nothing.
-- **Run against real data**: the 829 real transcripts in `~/.claude/projects/`, a real model, the
+- **Run against real data**: the real transcripts in `~/.claude/projects/`, a real model, the
   real CLI. Not a fixture you control. Read-only on the transcripts -- never write there.
 - **Report the losing arm.** A bake-off with one reported number is not a bake-off.
 - **A negative result is a successful task.** If the measurement kills the design, that is the task
@@ -100,7 +100,7 @@ Throwaway quality is allowed here; throwaway *honesty* is not.
 **asc-spike-setup** - task - P0
 Create `spike/` with a scratch SQLite DB and read-only helpers for `~/.claude/projects/*.jsonl`.
 Never write to the transcript directory.
-*Accept*: a script can stream all 829 transcripts without loading them into memory.
+*Accept*: a script can stream every transcript without loading them into memory.
 
 **asc-spike-corpus** - task - P0 - deps: spike-setup - **[EMPIRICAL]**
 *Question*: Can a single entry type be extracted from existing transcripts at N in the hundreds?

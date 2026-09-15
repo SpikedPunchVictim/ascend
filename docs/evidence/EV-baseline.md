@@ -174,7 +174,7 @@ not a claim about what transcripts contain.
 
 ## What this overturned
 
-Two figures that were carried as facts and are wrong:
+Three figures that were carried as facts and are wrong:
 
 - **"A backfill of two years"** (`derived-types.ts:69`) — the corpus is 44 days. The reasoning the
   comment supports is still right (the envelope's `recorded_at` genuinely is not the event time),
@@ -184,6 +184,14 @@ Two figures that were carried as facts and are wrong:
   in EV-9, before the rule was chosen. The decision it supports is unaffected and in fact
   conservative — the index-set trade was priced at 11× the volume it will ever see — but the number
   should not be reused as an estimate of backfill size.
+
+- **The "829 real transcripts" pointer, in `ARCHITECTURE.md`, `KICKOFF.md`, `TASKS.md` and
+  `EV-write-cost.md`** — and in six open beads. The directory holds **844** transcript files as of
+  2026-09-15, and it grew during this session by the same mechanism as the record count above. One
+  live directory has now been observed at **809, then 829, then 844**; each was true on its date and
+  every one of them is a false statement today. The pointers were changed to name the directory
+  without a count. A count describing a growing thing belongs in a dated measurement — which is what
+  this document is — and not in prose that depends on it being accurate.
 
 And one assumption worth naming, because it was never stated: that a derived corpus resembles a
 hand-recorded one. It does not. A hand-recorded corpus would carry `na` values, plausible

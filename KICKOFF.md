@@ -41,7 +41,7 @@ unblocked tasks; everything else is gated.
 1. **Empirical before assertive.** Any decision that can be settled by running something MUST be
    settled by running it. Twelve tasks are tagged `[EMPIRICAL]` — each produces a committed
    `EV-<n>` record (Question / Method / Measurement / Decision / Confidence). Name the question
-   *before* running. Use real data: the ~829 real transcripts in `~/.claude/projects/` (read-only,
+   *before* running. Use real data: the real transcripts in `~/.claude/projects/` (read-only,
    never write there), a real model, the real CLI. **Report the losing arm's numbers too.**
 2. **A negative result is a successful task.** If a measurement kills part of the design, say so
    plainly and stop. `asc-spike-patterns` is an explicit GO/NO-GO on the project's central premise:

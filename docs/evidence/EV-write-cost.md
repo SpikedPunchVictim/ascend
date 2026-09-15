@@ -21,7 +21,7 @@
                 - **autocommit, one transaction per entry** — what `asc record` does, called by
                   a hook on every session start
                 - **one batched transaction** — what the claude-code adapter's backfill of the
-                  ~829 real transcripts does
+                  real transcript corpus does
 
                 Values are the **409 real tool-denial rows** from `spike/corpus.db`, permuted
                 across 20 properties. Identical values in every variant, so a difference between

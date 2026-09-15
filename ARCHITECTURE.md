@@ -248,7 +248,7 @@ review completes and nothing in context mentions ascend exists.
 
 **Hooks are not used for recording.** A hook is a shell command with no LLM in it, so it can only
 capture mechanical facts — and `adapter-claude-code` already does that strictly better: retroactively
-across 829 existing sessions, with richer data, and without mutating user settings. A hook capturing
+across every session already on disk, with richer data, and without mutating user settings. A hook capturing
 tool calls adds nothing and only works from install day forward.
 
 **Hooks are used for recall.** Verified against the hooks docs:
@@ -453,8 +453,8 @@ is built into the error paths, since recall is pull-only.
 
 ## Stage 0 — Spike first (throwaway, quarantined)
 
-Per `empirical-planning`: the open questions are empirical, and several can be answered against 829
-real session transcripts (1.3 GB) before any of the above is built.
+Per `empirical-planning`: the open questions are empirical, and several can be answered against the
+real session transcripts already on disk before any of the above is built.
 
 **Questions:**
 
