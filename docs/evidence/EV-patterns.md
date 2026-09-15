@@ -17,7 +17,9 @@
                   destroys only the pairing between them, so it answers "is this association more
                   than the marginals alone would produce?"
 
-                Two types were profiled: `tool-denial` (N=409) and `skill-activation` (N=4668).
+                Two types were profiled: `tool-denial` (N=409) and `skill-activation` (N=4668
+                — **corrected 2026-09-14: 4,668 is a message-echo count, not a corpus size; the
+                true N is ~87 activations. See the Amendment at the end of this file.**).
                 16 dimension pairs were tested in total.
 
 ## Measurement
@@ -40,7 +42,9 @@
 The three-state ratios came back fully measured — `denial_kind`, `tool_name`, `project`, `repo` are
 each 100.0 % measured (0 not-measured) for this type, so the three-state machinery is exercised by
 the *other* profile rather than this one: `agent_name` in `skill-activation` is **57.1 % measured
-(2,002 / 4,668 not-measured)**, a genuine mixed-population case.
+(2,002 / 4,668 not-measured)**, a genuine mixed-population case. *(Corrected 2026-09-14: the
+mixed-population claim holds — the 2,002 not-measured rows are real — but the fraction's
+denominator is dwell-weighted, not a count of activations. See the Amendment.)*
 
 ### Associations — 14 of 16 survive the shuffled control
 
@@ -62,8 +66,13 @@ the *other* profile rather than this one: `agent_name` in `skill-activation` is 
 `skill-activation` (N=4,668): all 6 pairs survive — skill_name × project (V=0.573),
 skill_name × agent_name (V=0.729), skill_name × weekday (V=0.534), project × agent_name (V=0.561),
 project × weekday (V=0.618), agent_name × weekday (V=0.646).
+*(Corrected 2026-09-14: all 6 are **void**, not surviving — the rows are non-independent echoes of
+session state, so the test cannot separate a real association from dwell weighting, and the
+shuffled control is blind to it by construction. See the Amendment.)*
 
 **14 of 16 candidate associations survive.** The pattern machinery works.
+*(Corrected 2026-09-14: **8 of 16** actually survive, all from `tool-denial`; 2 are refuted
+artifacts of marginals; 6 are void. See the Amendment.)*
 
 ### The decisive finding: the shuffled control earns its place
 
@@ -144,3 +153,75 @@ What this does **not** establish:
   ARCHITECTURE.md is unexercised by this evidence.
 - **`automode-*` denials (24 total) are a distinct population** — they mean the auto-mode classifier,
   not a permission rule, and they were conflated with the rest in the profile above.
+
+---
+
+## Amendment — 2026-09-14: the `skill-activation` half is dwell-weighted (asc-xgo.1)
+
+**What was wrong.** The `skill-activation` profile is stated at **N=4,668** (line 20). That is not a
+corpus size. `attributionSkill` is session STATE echoed on every assistant message while a skill is
+active. Measured 2026-09-14 on the same tree (842 files, 425,234 lines, 1,202 MB; EV-corpus used 809
+files, so it has grown), it appears on **6,395 lines across 71 files** but holds only **12 distinct
+values** with **6,308 consecutive repeats**. The independent count is **87 value-runs** across 87
+file-events. The median run spans **55 messages / ~345 seconds**, and **76 of 86** repeated runs span
+more than 60 s — which is what makes this a state and not an event. 4,668 counts *messages that
+mention* a skill, not times one was used.
+
+**Consequence: every statistic over those rows is weighted by how LONG a skill stayed active, not by
+how often it was used.** A skill activated once in a very long session contributes far more rows than
+one used briefly. The dominant value in the corpus (`fullstack-dev-skills:the-fool`, 2,073 lines) is
+likely the longest-running activation rather than the most-used skill.
+
+### What this overturns
+
+1. **All six `skill-activation` associations (above) are void as evidence.** Rows within one
+   (skill, agent) cell largely come from a single activation, so the chi-square's independence
+   assumption is violated, the p-values are optimistic, and the effect sizes — including the largest,
+   skill_name × agent_name at V=0.729 — are inflated by dwell weighting. This is **pseudoreplication**.
+   The precise label matters: they are not shown to be *false*; the test as run **cannot separate** a
+   real association from the dwell-weighting artifact, so they carry no weight in either direction.
+
+2. **The shuffled-label control cannot detect this, by construction.** The control "holds each
+   dimension's marginal distribution fixed and destroys only the pairing between them" (Method,
+   above). Dwell weighting *is* a property of the marginals; shuffling preserves it. So the control
+   is structurally blind to the one defect this profile has, and "all 6 pairs survive" is not
+   evidence of anything. This is the sharpest result here: the design's most load-bearing
+   methodological bet is confirmed on `tool-denial` and has a blind spot exactly where the second
+   profile lives.
+
+3. **The `agent_name` mixed-population claim survives in kind, not in number.** The 2,002
+   not-measured rows are real, so the three-state machinery *is* exercised by this profile as
+   claimed. But 57.1 % has a dwell-weighted denominator; the true fraction over 87 activations is
+   unmeasured, and this amendment does not measure it.
+
+### What survives — the GO does not depend on this profile
+
+The Decision above rests the premise on the **`tool-denial` corpus (N=409, now ~436 as the corpus
+grew)**, which is counted per event by distinct `tool_use_id` and is unaffected by any of this.
+Specifically unaffected:
+
+- the denial_kind proportions (55.0 % permission-rule, CI 50.2–59.8 %) and the Bash concentration (92.7 %);
+- **the actionable finding** — within Bash, permission-rule at 58.6 %, and every non-Bash tool 100 %
+  user-rejected — the pattern no single entry reveals, which is the reason this EV says GO;
+- `tool_name × project` as the artifact the shuffled control earns its place by catching
+  (χ²=153.11, p=8.61e-8 → shuffled 0.1272). This is a `tool-denial` result;
+- the `project × repo` tautology (V=0.761) and the 2026-09-03 temporal confound (143 of 409).
+
+**One claim here is independently CONFIRMED, not overturned:** `user-correction` at N=20. Measured
+separately on the grown corpus: 20 lines across 10 files. EV-patterns was right where it looked
+closely, and its conclusion — register the type, but never use it as a second source of evidence for
+the same events — stands.
+
+### A third control E7 now requires
+
+E7 already needs the tautology check and the temporal-block control. This measurement adds a third:
+**an effective-sample-size / pseudoreplication check.** When rows are echoes of a session state
+rather than independent events, E7 must detect it — a value repeating in long consecutive runs
+within a session is the signal — and either collapse to activations or use a clustered method.
+Without it, any type whose field is state-like will silently produce dwell-weighted statistics with
+confident-looking p-values, and the shuffled control will not flag it.
+
+**Not measured, stated plainly:** the true `agent_name` fraction over 87 activations; whether any of
+the six void associations is real; and whether a dwell-aware re-analysis at n≈87 would even have
+power (12 skill values across 87 activations is thin — several cells would fall under `MIN_N = 20`
+and become anecdotes). This amendment corrects the record; it does not re-run the profile.
