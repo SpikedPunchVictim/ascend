@@ -63,15 +63,45 @@ export interface PageResult {
  * `ORDER BY recorded_at, id` query. So the plan display is just how SQLite names the index
  * constraint, and the pair comparison is being honoured.
  */
+/**
+ * The keyset order, named once.
+ *
+ * Written as a constant and interpolated rather than typed into each statement, because the three
+ * readers below have to agree about it -- a dump whose files are ordered differently from the pages
+ * a caller can resume is two answers to "what is in this type", and the second one is not obviously
+ * the wrong one. `@ascend/core`'s `CURSOR_ORDER` is the prose half of the same rule.
+ */
+const ORDER = 'ORDER BY recorded_at, id';
+
 const AFTER_POSITION = `SELECT id FROM entries
    WHERE type_name = ? AND (recorded_at, id) > (?, ?)
-   ORDER BY recorded_at, id
+   ${ORDER}
    LIMIT ?`;
 
 const FROM_START = `SELECT id FROM entries
    WHERE type_name = ?
-   ORDER BY recorded_at, id
+   ${ORDER}
    LIMIT ?`;
+
+/**
+ * Every id of a type, in the order the pages walk them. No `LIMIT`, and no second ordering.
+ *
+ * **The `--dump` reader (`asc-hg3`), and it exists to keep one ordering rather than two.** A dump
+ * writes a type's entries to files, and the entries in those files have to be the entries a page
+ * would show in the order a page would show them -- otherwise the two readers disagree about what
+ * the corpus contains and neither is obviously wrong. Chunking the output of `pageEntries` would
+ * have worked and would have re-run its `COUNT(*)` once per file; asking for the ids and hydrating
+ * them through `findEntry` instead keeps the same order, the same per-row validation, and one
+ * extra query for the whole type rather than one per chunk.
+ *
+ * **Ids rather than hydrated rows, deliberately.** A dump hydrates a chunk at a time, so the
+ * memory a dump holds is one chunk plus the id list; returning whole entries here would pull every
+ * `evidence_text` of a type into memory at once, which is the cost `signatures` was split out to
+ * avoid on the sampling path.
+ */
+const ALL_IN_ORDER = `SELECT id FROM entries
+   WHERE type_name = ?
+   ${ORDER}`;
 
 /**
  * One page of a type's entries.
@@ -131,4 +161,20 @@ export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult 
     .get(options.type) as { n: number };
 
   return { rows, total: counted.n, hasMore, nextCursor, scope };
+}
+
+/**
+ * Every id of a type, in page order.
+ *
+ * The whole scope, which is what `--dump` needs and what no page-shaped reader gives: walking
+ * cursors to the end would answer the same question in `ceil(n / limit)` round trips, each with a
+ * `COUNT(*)` this does not need, for an answer that is the ids alone.
+ *
+ * Ids are hydrated by the caller through `findEntry`, so the per-row validation that makes the read
+ * path loud about a row that no longer satisfies its own definition applies to a dump exactly as it
+ * applies to a page. See `ALL_IN_ORDER` for why this returns ids rather than entries.
+ */
+export function entryIds(db: DatabaseSync, type: string): readonly string[] {
+  const rows = db.prepare(ALL_IN_ORDER).all(type) as { id: string }[];
+  return rows.map((row) => row.id);
 }

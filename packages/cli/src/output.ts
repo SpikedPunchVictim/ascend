@@ -24,7 +24,7 @@
  * budget (`asc-9y1` measures exactly that), and `jq .` is one keystroke away for a human.
  */
 
-import type { EntryState } from '@ascend/store';
+import type { EntryState, RecordedEntry } from '@ascend/store';
 import { renderTrim, type Trim } from './budget.js';
 
 /** The `--json` contract version. Increment only for a breaking shape change. */
@@ -128,6 +128,34 @@ export function renderCoverage(coverage: Coverage): string {
 
 /** One result row. Keys are the column names, in the order the command chose. */
 export type Row = Readonly<Record<string, unknown>>;
+
+/**
+ * One recorded entry, as a result row -- the projection `--page`, `--sample` and `--dump` all emit.
+ *
+ * **One owner, because `--dump` writes these rows as LINES OF A FILE and `--page` renders them as a
+ * table.** If the two projections were written separately they could differ, and the difference
+ * would be invisible from either side: an agent that dumped a corpus and then paged the same type
+ * would see two shapes for the same entry and no reason to prefer one. JSON Lines has no envelope
+ * to absorb the drift, so the second copy would simply be a different record format.
+ *
+ * The envelope columns are flat and the properties are NOT spread in beside them, deliberately:
+ * property names are chosen by whoever defined the type, so a property called `id` would otherwise
+ * silently overwrite the entry's own id -- the collision `asc-865.1` records for the generated
+ * views. Keeping `properties` as one key makes that impossible.
+ *
+ * `evidence_text` is omitted when the entry has none rather than rendered as an empty string, for
+ * the same reason every other absent value in this CLI is (`TASKS.md` #7): an empty evidence field
+ * and a missing one are different facts.
+ */
+export function entryRow(entry: RecordedEntry): Row {
+  return {
+    id: entry.id,
+    recorded_at: entry.recordedAt,
+    type_version: entry.typeVersion,
+    properties: entry.properties,
+    ...(entry.evidenceText === null ? {} : { evidence_text: entry.evidenceText }),
+  };
+}
 
 /**
  * A result, ready for any of the three renderers.

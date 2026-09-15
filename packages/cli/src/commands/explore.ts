@@ -5,8 +5,23 @@
  * generalises; handed a profile, it chooses what to look at. So this prints counts, ranges,
  * cardinalities and per-property state tallies, and never an entry -- which also means a profile of
  * a corpus full of prose puts none of that prose into a caller's context. The remaining drill-down
- * flags (`--select`, `--filter`, `--sample`, `--max-tokens`, `--dump`) are separate work and land
- * on this command; see beads `asc-56k`, `asc-52u`, `asc-hg3`.
+ * flags (`--select`, `--filter`, `--group-by`) are separate work and land on this command; see
+ * bead `asc-56k`.
+ *
+ * **Four modes, and each is a different answer to "which entries, and how much of them".** The map
+ * (nothing), `--page` (a stable window you resume), `--sample` (a subset chosen for spread), and
+ * `--dump` (all of them, on disk, with an index). They are not composable and the command refuses
+ * the combinations rather than resolving them: a caller who asked for a page and got a dump, or the
+ * reverse, is looking at a different set of entries than the one they named, and nothing in either
+ * output says so.
+ *
+ * **`--dump` is the only mode whose output outlives the command, and that changes what it owes the
+ * caller.** A page is read and gone; a dump directory is returned to days later by someone holding
+ * the files and nothing else. So the index carries what the files were a dump OF, and it is written
+ * LAST -- a directory with data in it and no index is a directory with nothing to read, while the
+ * reverse would be an index naming files that were never written. For the same reason the token
+ * budget never touches the disk: `--max-tokens` fits the INDEX on stdout, which says so in its own
+ * `trim` block, while every file and the on-disk manifest are complete regardless.
  *
  * **`--page` is the opt-in that breaks that rule, and it is opt-in for exactly that reason.** The
  * choice of map-over-rows is a good default, not a prohibition: a model that has read the map and
@@ -56,9 +71,12 @@
  * this bead's call.
  */
 
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { Args, Flags } from '@oclif/core';
-import { DEFAULT_PAGE_SIZE } from '@ascend/core';
+import { CURSOR_ORDER, DEFAULT_PAGE_SIZE } from '@ascend/core';
 import {
+  entryIds,
   findEntry,
   findType,
   pageEntries,
@@ -80,8 +98,9 @@ import {
   type SampleMode,
   type SampleRequest,
 } from '../explore-sample.js';
-import { render, subset, type Row, type SampleReport } from '../output.js';
+import { entryRow, render, subset, type Row, type SampleReport } from '../output.js';
 import { fitToBudget, BudgetFloorError, type BudgetRequest } from '../budget.js';
+import { dumpFileRow, MANIFEST_NAME, planDump, type DumpChunk } from '../explore-dump.js';
 
 /** The state names, in the order they are rendered and counted. */
 const STATES = ['measured', 'not_applicable', 'not_measured', 'not_declared'] as const;
@@ -145,25 +164,20 @@ function renderSummary(property: PropertyProfile): string {
 }
 
 /**
- * One entry, as a row.
+ * What a directory holds, or `undefined` when it does not exist.
  *
- * The envelope columns are flat and the properties are NOT spread in beside them, deliberately:
- * property names are chosen by whoever defined the type, so a property called `id` would otherwise
- * silently overwrite the entry's own id -- the collision `asc-865.1` records for the generated
- * views. Keeping `properties` as one key makes that impossible.
- *
- * `evidence_text` is omitted when the entry has none rather than rendered as an empty string, for
- * the same reason every other absent value in this CLI is (`TASKS.md` #7): an empty evidence field
- * and a missing one are different facts.
+ * `undefined` rather than an empty list, because "there is nothing there" and "there is no there
+ * there" lead to the same write and different sentences. Only `ENOENT` is caught: a directory that
+ * exists and cannot be read is a real failure, and swallowing it would turn a permission problem
+ * into a dump that reports the directory as empty and then fails on the first write.
  */
-function entryRow(entry: RecordedEntry): Row {
-  return {
-    id: entry.id,
-    recorded_at: entry.recordedAt,
-    type_version: entry.typeVersion,
-    properties: entry.properties,
-    ...(entry.evidenceText === null ? {} : { evidence_text: entry.evidenceText }),
-  };
+function contentsOf(dir: string): readonly string[] | undefined {
+  try {
+    return readdirSync(dir);
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 /** One registered version, as a person reads it, with the numbers structured beside it. */
@@ -253,10 +267,20 @@ export default class Explore extends BaseCommand {
       description:
         'Fit the output to a context budget, dropping rows and reporting what it dropped.',
     }),
+    dump: Flags.string({
+      description:
+        'Write the entries to files in <dir>, plus a manifest.json index of what is there.',
+    }),
+    'dry-run': Flags.boolean({
+      description: 'With --dump: report the files and their sizes without writing any of them.',
+    }),
+    force: Flags.boolean({
+      description: 'With --dump: write into a directory that already has files in it.',
+    }),
   };
 
   /**
-   * Build a value, fit it to the budget when there is one, and write it.
+   * The text this command would write, built and fitted to the budget when there is one.
    *
    * **One path, not two.** The unfitted branch below renders the very same `toOutput` the fitted one
    * does, so a change to what this command emits cannot land in one mode and miss the other. The
@@ -267,22 +291,34 @@ export default class Explore extends BaseCommand {
    * A floor the budget cannot reach is a `usageError`, not a `refusal`. The caller typed the number,
    * so the world is not the thing that said no -- and the fix is always on the command line: raise
    * `--max-tokens` to the figure the message names, or narrow the scope.
+   *
+   * **Split from `emitBuilt` so that a mode which WRITES can fit before it commits.** The budget's
+   * verdict is a precondition of a dump, not a footnote to one: computing it after the files are on
+   * disk is a command that failed the caller's request and modified their filesystem anyway. Every
+   * other mode builds and emits in one step, because nothing else has a side effect to order against.
    */
-  private emitBuilt<T>(
+  private builtText<T>(
     budget: number | undefined,
     request: Omit<BudgetRequest<T>, 'maxTokens'>,
-  ): void {
+  ): string {
     if (budget === undefined) {
-      this.emitText(request.render(request.build(request.requested), undefined));
-      return;
+      return request.render(request.build(request.requested), undefined);
     }
     try {
       // The fitted text, not a re-render of it -- see `Fitted.text`.
-      this.emitText(fitToBudget({ ...request, maxTokens: budget }).text);
+      return fitToBudget({ ...request, maxTokens: budget }).text;
     } catch (error) {
       if (error instanceof BudgetFloorError) throw usageError(error.message);
       throw error;
     }
+  }
+
+  /** `builtText`, written. The two steps are separate only for the modes that have a disk to order against. */
+  private emitBuilt<T>(
+    budget: number | undefined,
+    request: Omit<BudgetRequest<T>, 'maxTokens'>,
+  ): void {
+    this.emitText(this.builtText(budget, request));
   }
 
   public async run(): Promise<void> {
@@ -310,11 +346,54 @@ export default class Explore extends BaseCommand {
       );
     }
 
+    // `--dump` is a third "which entries" mode, and it claims `--limit` too. Read here, ahead of the
+    // paging decision below, because `--limit` implies `--page` there and in dump mode it means
+    // entries per FILE -- one flag, two questions, and the caller typed it for one of them.
+    const dumpDir = this.optionalFlag(flags.dump);
+    const dumping = dumpDir !== undefined;
+    const dryRun = this.flagValue(flags['dry-run']);
+    const force = this.flagValue(flags.force);
+
+    if (!dumping) {
+      // Named rather than ignored, for the reason `--seed` is below: a caller who typed it and saw
+      // no preview would conclude the flag was broken, when the truth is that it was never read.
+      const stray = dryRun ? '--dry-run' : force ? '--force' : undefined;
+      if (stray !== undefined) {
+        throw usageError(
+          `${stray} only applies to --dump. A dump decides what would be written, so it is the only ` +
+            `mode with something to preview or to refuse. Add --dump <dir>, or drop ${stray}.`,
+        );
+      }
+    } else if (
+      this.flagValue(flags.page) ||
+      flags.cursor !== undefined ||
+      flags.sample !== undefined
+    ) {
+      // A dump writes the whole type. A page is a window you resume and a sample is a subset chosen
+      // for spread, so honouring either silently would write files the caller reads as the whole
+      // corpus -- the plausible-wrong-answer class, in the one output that outlives the command.
+      throw usageError(
+        '--dump cannot be combined with --page, --cursor or --sample: a dump writes the whole type, ' +
+          'in chunks of one stable order. To dump part of a type, narrow the type or read a page. ' +
+          'Drop one of them.',
+      );
+    }
+
+    const perFile = flags.limit ?? DEFAULT_PAGE_SIZE;
+    if (dumping && perFile < 1) {
+      throw usageError(
+        `--limit is how many entries go in each dumped file, so it must be at least 1. Got ` +
+          `${String(perFile)}. A dump of no entries is not a smaller dump; every file would be ` +
+          'empty.',
+      );
+    }
+
     // Any of the three means the caller wants entries rather than the map. `--limit` and
     // `--cursor` implying `--page` is what keeps the common cases to one flag while leaving
     // `--page` for "just show me some entries, default size".
     const paging =
-      this.flagValue(flags.page) || flags.cursor !== undefined || flags.limit !== undefined;
+      !dumping &&
+      (this.flagValue(flags.page) || flags.cursor !== undefined || flags.limit !== undefined);
 
     const sample = sampleMode(flags.sample);
 
@@ -360,6 +439,136 @@ export default class Explore extends BaseCommand {
         refusal(
           `There is no entry type named '${args.type}' in this project. ${knownNames(store)}`,
         );
+
+      // Dump mode. The entries go to disk and the INDEX comes back on stdout, so a caller -- or a
+      // scheduler handing work to parallel subagents -- can pick files without having read a byte
+      // of any of them.
+      if (dumping) {
+        if (findType(store.db, args.type) === undefined) throw noSuchType();
+
+        // The ids first, in the page order, then hydrated a chunk at a time. Hydrating all of them
+        // up front would pull every `evidence_text` of the type into memory at once, which is what
+        // `entryIds` returns ids rather than entries to avoid.
+        const ids = entryIds(store.db, args.type);
+        const chunks: DumpChunk[] = [];
+        for (let start = 0; start < ids.length; start += perFile) {
+          const entries: RecordedEntry[] = [];
+          for (const id of ids.slice(start, start + perFile)) {
+            const entry = findEntry(store.db, id);
+            // The id came from this same table a moment ago, so a miss means the table changed
+            // underneath the read. Nothing has been written at this point, which is why the message
+            // can promise that.
+            if (entry === undefined) {
+              throw refusal(
+                `entry '${id}' was listed for the dump but is no longer in the store, so the dump ` +
+                  'was stopped before it wrote anything. Run it again.',
+              );
+            }
+            entries.push(entry);
+          }
+          chunks.push({ entries });
+        }
+
+        // Everything is built and measured BEFORE anything is written, so `--dry-run` and a real
+        // dump report the same numbers, and a failure to plan cannot leave a half-written directory.
+        const plan = planDump(chunks, { type: args.type, order: CURSOR_ORDER });
+        const target = resolve(process.cwd(), dumpDir);
+        const rows = plan.manifest.files.map((file) => dumpFileRow(file, dryRun));
+
+        // Every refusal this mode has happens before the first write, and the budget is one of them.
+        // Fitting after the files were on disk was the first version of this, and driving it showed
+        // what that costs: `--dump <dir> --max-tokens 1` exited 2 with a message about the budget and
+        // left a complete five-file dump behind it. The caller asked a question the command declined
+        // to answer, and their filesystem changed anyway -- the same defect class as reporting success
+        // wrongly, one step further out. The text is built here and written below.
+        const text = this.builtText(budget, {
+          requested: rows.length,
+          // Zero for an empty dump, one otherwise -- and the difference is the message, not the fit.
+          // A floor above what the output holds changes nothing about what is emitted (slicing an
+          // empty row list gives an empty row list at any floor), which was measured by mutating
+          // this line to a bare `1` and re-running against the corpus: the output was identical
+          // `dropped: 0` at a workable budget. What moved was the REFUSAL, which names the floor --
+          // "the smallest possible one in this output format -- **1 file** -- is about 195 tokens"
+          // for a type with no files at all, when the truth is 0 files and 86 tokens. A refusal that
+          // overstates what exists is the same class of claim as a report that does, and it is read
+          // by someone deciding whether to trust the flag.
+          floor: rows.length === 0 ? 0 : 1,
+          build: (keep) => rows.slice(0, keep),
+          rowsOf: (kept) => kept.length,
+          keysOf: (kept) => kept.map((row) => String(row['file'])),
+          noun: ['file', 'files'],
+          render: (kept, trim) =>
+            render(format, {
+              columns: ['file', 'count', 'tokens', 'recorded_at_min', 'recorded_at_max'],
+              rows: kept,
+              // The same guard the map carries, and it was found the same way -- by driving this
+              // against the real corpus rather than by reading it. Without it the coverage block
+              // defaults to `complete(kept)`, so `--dump --max-tokens 500` printed **"showing 4 of
+              // 4"** beside a trim block saying it had dropped 9 rows. A consumer reading
+              // `coverage` alone -- which is what the field is for -- concludes the dump holds four
+              // files. That is the "reports success wrongly" class, in the one output whose whole
+              // job is to say what exists on disk.
+              ...(trim === undefined || trim.dropped === 0
+                ? {}
+                : { coverage: subset(kept.length, rows.length, true) }),
+              ...(trim === undefined ? {} : { trim }),
+            }),
+        });
+
+        if (dryRun) {
+          // Verbatim the string `record.ts` and `init.ts` use, and the same reason: stdout carries
+          // `dry_run: true` on every row for a machine, and this is the line for a person.
+          this.warn('dry run: nothing was written.');
+        } else {
+          const occupied = contentsOf(target) ?? [];
+          const written = new Set(plan.files.map((file) => file.name));
+          if (occupied.length > 0 && !force) {
+            throw usageError(
+              `${target} already holds ${String(occupied.length)} ` +
+                `${occupied.length === 1 ? 'file' : 'files'}, so a dump written there would sit ` +
+                `beside them and nothing would say which files were this dump's. Pass --force to ` +
+                'overwrite the names this dump writes, or dump into an empty directory.',
+            );
+          }
+
+          // `--force` overwrites the names it writes and touches nothing else, so a LARGER previous
+          // dump leaves its extra files behind -- and someone globbing the directory would read them
+          // as part of this one. Naming them is the difference between a limitation and a trap: the
+          // manifest lists exactly what belongs to this dump, and a person who never opens it has no
+          // other way to know. Measured on a five-entry type: dump at `--limit 1` (five files), then
+          // re-dump at `--limit 5 --force`, and four stale files survive beside a one-file dump.
+          const stale = occupied.filter((name) => name !== MANIFEST_NAME && !written.has(name));
+          if (stale.length > 0) {
+            this.warn(
+              `${target} holds ${String(stale.length)} ` +
+                `${stale.length === 1 ? 'file' : 'files'} this dump does not write, so ` +
+                `${stale.length === 1 ? 'it was' : 'they were'} left alone and ` +
+                `${stale.length === 1 ? 'is' : 'are'} not part of it: ${stale.join(', ')}. ` +
+                `${MANIFEST_NAME} lists the files this dump wrote, and is the authority on what ` +
+                'belongs to it.',
+            );
+          }
+
+          mkdirSync(target, { recursive: true });
+          for (const file of plan.files) {
+            writeFileSync(join(target, file.name), file.text);
+          }
+          // LAST, deliberately. A crash between here and the files above leaves a directory with
+          // data in it and no index -- a caller sees nothing to read. Writing the index first would
+          // leave the opposite: an index naming files that were never written, which is the
+          // "reports success wrongly" class and the one failure of this feature that a reader
+          // cannot detect for themselves.
+          writeFileSync(join(target, MANIFEST_NAME), plan.manifestText);
+        }
+
+        // The budget fits the INDEX, and cannot touch the disk. That ordering is load-bearing: a
+        // trimmed stdout is honest (it carries `trim` and names the files it withheld) while a
+        // truncated manifest ON DISK would be a permanent lie about what the directory holds, read
+        // later by someone with no way to tell. Every file and the whole manifest are complete
+        // regardless of what this line writes.
+        this.emitText(text);
+        return;
+      }
 
       // Sample mode. A sample is a subset of a population whose MEMBERSHIP is a function of a
       // parameter the reader cannot see, so it states both the share and the choice -- the same

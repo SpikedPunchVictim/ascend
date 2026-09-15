@@ -87,7 +87,7 @@ export {
   type SearchOptions,
 } from './search.js';
 
-export { pageEntries, type PageOptions, type PageResult } from './pages.js';
+export { entryIds, pageEntries, type PageOptions, type PageResult } from './pages.js';
 
 export {
   signatures,
