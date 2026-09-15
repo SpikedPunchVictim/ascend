@@ -90,6 +90,15 @@ export {
 export { pageEntries, type PageOptions, type PageResult } from './pages.js';
 
 export {
+  signatures,
+  type EntrySignature,
+  type SignatureCell,
+  type SignatureProperty,
+} from './signatures.js';
+
+export type { EntryState } from './sql.js';
+
+export {
   profileType,
   TOP_K,
   type ProfileOptions,

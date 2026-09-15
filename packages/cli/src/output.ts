@@ -24,6 +24,8 @@
  * budget (`asc-9y1` measures exactly that), and `jq .` is one keystroke away for a human.
  */
 
+import type { EntryState } from '@ascend/store';
+
 /** The `--json` contract version. Increment only for a breaking shape change. */
 export const OUTPUT_CONTRACT_VERSION = 1;
 
@@ -163,6 +165,16 @@ export interface Output {
    * reporting `null`, so `json_type(...) IS NULL` and a missing key are the same read.
    */
   readonly next_cursor?: string;
+
+  /**
+   * How the rows were chosen, for an output that is a SAMPLE rather than a page or a whole answer.
+   *
+   * A third member of the same family as `coverage` and `next_cursor`, under the same rule: absent
+   * means "this output is not a sample", which every command that does not sample says by saying
+   * nothing. `coverage` still applies and still states the share -- what only this block can state
+   * is WHICH rows, and therefore whether they are the rows the caller meant.
+   */
+  readonly sample?: SampleReport;
 }
 
 /**
@@ -177,6 +189,80 @@ export interface Output {
  */
 function withCoverage(output: Output): Output & { readonly coverage: Coverage } {
   return { ...output, coverage: output.coverage ?? complete(output.rows) };
+}
+
+/**
+ * One stratum's share of the population and of the sample.
+ *
+ * `state` is always present and `value` only when there is one, which is the same rule the rest of
+ * this CLI applies to absent values (`TASKS.md` #7): a measured value reports its value, and the two
+ * absent states report which absence they are. Rendering a stratum whose state is `not_measured` as
+ * `value: null` would put a fabricated value in the one place a reader is being asked to trust a
+ * proportion over it.
+ */
+export interface SampleStratum {
+  readonly state: EntryState;
+  /** The measured value. Omitted in either absent state, where there is no value to report. */
+  readonly value?: string;
+  readonly population: number;
+  readonly selected: number;
+}
+
+/**
+ * What a sample chose from, and how it chose.
+ *
+ * WHY THIS IS ON THE OUTPUT AND NOT IN A LOG LINE. A sample is the one thing this CLI emits whose
+ * MEMBERSHIP is a function of a parameter the reader cannot see. `--limit` says how many; nothing
+ * else says which, so without this block a reader has no way to reproduce a selection or to notice
+ * that it was not the one they meant. It carries the mode, the property chosen, the seed when the
+ * mode used one, and the achieved per-stratum counts -- so "stratified preserved the proportions" is
+ * a fact the output states rather than a claim the documentation makes.
+ */
+export interface SampleReport {
+  readonly mode: string;
+  /** The property sampled by. Omitted when the mode does not take one. */
+  readonly by?: string;
+  /**
+   * The seed the selection was derived from. Omitted for the modes that are not draws.
+   *
+   * Reported rather than assumed to be the default: a caller who did not pass `--seed` still needs
+   * to know what it was in order to reproduce this exact output, and one who did needs to see that
+   * it took effect.
+   */
+  readonly seed?: string;
+  /** The achieved distribution. Empty when the mode was given no property to report on. */
+  readonly strata: readonly SampleStratum[];
+}
+
+/**
+ * A sample, as a block: one line naming the choice, then one line per stratum. Not a format -- the
+ * structured fields on the same output are.
+ *
+ * **One line per stratum, rather than one long line**, and that is a layout decision with a reason.
+ * Every stratum has to be named, including the ones the sample took none of -- a stratum at zero is
+ * the finding, since it is exactly what stratified sampling exists to prevent, and a rendering that
+ * dropped it would hide the case worth looking at. But ten strata of a real corpus render to four
+ * hundred characters, which `renderTable` would either elide (hiding strata) or wrap (unreadably).
+ * A column of numbers is what a person comparing two of these actually wants, and it costs nothing
+ * in the JSON.
+ */
+export function renderSample(sample: SampleReport): string {
+  const parts = [sample.mode];
+  if (sample.by !== undefined) parts.push(`by ${sample.by}`);
+  // JSON-quoted so a seed with a space or a quote in it reads as one token rather than as more
+  // prose -- the seed is an operand a caller retypes, and it has to survive the round trip.
+  if (sample.seed !== undefined) parts.push(`seed ${JSON.stringify(sample.seed)}`);
+  if (sample.strata.length === 0) return parts.join(', ');
+
+  const missed = sample.strata.filter((stratum) => stratum.selected === 0).length;
+  const lines = [
+    `${parts.join(', ')}: ${String(sample.strata.length)} strata, ${String(missed)} unsampled`,
+    ...sample.strata.map(
+      (stratum) =>
+        `  ${stratum.value ?? stratum.state}  ${String(stratum.selected)} of ${String(stratum.population)}`,
+    ),
+  ];
+  return lines.join('\n');
 }
 
 /**
@@ -213,6 +299,14 @@ export interface JsonEnvelope {
    * the next command -- and stdout is where data goes (`cli-best-practices` rule 1).
    */
   readonly next_cursor?: string;
+  /**
+   * How the rows were chosen, when they were sampled.
+   *
+   * Additive at `ascend_output` 1, like `coverage` and `next_cursor` before it: a consumer that
+   * predates the key reads `rows`, `row_count` and `coverage` unchanged, and one that knows it can
+   * reproduce the selection from `seed` instead of taking the membership on faith.
+   */
+  readonly sample?: SampleReport;
 }
 
 export function renderJson(output: Output): string {
@@ -223,6 +317,7 @@ export function renderJson(output: Output): string {
     row_count: settled.rows.length,
     coverage: settled.coverage,
     ...(settled.next_cursor === undefined ? {} : { next_cursor: settled.next_cursor }),
+    ...(settled.sample === undefined ? {} : { sample: settled.sample }),
   };
   return JSON.stringify(envelope);
 }
@@ -353,6 +448,17 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
     // back. It is also base64url-free (`encodeURIComponent` of canonical JSON), so it carries no
     // whitespace that a table's own flattening would disturb.
     if (output.next_cursor !== undefined) body.push(output.next_cursor);
+  }
+
+  // The sample line sits OUTSIDE that condition, and the difference is the point: a sample is a
+  // subset of the population and can be a very small one, but it is never a COMPLETE output, so
+  // `coverage.shown < coverage.total` is true for every sample that is not the whole corpus. The
+  // exception -- `--limit` at or above the population, where the sample is everything -- is the
+  // one case where the reader is looking at all of it and a line about how it was chosen is
+  // still worth having, because it is the line that says the mode had nothing to choose between.
+  if (output.sample !== undefined) {
+    if (body[body.length - 1] !== '') body.push('');
+    body.push(renderSample(output.sample));
   }
 
   return body.join('\n');

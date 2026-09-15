@@ -12,6 +12,19 @@
 
 import { ENVELOPE_PROPERTY_NAMES } from '@ascend/core';
 
+/**
+ * The four states a projected property can be in -- `@ascend/core`'s three, plus the one only a
+ * version-aware query can produce.
+ *
+ * The type lives here rather than in `@ascend/core` because `not_declared` is not a fact about an
+ * entry: it is a relation between a row and the definition it was recorded under, and it exists
+ * exactly where a version list is available. Core's `PropertyState` is therefore genuinely smaller
+ * and not a subset that wants widening -- an entry on its own is never `not_declared`. This is the
+ * type of the string the CASE below PRODUCES, and it is written once, here, for the reason the whole
+ * module exists: a second copy of a four-way decision is a second answer.
+ */
+export type EntryState = 'measured' | 'not_applicable' | 'not_measured' | 'not_declared';
+
 /** Quote an identifier for generated SQL. Doubling an embedded quote is the SQLite escape. */
 export const ident = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 

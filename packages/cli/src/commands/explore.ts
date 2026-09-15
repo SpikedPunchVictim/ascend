@@ -59,21 +59,44 @@
 import { Args, Flags } from '@oclif/core';
 import { DEFAULT_PAGE_SIZE } from '@ascend/core';
 import {
+  findEntry,
   findType,
   pageEntries,
   profileType,
+  signatures,
   type PropertyProfile,
   type RecordedEntry,
   type StateCounts,
   type VersionProfile,
 } from '@ascend/store';
 import { BaseCommand } from '../base.js';
-import { refusal } from '../errors.js';
+import { refusal, usageError } from '../errors.js';
 import { knownNames } from '../register-document.js';
+import {
+  chooseSample,
+  resolveSample,
+  SAMPLE_MODES,
+  type SampleMode,
+  type SampleRequest,
+} from '../explore-sample.js';
 import { subset, type Row } from '../output.js';
 
 /** The state names, in the order they are rendered and counted. */
 const STATES = ['measured', 'not_applicable', 'not_measured', 'not_declared'] as const;
+
+/**
+ * The mode the caller typed, as a member of the vocabulary.
+ *
+ * oclif has already refused anything outside `SAMPLE_MODES` by the time this runs, so the search
+ * cannot fail -- and the throw is what makes that a check rather than an assumption, on the one
+ * boundary where a string becomes a decision.
+ */
+function sampleMode(typed: string | undefined): SampleMode | undefined {
+  if (typed === undefined) return undefined;
+  const mode = SAMPLE_MODES.find((candidate) => candidate === typed);
+  if (mode === undefined) throw usageError(`--sample must be one of: ${SAMPLE_MODES.join(', ')}`);
+  return mode;
+}
 
 /**
  * The tally as one line: every state named, with its share of the entries that declared the
@@ -212,7 +235,17 @@ export default class Explore extends BaseCommand {
       description: 'Resume from the cursor a previous page printed. Implies --page.',
     }),
     limit: Flags.integer({
-      description: `Entries per page (default ${String(DEFAULT_PAGE_SIZE)}). Implies --page.`,
+      description: `Entries per page, or per sample. Default ${String(DEFAULT_PAGE_SIZE)}.`,
+    }),
+    sample: Flags.string({
+      description: 'Draw a sample instead of a page, to show spread rather than order.',
+      options: [...SAMPLE_MODES],
+    }),
+    by: Flags.string({
+      description: 'The categorical property to sample by. Required by --sample stratified.',
+    }),
+    seed: Flags.string({
+      description: 'Vary the draw. Omitted, the seed is fixed so a sample is reproducible.',
     }),
   };
 
@@ -225,6 +258,36 @@ export default class Explore extends BaseCommand {
     // `--page` for "just show me some entries, default size".
     const paging =
       this.flagValue(flags.page) || flags.cursor !== undefined || flags.limit !== undefined;
+
+    const sample = sampleMode(flags.sample);
+
+    // A sample and a page are two different answers to "which entries", and honouring one silently
+    // would produce the plausible-wrong-answer class: rows a caller reads as the window they asked
+    // for. So the combination is refused rather than resolved, and it cannot be expressed by
+    // accident -- `--limit` implies `--page`, so `--sample --limit 20` lands here unless this runs
+    // ahead of that.
+    if (flags.sample !== undefined) {
+      if (this.flagValue(flags.page) || flags.cursor !== undefined) {
+        throw usageError(
+          '--sample cannot be combined with --page or --cursor: a page is a stable window you ' +
+            'resume, and a sample is a subset chosen for spread. Drop one of them.',
+        );
+      }
+      if (flags.seed !== undefined && flags.sample !== 'random' && flags.sample !== 'stratified') {
+        throw usageError(
+          `--seed does not apply to --sample ${flags.sample}: that is a deterministic choice, not ` +
+            'a draw, so the same corpus always yields the same rows. Drop the seed, or use ' +
+            '--sample random.',
+        );
+      }
+    } else if (flags.by !== undefined || flags.seed !== undefined) {
+      // Named rather than ignored. A caller who typed `--seed` and got the same rows every time
+      // would conclude the seed was broken, when the truth is that it was never read.
+      const flag = flags.by === undefined ? '--seed' : '--by';
+      throw usageError(
+        `${flag} only applies to --sample. Add --sample ${SAMPLE_MODES.join('|')}, or drop ${flag}.`,
+      );
+    }
 
     await this.withProject(({ store }) => {
       // A name nobody registered is a mistyped name or the wrong project, and the fix differs
@@ -240,6 +303,53 @@ export default class Explore extends BaseCommand {
         refusal(
           `There is no entry type named '${args.type}' in this project. ${knownNames(store)}`,
         );
+
+      // Sample mode. A sample is a subset of a population whose MEMBERSHIP is a function of a
+      // parameter the reader cannot see, so it states both the share and the choice -- the same
+      // argument as the coverage line, one step further.
+      //
+      // The projection is read first and the rows are hydrated after, rather than the other way
+      // round: choosing needs every entry's categorical identity and none of their documents, and
+      // hydrating first would pull a whole type's `evidence_text` into memory to select forty of
+      // them. It also means the sampler's input never held prose, which is the same rule the spike
+      // reader states for the corpus.
+      if (sample !== undefined) {
+        const profile = profileType(store.db, args.type);
+        if (profile === undefined) throw noSuchType();
+
+        const request: SampleRequest = {
+          mode: sample,
+          size: flags.limit ?? DEFAULT_PAGE_SIZE,
+          ...(flags.by === undefined ? {} : { by: flags.by }),
+          ...(flags.seed === undefined ? {} : { seed: flags.seed }),
+        };
+
+        const resolved = resolveSample(profile, request);
+        const chosen = chooseSample(
+          signatures(store.db, args.type, resolved.properties),
+          resolved,
+          request,
+        );
+
+        // Hydrated in the sample's own order, so the rows a reader sees are in the order the
+        // sampler reported rather than in whatever order a second query returned them.
+        const rows: Row[] = [];
+        for (const id of chosen.ids) {
+          const entry = findEntry(store.db, id);
+          if (entry === undefined) continue;
+          rows.push(entryRow(entry));
+        }
+
+        this.emit(format, {
+          columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
+          rows,
+          // A sample has no remainder to resume, so `has_more` is false however small the share --
+          // there is no cursor to hand back, and saying "more" would promise one.
+          coverage: subset(rows.length, profile.count, false),
+          sample: chosen.sample,
+        });
+        return;
+      }
 
       // Entry mode. A page of rows is the one output this command emits that is a SUBSET of a
       // population, so it is the one that has to state its coverage rather than let `emit`

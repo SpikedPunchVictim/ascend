@@ -22,6 +22,7 @@
 
 import { Errors } from '@oclif/core';
 import { CursorError, PageSizeError } from '@ascend/core';
+import { SampleSizeError } from '@ascend/analysis';
 import { isBusyError } from '@ascend/store';
 import { NoProjectError } from './project.js';
 
@@ -69,7 +70,14 @@ export function describeFailure(error: unknown, debug: boolean): Failure {
   //
   // What is deliberately NOT here: `UnknownTypeError` and `EntryRejectedError`. Those are refusals
   // -- the command line was fine and the world said no -- so they fall through to the default 1.
-  if (error instanceof CursorError || error instanceof PageSizeError) {
+  // `SampleSizeError` joins them for the same reason and by the same argument: `--limit 0` is a size
+  // the caller typed, and whether it was typed as a page size or a sample size is not a difference
+  // that changes whose fault it is.
+  if (
+    error instanceof CursorError ||
+    error instanceof PageSizeError ||
+    error instanceof SampleSizeError
+  ) {
     return withDetail({ message: error.message, exitCode: 2 });
   }
 
