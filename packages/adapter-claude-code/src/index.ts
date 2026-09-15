@@ -40,6 +40,17 @@ export {
   type TranscriptRecord,
 } from './decode.js';
 
+export { DERIVED_SOURCE, DERIVED_TYPES, derivedType } from './derived-types.js';
+
+export {
+  checkRunner,
+  createDeriver,
+  execSegments,
+  type DeriveCounters,
+  type DerivedEntry,
+  type Deriver,
+} from './derive.js';
+
 export {
   JSONL_SUFFIX,
   classifyTranscript,

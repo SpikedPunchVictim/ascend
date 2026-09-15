@@ -964,12 +964,26 @@ requires `pnpm build`, not just the source restore.
 **EV-constraints carried in:** `EV-corpus` measured the real corpus at **809 files / 388,054 lines /
 1.14 GB** read in **11.2 s** at **213 MB** peak RSS, yielding **69,276 rows in 7.2 s**. Tool-denial
 entries reach **N=409** → GO. `user-correction` reaches only **N=20** and is **not an independent
-corpus** — do not present it as one.
+corpus** — do not present it as one. (The file counts are the 2026-09-11 spike; `EV-corpus`'s own
+amendment and `EV-derived` both re-measured on 2026-09-15 at **843 files / 431,039 records /
+1.19 GiB**.)
+
+**`EV-derived` (EV-9), 2026-09-15 — all five types GO, with the rules stated:** 1,488 entries
+measured against the real corpus, 0 invalid, 0 warnings, 0 duplicate keys — `verification_run` 486,
+`tool_denial` 457, `context_compaction` 438, `skill_activation` 87, `user_correction` 20. A derived
+type's N is its count of DISTINCT PER-EVENT IDENTIFIERS, never its line count (measured: 6,395
+records carrying `attributionSkill` yield 87 activations). `verification_run` was the type where the
+rule had to be *chosen*: one corpus yields 16,352 / 10,893 / 6,940 / 6,826 / **486** under five
+defensible rules, and the corpus does not pick between them. Heredoc bodies are skipped — proven by a
+controlled A/B over one frozen 72,014-command list, where **54 %** of 922,333 segments (497,980) are
+file *contents* and skipping them removes **7 fabricated entries** at a cost of 5 unterminated
+openers in 12,818. `user_correction`'s non-independence is stated in the type's own description.
 
 **Safety constraint (verbatim from `TASKS.md`):** *"Read-only on the transcripts — never write
 there."*
 
-**Status: Not Started** (`asc-dh0`)
+**Status: In Progress** (`asc-dh0`) — `asc-ct3` (streaming reader) **complete**; `asc-qib` (derived
+type definitions) **complete**; `asc-ycl` (`asc ingest claude-code`) and `asc-sx7` next.
 
 ---
 
