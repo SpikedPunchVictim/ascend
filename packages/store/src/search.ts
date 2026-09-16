@@ -111,11 +111,22 @@ export interface SearchHit {
  * searchable term is the correct answer, not a failure.
  */
 export function toFtsMatch(query: string): string | null {
-  const tokens = (query.match(TERM) ?? []).filter(
-    (token) => codePointLength(token) >= MIN_TERM_LENGTH,
-  );
+  const tokens = searchTerms(query);
   if (tokens.length === 0) return null;
   return tokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' OR ');
+}
+
+/**
+ * The terms a search would look for, in the order they appear.
+ *
+ * Extracted from `toFtsMatch` so that anything explaining a search's result works from **the same
+ * tokens the search used**. A second tokenizer written for the zero-result assist would be a second
+ * opinion about what the query means, and the one observable consequence would be an assist that
+ * reports on terms the search never looked for -- a wrong explanation of a right answer, which is
+ * harder to notice than a wrong answer.
+ */
+export function searchTerms(query: string): readonly string[] {
+  return (query.match(TERM) ?? []).filter((token) => codePointLength(token) >= MIN_TERM_LENGTH);
 }
 
 /**
@@ -197,4 +208,162 @@ export function searchEntries(
 export function indexedDocumentCount(db: DatabaseSync): number {
   const row = db.prepare(`SELECT COUNT(*) AS n FROM ${FTS_TABLE}`).get() as { n: number };
   return row.n;
+}
+
+/**
+ * How many entries a search matches in total, before any limit.
+ *
+ * **Exists because `LIMIT` makes the result count a lie, and nothing else can correct it.** A search
+ * capped at one row reports one row; a caller asking "does this corpus mention X" reads that as "it
+ * mentions X once", and "how many entries discuss this" reads it as one. Measured on the frozen
+ * corpus: `the` against `user_correction` matches **17** entries, and at `--limit 1` the row list
+ * cannot tell that apart from a corpus that matches once.
+ *
+ * Cheap enough to run unconditionally: **0.0221 ms** measured against that same corpus (n=200), which
+ * is the cost of `indexedCountForType` and about a 35th of the `json_each` scan the zero-result path
+ * already does. The plan is an FTS index scan joined to `entries` by primary key, so it counts
+ * matched documents rather than reading them.
+ *
+ * Returns 0 for a query with no usable term, matching `searchEntries`, so the two cannot disagree
+ * about whether a query is answerable.
+ */
+export function countSearchMatches(
+  db: DatabaseSync,
+  query: string,
+  options: { readonly type?: string } = {},
+): number {
+  const match = toFtsMatch(query);
+  if (match === null) return 0;
+
+  const filter = options.type === undefined ? '' : ' AND e.type_name = ?';
+  const params: unknown[] = [match];
+  if (options.type !== undefined) params.push(options.type);
+
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM ${FTS_TABLE}
+         JOIN entries AS e ON e.id = ${FTS_TABLE}.entry_id
+        WHERE ${FTS_TABLE} MATCH ?${filter}`,
+    )
+    .get(...(params as never[])) as { n: number };
+  return row.n;
+}
+
+/**
+ * How much of one type a search actually looked over.
+ *
+ * **The two numbers are the point, and they are different questions.** `entries` is the type;
+ * `indexed` is the part of it the FTS index holds, which is the only part `searchEntries` can ever
+ * return. When they differ, a search that returns nothing has not said "this type holds nothing like
+ * that" -- it has said "the part I was able to read holds nothing like that", and those two claims
+ * want opposite responses from a caller. Nothing else in the API reports the second.
+ *
+ * Measured on the frozen EV-11 corpus, where the distinction is not hypothetical: 1,491 entries
+ * across five populated types, of which **20** are indexed -- all of them `user_correction`. The
+ * other four types are an unconditional zero for every query a caller could type, `""` and single
+ * common letters included, because there is no document for a query to match rather than because the
+ * query was poor. `indexedCountForType` is the only way to tell those apart.
+ *
+ * `indexed` is counted through the join to `entries` rather than by counting non-null
+ * `evidence_text` columns, because the join is what `searchEntries` runs. A store whose index had
+ * fallen behind its rows would report the same number either way, and reporting the index's own view
+ * is what keeps this number an explanation of the search rather than a second opinion about the
+ * table.
+ *
+ * `docs/evidence/EV-15.md` has the corpus measurements this was built against.
+ */
+export interface SearchScope {
+  /** Entries of this type, at any version. */
+  readonly entries: number;
+  /** How many of them the index holds -- the searchable part. */
+  readonly indexed: number;
+}
+
+export function searchScope(db: DatabaseSync, type: string): SearchScope {
+  const entries = db.prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?').get(type) as {
+    n: number;
+  };
+  const indexed = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM ${FTS_TABLE}
+         JOIN entries AS e ON e.id = ${FTS_TABLE}.entry_id
+        WHERE e.type_name = ?`,
+    )
+    .get(type) as { n: number };
+  return { entries: entries.n, indexed: indexed.n };
+}
+
+/** One property value that occurs in a type, and how many of its entries carry it. */
+export interface PropertyValueHit {
+  readonly property: string;
+  readonly value: string;
+  readonly entries: number;
+}
+
+/**
+ * Property values that **actually occur** in a type and contain one of `terms`.
+ *
+ * This is the assist's "did you mean", and it is a different question from the one mast asks. A
+ * symbol index and a text index search the same space -- code is text -- so a miss there is a
+ * vocabulary miss and the fix is a better word. Ascend searches only `evidence_text`, and a
+ * `verification_run` entry's `runner` is `"cargo test"` while its evidence may hold no such word.
+ * Measured on the frozen corpus: `asc search verification_run "cargo"` can match nothing while **215
+ * entries carry `cargo` in a property**, and the difference is not the caller's vocabulary.
+ *
+ * Every row is a measurement of rows that exist -- `entries` is the count of entries carrying this
+ * exact value -- so a suggestion cannot name a value the type does not hold. That is deliberate and
+ * it is the whole value of the feature: an assist that guesses is a second dead end with a delay.
+ *
+ * **Matched by containment, not by similarity, and that is a choice with a cost.** Containment has
+ * no threshold to defend and no way to invent a match; the trigram floor mast uses (`minScore = 0.3`
+ * in its source, with no recorded provenance) does not survive contact with this corpus -- measured
+ * here, `"contxt"` finds `context` at 0.44 but `"transcipt"` finds `transcript` at nothing, because a
+ * transposition breaks three of eight trigrams. So a caller's typo may find nothing here. What the
+ * caller does get is a floor they can reason about: every value suggested is one that exists.
+ *
+ * SQLite's `LIKE` folds case for ASCII only, and this inherits that limit rather than papering over
+ * it: a term differing from a stored value by non-ASCII case finds nothing.
+ */
+export function propertyValueMatches(
+  db: DatabaseSync,
+  options: { readonly type: string; readonly terms: readonly string[]; readonly limit: number },
+): readonly PropertyValueHit[] {
+  if (options.terms.length === 0) return [];
+
+  // One `LIKE` per term, ORed, because a search's own terms are ORed (`toFtsMatch`) -- an assist
+  // that ANDed them would report on a query the caller did not make.
+  //
+  // `ESCAPE` is not decoration. The terms are runs of `[\p{L}\p{N}_]+`, so `%` cannot appear but `_`
+  // can: a caller searching `foo_bar` would otherwise hand SQLite a wildcard, and `LIKE '%_%'`
+  // matches every non-empty value in the type. The escape character itself is escaped first, so a
+  // term holding a backslash cannot consume the character after it.
+  const escaped = options.terms.map((term) => `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+  const where = escaped.map(() => "je.value LIKE ? ESCAPE '\\'").join(' OR ');
+
+  const rows = db
+    .prepare(
+      `SELECT je.key AS property, je.value AS value, COUNT(*) AS entries
+         FROM entries AS e, json_each(e.properties_json) AS je
+        WHERE e.type_name = ? AND je.type = 'text' AND (${where})
+        GROUP BY je.key, je.value
+        ORDER BY entries DESC, je.key ASC, je.value ASC
+        LIMIT ?`,
+    )
+    .all(
+      ...matchParams(options.type, escaped, options.limit),
+    ) as unknown as readonly PropertyValueHit[];
+
+  return rows;
+}
+
+/**
+ * The bound parameters, in the order the statement above names them.
+ *
+ * Written as one function because the type, the patterns and the limit would otherwise be three
+ * spreads at the call site whose order a reader has to reconstruct from the SQL. The `as never[]` is
+ * the same concession `searchEntries` makes at its own bind: the driver is typed for a primitive
+ * union, and a `string[]` is not assignable to it even though every element is a string.
+ */
+function matchParams(type: string, patterns: readonly string[], limit: number): never[] {
+  return [type, ...patterns, limit] as never[];
 }

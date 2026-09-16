@@ -232,15 +232,51 @@ evidence.
 Honest about what exists, because a README that overstates is worse than one that says nothing.
 
 **Built and working:** `asc init`, `asc record`, `asc query` (including `--across`), the whole
-`asc types` topic (`list`, `show`, `brief`, `define`, `deprecate`, `export`, `import`), and
-`asc ingest claude-code`. Underneath them the store, the registry, generated views and the
-three-state model are complete. FTS5 search exists in `packages/store` and is tested, but **no
-command exposes it yet** — that's `asc search`.
+`asc types` topic (`list`, `show`, `brief`, `define`, `deprecate`, `export`, `import`),
+`asc ingest claude-code`, and `asc search`. `asc explore` is built in five of its modes — the
+profile it defaults to, `--page`, `--sample`, `--max-tokens` and `--dump` — which is the set that
+answers *what is in this type* and *how do I read it without filling a context window*.
+`--select`, `--filter` and `--group-by` are not among them, so reading a type's entries *by
+property value* is not yet a command; `asc search` reports where a term occurs as a property value,
+but will not retrieve on it.
 
-**Not built yet:** `asc explore` and `asc search`; `asc doctor`; `asc install-hook`; the annotation
-layer; the analysis skill and its slash command. Nothing distributes derived entries *across*
-projects either — the ingest reads the whole transcript corpus and writes it into the store of the
-project you run it in, so a second project's store gets its own full copy.
+Underneath all of them the store, the registry, generated views and the three-state model are
+complete.
+
+**Not built yet:** `asc explore --select/--filter/--group-by`; `asc stats` and the analysis layer
+behind it; `asc annotate` and `asc kappa`; `asc doctor`; `asc install-hook`; the analysis skill and
+its slash command. Nothing distributes derived entries *across* projects either — the ingest reads
+the whole transcript corpus and writes it into the store of the project you run it in, so a second
+project's store gets its own full copy.
+
+### What `asc search` does, and what it does not
+
+It searches **`evidence_text` and nothing else**. Properties, the type name and the envelope are
+not indexed, so a term that lives in a property is invisible to it however often it occurs — and
+because `evidence_text` is set only when a workflow records evidence, most entries in a
+transcript-derived store carry none. Measured on the development corpus, 1,471 of 1,491 entries are
+unsearchable, and they are four of the five populated types *in full*: for those, every query
+returns zero.
+
+That makes a bare `[]` a bad answer, so a search that finds nothing reports **why** — whether the
+type is empty, whether its entries carry no evidence text (in which case no query can ever match),
+or whether the term is genuinely absent — along with the counts behind that, and any property
+values that actually occur and contain a term of the query:
+
+```
+$ asc search verification_run "cargo"
+
+no matches.
+This type has 486 entries, and the index holds none of them: the index covers
+'evidence_text', and no entry of this type carries any. No query can match, so retrying
+with different words will not help -- the type's properties are where its content is.
+
+The query terms do occur as property values, which a search does not cover:
+  runner = "cargo test"  (127 entries)
+  runner = "cargo clippy"  (88 entries)
+```
+
+`--json` carries the same thing as an `assist` block, present only when the result is empty.
 
 ### What `asc ingest claude-code` does
 

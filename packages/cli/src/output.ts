@@ -26,6 +26,7 @@
 
 import type { EntryState, RecordedEntry } from '@ascend/store';
 import { renderTrim, type Trim } from './budget.js';
+import { renderAssist, type SearchAssist } from './search-assist.js';
 
 /** The `--json` contract version. Increment only for a breaking shape change. */
 export const OUTPUT_CONTRACT_VERSION = 1;
@@ -214,6 +215,17 @@ export interface Output {
    * the absence of this block is how a consumer tells those two cases apart.
    */
   readonly trim?: Trim;
+
+  /**
+   * Why a search found nothing, for an output that is a zero-result search.
+   *
+   * The fifth member of the family `coverage`, `next_cursor`, `sample` and `trim` belong to, under
+   * the same rule: absent means "this output is not a zero-result search", which every command but
+   * `asc search` says by saying nothing, and which `asc search` says by producing rows. It is
+   * present on every zero result, empty `values` included, because the absence of this block is how
+   * a consumer tells "searched and found nothing" from "did not search".
+   */
+  readonly assist?: SearchAssist;
 }
 
 /**
@@ -355,6 +367,8 @@ export interface JsonEnvelope {
    * `--max-tokens` exists to feed a model.
    */
   readonly trim?: Trim;
+  /** Mirrors `Output.assist`. Same rule: absent means the output is not a zero-result search. */
+  readonly assist?: SearchAssist;
 }
 
 export function renderJson(output: Output): string {
@@ -367,6 +381,7 @@ export function renderJson(output: Output): string {
     ...(settled.next_cursor === undefined ? {} : { next_cursor: settled.next_cursor }),
     ...(settled.sample === undefined ? {} : { sample: settled.sample }),
     ...(settled.trim === undefined ? {} : { trim: settled.trim }),
+    ...(settled.assist === undefined ? {} : { assist: settled.assist }),
   };
   return JSON.stringify(envelope);
 }
@@ -519,6 +534,16 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
   if (output.trim !== undefined) {
     if (body[body.length - 1] !== '') body.push('');
     body.push(renderTrim(output.trim));
+  }
+
+  // The assist is last, and on stdout rather than stderr for the reason the cursor line is: it is
+  // part of the answer, not a note about it. A caller that pipes `asc search` somewhere and reads
+  // the empty table has been told the search failed and told nothing about why -- and the why is
+  // the half that decides what they do next. A zero-result search is the one output in this CLI
+  // whose most useful content is an explanation, so it travels with the answer.
+  if (output.assist !== undefined) {
+    if (body[body.length - 1] !== '') body.push('');
+    body.push(renderAssist(output.assist));
   }
 
   return body.join('\n');

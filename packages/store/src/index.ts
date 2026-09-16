@@ -80,11 +80,17 @@ export {
 } from './recorder.js';
 
 export {
+  countSearchMatches,
   indexedDocumentCount,
+  propertyValueMatches,
   searchEntries,
+  searchScope,
+  searchTerms,
   toFtsMatch,
+  type PropertyValueHit,
   type SearchHit,
   type SearchOptions,
+  type SearchScope,
 } from './search.js';
 
 export { entryIds, pageEntries, type PageOptions, type PageResult } from './pages.js';
