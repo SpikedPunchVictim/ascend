@@ -182,9 +182,9 @@ function sqliteFailure(primary: number, message: string): string {
       return (
         `SQLite could not make sense of a statement: '${message}' (code ${String(primary)}). ` +
         `Either the SQL is not valid, or it names a table or column the store does not have -- ` +
-        `SQLite reports both as this one code, and the wording above is what says which. The ` +
-        `store's tables are entries, entry_types, annotations, annotation_schemes, meta and the ` +
-        `full-text index entries_fts, plus one generated view per entry type named ` +
+        `SQLite reports both as this one code, and the wording above is what says which. An ` +
+        `ascend store's tables are entries, entry_types, annotations, annotation_schemes, meta and ` +
+        `the full-text index entries_fts, plus one generated view per entry type named ` +
         `'v_<type>_v<version>'; 'asc types list' names the types that exist. If the statement was ` +
         `not one you wrote, this is a bug in ascend.`
       );

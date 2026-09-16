@@ -210,9 +210,22 @@ const WORKER_SOURCE = `
     // A READER, which is the peer class only an exclusive wait covers: the switch needs exclusive
     // access, and \`BEGIN IMMEDIATE\` does not conflict with a reader at all. The SELECT is the
     // statement that takes the SHARED lock and, inside a transaction, holds it.
-    db.exec('CREATE TABLE holder (x INTEGER)');
+    //
+    // **The tables are ascend's own marker tables, and that is a fixture change asc-63v forced.**
+    // This arm used to create a bare \`holder\` table and commit it, which left a non-empty file with
+    // no ascend tables in it -- and the guard added in asc-63v now refuses exactly that, before the
+    // WAL switch this test is about can contend for anything. The refusal is correct: a file with a
+    // \`holder\` table and no ascend schema IS someone else's database. So the fixture is what
+    // changes, to remain the peer it claims to be: a file that is recognisably an ascend store and
+    // is not yet in WAL, which is the state a store restored from a pre-WAL backup is in.
+    //
+    // The assertions are untouched. The write arm below needs no change because its CREATE runs
+    // inside the transaction and the ROLLBACK removes it, which is why only this arm broke.
+    db.exec('CREATE TABLE meta (key TEXT, value TEXT)');
+    db.exec('CREATE TABLE entries (id TEXT)');
+    db.exec('CREATE TABLE entry_types (name TEXT)');
     db.exec('BEGIN');
-    db.prepare('SELECT * FROM holder').all();
+    db.prepare('SELECT * FROM meta').all();
   } else {
     db.exec('BEGIN IMMEDIATE');
     db.exec('CREATE TABLE holder (x INTEGER)');

@@ -240,6 +240,46 @@ export class StaleStoreError extends Error {
   }
 }
 
+/**
+ * Thrown when the file at the store path already holds a database that ascend did not create.
+ *
+ * asc-63v, measured by driving the real binary: put any SQLite file at `<proj>/.ascend/ascend.db`
+ * -- one holding a single table of the caller's own -- and `asc types list` exited **0**, printed an
+ * empty table, and left the file carrying ascend's full schema alongside theirs. A read-shaped
+ * command silently adopted and migrated a foreign database, and the caller could not tell "this
+ * project has no types" from "I just created a store inside someone else's file".
+ *
+ * The precedent is already in this package: `--across` refuses the same situation before attaching,
+ * on the grounds that "treating an unreadable project as empty would report a fragment of the corpus
+ * as the whole of it". The project's own open had no equivalent check. This is that check.
+ *
+ * **The refusal happens before any migration, not during one**, and that is the whole point: a
+ * foreign file whose table names happen to collide is already refused later, by the migration runner
+ * ("table entries already exists", exit 1, foreign data intact) -- but a foreign file whose names do
+ * NOT collide was not refused at all. Guarding on what the file IS rather than on what the DDL
+ * collides with is what covers both.
+ */
+export class ForeignStoreError extends Error {
+  constructor(
+    readonly file: string,
+    readonly tables: readonly string[],
+  ) {
+    // The sample is capped: a file with two hundred tables would otherwise put all of them in a
+    // message, and the caller needs enough to recognise the file, not an inventory of it.
+    const shown = tables.slice(0, 3).join(', ');
+    const rest = tables.length > 3 ? ` and ${String(tables.length - 3)} more` : '';
+    super(
+      `${file} is a SQLite database, and it is not an ascend store: it holds ${String(
+        tables.length,
+      )} table(s) of its own (${shown}${rest}) and is missing ascend's. ascend would have added its ` +
+        `own schema to it, which means writing to a file ascend did not create, so this is refused ` +
+        `before anything is migrated. Move that file aside and re-run -- 'asc init' creates a store ` +
+        `in a directory that has none -- or point ascend at the project you meant.`,
+    );
+    this.name = 'ForeignStoreError';
+  }
+}
+
 export interface Store {
   readonly db: DatabaseSync;
   readonly dir: string;
@@ -514,6 +554,74 @@ export function verifyPragmas(
 }
 
 /**
+ * The tables every ascend store has, and the marker that says a file is one.
+ *
+ * All three arrive together, in migration 1 (`INITIAL`), so a file that has any one of them has all
+ * three -- and a file that has none of them has never been migrated by any released ascend. There
+ * have only ever been two migrations and both are additive, so no ascend store exists that is
+ * missing one of these.
+ *
+ * **Three names rather than one, deliberately.** `meta` alone would be a weak marker: plenty of
+ * applications have a table called `meta`, and a foreign file that happened to have one would be
+ * adopted -- which is the defect this guard exists to remove, not a narrower version of it. A file
+ * with all three of these names and no ascend behind it is not a case worth designing for.
+ */
+const STORE_MARKER_TABLES = ['meta', 'entries', 'entry_types'] as const;
+
+/**
+ * The tables a file holds that SQLite did not create, which is what "already has something in it"
+ * means.
+ *
+ * `name NOT LIKE 'sqlite_%'` because SQLite's own bookkeeping -- `sqlite_sequence` for any
+ * AUTOINCREMENT table, `sqlite_stat1` -- is not the caller's content and must not be what makes a
+ * file look foreign.
+ */
+function userTables(db: DatabaseSync): string[] {
+  return (
+    db
+      .prepare(
+        `SELECT name FROM sqlite_master
+          WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+          ORDER BY name`,
+      )
+      .all() as unknown as { name: string }[]
+  ).map((row) => row.name);
+}
+
+/**
+ * Refuse a file that already holds a database ascend did not create, before it is migrated.
+ *
+ * asc-63v. Runs on every open of a real file -- writable, read-only, and `migrate: false` alike --
+ * because "this is not our file" is true regardless of what the caller meant to do with it, and
+ * because the read-only path is where the current behaviour is worst: it skips migration entirely,
+ * so a foreign file met by `asc query` produced `StaleStoreError`, whose message says ascend expects
+ * a newer schema and to run another command to bring it up to date. That is a false statement about
+ * a file no ascend ever wrote.
+ *
+ * **An empty file is not a foreign file.** A path that does not exist, or holds zero bytes, reports
+ * no tables at all -- which is the ordinary first-open case, and the one every `asc init` takes. The
+ * check is on what the file CONTAINS, not on whether it exists, so there is no separate
+ * "does it exist" branch to get wrong.
+ *
+ * **Stated limitation, not a silent one:** a file that holds a SQLite header and no tables at all
+ * (an empty database someone made with the `sqlite3` shell, say) is indistinguishable from a fresh
+ * one by any means available here, and is adopted. Nothing is lost in that case -- there is nothing
+ * in the file -- which is why it is accepted rather than refused on a heuristic.
+ */
+function assertNotForeign(db: DatabaseSync, file: string, inMemory: boolean): void {
+  // An in-memory database has no file, so there is no one else's data to protect. Exempt rather
+  // than checked, because it would report zero tables and pass anyway -- a branch that cannot
+  // change an outcome is not worth the reader's attention.
+  if (inMemory) return;
+
+  const found = userTables(db);
+  if (found.length === 0) return;
+  if (STORE_MARKER_TABLES.every((table) => found.includes(table))) return;
+
+  throw new ForeignStoreError(file, found);
+}
+
+/**
  * Open (creating if needed) the store in `dir`, apply pragmas, migrate, and verify.
  */
 export function openStore(options: OpenOptions): Store {
@@ -529,6 +637,24 @@ export function openStore(options: OpenOptions): Store {
   const db = openHandle(file, { readOnly, busyTimeoutMs });
 
   try {
+    // **The first statement of the open, before anything writes so much as a header byte.**
+    //
+    // Where this sits is the whole guard, and it took three measurements to get right. Written after
+    // `verifyPragmas`, the read-only arm failed with `PragmaError: journal_mode is 'delete'` -- a
+    // foreign file is not WAL, a read-only open cannot switch it, and the read-back refused before
+    // anything asked whether the file was ours. Written after `setJournalModeWal` (the next line),
+    // the file was still MODIFIED: the journal-mode switch writes to the database header, so the
+    // refusal arrived after ascend had already changed someone else's file -- the same harm the bead
+    // reports, one statement smaller. The byte-identity assertion in `foreign.test.ts` is what
+    // caught that, which is why it compares bytes rather than trusting the refusal.
+    //
+    // Reading `sqlite_master` needs no pragma, no journal mode and no schema, so it can speak first
+    // on every path. Before `assertNotAhead` for the same reason: that guard's message says a NEWER
+    // ASCEND WROTE THIS STORE, which for a file no ascend ever touched is simply false. A store that
+    // IS ascend's is unaffected either way -- it carries the marker, so it passes here and meets
+    // every guard below exactly as before.
+    assertNotForeign(db, file, inMemory);
+
     // Outside any transaction: journal_mode cannot be changed inside one.
     //
     // Skipped read-only -- measured: it is a write to the database header, so a read-only

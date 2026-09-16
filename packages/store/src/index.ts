@@ -25,6 +25,7 @@ export {
   sqlitePrimaryCode,
   openStore,
   PragmaError,
+  ForeignStoreError,
   StaleStoreError,
   StoreBusyError,
   withRollback,
