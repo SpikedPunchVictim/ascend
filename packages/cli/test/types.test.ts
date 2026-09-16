@@ -59,6 +59,22 @@ function asc(args: readonly string[], cwd: string, stdin?: string): Run {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
+/**
+ * stderr with oclif's decoration removed, so an assertion about the rendered line means what it
+ * reads like.
+ *
+ * The `›` gutter is dropped and the runs of whitespace collapsed, because oclif wraps a long message
+ * at the terminal width and indents every continuation line. Without this, `toContain('Warning: the
+ * type name')` would be an assertion about where the wrap happened to fall rather than about the
+ * line the user reads.
+ */
+function flatten(text: string): string {
+  return text
+    .replace(/^\s*›\s*/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** A directory holding an `.ascend/` store, with nothing registered in it yet. */
 function project(): string {
   const dir = scratch();
@@ -305,9 +321,25 @@ describe('asc types define', () => {
   });
 
   it('refuses a missing operand as a usage error rather than waiting on stdin', () => {
-    const run = asc(['types', 'define'], project());
-    // 2, not 1: the command line itself was incomplete.
+    // **The piped document is the point, and without it this test cannot fail.** It asserted one
+    // thing -- an exit code -- and measured, oclif fills a missing positional argument from stdin
+    // (`tryStdin`), so the defective path reads the document AS A FILENAME and exits 2 on the
+    // resulting `ENOENT`. One exit code, two opposite behaviours, and the test named "rather than
+    // waiting on stdin" could not tell them apart. The message is the discriminator, so the message
+    // is asserted; this carries the `define` half of the class, and the block below covers `import`,
+    // which shares the operand shape (asc-i6z).
+    const dir = project();
+    const run = asc(['types', 'define'], dir, JSON.stringify(REVIEW));
+
+    // 2, not 1: the command line itself was incomplete -- and it says which operand is missing.
     expect(run.status).toBe(2);
+    expect(run.stderr).toContain('Missing 1 required arg');
+    // The defect in one assertion: `ENOENT` is what "stdin was consumed as the operand" looks like
+    // from outside, and `could not be read` is how this command spells it.
+    expect(run.stderr).not.toContain('ENOENT');
+    expect(run.stderr).not.toContain('could not be read');
+    // And nothing was registered, so the refusal is not merely a message.
+    expect(registry(dir)).toEqual([]);
   });
 });
 
@@ -321,22 +353,13 @@ describe('a piped value is never taken for an operand', () => {
    * **The suite was green before this fix, and why is worth recording.** Every test that pipes
    * into these commands passes `-` explicitly, and the one test that names this exact case -- the
    * "refuses a missing operand as a usage error rather than waiting on stdin" case just above --
-   * passes no stdin at all. It asserts the right thing about a setup that cannot produce the bug.
+   * passed no stdin at all: it asserted an exit code that the defective path also produces, so it
+   * could not fail. It pipes now and carries the `define` half, with the `ENOENT` and
+   * nothing-was-registered assertions that used to live here. What follows is the `import` twin,
+   * the `-` case that is the whole difference, and the two shapes where the fill was worse than a
+   * wrong message.
    */
   const DOCUMENT = JSON.stringify(REVIEW);
-
-  it('refuses a piped document instead of reading it as a path', () => {
-    const dir = project();
-    const run = asc(['types', 'define'], dir, DOCUMENT);
-
-    expect(run.status).toBe(2);
-    expect(run.stderr).toContain('Missing 1 required arg');
-    // The defect in one assertion: `ENOENT` is what "read as a path" looks like from outside.
-    expect(run.stderr).not.toContain('ENOENT');
-    expect(run.stderr).not.toContain('could not be read');
-    // And nothing was registered, so the refusal is not merely a message.
-    expect(registry(dir)).toEqual([]);
-  });
 
   it('refuses a piped document for `import` too, which shares the operand shape', () => {
     const dir = project();
@@ -959,14 +982,47 @@ describe('the warning prefix is not doubled', () => {
   // "Warning: ...", so every store warning reached the user as "Warning: warning: ...". A cosmetic
   // defect, and still one worth a test -- it shipped through a green suite because nothing asserted
   // the shape of the rendered line, only that it contained the warning's content.
+  //
+  // **That gap survived the fix, which is why the assertions below are shaped the way they are.**
+  // Both tests asserted `not.toContain('warning: ')` -- the absence of the WRONG string -- and never
+  // that a `Warning:` appears at all. So deleting the prefix, or the whole `this.warn` loop, left
+  // both green: a test that fails only when the code is wrong in one direction, written to guard the
+  // other one. The count is asserted first and the doubling second, so the common failure (the
+  // warning vanishing entirely) fails the test that is named for warnings.
+
+  /**
+   * The two things that are true of a correctly rendered warning, whichever command printed it.
+   *
+   * Written against the flattened text rather than the raw stream, and never across the text that
+   * sits between the prefix and the message: `import` puts the source path there, oclif wraps the
+   * line, and the wrap point moves with the length of that path -- so `Warning: <path> the type
+   * name...` as one literal is an assertion about where the line broke, and it passes or fails
+   * depending on the length of a temp directory name.
+   */
+  function expectOneWarning(stderr: string): void {
+    const line = flatten(stderr);
+    // The presence half, and the half that was missing. `this.warn` renders the prefix, so a store
+    // warning that reaches the user at all reaches them WITH it, at the start of the line.
+    expect(line.startsWith('Warning: ')).toBe(true);
+    // Exactly one, and **case-insensitively**, which is the whole guard.
+    //
+    // The defect was a LOWERCASE `warning: ` prefixed onto a string oclif already renders as
+    // `Warning: ` -- and for `import` a source path sits in between, so the doubled line reads
+    // `Warning: <path>: warning: ...`. A case-sensitive search for `Warning: warning: ` walks
+    // straight past that, which was measured rather than feared: the case-sensitive version of this
+    // assertion survived a faithful reintroduction of the import half of the defect.
+    expect(line.match(/warning:/gi) ?? []).toHaveLength(1);
+  }
+
   it('prints one "Warning:", not two, on define', () => {
     const dir = project();
     asc(['types', 'define', json(dir, 'a.json', STAGE)], dir);
 
     const run = asc(['types', 'define', json(dir, 'b.json', OVERLAPPING)], dir);
 
-    expect(run.stderr).toContain("shares 'stage'");
-    expect(run.stderr).not.toContain('warning: ');
+    expectOneWarning(run.stderr);
+    // And the warning's own text survives, so the single prefix was not achieved by dropping it.
+    expect(flatten(run.stderr)).toContain("the type name 'stage' shares 'stage'");
   });
 
   it('prints one "Warning:", not two, on import', () => {
@@ -978,7 +1034,11 @@ describe('the warning prefix is not doubled', () => {
     const second = json(dir, 'second.json', [OVERLAPPING]);
     const run = asc(['types', 'import', second], dir);
 
-    expect(run.stderr).toContain("shares 'stage'");
-    expect(run.stderr).not.toContain('warning: ');
+    expectOneWarning(run.stderr);
+    expect(flatten(run.stderr)).toContain("the type name 'stage' shares 'stage'");
+    // `import` names the document that drew the warning, which is the one place the two commands
+    // differ -- a caller importing a list needs to know which one this was, so a fix that made
+    // `import` render like `define` would have dropped information rather than decoration.
+    expect(flatten(run.stderr)).toContain('second.json');
   });
 });
