@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { statementCount } from '@ascend/cli';
+import { OUTPUT_CONTRACT_VERSION, statementCount } from '@ascend/cli';
 import { attachHeadroom, openStore } from '@ascend/store';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -184,8 +184,12 @@ describe('running one statement', () => {
     // `coverage` joined it as an ADDITIVE key at `ascend_output` 1 (`asc-wsa`): a consumer that
     // predates it reads `rows` and `row_count` unchanged, and this query emitted everything it
     // produced, so its coverage says exactly that.
+    //
+    // The version is read from the module rather than written here. Pinning the literal in five
+    // separate files made a deliberate bump a five-file edit whose diff said nothing about WHY --
+    // the number is asserted once, in `output.test.ts`, where the reason for changing it lives.
     expect(JSON.parse(json.stdout)).toEqual({
-      ascend_output: 1,
+      ascend_output: OUTPUT_CONTRACT_VERSION,
       rows: [{ one: 1, two: 2 }],
       row_count: 1,
       coverage: { shown: 1, total: 1, has_more: false, percent: 100 },

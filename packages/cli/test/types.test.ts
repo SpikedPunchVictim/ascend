@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { OUTPUT_CONTRACT_VERSION } from '@ascend/cli';
 
 /**
  * The `asc types` commands, driven as the real binary against a real store.
@@ -780,7 +781,7 @@ describe('asc types export, and what --json means', () => {
     // change a consumer has to discover. `coverage` joined it ADDITIVELY at `ascend_output` 1
     // (`asc-wsa`), so the version does not move and this list is where that is stated.
     expect(Object.keys(parsed).sort()).toEqual(['ascend_output', 'coverage', 'row_count', 'rows']);
-    expect(parsed['ascend_output']).toBe(1);
+    expect(parsed['ascend_output']).toBe(OUTPUT_CONTRACT_VERSION);
     expect(parsed['row_count']).toBe(1);
     // One exported document, and the export withheld none of it.
     expect(parsed['coverage']).toStrictEqual({

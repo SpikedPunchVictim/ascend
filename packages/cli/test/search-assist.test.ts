@@ -7,15 +7,17 @@ import {
 } from '../src/search-assist.js';
 
 /**
- * The zero-result assist as a function.
+ * The search assist as a function.
  *
  * The whole reason this module takes `{entries, indexed}` rather than reaching for a database is
  * that the interesting cases are boundaries, and a boundary is one line here against one fixture
- * there. The three exhaustively-ordered cases below -- empty type, unindexed type, plain miss -- are
- * the entire decision the assist makes about why a search failed, and getting the ORDER wrong is the
- * failure that matters: a type with no entries also has no indexed documents, so a test that only
- * covered "no indexed documents" would pass on an implementation that told every caller with an
- * empty project that their entries were unsearchable.
+ * there. The four exhaustively-ordered cases below -- rows returned, empty type, unindexed type,
+ * plain miss -- are the entire decision the assist makes about what a search has to say for itself,
+ * and getting the ORDER wrong is the failure that matters. Two overlaps are live: `rows-returned`
+ * dominates all three zero-result codes, because a search that returned rows is not a dead end of
+ * any kind; and a type with no entries also has no indexed documents, so a test that only covered
+ * "no indexed documents" would pass on an implementation that told every caller with an empty
+ * project that their entries were unsearchable.
  *
  * The wording is asserted by substring rather than in full. A test that pins a rendered paragraph
  * character for character fails on every rewording, which trains a reader to update the expectation
@@ -23,7 +25,8 @@ import {
  * reason code, whether values are named at all), not the sentences carrying them.
  */
 
-const reason = (entries: number, indexed: number): string => assistReason({ entries, indexed });
+const reason = (entries: number, indexed: number, rowsReturned = false): string =>
+  assistReason({ entries, indexed }, rowsReturned);
 
 describe('assistReason', () => {
   it('names an empty type before it names an unindexed one', () => {
@@ -51,11 +54,23 @@ describe('assistReason', () => {
   it('treats one entry carrying evidence as searchable', () => {
     expect(reason(1, 1)).toBe('no-match');
   });
+
+  it('names returned rows ahead of every zero-result code', () => {
+    // The four overlap cases, all at once. Each of these counts would otherwise produce a
+    // zero-result code, and every one of them is the wrong thing to tell a caller whose search
+    // succeeded -- `nothing-indexed` in particular, which instructs the reader to stop rewording
+    // because no query can match. That instruction, printed under a result set, is the defect this
+    // case was added for.
+    expect(reason(1491, 20, true)).toBe('rows-returned');
+    expect(reason(486, 486, true)).toBe('rows-returned');
+    expect(reason(486, 0, true)).toBe('rows-returned');
+    expect(reason(0, 0, true)).toBe('rows-returned');
+  });
 });
 
 describe('buildAssist', () => {
   it('carries the two counts through unchanged', () => {
-    const assist = buildAssist({ entries: 486, indexed: 0 }, []);
+    const assist = buildAssist({ entries: 486, indexed: 0 }, [], false);
     expect(assist.entries).toBe(486);
     expect(assist.indexed).toBe(0);
     expect(assist.reason).toBe('nothing-indexed');
@@ -64,14 +79,24 @@ describe('buildAssist', () => {
   it('reports an empty value list rather than omitting the field', () => {
     // The field's presence is what distinguishes "searched for property values and found none" from
     // "did not search", which is the distinction every optional block in this CLI makes.
-    expect(buildAssist({ entries: 20, indexed: 20 }, []).values).toEqual([]);
+    expect(buildAssist({ entries: 20, indexed: 20 }, [], false).values).toEqual([]);
   });
 
   it('projects a store hit down to the three fields the contract names', () => {
-    const assist = buildAssist({ entries: 486, indexed: 0 }, [
-      { property: 'runner', value: 'cargo test', entries: 127 },
-    ]);
+    const assist = buildAssist(
+      { entries: 486, indexed: 0 },
+      [{ property: 'runner', value: 'cargo test', entries: 127 }],
+      false,
+    );
     expect(assist.values).toEqual([{ property: 'runner', value: 'cargo test', entries: 127 }]);
+  });
+
+  it('takes rowsReturned from its caller rather than inferring it from the counts', () => {
+    // The counts describe the type and cannot say whether THIS query matched. A build that guessed
+    // `entries > 0 && indexed > 0` would mark every miss on a populated type as a success.
+    const scope = { entries: 486, indexed: 486 };
+    expect(buildAssist(scope, [], false).reason).toBe('no-match');
+    expect(buildAssist(scope, [], true).reason).toBe('rows-returned');
   });
 });
 
@@ -81,8 +106,14 @@ describe('renderAssist', () => {
     values: SearchAssist['values'] = [],
   ): SearchAssist =>
     buildAssist(
-      { entries: reason === 'type-empty' ? 0 : 486, indexed: reason === 'no-match' ? 486 : 0 },
+      {
+        entries: reason === 'type-empty' ? 0 : 486,
+        // A search that returned rows came from a type that has them and indexes them, so the
+        // searchable shape is the only one that can carry this reason.
+        indexed: reason === 'no-match' || reason === 'rows-returned' ? 486 : 0,
+      },
       values,
+      reason === 'rows-returned',
     );
 
   it('says an empty type has nothing to find, and does not mention the index', () => {
@@ -150,4 +181,37 @@ describe('renderAssist', () => {
       expect(renderAssist(assist(reason))).toContain('no matches');
     }
   });
+
+  it('does NOT say "no matches" when rows came back', () => {
+    // The lead line is the whole difference between the two paths, and printing it under a result
+    // set would be the exact falsehood this block exists to prevent -- committed by the block
+    // itself. Asserted as an absence because the risk is a line left in from the zero-result path.
+    const text = renderAssist(assist('rows-returned'));
+    expect(text).not.toContain('no matches');
+    expect(text).not.toContain('will not help');
+  });
+
+  it('says where else the terms occur when rows came back and values were found', () => {
+    const text = renderAssist(
+      assist('rows-returned', [{ property: 'error_text', value: 'module not found', entries: 3 }]),
+    );
+    expect(text).toContain('also occur as property values');
+    expect(text).toContain('error_text = "module not found"');
+    expect(text).toContain('3 entries');
+  });
+
+  it('says the result is complete when rows came back and nothing else holds the terms', () => {
+    // The reassuring half, and the reason this block earns its cost on the rows>0 path: without it
+    // a caller cannot tell "nothing is withheld" from "nothing was looked for", which is the same
+    // silence the zero-result path was built to break.
+    const text = renderAssist(assist('rows-returned'));
+    expect(text).toContain('nowhere else in');
+    expect(text).not.toContain('either');
+  });
 });
+
+// The call-site gate that produced the defect -- an assist built only when `rows.length === 0` -- is
+// guarded where a caller reaches it rather than here: `search-cli.test.ts`, 'offers the property
+// values a RESULT SET does not cover'. A source scan would have been the cheaper guard and the worse
+// one: it asserts the shape of an expression, where the behavioural test asserts that a search
+// returning rows still reports what it does not cover -- which is the property, not the text.

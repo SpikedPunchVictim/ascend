@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { OUTPUT_CONTRACT_VERSION } from '@ascend/cli';
 import { DERIVED_SOURCE } from '@ascend/adapter-claude-code';
 import { ENTRY_SOURCES } from '@ascend/store';
 
@@ -431,7 +432,7 @@ describe('asc ingest claude-code', () => {
       rows: { action: string; target: string; outcome: string }[];
     };
 
-    expect(envelope.ascend_output).toBe(1);
+    expect(envelope.ascend_output).toBe(OUTPUT_CONTRACT_VERSION);
     // Five definitions and five types' worth of entries -- the same run the table describes.
     expect(envelope.row_count).toBe(10);
     expect(envelope.rows.filter((row) => row.action === 'type')).toHaveLength(5);

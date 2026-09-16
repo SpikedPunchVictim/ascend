@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { OUTPUT_CONTRACT_VERSION } from '@ascend/cli';
 
 /**
  * The CLI, driven as the real binary.
@@ -130,7 +131,7 @@ describe('the output formats', () => {
 
     expect(run.status).toBe(0);
     const parsed = JSON.parse(run.stdout) as Record<string, unknown>;
-    expect(parsed['ascend_output']).toBe(1);
+    expect(parsed['ascend_output']).toBe(OUTPUT_CONTRACT_VERSION);
     expect(parsed['rows']).toEqual([]);
     expect(parsed['row_count']).toBe(0);
   });

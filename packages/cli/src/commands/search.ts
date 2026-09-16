@@ -7,7 +7,15 @@
  * on the frozen corpus, a search for `cargo` against `verification_run` matches nothing while **215
  * entries carry it in a `runner` property**. That is not an index defect; it is the boundary of what
  * was indexed, and a search that reported only `[]` would let a caller conclude the corpus lacks the
- * term. So the zero-result path reports what was searched and where else the terms actually occur.
+ * term. So the output reports what was searched and where else the terms actually occur.
+ *
+ * **That reporting is unconditional, and it was not always.** It used to run only when the FTS half
+ * returned nothing, which made a property-held term findable or not according to whether an
+ * unrelated row happened to match the same query. Measured on a corpus earned from live workflows,
+ * every search that returned rows in the one type that can exhibit the case withheld a property
+ * match the corpus held -- 7 of 7, with no exceptions (`docs/evidence/EV-17.md`). A caller who got
+ * rows is not looking for a reason to doubt the answer, so the case is worse than the dead end this
+ * was built for, not milder. It is reported on both paths now.
  *
  * **Ranking is BM25 and the scores are negative.** FTS5's `bm25()` returns lower-is-better, so the
  * rows come best-first and a more negative `score` is a better match. That is inverted from every
@@ -44,18 +52,19 @@ import { subset, type Output, type Row } from '../output.js';
  *
  * Five, and the bound is a judgement rather than a measurement -- stated plainly because a number
  * that looks measured and is not is the kind of thing this project refuses. The reason it is small:
- * the assist is read at the moment a caller has already failed once, and a wall of candidates is
- * another decision to make at the worst moment to make one. Measured on the frozen corpus, the
- * suggestions a real query produces are few anyway -- `cargo` against `verification_run` yields
- * three, `bash` against `tool_denial` yields one -- so this cap trims nothing a caller would want.
+ * the assist is read at the moment a caller is deciding whether to trust an answer, and a wall of
+ * candidates is another decision to make at the worst moment to make one. Measured, the suggestions
+ * a real query produces are few anyway -- `cargo` against `verification_run` yields three, `bash`
+ * against `tool_denial` yields one -- so this cap trims nothing a caller would want.
  */
 const ASSIST_VALUE_LIMIT = 5;
 
 export default class Search extends BaseCommand {
   static override description =
     "Search one entry type's evidence text, best match first. The index covers evidence_text only " +
-    '-- not properties, not the type name -- so a term that occurs in a property is invisible here, ' +
-    'and a search that finds nothing says why and reports where else the terms occur. Scores are ' +
+    '-- not properties, not the type name -- so the output reports what it could not cover: a ' +
+    'search that finds nothing says why, and one that finds something says where else the terms ' +
+    'occur. Scores are ' +
     "FTS5's bm25(): they are NEGATIVE and lower is better, and they compare within one result set " +
     'rather than across types.';
 
@@ -127,20 +136,24 @@ export default class Search extends BaseCommand {
         snippet: hit.snippet,
       }));
 
-      // The assist is built from measurements taken on the zero-result path only. Two full-corpus
-      // counts and one `json_each` scan are affordable exactly because a caller who got rows never
-      // pays for them -- and a caller who got none is the only one who needs them.
-      const assist =
-        rows.length > 0
-          ? undefined
-          : buildAssist(
-              searchScope(db, args.type),
-              propertyValueMatches(db, {
-                type: args.type,
-                terms,
-                limit: ASSIST_VALUE_LIMIT,
-              }),
-            );
+      // Built on every search, including one that returned rows. Gating this on `rows.length === 0`
+      // was affordable and wrong: it made a term's findability depend on whether an unrelated row
+      // happened to match the same query. Measured on a corpus earned from live workflows, of the
+      // searches in the one type that can exhibit the case, 7 returned rows and **every one of the
+      // 7 withheld a property match the corpus held** -- with zero searches returning rows and
+      // withholding nothing (`docs/evidence/EV-17.md`). The scan costs 0.1228 ms, which is 1.01x the
+      // FTS query it accompanies, and a result set that looks complete while a substring match sits
+      // unreachable in the store is the severity-zero class. Reported, therefore, either way: the
+      // values if there are any, and the fact that there are none if there are not.
+      const assist = buildAssist(
+        searchScope(db, args.type),
+        propertyValueMatches(db, {
+          type: args.type,
+          terms,
+          limit: ASSIST_VALUE_LIMIT,
+        }),
+        rows.length > 0,
+      );
 
       // `total` is counted rather than inferred from `rows.length`, and this is the severity-zero
       // guard rather than a nicety. `Output.coverage` defaults to `complete(rows)`, which asserts
@@ -159,7 +172,7 @@ export default class Search extends BaseCommand {
         // Stated only when the limit actually withheld something. `complete(rows)` and an honest
         // `subset(n, n, false)` are the same statement, and the defaulted one says it for free.
         ...(rows.length < total ? { coverage: subset(rows.length, total, true) } : {}),
-        ...(assist === undefined ? {} : { assist }),
+        assist,
       };
 
       this.emit(format, output);

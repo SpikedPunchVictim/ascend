@@ -175,11 +175,26 @@ describe('asc search -- the ranked result', () => {
     expect(result.row_count).toBe(4);
   });
 
-  it('carries no assist when it found something', () => {
-    // Absence is the contract's signal. A block that appeared on every search -- empty on a hit --
-    // would make "found nothing" and "found something" the same shape to a consumer.
+  it('carries an assist even when it found something, and names the rows case', () => {
+    // THE REGRESSION, and it is the one this block was rebuilt for. The assist used to be absent
+    // here, and absence was the signal a consumer read as "this search succeeded". Measured on a
+    // corpus earned from live workflows, every search that returned rows in the one type that can
+    // exhibit the case withheld a property match the corpus held -- 7 of 7, no exceptions
+    // (`docs/evidence/EV-17.md`). A caller who got rows is not looking for a reason to doubt the
+    // answer, which makes this the worse case, not the milder one.
     const dir = fixture(4);
-    expect(search(dir, SEARCHABLE.name, 'deployment').assist).toBeUndefined();
+    const assist = search(dir, SEARCHABLE.name, 'deployment').assist;
+    expect(assist?.reason).toBe('rows-returned');
+    expect(assist?.entries).toBe(4);
+    expect(assist?.indexed).toBe(4);
+  });
+
+  it('says the terms are found nowhere else when no property holds them', () => {
+    // The reassuring half. Without it a caller cannot tell "nothing is withheld" from "nothing was
+    // looked for" -- the same silence the zero-result path was built to break.
+    const dir = fixture(4);
+    const assist = search(dir, SEARCHABLE.name, 'deployment').assist;
+    expect(assist?.values).toEqual([]);
   });
 
   it('marks the matched term in the snippet', () => {
@@ -265,6 +280,42 @@ describe('asc search -- the zero-result assist', () => {
   it('offers nothing when the term occurs nowhere at all', () => {
     const dir = fixture(2);
     expect(search(dir, SEARCHABLE.name, 'zzzqqq').assist?.values).toEqual([]);
+  });
+
+  it('offers the property values a RESULT SET does not cover', () => {
+    // The defect, end to end and through the real binary. Two entries of the same type, both
+    // searchable, both carrying `cargo test` in `runner`; only one mentions cargo in its evidence.
+    // The search returns one row -- and before this was fixed it said nothing at all about the
+    // other entry, which holds the query term in a property and is unreachable by the query that
+    // should find it. `asc-nai`'s own constructed case, reproduced in a fixture.
+    const dir = project();
+    const record = (note: string, evidence: string): void => {
+      const run = asc(
+        [
+          'record',
+          SEARCHABLE.name,
+          '--prop',
+          'runner=cargo test',
+          '--prop',
+          `note=${note}`,
+          '--evidence',
+          evidence,
+          '--json',
+        ],
+        dir,
+      );
+      expect(run.status).toBe(0);
+    };
+    record('a', 'cargo build failed');
+    record('b', 'nothing relevant here');
+
+    const result = search(dir, SEARCHABLE.name, 'cargo');
+    // The premise: rows came back, so the old gate would have withheld the property pass entirely.
+    expect(result.row_count).toBe(1);
+    expect(result.assist?.reason).toBe('rows-returned');
+    expect(result.assist?.values).toEqual([
+      { property: 'runner', value: 'cargo test', entries: 2 },
+    ]);
   });
 
   it('does not treat an underscore term as a wildcard', () => {

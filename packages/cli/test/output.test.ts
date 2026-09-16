@@ -189,6 +189,20 @@ describe('a malformed value already in the input is carried, not hidden', () => 
   });
 });
 
+describe('the version a consumer branches on', () => {
+  it('is 2, and changing it has to be deliberate', () => {
+    // The one place the literal is written down. Every other suite asserts against the exported
+    // constant, which is right -- they are testing that commands agree with the contract, not what
+    // the contract says -- but it left the number itself unguarded, so a bump would have been a
+    // silent change to a published shape. It is 2 because `assist` became unconditional on
+    // `asc search`: a consumer that read the block's ABSENCE as "this search succeeded" is now
+    // wrong, and one that read `reason` as always naming a failure is wrong for `rows-returned`.
+    // Both are breaking readings of a field that looks unchanged, which is precisely what a
+    // contract version is for. If you are here to change this number, say in the comment why.
+    expect(OUTPUT_CONTRACT_VERSION).toBe(2);
+  });
+});
+
 describe('the other two renderers are unchanged by any of this', () => {
   it('does not truncate at all, so no cut exists to get wrong', () => {
     const value = `${'a'.repeat(58)}${EMOJI}${'b'.repeat(20)}`;

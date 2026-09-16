@@ -28,8 +28,15 @@ import type { EntryState, RecordedEntry } from '@ascend/store';
 import { renderTrim, type Trim } from './budget.js';
 import { renderAssist, type SearchAssist } from './search-assist.js';
 
-/** The `--json` contract version. Increment only for a breaking shape change. */
-export const OUTPUT_CONTRACT_VERSION = 1;
+/**
+ * The `--json` contract version. Increment only for a breaking shape change.
+ *
+ * 2 -- `assist` is present on every `asc search`, not only on a zero result. A consumer that read
+ * the block's absence as "this search succeeded" is now wrong, and one that read `reason` as always
+ * naming a failure is wrong for the new `rows-returned` code. Both are breaking readings of an
+ * unchanged-looking field, which is what this number is for.
+ */
+export const OUTPUT_CONTRACT_VERSION = 2;
 
 export type OutputFormat = 'json' | 'table' | 'csv';
 
@@ -217,13 +224,14 @@ export interface Output {
   readonly trim?: Trim;
 
   /**
-   * Why a search found nothing, for an output that is a zero-result search.
+   * What a search has to say beyond its rows.
    *
-   * The fifth member of the family `coverage`, `next_cursor`, `sample` and `trim` belong to, under
-   * the same rule: absent means "this output is not a zero-result search", which every command but
-   * `asc search` says by saying nothing, and which `asc search` says by producing rows. It is
-   * present on every zero result, empty `values` included, because the absence of this block is how
-   * a consumer tells "searched and found nothing" from "did not search".
+   * The fifth member of the family `coverage`, `next_cursor`, `sample` and `trim` belong to, and the
+   * one that left it: absent means "this output is not a search", which every command but `asc
+   * search` says by saying nothing. It is present on every search -- empty `values` included, and
+   * rows included -- because a consumer needs to tell "searched and found nothing" from "did not
+   * search", and the `rows-returned` case needs the block for a reason of its own: to say where the
+   * query's terms occur that the rows do not cover.
    */
   readonly assist?: SearchAssist;
 }
@@ -367,7 +375,7 @@ export interface JsonEnvelope {
    * `--max-tokens` exists to feed a model.
    */
   readonly trim?: Trim;
-  /** Mirrors `Output.assist`. Same rule: absent means the output is not a zero-result search. */
+  /** Mirrors `Output.assist`. Present on every search; `reason` says which case it is. */
   readonly assist?: SearchAssist;
 }
 

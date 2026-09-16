@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { OUTPUT_CONTRACT_VERSION } from '@ascend/cli';
 
 /**
  * `asc explore` -- driven as the real binary against a real store.
@@ -606,7 +607,7 @@ describe('asc explore: the surfaces every command owes', () => {
       rows: readonly unknown[];
       row_count: number;
     };
-    expect(envelope.ascend_output).toBe(1);
+    expect(envelope.ascend_output).toBe(OUTPUT_CONTRACT_VERSION);
     expect(envelope.row_count).toBe(envelope.rows.length);
   });
 
