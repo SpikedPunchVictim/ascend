@@ -110,7 +110,9 @@ export const STARTER_TYPES: readonly TypeSpec[] = [
       'the three-strike rule fires -- three attempts at the same problem have failed and you are ' +
       'stopping to reassess rather than trying a fourth variation. Record it at the moment you stop, ' +
       'not after you recover: the value of this entry is the state of mind you are about to leave, ' +
-      'and it is the least reconstructable thing in the whole store.',
+      'and it is the least reconstructable thing in the whole store. Keep the failing output as it ' +
+      'was printed while you still have it -- `error_text` wants the exact words, and only the exact ' +
+      'words are what a later search can find.',
     properties: [
       {
         name: 'attempt_count',
