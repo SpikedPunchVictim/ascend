@@ -344,6 +344,91 @@ describe('asc record', () => {
     expect(stored(dir)).toEqual([]);
   });
 
+  it('refuses an empty text flag by the name the caller typed, not the store’s field name', () => {
+    // asc-3u2 (e). Measured before the fix: `--evidence ''` answered "evidenceText is empty" -- the
+    // name of the store's `RecordContext` field, which the store's `requireNonEmpty` is right to
+    // use for a library caller and wrong to use for someone who typed a flag and has never seen it.
+    // The document path already named the document's own field; this is the flag path catching up.
+    //
+    // All four are swept, not just the one that was measured: they reach the same
+    // `OPTIONAL_TEXT_FIELDS` loop in the recorder, so `--run-id ''`, `--workflow ''` and `--actor ''`
+    // leaked the same way.
+    const dir = project();
+    // `storeField` is the name the recorder's `requireNonEmpty` was handed (`recorder.ts`'s
+    // `OPTIONAL_TEXT_FIELDS`), which is what the message used to print.
+    //
+    // **Two of the four are the same word with a dash added, and the table says so rather than
+    // pretending otherwise.** `evidenceText`/`runId` are the names the caller never typed; for
+    // `--workflow` and `--actor` the recorder's field is already `workflow`/`actor`, so the old
+    // message was off by the dashes, not by the noun. Sweeping all four is still right -- one loop
+    // fixes all four and a partial fix would leave two behind -- but claiming four noun leaks would
+    // not be true, and this test would not have caught it if it were.
+    const cases = [
+      { flag: '--evidence', storeField: 'evidenceText' },
+      { flag: '--run-id', storeField: 'runId' },
+      { flag: '--workflow', storeField: 'workflow' },
+      { flag: '--actor', storeField: 'actor' },
+    ];
+
+    for (const { flag, storeField } of cases) {
+      const run = asc(
+        ['record', 'decision', '--prop=chosen=a', '--prop=rationale=b', flag, ''],
+        dir,
+      );
+
+      expect(run.status).toBe(1);
+      expect(flatten(run.stderr)).toContain(`${flag} is empty`);
+
+      // Only asserted where the two names differ. Where they do not, `--workflow` CONTAINS
+      // `workflow`, so the negation could not hold and asserting it would be asserting a falsehood
+      // about the code rather than about the message.
+      if (!flag.includes(storeField)) {
+        expect(flatten(run.stderr)).not.toContain(storeField);
+      }
+    }
+
+    // And no refusal wrote anything, which is the property every refusal in this file shares.
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('still records when the same flags carry a value', () => {
+    // The refutation of the above: a check for `=== ''` that refused the flag itself, or refused an
+    // absent one, would pass every assertion in the previous test and break recording.
+    const dir = project();
+    const run = asc(
+      [
+        'record',
+        'decision',
+        '--prop=chosen=a',
+        '--prop=rationale=b',
+        '--evidence',
+        'some words',
+        '--run-id',
+        'r1',
+      ],
+      dir,
+    );
+
+    expect(run.status).toBe(0);
+    expect(stored(dir)[0]?.evidence_text).toBe('some words');
+    expect(stored(dir)[0]?.run_id).toBe('r1');
+  });
+
+  it('keeps the document path naming the document’s field, so the two paths agree on the rule', () => {
+    // The document path was already right and is asserted here so a later change to the flag path
+    // cannot quietly make the two disagree about what to call the same value.
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '-'],
+      dir,
+      '{"properties":{"chosen":"a","rationale":"b"},"evidence_text":""}',
+    );
+
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain('document.evidence_text is empty');
+    expect(stored(dir)).toEqual([]);
+  });
+
   it('refuses a malformed --prop with the shape it wants', () => {
     const dir = project();
     const run = asc(['record', 'decision', '--prop=chosen'], dir);

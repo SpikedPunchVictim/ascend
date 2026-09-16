@@ -42,9 +42,9 @@
  * is its own format, as `brief`'s is.
  */
 
-import { Args } from '@oclif/core';
+import { Args, Flags } from '@oclif/core';
 import { listTypes, typeVersions, type Store } from '@ascend/store';
-import { BaseCommand } from '../../base.js';
+import { BaseCommand, OUTPUT_FLAGS } from '../../base.js';
 import { documentFromRow, serializeDocuments, type TypeDocument } from '../../document.js';
 import { refusal, usageError } from '../../errors.js';
 import { knownNames } from '../../register-document.js';
@@ -57,6 +57,30 @@ export default class TypesExport extends BaseCommand {
     '<%= config.bin %> <%= command.id %> review_completed > review.json',
     '<%= config.bin %> <%= command.id %> | <%= config.bin %> types import -',
   ];
+
+  /**
+   * `--csv` is accepted and refused, but no longer advertised.
+   *
+   * Measured: `asc types export --help` listed `--csv  Print RFC 4180 CSV.` while `asc types export
+   * --csv` exited 2 refusing it. The flag is inherited from `base.ts`'s `OUTPUT_FLAGS`, and its
+   * help line was inherited with it -- so the one screen a caller reads before trying the flag was
+   * the screen that said the flag works. `asc-3u2` item (d).
+   *
+   * **The flag is kept rather than dropped.** Dropping it would make oclif answer with its own
+   * "Nonexistent flag: --csv", replacing the refusal below -- which explains WHY a nested
+   * definition has no tabular projection and names the command that does -- with a parser message
+   * that explains nothing. `hidden: true` removes the line from help and changes no behaviour:
+   * `--csv` still parses, still reaches `resolveFormat`, and still gets that refusal.
+   *
+   * This is the only command that overrides `baseFlags`, and it overrides only the presentation of
+   * one flag. `base.ts` puts the output flags in one place so that format RESOLUTION cannot vary
+   * between commands -- and it still cannot: this command resolves through `resolveFormat` like
+   * every other, and the set of formats it accepts is unchanged.
+   */
+  static override baseFlags = {
+    ...OUTPUT_FLAGS,
+    csv: Flags.boolean({ description: 'Print RFC 4180 CSV.', hidden: true }),
+  };
 
   static override args = {
     // `ignoreStdin`, and this is the arg where the omission was worst. It is `required: false`,

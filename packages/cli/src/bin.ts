@@ -45,6 +45,35 @@
 import { execute } from '@oclif/core';
 import { installPipeGuards } from './streams.js';
 
+/**
+ * The flags that say how to print rather than what to do.
+ *
+ * Spelled out as argv strings rather than read from `base.ts`'s `OUTPUT_FLAGS`, because the
+ * question here is about the ARGV TOKENS -- which strings a caller typed -- and a flags object
+ * cannot answer it: it does not say whether `--json=false`, `--no-json` or `-j` should route, and
+ * each of those is a different decision. Only the exact spellings route. `help.test.ts` asserts
+ * this set against `OUTPUT_FLAGS`, so a fifth output flag cannot be added without one of the two
+ * places failing to compile-or-test silently.
+ */
+const OUTPUT_ONLY_FLAGS: ReadonlySet<string> = new Set(['--json', '--table', '--csv', '--debug']);
+
+/**
+ * Whether this invocation named no command at all -- only output flags.
+ *
+ * `asc --json` used to exit 2 with `command --json not found`, because the default below applied
+ * only to a FULLY empty argv. So the base output flags were unreachable on the root: the natural
+ * spelling of "the brief, as JSON" was an error, and the only way to get it was to name a command
+ * the caller had no reason to know about. Since a bare `asc` already means `types brief`, a bare
+ * `asc` plus output flags means `types brief` plus those flags.
+ *
+ * `--help` and `--version` are deliberately NOT in this set. They are not output flags, oclif
+ * answers them without instantiating a command, and routing them would replace two working
+ * screens with whatever `types brief` does with them.
+ */
+function namesNoCommand(argv: readonly string[]): boolean {
+  return argv.length > 0 && argv.every((arg) => OUTPUT_ONLY_FLAGS.has(arg));
+}
+
 // Before `execute`, so the guard is in place for every path -- including `--help` and
 // `--version`, which oclif answers without ever instantiating a command.
 installPipeGuards();
@@ -56,5 +85,5 @@ await execute({
   // Passed explicitly rather than left to oclif's own `process.argv.slice(2)`, so there is one
   // answer to "what was asked for" instead of two. Everything else is untouched: `asc --help`,
   // `asc --version` and every real command reach oclif exactly as typed.
-  args: argv.length === 0 ? ['types', 'brief'] : argv,
+  args: argv.length === 0 || namesNoCommand(argv) ? ['types', 'brief', ...argv] : argv,
 });

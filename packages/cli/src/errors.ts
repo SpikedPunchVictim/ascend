@@ -46,8 +46,45 @@ function oclifExitCode(error: Error): number | undefined {
   return typeof exit === 'number' ? exit : undefined;
 }
 
-function stackOf(error: unknown): string | undefined {
-  return error instanceof Error ? error.stack : undefined;
+/**
+ * The stack, minus the part that repeats the message.
+ *
+ * Node's `stack` begins with `${name}: ${message}`, and `describeFailure` prints the message on the
+ * line above -- so `--debug` printed the failure TWICE. Measured: `asc types show nope --debug`
+ * rendered "There is no entry type named 'nope' ..." on two separate line groups. `--debug` is the
+ * flag you reach for when something is wrong, and a doubled first line is text the reader has to
+ * work out is not two failures.
+ *
+ * **The class name survives when it is not the default `Error`.** It is the one thing the header
+ * line carries that the message does not: `StoreBusyError` or `ForeignStoreError` in a trace is
+ * what `--debug` exists to give, and dropping the whole line to remove the duplication would drop
+ * that with it. So an `Error`'s header goes and a named error's header becomes a name.
+ *
+ * The duplication is matched against the message rather than assumed, and matched LINE BY LINE
+ * across the whole header -- a message containing newlines makes `${name}: ${message}` several
+ * lines long, and all of them sit at the top of the stack.
+ *
+ * **The line-by-line match is defensive, and a mutation round proved it is not load-bearing.**
+ * The obvious weaker form, `lines[0] === header[0]`, was applied as a mutation and SURVIVED every
+ * test -- because Node puts the WHOLE message on the stack (measured: `new Error('a\nb').stack`
+ * begins `['Error: a', 'b', ...]`), so the first line matching implies the rest do. The two forms
+ * agree on every stack Node can produce. This one is kept anyway: it states the precondition the
+ * `slice` below actually relies on -- that the entire header is present, not just its first line --
+ * so a stack from somewhere other than Node's `Error` cannot be silently mis-sliced. Recorded here
+ * because a surviving mutation is a finding either way, and the honest one is "the mutation was
+ * equivalent", not "the test was weak".
+ */
+function detailOf(error: Error): string | undefined {
+  const stack = error.stack;
+  if (stack === undefined) return undefined;
+
+  const lines = stack.split('\n');
+  const header = `${error.name}: ${error.message}`.split('\n');
+  const repeats = header.every((line, index) => lines[index] === line);
+  if (!repeats) return stack;
+
+  const frames = lines.slice(header.length);
+  return error.name === 'Error' ? frames.join('\n') : [error.name, ...frames].join('\n');
 }
 
 /**
@@ -58,7 +95,7 @@ function stackOf(error: unknown): string | undefined {
  * result is a flag you cannot debug with.
  */
 export function describeFailure(error: unknown, debug: boolean): Failure {
-  const detail = debug ? stackOf(error) : undefined;
+  const detail = debug && error instanceof Error ? detailOf(error) : undefined;
   const withDetail = (failure: Failure): Failure =>
     detail === undefined ? failure : { ...failure, message: `${failure.message}\n\n${detail}` };
 

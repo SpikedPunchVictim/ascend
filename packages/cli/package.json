@@ -33,6 +33,7 @@
     "bin": "asc",
     "dirname": "asc",
     "commands": "./dist/commands",
+    "helpClass": "./dist/help.js",
     "topicSeparator": " ",
     "topics": {
       "ingest": {

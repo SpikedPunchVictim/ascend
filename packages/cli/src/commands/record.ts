@@ -396,6 +396,41 @@ export default class RecordEntry extends BaseCommand {
       );
     }
 
+    // Refused by the flag's own name, before the store is opened.
+    //
+    // Measured: `asc record decision --prop=chosen=a --prop=rationale=b --evidence ''` answered
+    // "evidenceText is empty". That message comes from the store's `requireNonEmpty`, which names
+    // the field of the RECORD CONTEXT it is handed -- right for a library caller, who passed
+    // `evidenceText`, and wrong for someone who typed a flag, who has never seen that identifier.
+    // `entry-document.ts` already names the DOCUMENT's field on the document path, so the document
+    // path was right and this one was the odd one out: `asc-3u2` item (e).
+    //
+    // All four text flags are swept together rather than only the one that was measured: they
+    // reach the same `requireNonEmpty` through the same `OPTIONAL_TEXT_FIELDS` loop, so fixing
+    // `--evidence` alone would have left the other three behind. The exit code stays 1, which is
+    // what the store's `TypeError` produced before -- this changes the noun in the sentence, not
+    // the outcome.
+    //
+    // **Two of the four leaked a NAME; the other two leaked only the dashes.** Measured from what
+    // the recorder is handed (`record.ts`'s own mapping below): `--evidence` reached the store as
+    // `evidenceText` and `--run-id` as `runId`, names no caller has ever seen. `--workflow` and
+    // `--actor` reach it as `workflow` and `actor` -- the same words the caller typed, printed
+    // without the `--`. Recording the difference because calling all four "the same bug" would be
+    // the kind of tidy summary this project's evidence rules exist to prevent.
+    for (const [flag, value] of [
+      ['--evidence', flags.evidence],
+      ['--run-id', flags['run-id']],
+      ['--workflow', flags.workflow],
+      ['--actor', flags.actor],
+    ] as const) {
+      if (value === '') {
+        throw refusal(
+          `${flag} is empty. An empty string is a real value in SQLite rather than "unknown", ` +
+            `so omit the flag instead to leave it unset.`,
+        );
+      }
+    }
+
     const propFlags = propertiesFrom(props);
     // Refused here, before the store is opened and before anything is validated, because the
     // conflict is entirely within the caller's own argv -- no store state can make it resolvable,

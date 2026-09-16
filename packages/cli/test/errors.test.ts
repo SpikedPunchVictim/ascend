@@ -83,3 +83,86 @@ describe('a lock conflict is reported as something a person can act on', () => {
     expect(failure.message).toContain('at ');
   });
 });
+
+/**
+ * `--debug` no longer prints the failure twice. `asc-3u2` item (c).
+ *
+ * Measured before the fix: `asc types show nope --debug` rendered "There is no entry type named
+ * 'nope' ..." on two separate line groups. `describeFailure` prints the message and then appends
+ * `error.stack`, whose first line is `${name}: ${message}` -- the same message again. Cosmetic
+ * until you need it, and `--debug` is the flag you reach for exactly when you need it.
+ *
+ * **The count is what is asserted, not the absence.** "Does not contain the message twice" is not
+ * expressible as a substring assertion, and a test that only checked the message was present would
+ * have passed before the fix -- which is the shape of false-green this repo treats as severity
+ * zero. `occurrences` is how "once" is stated.
+ */
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+describe('--debug shows the stack without repeating the message', () => {
+  it('prints the message once, not twice', () => {
+    // Would have been 2 before the fix: once from `failure.message`, once from the stack's header.
+    const { message } = describeFailure(new Error('a plain failure'), true);
+
+    expect(occurrences(message, 'a plain failure')).toBe(1);
+    expect(message).toContain('at ');
+  });
+
+  it('keeps the class name, which is the only thing the dropped line carried', () => {
+    // `store/src/db.ts` and friends set `this.name` in the constructor, so this is the shape a real
+    // ascend error has -- and it is why the whole header line is not simply deleted: `StoreBusyError`
+    // in a trace is information `--debug` exists to give.
+    class Named extends Error {
+      public constructor(message: string) {
+        super(message);
+        this.name = 'StoreBusyError';
+      }
+    }
+
+    const { message } = describeFailure(new Named('a named failure'), true);
+
+    expect(message).toContain('StoreBusyError');
+    expect(occurrences(message, 'a named failure')).toBe(1);
+  });
+
+  it('handles a message containing a newline, so a multi-line failure prints once', () => {
+    // ascend's multi-line messages are real: `EntryRejectedError` lists every problem with an entry
+    // on its own line, and that is the error `asc record` shows most often.
+    //
+    // **This is NOT the case a single-line comparison misses, which is what it was first written
+    // to say.** Measured: `new Error('first line\nsecond line').stack` begins
+    // `['Error: first line', 'second line', ...]`, so the whole message is on the header and
+    // `lines[0] === header[0]` implies the rest. That weaker form was applied as a mutation and
+    // survived, which is what exposed the wrong claim rather than a weak test.
+    //
+    // It is kept because it is not vacuous: dropping the header unconditionally (mutation M10)
+    // makes `second line` print twice and this test fails.
+    const { message } = describeFailure(new Error('first line\nsecond line'), true);
+
+    expect(occurrences(message, 'first line')).toBe(1);
+    expect(occurrences(message, 'second line')).toBe(1);
+  });
+
+  it('leaves a stack alone when it does not repeat the message', () => {
+    // The refutation of the fix itself. Dropping the first line unconditionally would pass every
+    // test above and destroy a stack whose header says something the message does not -- so the
+    // match is checked rather than assumed, and this pins that.
+    const error = new Error('the message');
+    error.stack = 'SomethingElse entirely\n    at somewhere';
+
+    const { message } = describeFailure(error, true);
+
+    expect(message).toContain('SomethingElse entirely');
+  });
+
+  it('adds nothing at all when --debug was not asked for', () => {
+    // The flag must not be able to change the message it is a diagnostic FOR -- `errors.ts` says
+    // `debug` never changes whether the command fails or what it exits with, and the same reasoning
+    // covers what it prints when it succeeds at printing.
+    const { message } = describeFailure(new Error('a plain failure'), false);
+
+    expect(message).toBe('a plain failure');
+  });
+});
