@@ -73,7 +73,9 @@ hook       SessionStart: asc types brief                offered, not installed
 ```
 
 `asc init` creates the store, adds `.ascend/` to `.gitignore`, and installs four starter types. It
-**never edits your settings** — the recall hook is offered, not installed.
+**never edits your settings** — the recall hook is offered, not installed. `asc install-hook` adds
+it, and only with your consent: it appends to `.claude/settings.json` rather than rewriting it, so a
+hook you already have (beads installs one) keeps working alongside it.
 
 Record something:
 
@@ -177,10 +179,12 @@ unchanged. That is the transfer and durability escape hatch for the registry.
 | `asc types define DOC` | Register a definition from JSON. `--dry-run` previews it. |
 | `asc types deprecate NAME` | Retire a type, keeping the entries already recorded. |
 | `asc types export` / `import` | Round-trip definitions as JSON documents. |
+| `asc install-hook` | Add a `SessionStart` hook so every session starts knowing the types. `--dry-run` previews it. |
 
 Every command supports `--help`. Mutating commands (`init`, `record`, `ingest claude-code`, `types
-define`, `types deprecate`, `types import`) support `--dry-run`. Output is `--table` (default),
-`--json`, or `--csv`
+define`, `types deprecate`, `types import`, `install-hook`) support `--dry-run` — and
+`asc install-hook` additionally requires `--yes` when stdout is not a terminal, so it is never
+*required* to be interactive. Output is `--table` (default), `--json`, or `--csv`
 — and results go to **stdout** while warnings, progress and errors go to **stderr**, so
 `asc query ... --csv > out.csv` is always safe.
 
@@ -244,7 +248,7 @@ Underneath all of them the store, the registry, generated views and the three-st
 complete.
 
 **Not built yet:** `asc explore --select/--filter/--group-by`; `asc stats` and the analysis layer
-behind it; `asc annotate` and `asc kappa`; `asc doctor`; `asc install-hook`; the analysis skill and
+behind it; `asc annotate` and `asc kappa`; `asc doctor`; the analysis skill and
 its slash command. Nothing distributes derived entries *across* projects either — the ingest reads
 the whole transcript corpus and writes it into the store of the project you run it in, so a second
 project's store gets its own full copy.

@@ -38,14 +38,7 @@
  * the gitignore at all.
  */
 
-import {
-  existsSync,
-  lstatSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Flags } from '@oclif/core';
 import { openStore, STORE_DIR, STORE_FILE, withRollback, type Store } from '@ascend/store';
@@ -53,6 +46,7 @@ import { BaseCommand } from '../base.js';
 import { findGitRoot, findProjectRoot } from '../project.js';
 import { registerDocument } from '../register-document.js';
 import { STARTER_TYPES } from '../starters.js';
+import { symlinkTarget } from '../symlink.js';
 
 /** One row of the report: what was touched, and what happened to it. */
 interface InitRow extends Record<string, unknown> {
@@ -87,37 +81,6 @@ function ignoresStore(text: string): boolean {
       [STORE_DIR, `${STORE_DIR}/`].some((name) => trimmed === `${prefix}${name}`),
     );
   });
-}
-
-/**
- * Where a symlinked `.gitignore` actually lives, if it is a symlink at all.
- *
- * Three answers, and the third is the reason this is not a boolean:
- *
- *   - `undefined` -- not a link (or nothing at that path), so the requested path is the real one
- *   - a path      -- a link, resolved. `realpathSync` and not `readlinkSync`, because a link's
- *                    target may be relative and may itself be a link; resolving once here means the
- *                    read and the write cannot disagree about which file they mean
- *   - `null`      -- a link pointing at nothing
- *
- * **`lstatSync`, not `existsSync`**, and that is the point of the third answer: `existsSync` follows
- * a link, so a dangling `.gitignore` symlink answers "no file here" and the create branch would
- * replace the link with a regular file -- the same defect as the healthy-link case, reached through
- * the branch that looks like it is creating something new.
- */
-function symlinkTarget(path: string): string | null | undefined {
-  try {
-    if (!lstatSync(path).isSymbolicLink()) return undefined;
-  } catch {
-    // Nothing at `path` at all. Not an error: this is the ordinary "no .gitignore here" case.
-    return undefined;
-  }
-
-  try {
-    return realpathSync(path);
-  } catch {
-    return null;
-  }
 }
 
 export default class Init extends BaseCommand {
@@ -372,8 +335,8 @@ export default class Init extends BaseCommand {
       'recall: ascend can add a SessionStart hook that runs `asc types brief`, so each session ' +
         'starts knowing which types exist and when to record them -- the failure this product ' +
         'actually faces is an empty database, not a bad one. ascend will not edit your settings ' +
-        'to do it: `asc install-hook` will offer to add it, with your explicit consent, and that ' +
-        'command is not in this release.',
+        'to do it: `asc install-hook` adds it, with your explicit consent, and ' +
+        '`asc install-hook --dry-run` shows exactly what it would write before anything does.',
     );
   }
 }

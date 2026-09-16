@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { flatten } from './helpers.js';
 
 /**
  * `asc init`, driven as the real binary.
@@ -102,22 +103,6 @@ function repositoryAbove(dir: string): boolean {
     if (parent === current) return false;
     current = parent;
   }
-}
-
-/**
- * stderr as one line, with oclif's decoration removed.
- *
- * **oclif wraps `this.warn` at the terminal width** and prefixes every continuation line with
- * ` ›   `. Measured: a warning containing `asc install-hook` arrives as `asc` then
- * ` ›    install-hook`, so `toContain('asc install-hook')` fails against the raw text on a
- * phrase that is plainly there. Collapsing the prefix and the runs of whitespace is what makes a
- * substring assertion mean what it reads like.
- */
-function flatten(text: string): string {
-  return text
-    .replace(/^\s*›\s*/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 /**
