@@ -247,6 +247,43 @@ function repeatedPropertyError(
   );
 }
 
+/**
+ * Refuse a `--prop` whose value came out empty.
+ *
+ * **The defect, measured.** `--prop=stage=$UNSET_VAR` reaches the store as `""`, which is a real
+ * value in SQLite rather than a hole: the row is written, `stage_state` for it computes as
+ * `measured`, and the generated view reports a property that was never declared as though someone
+ * had recorded the empty string as its value. `--na stage` is how a caller says the property does
+ * not apply, and it is one keystroke away -- so the whole failure is a caller intending silence and
+ * getting a measurement instead.
+ *
+ * **Two spellings, one value, and the check is on the VALUE for that reason.** Measured on the real
+ * binary: `--prop=stage=` and `--prop=stage=""` both store `{"stage":""}`, because `flagValue` runs
+ * `JSON.parse` on the text after the `=` and `JSON.parse('""')` succeeds. A check on the raw text
+ * would have caught the first and let the second through with byte-identical stored state. The
+ * neighbours are not the defect and are deliberately not caught: `--prop=stage=''` stores the two
+ * literal quote characters and `--prop=stage= ` stores a space, and neither is empty.
+ *
+ * Raised before the store is opened, beside the repeat check, because like that one the whole
+ * problem is in the caller's own argv -- and every empty name is reported in one refusal so a
+ * command line with two of them is fixed in one pass.
+ *
+ * **The DOCUMENT path still accepts `{"properties":{"stage":""}}`.** That asymmetry is the
+ * decision, not an oversight: `--prop=<name>=` is a spelling that happens by accident -- an unset
+ * shell variable, a template with a blank substitution -- while a document is a file someone
+ * wrote, where `""` is a value they typed on purpose. The command line is where the accident lives.
+ */
+function emptyPropertyError(names: readonly string[]): Error {
+  const clauses = names.map(
+    (name) => `--prop=${name} is empty (record it as not applying with --na ${name} instead)`,
+  );
+  return refusal(
+    `${clauses.join('; ')}. An empty string is a real value in SQLite rather than "unknown", so it ` +
+      `would be stored as a measurement of "" rather than as silence, and the generated view would ` +
+      `report the property as measured. Omit the property to leave it undeclared.`,
+  );
+}
+
 /** How a message names one entry: by index in a batch, and not at all otherwise. */
 function entryLabel(index: number, total: number): string {
   return total > 1 ? `entry ${String(index)}` : 'the entry';
@@ -438,6 +475,16 @@ export default class RecordEntry extends BaseCommand {
     // `--dry-run` reaches this too, and must: previewing a recording that cannot happen is its own
     // false report.
     if (propFlags.repeats.length > 0) throw repeatedPropertyError(propFlags.repeats);
+
+    // The empty check reads the PARSED value rather than the text after the `=`, so it catches
+    // `--prop=x=""` as well as `--prop=x=` -- the two spellings store the same `""` (see
+    // `emptyPropertyError`). Ordered after the repeat check so a command line with both problems
+    // hears about the conflict first: it quotes the two values the caller wrote, which is the only
+    // thing that tells them which of their own words they are looking at.
+    const emptyNames = Object.entries(propFlags.properties)
+      .filter(([, value]) => value === '')
+      .map(([name]) => name);
+    if (emptyNames.length > 0) throw emptyPropertyError(emptyNames);
 
     const documents =
       args.document === undefined

@@ -429,6 +429,183 @@ describe('asc record', () => {
     expect(stored(dir)).toEqual([]);
   });
 
+  it('refuses an empty --prop VALUE, which would store a measurement of "" rather than silence', () => {
+    // asc-vlo. Measured before the fix, on the real binary: `--prop=stage=$UNSET_VAR` wrote the row,
+    // exited 0 and printed nothing, and `v_review_completed_v1` then reported `stage_state =
+    // measured` -- a property nobody declared, reported as though someone had recorded the empty
+    // string as its value. `--na stage` is the way to say it does not apply, and it is one
+    // keystroke away, so the whole failure is a caller intending silence and getting a measurement.
+    //
+    // **The check is on the parsed VALUE, and this test is why.** Measured: `--prop=stage=` and
+    // `--prop=stage=""` both store `{"stage":""}`, because `flagValue` runs `JSON.parse` on the text
+    // after the `=` and `JSON.parse('""')` succeeds. A check on the raw text would have caught the
+    // first spelling and let the second through with byte-identical stored state.
+    const dir = project();
+
+    for (const spelling of ['--prop=stage=', '--prop=stage=""']) {
+      const run = asc(['record', 'review_completed', '--prop=verdict=approved', spelling], dir);
+
+      expect(run.status).toBe(1);
+      expect(flatten(run.stderr)).toContain('--prop=stage is empty');
+      // The remedy, named for the property the caller actually wrote -- the same lesson asc-3u2 (e)
+      // recorded one test up: a refusal has to name the thing in the caller's own vocabulary.
+      expect(flatten(run.stderr)).toContain('--na stage');
+    }
+
+    // Both spellings, one store, and it is still empty. Asserted per spelling above and once here,
+    // because a refusal that refused the flag but wrote the row anyway is the failure this file
+    // guards against everywhere else.
+    expect(stored(dir)).toEqual([]);
+
+    // And the refusal is raised before the dry-run branch, like every other argv refusal here: a
+    // preview promises what the real run would do, so it cannot promise a write this refuses.
+    const preview = asc(
+      ['record', 'review_completed', '--prop=verdict=approved', '--prop=stage=', '--dry-run'],
+      dir,
+    );
+    expect(preview.status).toBe(1);
+    expect(flatten(preview.stderr)).toContain('--prop=stage is empty');
+    expect(preview.stdout).toBe('');
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('reports every empty name in one refusal, so one command line takes one pass', () => {
+    const dir = project();
+    const run = asc(
+      [
+        'record',
+        'review_completed',
+        '--prop=verdict=approved',
+        '--prop=stage=',
+        '--prop=findings=',
+      ],
+      dir,
+    );
+
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain('--prop=stage is empty');
+    expect(flatten(run.stderr)).toContain('--prop=findings is empty');
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('leaves the near-misses alone, because they are not empty and refusing them would be a false alarm', () => {
+    // The refutation of the check itself, and the reason it tests `value === ''` rather than
+    // something looser. Measured on the real binary, `--prop=stage=''` stores the two literal quote
+    // characters and `--prop=stage= ` stores a single space -- neither is the empty string, and a
+    // caller who typed either meant something by it.
+    const dir = project();
+
+    for (const [spelling, expected] of [
+      ["--prop=stage=''", "''"],
+      ['--prop=stage= ', ' '],
+    ] as const) {
+      const run = asc(
+        ['record', 'review_completed', '--prop=verdict=approved', spelling, '--json'],
+        dir,
+      );
+
+      expect(run.status).toBe(0);
+      // Looked up by the id the run REPORTED rather than by `ORDER BY recorded_at` and taking the
+      // last one. Both runs land in the same millisecond, and `stored` breaks that tie on the id --
+      // which is a random UUID, so "the last row" is whichever of the two sorts higher. That is a
+      // test that passes most of the time, which is worse than one that fails.
+      const id = envelope(run.stdout)[0]?.['id'] as string;
+      expect(JSON.parse(stored(dir, 'id = ?', id)[0]?.properties_json ?? '{}')).toMatchObject({
+        stage: expected,
+      });
+    }
+
+    // **The falsy values are the other half, and they are why the test is `=== ''` and not `!value`.**
+    // Measured: `null`, `0` and `false` all reach the store as themselves and are refused there by
+    // the TYPE check -- `stage: Expected string, received number` -- which is the correct diagnosis,
+    // because the caller wrote a value and the problem is its type. A falsy check would replace all
+    // three with "is empty ... use --na stage", which sends them to declare the property
+    // not-applicable when what they actually need is a different value. Asserted as the negative, so
+    // this pins the diagnosis rather than the exit code the two branches happen to share.
+    for (const falsy of ['null', '0', 'false']) {
+      const run = asc(
+        ['record', 'review_completed', '--prop=verdict=approved', `--prop=stage=${falsy}`],
+        dir,
+      );
+
+      expect(run.status).toBe(1);
+      expect(flatten(run.stderr)).toContain('expects a string');
+      expect(flatten(run.stderr)).not.toContain('is empty');
+    }
+
+    // Nothing above was recorded, including the falsy rows -- the store refused all three.
+    expect(stored(dir)).toHaveLength(2);
+  });
+
+  it('reports an argv conflict before the empty value, because it quotes the caller’s own words', () => {
+    // The ordering is a choice, so it is pinned. `--prop=stage= --prop=stage=approved` has BOTH
+    // problems, and the repeat refusal is the one that helps: it quotes `''` and `'approved'`, which
+    // is the only thing that shows the caller which of their own two words they are looking at. The
+    // empty message would answer "--prop=stage is empty ... use --na stage" to someone who did give
+    // a value -- a true sentence that does not describe their command line.
+    const dir = project();
+    const run = asc(
+      ['record', 'review_completed', '--prop=verdict=approved', '--prop=stage=a', '--prop=stage='],
+      dir,
+    );
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--prop=stage was given 2 times with different values');
+    expect(flatten(run.stderr)).not.toContain('is empty');
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('still records the two things an empty --prop is confused with', () => {
+    // The positive controls, so the new refusal cannot have eaten the states it exists to steer
+    // callers toward: a real value still measures, and `--na` still declares not-applicable. Both
+    // read back through the generated view, which is the surface the whole defect was visible on.
+    const dir = project();
+
+    const valued = asc(
+      ['record', 'review_completed', '--prop=verdict=approved', '--prop=stage=approved'],
+      dir,
+    );
+    expect(valued.status).toBe(0);
+
+    const notApplicable = asc(
+      ['record', 'review_completed', '--prop=verdict=approved', '--na=stage'],
+      dir,
+    );
+    expect(notApplicable.status).toBe(0);
+
+    const undeclared = asc(['record', 'review_completed', '--prop=verdict=approved'], dir);
+    expect(undeclared.status).toBe(0);
+
+    const states = view(dir, 'v_review_completed_v1')
+      .map((row) => row['stage_state'])
+      .sort();
+    // Three rows, three states -- and `measured` is reached by the one row that HAS a value.
+    expect(states).toEqual(['measured', 'not_applicable', 'not_measured']);
+  });
+
+  it('keeps the DOCUMENT path accepting an explicit "", which is the decision not the oversight', () => {
+    // The asymmetry asc-vlo chose: `--prop=<name>=` is a spelling that happens by accident -- an
+    // unset shell variable, a template with a blank substitution -- while a document is a file
+    // someone wrote, where `""` is a value typed on purpose. Asserted here rather than left in the
+    // docblock, because the obvious "consistency" fix later is to route the document through the
+    // same check, and that would silently reverse a decision the user made.
+    const dir = project();
+    const run = asc(
+      ['record', 'review_completed', '-'],
+      dir,
+      '{"properties":{"verdict":"approved","stage":""}}',
+    );
+
+    expect(run.status).toBe(0);
+    expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      verdict: 'approved',
+      stage: '',
+    });
+    // And it is still reported as a measurement, which is what an explicit `""` IS, and exactly
+    // what the flag path refuses to produce by accident.
+    expect(view(dir, 'v_review_completed_v1')[0]?.['stage_state']).toBe('measured');
+  });
+
   it('refuses a malformed --prop with the shape it wants', () => {
     const dir = project();
     const run = asc(['record', 'decision', '--prop=chosen'], dir);
