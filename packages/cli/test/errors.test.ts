@@ -56,16 +56,25 @@ describe('a lock conflict is reported as something a person can act on', () => {
     expect(failure.message).toBe('no type named `decision` is registered');
   });
 
-  it('leaves a NON-busy sqlite error alone', () => {
+  it('keeps a NON-busy sqlite error out of the lock branch', () => {
     // errcode 1 is SQLITE_ERROR, not a lock. Sharing `code: 'ERR_SQLITE_ERROR'` is exactly why the
-    // guard must read `errcode` as well as `code`.
+    // guard must read `errcode` as well as `code` -- a guard matching on `code` alone would hand
+    // this the lock-conflict message and send the caller hunting a lock that was never there.
+    //
+    // **The assertion changed when the driver-error layer landed, and the test's purpose did not.**
+    // A code-1 error used to pass through verbatim; it is now explained (asc-tno), so asserting
+    // `message === 'no such table: entries'` would have been asserting the defect. What this test
+    // exists to refute is the over-broad guard, so that is what it pins: not the lock message --
+    // and, still, the driver's own wording, which is the specific half the explanation must keep.
     const error = new Error('no such table: entries');
     Object.assign(error, {
       code: 'ERR_SQLITE_ERROR',
       errcode: 1,
       errstr: 'no such table: entries',
     });
-    expect(describeFailure(error, false).message).toBe('no such table: entries');
+    const { message } = describeFailure(error, false);
+    expect(message).not.toMatch(/locked by another ascend process/);
+    expect(message).toContain('no such table: entries');
   });
 
   it('still appends the stack under --debug, which never changes the exit code', () => {

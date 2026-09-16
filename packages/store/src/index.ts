@@ -22,6 +22,7 @@
 export {
   DEFAULT_BUSY_TIMEOUT_MS,
   isBusyError,
+  sqlitePrimaryCode,
   openStore,
   PragmaError,
   StaleStoreError,

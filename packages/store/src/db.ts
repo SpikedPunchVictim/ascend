@@ -83,12 +83,34 @@ const PRIMARY_CODE_MASK = 0xff;
  * on. Two copies of the predicate would agree until the day one changed.
  */
 export function isBusyError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const { code, errcode } = error as { readonly code?: unknown; readonly errcode?: unknown };
-  if (code !== 'ERR_SQLITE_ERROR') return false;
-  if (typeof errcode !== 'number') return false;
-  const primary = errcode & PRIMARY_CODE_MASK;
+  const primary = sqlitePrimaryCode(error);
   return primary === SQLITE_BUSY || primary === SQLITE_LOCKED;
+}
+
+/**
+ * The SQLite PRIMARY result code behind a thrown thing, or `undefined` if it is not a driver error.
+ *
+ * **This is the one place ascend asks "which SQLite code is this", and it exists because there were
+ * three.** `isBusyError` masks the extended codes down to the primary one, and the CLI had written
+ * the same mask out twice more -- once in `errors.ts`'s busy branch (via `isBusyError`, correctly)
+ * and once inline in `commands/query.ts`, to recognise a read-only connection. Three copies of a
+ * constant agree until the day one of them changes, and the failure that produces is a guard that
+ * stops firing while still reporting green, which is the class this project treats as severity-zero.
+ *
+ * Extended codes are the reason the mask is not decoration: measured, a real lock conflict reported
+ * **261** (`SQLITE_BUSY_RECOVERY`) and an extended `SQLITE_BUSY` is `5 | (n << 8)` -- so an `===`
+ * against 5 misses it. Callers that want "is this the primary code N" compare the value this
+ * returns; they must not compare `errcode` itself.
+ *
+ * `undefined` rather than `0` for "not a driver error", because `0` is `SQLITE_OK` -- a real code
+ * that means the opposite of what a caller testing truthiness would read into it.
+ */
+export function sqlitePrimaryCode(error: unknown): number | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const { code, errcode } = error as { readonly code?: unknown; readonly errcode?: unknown };
+  if (code !== 'ERR_SQLITE_ERROR') return undefined;
+  if (typeof errcode !== 'number') return undefined;
+  return errcode & PRIMARY_CODE_MASK;
 }
 
 /**

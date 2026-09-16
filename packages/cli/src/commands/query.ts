@@ -27,6 +27,7 @@ import {
   detachStore,
   foldDatabaseName,
   DuplicateProjectError,
+  sqlitePrimaryCode,
   STORE_DIR,
   STORE_FILE,
   type Attachment,
@@ -60,9 +61,10 @@ type Handle = Store['db'];
  * database'` **and** `errcode: 8`. Matching the text would be matching a translation -- SQLite's
  * wording is not part of its interface -- while the code is.
  *
- * Masked with `0xff` because `errcode` may carry SQLite's *extended* code, which ORs a sub-code
- * into the high bytes (`SQLITE_READONLY_RECOVERY` is `8 | 256`). Comparing against bare `8` would
- * miss that whole family, and the ones it missed would print as raw driver errors.
+ * The extended-code mask this comment used to explain now lives in `sqlitePrimaryCode`, in the
+ * package that owns the driver, because this file was the second of three copies of it. Comparing
+ * the value that returns against this constant is the whole check; comparing `errcode` itself is
+ * not, and `SQLITE_READONLY_RECOVERY` (`8 | 256`) is the family that says so.
  */
 const SQLITE_READONLY = 8;
 
@@ -286,8 +288,8 @@ function read(handle: Handle, sql: string): ReadResult {
     // not say that this is by design, or that the statement is what has to change. Every other error
     // propagates verbatim, which is `errors.ts`'s stated default -- a SQLite syntax error already
     // reads as an error, and wrapping it would bury the part that says what is wrong.
-    const errcode = (error as { errcode?: unknown } | null)?.errcode;
-    if (typeof errcode === 'number' && (errcode & 0xff) === SQLITE_READONLY) {
+    const errcode = sqlitePrimaryCode(error);
+    if (errcode === SQLITE_READONLY) {
       throw refusal(
         `the statement tried to modify the store, and asc query holds a read-only connection. ` +
           `That is the guarantee that makes 'asc query' safe to allowlist, so it is not a setting ` +

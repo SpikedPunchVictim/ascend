@@ -8,6 +8,12 @@
  * something that buries the useful part. What this module adds is the parts the store
  * cannot know: the **exit code**, and whether a stack trace is wanted at all.
  *
+ * **The exception to that default is the layer under the store**, which writes nothing in that
+ * shape and cannot be asked to: the operating system reports `EEXIST` and SQLite reports
+ * `incomplete input`, and neither knows it is talking to a person. `driver-errors.ts` turns those
+ * into the same context -> problem -> fix the store's own errors already have, and is consulted
+ * below, before the default. Everything it does not recognise still prints as-is.
+ *
  * Exit codes are a contract, not a detail:
  *
  *   0    success, and nothing else claims it
@@ -24,6 +30,7 @@ import { Errors } from '@oclif/core';
 import { CursorError, PageSizeError } from '@ascend/core';
 import { SampleSizeError } from '@ascend/analysis';
 import { isBusyError } from '@ascend/store';
+import { describeDriverError } from './driver-errors.js';
 import { NoProjectError } from './project.js';
 
 export interface Failure {
@@ -116,6 +123,27 @@ export function describeFailure(error: unknown, debug: boolean): Failure {
         'expected -- re-run the command once the other one has finished.',
       exitCode: 1,
     });
+  }
+
+  // The operating system and SQLite, before the default that prints a message as-is.
+  //
+  // This branch is here rather than at the call sites because there ARE no call sites to speak of:
+  // a filesystem error is thrown by `mkdirSync` deep inside `packages/store`, and a SQLite error by
+  // the driver underneath it, so by the time anything in `packages/cli` sees one the layer that knew
+  // what it was doing is gone. The code is all that survives, which is why the mapping keys on it.
+  //
+  // Placed AFTER the busy branch on purpose. `isBusyError` is a SQLite code too -- 5 or 6 -- and it
+  // has a longer, more specific message built from measurements about what a busy open does and does
+  // not do. Letting the general table answer first would replace that with a generic line about code
+  // 5, which would be a regression dressed as consolidation.
+  //
+  // Exit 1, matching the default it precedes: ascend understood the command and could not carry it
+  // out. The one thing a caller might expect to be 2 -- `asc query` handed SQL that will not parse
+  // -- is 1 by the same argument `refusal` gives for a malformed document: the SQL is data the
+  // caller supplied, not the command line they typed, and the command line was fine.
+  const driverMessage = describeDriverError(error);
+  if (driverMessage !== undefined) {
+    return withDetail({ message: driverMessage, exitCode: 1 });
   }
 
   if (error instanceof Error) {
