@@ -59,7 +59,7 @@ function asc(args: readonly string[], cwd: string): Run {
 }
 
 function squashed(text: string): string {
-  return text.replace(/[\s›]+/g, '');
+  return text.replace(/\s+/g, '');
 }
 
 /**

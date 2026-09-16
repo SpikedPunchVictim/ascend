@@ -1,6 +1,6 @@
 import { StoreBusyError } from '@ascend/store';
 import { describe, expect, it } from 'vitest';
-import { describeFailure } from '../src/errors.js';
+import { MESSAGE_WIDTH, describeFailure, renderForStderr } from '../src/errors.js';
 
 /**
  * The error boundary, tested where it is a boundary.
@@ -164,5 +164,148 @@ describe('--debug shows the stack without repeating the message', () => {
     const { message } = describeFailure(new Error('a plain failure'), false);
 
     expect(message).toBe('a plain failure');
+  });
+});
+
+/**
+ * The rendering a failure gets on its way to stderr. `asc-98c`.
+ *
+ * **Why the rule is tested here and not only through the binary.** `ingest.test.ts` and
+ * `init.test.ts` drive the real CLI and assert a long path against the raw stderr, which is the
+ * assertion the bead is DONE WHEN on. What they cannot do is say *why* an overlong token survives
+ * or what happens at the width boundary, because a tmpdir path is 79 characters and lands one
+ * character over the line by accident of the prefix rather than by construction. These are the
+ * cases a real fixture cannot reach, and they are the cases the rule is made of.
+ *
+ * **Why `describeFailure` is not in the loop.** It chooses the wording and the exit code; this
+ * chooses how the wording is laid out. Composing them would mean every case below had to be
+ * expressed as an error `describeFailure` would classify, which for a 120-character unbreakable
+ * token means inventing an error the product never throws. The two are joined at `emitStderr`, and
+ * the binary-level tests above that join are the ones that drive it.
+ */
+describe('a failure is laid out the way a reader has to read it', () => {
+  it('is the label, the message, and nothing else on the line', () => {
+    // The exact string, because every ornament oclif added is a subtraction from this:
+    // `prettyPrint` produced ` ›   Error: ...` -- a leading space, a `›`, and three more spaces,
+    // which moved the label off column 0 so it was no longer greppable and put a glyph inside
+    // text that a reader is meant to copy.
+    expect(renderForStderr('Error', 'no store found here')).toBe('Error: no store found here');
+    expect(renderForStderr('Warning', 'dry run: nothing was written')).toBe(
+      'Warning: dry run: nothing was written',
+    );
+  });
+
+  it('leaves a path whole however long it is, because a path has no space in it', () => {
+    // The defect itself, at the level where the rule lives. oclif's `wrapAnsi(..., { hard: true })`
+    // broke this path across two lines with a `›` between the halves, so the path on stderr was not
+    // a path: it could not be pasted, and `expect(stderr).toContain(path)` failed on output that was
+    // correct -- which is why every suite that touched a path carried a gutter-stripping helper.
+    const path = `/var/folders/${'q'.repeat(120)}/T/asc-ab12cd/.claude/projects`;
+    const text = renderForStderr('Error', `No transcripts found under ${path}.`);
+
+    expect(text).toContain(path);
+    expect(text).not.toContain('›');
+
+    // The line it sits on overruns the width, and that is the trade rather than a missed case: a
+    // long line reads, a broken path does not. Asserted because it is the half a future "fix" for
+    // the overrun would take away -- a `wrapLine` that cut here would pass every other test in this
+    // block and restore exactly the defect the block exists for.
+    expect(text.split('\n').some((line) => line.length > MESSAGE_WIDTH)).toBe(true);
+  });
+
+  it('breaks at spaces, so a line is over the width only when it holds a word that cannot fit', () => {
+    // 40 four-letter words: over the width by construction, every word short enough to fit on a
+    // line of its own. Nothing here may overrun -- the overrun in the test above is licensed by a
+    // token no space can rescue, and this is the case that says the licence is not general.
+    const text = renderForStderr('Error', Array.from({ length: 40 }, () => 'word').join(' '));
+    const lines = text.split('\n');
+
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(MESSAGE_WIDTH);
+  });
+
+  it('loses nothing and splits nothing, whatever the message is', () => {
+    // The property, stated once and run over the shapes that reach it. Two ways to be wrong and
+    // both are covered: dropping text (a wrap that discards), and cutting a token (a wrap that
+    // breaks wherever the column lands). Re-joining on whitespace catches the first, and looking
+    // each word up as a whole catches the second.
+    const messages = [
+      'a short one that is under the width',
+      Array.from({ length: 40 }, () => 'word').join(' '),
+      `No transcripts found under /var/folders/${'q'.repeat(200)}/T/asc/.claude/projects.`,
+      'context line\nproblem line\nfix line',
+      '  indented under --debug\n    at somewhere (/a/very/long/path/that/goes/on/a/while/index.ts:1:1)',
+      'a  run  of  spaces  that  is  long  enough  to  wrap  somewhere  in  the  middle  of  it',
+      '',
+    ];
+
+    for (const message of messages) {
+      const text = renderForStderr('Error', message);
+
+      // Nothing invented, nothing dropped: the same text, with line breaks counted as whitespace.
+      expect(text.replace(/\s+/g, ' ').trim()).toBe(
+        `Error: ${message}`.replace(/\s+/g, ' ').trim(),
+      );
+
+      // Every word arrives whole. A word cut in half leaves its two fragments on the stream and no
+      // copy of the word itself, so this is the assertion that breaks when a token is split.
+      const words = new Set(text.split(/\s+/).filter(Boolean));
+      for (const word of message.split(/\s+/).filter(Boolean)) expect(words).toContain(word);
+    }
+  });
+
+  it('keeps the paragraph structure, because a refusal is context, problem and fix', () => {
+    // Every message in `errors.ts` and every store refusal is written in that shape on purpose, and
+    // a renderer that flattened newlines into the wrap would turn three steps into one paragraph.
+    const text = renderForStderr('Error', 'context\nproblem\nfix');
+    expect(text).toBe('Error: context\nproblem\nfix');
+  });
+
+  it('keeps an indented line indented, and fits its words into the room that is left', () => {
+    // `--debug`'s stack arrives indented. Re-fitting a frame from column 0 would turn a trace into
+    // prose, and ignoring the indent when measuring would push every frame over the width by four.
+    const frame = `    at somewhere (${'/a/long/path/'.repeat(8)}index.ts:1:1)`;
+    const text = renderForStderr('Error', `a failure\n${frame}`);
+    const lines = text.split('\n').slice(1);
+
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) expect(line.startsWith('    ')).toBe(true);
+  });
+
+  it('does not tidy a run of spaces out of a line that exactly fills the width', () => {
+    // The words below are chosen so the first line lands on EXACTLY `MESSAGE_WIDTH`, and so the
+    // double space sits in the middle of that line rather than at the break -- where a wrap would
+    // hide it. `body.split(/\s+/)` instead of `body.split(' ')` collapses the run and reads like an
+    // obvious tidy-up; this is what refutes it, and the mutation round says so: of the eight wrong
+    // implementations tried against this block, M5 (the collapse) is killed by this test and by no
+    // other. The message on stderr is the text that was written, so the run stays.
+    //
+    // **What this test does NOT pin, and the measurement that says so.** An earlier version of this
+    // comment claimed the case also guarded the boundary -- "80 is a line, and 81 is a break". It
+    // does not, and cannot. The early return in `wrapLine` is a fast path: for a line at or under
+    // the width whose every word fits, the general path reassembles exactly the same line, so
+    // `line.length < width` and `<= width` are the same function. Measured, not argued: 200,008
+    // generated lines straddling the boundary -- exact-width, indented, runs of spaces, overlong
+    // tokens, all-space -- and the two implementations differ on 0 of them. The mutation round
+    // called that mutation SURVIVED, and the differential run is why it is recorded as an
+    // equivalent mutant rather than as a hole in the tests. The assertion below stands because the
+    // CONTENT it pins is real; the boundary claim attached to it was not.
+    const text = renderForStderr(
+      'Error',
+      `${'x'.repeat(30)}  ${'y'.repeat(20)} ${'z'.repeat(20)} ${'w'.repeat(20)}`,
+    );
+
+    expect(text.split('\n')[0]).toBe(
+      `Error: ${'x'.repeat(30)}  ${'y'.repeat(20)} ${'z'.repeat(20)}`,
+    );
+    expect(text.split('\n')[0]?.length).toBe(MESSAGE_WIDTH);
+  });
+
+  it('adds no terminator, which is the writer’s half of the contract', () => {
+    // `BaseCommand.emitStderr` supplies the newline, and `emitText` states the rule for stdout:
+    // the renderer produces the text and the writer writes it. `types export` is asserted as
+    // `'[]\n'` for the same reason. A renderer that ended its own line would be a second owner of
+    // the terminator, and the two would double it the first time one of them changed.
+    expect(renderForStderr('Error', 'a plain failure')).not.toMatch(/\n$/);
   });
 });

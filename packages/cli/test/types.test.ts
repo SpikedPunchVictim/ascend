@@ -60,19 +60,15 @@ function asc(args: readonly string[], cwd: string, stdin?: string): Run {
 }
 
 /**
- * stderr with oclif's decoration removed, so an assertion about the rendered line means what it
- * reads like.
+ * stderr with its wrapping undone, so an assertion about the rendered line means what it reads like.
  *
- * The `›` gutter is dropped and the runs of whitespace collapsed, because oclif wraps a long message
- * at the terminal width and indents every continuation line. Without this, `toContain('Warning: the
- * type name')` would be an assertion about where the wrap happened to fall rather than about the
- * line the user reads.
+ * Without this, `toContain('Warning: the type name')` would be an assertion about where the wrap
+ * happened to fall rather than about the line the user reads. No `›` gutter is stripped: ascend
+ * renders its own failures and warnings (`errors.ts`), so stderr carries none -- and an assertion
+ * here is what fails if one comes back.
  */
 function flatten(text: string): string {
-  return text
-    .replace(/^\s*›\s*/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /** A directory holding an `.ascend/` store, with nothing registered in it yet. */

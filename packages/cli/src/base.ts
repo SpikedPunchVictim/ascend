@@ -18,7 +18,7 @@
  */
 
 import { Command, Flags } from '@oclif/core';
-import { describeFailure, usageError } from './errors.js';
+import { describeFailure, renderForStderr, usageError, type StderrLabel } from './errors.js';
 import { render, type Output, type OutputFormat } from './output.js';
 import {
   openProject,
@@ -223,19 +223,78 @@ export abstract class BaseCommand extends Command {
   }
 
   /**
+   * Write a message to stderr.
+   *
+   * The counterpart of `emitText`, and it follows the same rule: a renderer produces the text and
+   * this supplies the terminator. `process.stderr.write` rather than `console.error` because the
+   * stream is what `streams.ts` made synchronous (`makeWritesSynchronous`), so the bytes are
+   * complete before the `process.exit` that always ends an error reaches for them -- the same
+   * property `8pp-truncation.test.ts` pins on stdout. `console.error` would route through
+   * `format()` and `ux/write`, a second answer to "how is this text written" that ascend does not
+   * control the lifetime of.
+   *
+   * There is no empty-rendering guard here, and that is a fact about the renderer rather than an
+   * omission: `renderForStderr` always produces the label, so its output is never the empty string
+   * and the guard would be a branch no input reaches.
+   */
+  protected emitStderr(label: StderrLabel, message: string): void {
+    process.stderr.write(`${renderForStderr(label, message)}\n`);
+  }
+
+  /**
    * Turn anything thrown into stderr plus an exit code.
    *
    * `--debug` is read from argv rather than from parsed flags on purpose: this runs when
    * parsing may itself have failed, which is exactly when a stack is most useful.
    *
-   * Not `async`, because it never awaits: the body ends in `this.error`, which oclif types
-   * as `never` (it throws a `CLIError` carrying the exit code for oclif's own top-level
-   * handler to print and exit with). An `async` keyword here would exist only to satisfy
-   * the declared return type, and a method that pretends to be asynchronous is a method a
-   * caller might wrongly assume can be awaited for a result.
+   * **ascend renders its own failures, and this replaced `this.error` (asc-98c).** `this.error`
+   * hands the message to oclif, which wraps it with `wrapAnsi(..., { hard: true })` and marks each
+   * continuation line with a `›` -- breaking mid-token, and in practice mid-path. The measurement,
+   * the breaking rule that replaced it and the width are in `renderForStderr`, which is where the
+   * decision belongs. What is stated here is why the exit still goes through oclif:
+   *
+   * `this.exit(code)` throws an `Errors.ExitError`, and oclif's top-level handler treats that class
+   * as "already reported": it prints nothing for it and exits with the code it carries
+   * (`errors/handle.js`: `shouldPrint` is false for an `ExitError`). So the text above is the only
+   * thing on stderr, the exit code is unchanged, and the unwind is the ordinary one -- the command's
+   * `finally`, oclif's `finally` hook and `Performance.collect` all still run. Exiting from here
+   * with `process.exit` would have been one line shorter and would have skipped all three.
+   *
+   * Not `async`, because it never awaits: the body ends in `this.exit`, which oclif types as
+   * `never`. An `async` keyword here would exist only to satisfy the declared return type, and a
+   * method that pretends to be asynchronous is a method a caller might wrongly assume can be
+   * awaited for a result.
+   *
+   * **One failure is still rendered by oclif, and it is stated rather than hidden:** a command
+   * name that does not exist. `asc frobnicate` is answered by oclif's `main.js` before any command
+   * is instantiated -- `config.findCommand` returns nothing and `runCommand` raises the error
+   * itself -- so there is no `BaseCommand` on the stack to catch it, and it keeps the `›` and the
+   * terminal-width wrap. Its message is a command name and never a path, so it cannot hit the
+   * defect this method fixes; `install-hook.test.ts` and `help-cli.test.ts` cover the shapes it
+   * can take. Catching it would mean replacing `execute()` with `run()` in `bin.ts` and
+   * re-implementing what `handle` does with exit codes -- including the `ExitError` thrown three
+   * lines below -- which is a larger change than this defect earns.
    */
   protected override catch(error: CommandError): Promise<void> {
     const failure = describeFailure(error, this.argv.includes('--debug'));
-    this.error(failure.message, { exit: failure.exitCode });
+    this.emitStderr('Error', failure.message);
+    this.exit(failure.exitCode);
+  }
+
+  /**
+   * Write a warning to stderr.
+   *
+   * Overridden for the reason `catch` is: oclif's `warn` renders through the same `prettyPrint`,
+   * so a warning was wrapped and gutter-marked exactly as an error was. Warnings are how the
+   * `--dry-run` commands say that nothing was written, and how `asc query` says a plan was changed
+   * -- sentences a reader is meant to read whole, not in `›`-marked fragments.
+   *
+   * Returns the input, matching oclif's declared signature. Nothing in ascend reads the return
+   * value; it is returned because a caller written against oclif's type may chain on it, and
+   * narrowing the signature would be this class making a promise about a method it did not define.
+   */
+  public override warn(input: Error | string): Error | string {
+    this.emitStderr('Warning', input instanceof Error ? input.message : input);
+    return input;
   }
 }

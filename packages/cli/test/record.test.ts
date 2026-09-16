@@ -79,12 +79,14 @@ function project(): string {
   return dir;
 }
 
-/** stderr with oclif's wrap decoration removed, so a substring assertion means what it reads like. */
+/**
+ * stderr with its wrapping undone, so a substring assertion means what it reads like.
+ *
+ * No `›` gutter is stripped: ascend renders its own failures and warnings (`errors.ts`), so
+ * stderr carries none -- and an assertion here is what fails if one comes back.
+ */
 function flatten(text: string): string {
-  return text
-    .replace(/^\s*›\s*/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /** The directory as the PROCESS resolves it. macOS `tmpdir()` is a symlink under `/var`. */

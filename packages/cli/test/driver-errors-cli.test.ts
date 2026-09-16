@@ -21,13 +21,17 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * damaged store file.
  *
  * **Every absence assertion is a squashed comparison, and that is a correctness requirement rather
- * than tidiness.** oclif wraps `this.warn`/`this.error` at the terminal width and breaks
- * **mid-token**, marking the break with `›` -- measured elsewhere in this suite as a path arriving
- * as `.../proj-0` then `›V7xm7/proj-0`. So `expect(stderr).not.toContain('Error: incomplete input')`
- * -- the assertion that the old leak is gone -- would PASS on wrapped text that still contains it,
- * which is precisely the false green this project treats as severity-zero. Squashing whitespace and
- * the marker out of BOTH sides is what makes that assertion mean what it reads like. The positive
- * assertions run through the same function for the same reason, in the other direction.
+ * than tidiness.** ascend wraps a failure at 80 columns at spaces only (`errors.ts`), so
+ * `expect(stderr).not.toContain('Error: incomplete input')` -- the assertion that the old leak is
+ * gone -- would PASS on text that contains it split across a line break, which is precisely the
+ * false green this project treats as severity-zero. Squashing whitespace out of BOTH sides is what
+ * makes that assertion mean what it reads like. The positive assertions run through the same
+ * function for the same reason, in the other direction.
+ *
+ * The break used to be worse than a newline: oclif wrapped with `wrapAnsi(..., { hard: true })` and
+ * marked it, so a path arrived as `.../proj-0` then `›V7xm7/proj-0` -- a marker *inside* the token,
+ * which is asc-98c. ascend renders its own failures now, so nothing here strips a `›` and the
+ * assertions below would fail if one came back.
  *
  * **Every site is asserted at exit 1**, which is the contract: ascend understood the command and
  * could not carry it out. That is distinct from 2, the code for a command line the caller got wrong
@@ -67,15 +71,18 @@ function asc(args: readonly string[], cwd: string): Run {
 }
 
 /**
- * Everything oclif's decoration adds, deleted -- so a wrap cannot make either kind of assertion lie.
+ * Every whitespace run deleted -- so a wrap cannot make either kind of assertion lie.
  *
  * Used on **both** sides of every comparison, which is the point: a phrase and the text it is
  * searched for are reduced the same way, so a break inside a word costs nothing. `flatten` in
  * `helpers.ts` is deliberately NOT reused here -- it inserts a space where the wrap was, which is
  * right for reading a message and wrong for proving a phrase is absent.
+ *
+ * Nothing strips a `›` any more; ascend renders its own failures (`errors.ts`), so there is none.
+ * The argument for why there must not be one is in this file's header comment.
  */
 function squashed(text: string): string {
-  return text.replace(/[\s›]+/g, '');
+  return text.replace(/\s+/g, '');
 }
 
 /** A project: a directory with a `.git` marker, initialised so a store exists. */

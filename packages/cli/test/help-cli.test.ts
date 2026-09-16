@@ -77,18 +77,19 @@ function project(): string {
 }
 
 /**
- * Help text as lines, with oclif's wrap decoration removed.
+ * Help text as one line, with its wrapping undone.
  *
- * oclif wraps at the terminal width and prefixes continuation lines with ` › `. A test that
- * asserted on the raw text would fail on a phrase that is plainly there (`helpers.ts` records the
- * measurement), and -- worse for this file -- `not.toContain('--csv')` in the export help would
- * PASS on text where `--csv` is present but wrapped.
+ * oclif wraps help at the terminal width. A test that asserted on the raw text would fail on a
+ * phrase that is plainly there, and -- worse for this file -- `not.toContain('--csv')` in the export
+ * help would PASS on text where `--csv` is present but wrapped.
+ *
+ * **This one never needed the `›` gutter removed**, and that is worth knowing rather than
+ * deducing: the gutter is oclif's *error* decoration, and help goes out through the help renderer.
+ * It was stripped here by habit, from the same copy-paste `helpers.ts` complains about, and it is
+ * gone now that `asc` renders its own failures and warnings (`errors.ts`).
  */
 function flatten(text: string): string {
-  return text
-    .replace(/^\s*›\s*/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 describe('the root help carries what every subcommand’s help carries', () => {

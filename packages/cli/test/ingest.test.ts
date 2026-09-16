@@ -198,27 +198,6 @@ function stored(dir: string): {
   }
 }
 
-/**
- * An error message with oclif's stderr decoration removed.
- *
- * oclif wraps what it prints at the terminal width and marks each line with a `›` gutter, and
- * **the wrap lands MID-PATH**: a message carrying a long tmpdir arrives with
- * `/…/asc-ingest-IgAq9O` on one line and `/…` on the next, separated by ` › `. Measured, not
- * assumed -- the first version of this helper collapsed whitespace only, and the assertion still
- * failed, because the break is ` › ` and not a space.
- *
- * Stripping the gutter and then collapsing whitespace reconstructs the message the command
- * actually produced, so the assertion is about the text rather than about how it was displayed.
- *
- * The wrapping is oclif's, applied to every command's errors alike -- but it does mean a path
- * printed in an error is not copy-pasteable, which is a real (small) defect worth its own bead.
- * Recorded here rather than worked around silently, because a test that hid it would be the
- * reason nobody noticed.
- */
-function unwrapped(text: string): string {
-  return text.replace(/\s*›\s*/g, '').replace(/\s+/g, ' ');
-}
-
 /** The `entry` rows of the report, keyed by type. */
 function outcomes(stdout: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -402,8 +381,17 @@ describe('asc ingest claude-code', () => {
     expect(run.status).toBe(1);
     // The message NAMES the root it looked in, because "found nothing" is only actionable if the
     // reader can see where ascend looked.
-    expect(unwrapped(run.stderr)).toContain(join(dir, '.claude', 'projects'));
-    expect(unwrapped(run.stderr)).toContain('--root');
+    //
+    // **Asserted against the RAW stderr, and that is the assertion asc-98c exists for.** This path
+    // is longer than the width ascend wraps at, so it is the case that used to arrive split across
+    // two lines with a `›` between the halves -- unpasteable, and a substring assertion here failed
+    // on output that was correct. There is no helper in between now: if the path is not one
+    // contiguous string on stderr, this line says so.
+    expect(run.stderr).toContain(join(dir, '.claude', 'projects'));
+    expect(run.stderr).toContain('--root');
+    // And it is still a failure with a label, not a bare path: the fix removed decoration, not the
+    // context -> problem -> fix shape.
+    expect(run.stderr).toContain('Error: No transcripts found under');
     expect(stored(dir).entries).toBe(0);
   });
 

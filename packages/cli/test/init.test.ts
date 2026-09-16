@@ -117,24 +117,6 @@ function real(dir: string): string {
   return realpathSync(dir);
 }
 
-/**
- * Text reduced to just its characters, for asserting that a long token survived the wrapper.
- *
- * Built ON `flatten`, and the order is the whole point. oclif wraps at the terminal width and
- * breaks **inside a token** when there is no space to break at, inserting its `›` marker at the
- * break: a tmpdir path arrives as `...szvxz58d2r95y` / ` ›   793l9hvwj...`. So two distortions have
- * to go, in this order -- the `›` is only at a line start in the RAW text, so `flatten` has to
- * strip it before the newline that anchors it is collapsed away. Measured both ways: collapsing
- * whitespace first leaves `<tmpdir-id-pre›suffix>` (glyph still embedded), and collapsing without
- * stripping leaves `szvxz58d2r95y 793l9hvwj` (a phantom space that was never in the path).
- *
- * What remains is the characters themselves, which is exactly the claim being made: the path was
- * printed. Neither `›` nor a space can occur in a real path, so this cannot pass by accident.
- */
-function squeeze(text: string): string {
-  return flatten(text).replace(/\s+/g, '');
-}
-
 function envelope(stdout: string): readonly Record<string, unknown>[] {
   return (JSON.parse(stdout) as { rows: Record<string, unknown>[] }).rows;
 }
@@ -347,10 +329,11 @@ describe('asc init', () => {
     expect(envelope(run.stdout).find((row) => row['action'] === 'gitignore')?.['target']).toBe(
       join(real(dirs[0] as string), '.gitignore'),
     );
-    // `squeeze`, not `flatten`: oclif wraps at the terminal width and breaks MID-TOKEN, so the path
-    // arrives with a space inside it (`asc-init -0DTHfR/alpha`). Measured on this assertion's first
-    // run -- `flatten` fails against output that is correct.
-    expect(squeeze(run.stderr)).toContain(real(shared));
+    // RAW stderr, and the shared path is longer than the width ascend wraps at -- so this is the
+    // assertion asc-98c exists for. It used to need a helper, because oclif broke the path mid-token
+    // and the space it left inside it (`asc-init -0DTHfR/alpha`) made `flatten` fail on correct
+    // output. A path has no space to break at now, so it is one contiguous string or this fails.
+    expect(run.stderr).toContain(real(shared));
   });
 
   it('leaves a DANGLING .gitignore symlink alone, which existsSync cannot tell from no file', () => {
@@ -453,7 +436,8 @@ describe('asc init', () => {
     // said, because `openProject` walks up and would otherwise silently switch which store
     // answers for everything under the new one.
     expect(flatten(run.stderr)).toContain('shadowed');
-    expect(squeeze(run.stderr)).toContain(squeeze(join(real(dir), '.ascend')));
+    // Also raw, for the reason above: a store path is not a phrase, and it must be printed whole.
+    expect(run.stderr).toContain(join(real(dir), '.ascend'));
     expect(registry(nested).map((row) => row.name)).toEqual(STARTERS);
   });
 

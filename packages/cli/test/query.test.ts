@@ -81,31 +81,36 @@ function project(): string {
   return dir;
 }
 
-/** stderr with oclif's wrap decoration removed, so a substring assertion means what it reads like. */
+/**
+ * stderr with its wrapping undone, so a substring assertion means what it reads like.
+ *
+ * No `›` gutter is stripped: ascend renders its own failures and warnings (`errors.ts`), so
+ * stderr carries none -- and an assertion here is what fails if one comes back.
+ */
 function flatten(text: string): string {
-  return text
-    .replace(/^\s*›\s*/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /**
- * `flatten` with every whitespace run and every wrap marker deleted, for assertions that name a path.
+ * `flatten` with the whitespace deleted entirely, for assertions that name a path.
  *
- * **Measured, and it is the reason this exists rather than `flatten` being enough.** oclif wraps
- * `this.warn` at the terminal width and breaks **mid-token** when a word does not fit, marking the
- * break with a `›`. Observed verbatim: `.../asc-query-hood-wV7xm7/proj-0` came back as
- * `.../asc-query-hood-w›V7xm7/proj-0`. So `flatten`'s newline-to-space collapse inserted a space
- * that is not in the message, AND the marker landed in the middle of the path -- a substring
- * assertion on that path fails against output that is correct.
+ * **Measured, and it is the reason this exists rather than `flatten` being enough.** These
+ * warnings name tmpdirs longer than the width ascend wraps at, so `flatten`'s newline-to-space
+ * collapse inserts a space that is not in the message -- and a substring assertion on the path
+ * then fails against output that is correct.
  *
  * The worse half is the NEGATIVE assertion: `expect(notes).not.toContain(path)` would pass on that
  * same corrupted text without the path being absent at all -- a false green, and exactly the kind of
  * check this repo treats as severity-zero. So both directions go through this one function, where
- * neither inserted whitespace nor a wrap marker can make either of them lie.
+ * inserted whitespace cannot make either of them lie.
+ *
+ * Nothing strips a `›` any more. It used to -- that was asc-98c, where oclif broke a path
+ * mid-token and marked the break, and `.../asc-query-hood-wV7xm7/proj-0` arrived as
+ * `.../asc-query-hood-w›V7xm7/proj-0`. ascend renders its own warnings now (`errors.ts`), so the
+ * marker is gone and this function would fail on it if it came back.
  */
 function squashed(text: string): string {
-  return text.replace(/[\s›]+/g, '');
+  return text.replace(/\s+/g, '');
 }
 
 /** The store file as a path this process can compare against SQLite's own resolution of it. */

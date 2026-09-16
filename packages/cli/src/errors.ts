@@ -227,3 +227,103 @@ export function refusal(message: string): Error {
 export function usageError(message: string): Errors.CLIError {
   return new Errors.CLIError(message, { exit: 2 });
 }
+
+/** Which of the two labels a message on stderr carries. */
+export type StderrLabel = 'Error' | 'Warning';
+
+/**
+ * Where a message written to stderr is wrapped.
+ *
+ * **80, fixed, and not read from the terminal.** A constant width is what makes the same refusal
+ * produce the same bytes in a terminal, in a pipe, in a CI log and in a model's context -- so a
+ * message quoted in a bug report is the message that was printed, and a test can assert on it
+ * without pretending to be a TTY. 80 is also the width oclif itself falls back to when stderr is
+ * not a terminal (`@oclif/core/lib/screen.js`), so ascend wraps where it already wrapped and only
+ * the breaking rule changes.
+ *
+ * Width decides where lines END; it never decides whether a word survives, because `wrapLine`
+ * breaks at spaces and lets an overlong word overrun. So a narrow terminal costs nothing here: it
+ * soft-wraps the already-wrapped text with no decoration of its own.
+ *
+ * Counted in UTF-16 code units rather than display columns, which is exact for the ASCII these
+ * messages are written in and off by the wide-character factor for text that is not.
+ */
+export const MESSAGE_WIDTH = 80;
+
+/**
+ * A message as a reader sees it: the label, the text, and nothing else.
+ *
+ * **This is a fix, and what it fixes was measured.** oclif renders every error and every warning
+ * through `prettyPrint` (`@oclif/core/lib/errors/errors/pretty-print.js`), which calls
+ * `wrapAnsi(output, errtermwidth - 6, { hard: true, trim: false })` and then indents the result,
+ * marking each line with a `›`. `hard: true` breaks **mid-token**, so a refusal that named a path
+ * printed it as
+ *
+ * ```
+ *  ›   /var/folders/.../this-is-a- ›   long-directory-name-that-will-wrap/nope
+ * ```
+ *
+ * -- two problems in one line. The path is no longer the path, so it cannot be pasted; and the `›`
+ * is decoration sitting inside the text, which a reader has to be told to ignore. asc-98c.
+ *
+ * **Whitespace is the only break, and a token longer than the line is left whole.** A path has no
+ * space in it, so there is nowhere for a path to be cut, however long the tmpdir is. The line is
+ * then longer than 80 columns; that is the correct trade, because a long line is readable and a
+ * broken path is not.
+ *
+ * **No gutter**, for the reason above: this text is read by a person who may copy from it and by a
+ * model that has to parse it, and both do better without an ornament that is not part of the
+ * message. `Error: ` / `Warning: ` at column 0 is what is left, and it is greppable.
+ *
+ * The message's own newlines are kept and each line is wrapped independently, so the paragraph
+ * structure survives: the store's refusals are written context -> problem -> fix, and `--debug`'s
+ * trace arrives as indented lines that `wrapLine` leaves indented.
+ *
+ * Returns the text with NO trailing terminator, which is this package's convention for every
+ * renderer -- `types export`'s output is asserted as `'[]\n'` because the renderer produces `'[]'`
+ * and the writer adds the newline. `BaseCommand.emitStderr` is that writer.
+ */
+export function renderForStderr(label: StderrLabel, message: string): string {
+  return `${label}: ${message}`
+    .split('\n')
+    .flatMap((line) => wrapLine(line, MESSAGE_WIDTH))
+    .join('\n');
+}
+
+/**
+ * One line, broken at spaces so that no word is ever cut in half.
+ *
+ * A word wider than the room left for it is pushed onto a line of its own and allowed to overrun
+ * -- see `MESSAGE_WIDTH`. Running a word together with its neighbours instead would be worse than
+ * not wrapping at all, so the overrun is deliberate and not a missed case.
+ *
+ * A source line's own indentation is kept and the room left over is what the words are fitted
+ * into. `--debug`'s stack frames arrive indented, and re-fitting them from column 0 would turn a
+ * trace into prose.
+ */
+function wrapLine(line: string, width: number): readonly string[] {
+  if (line.length <= width) return [line];
+
+  const indent = /^[ \t]*/.exec(line)?.[0] ?? '';
+  const body = line.slice(indent.length);
+  const room = width - indent.length;
+  if (room <= 0 || body === '') return [line];
+
+  const out: string[] = [];
+  let current = '';
+
+  // Split and rejoin on single spaces rather than collapsing whitespace: `'a  b'` splits to
+  // `['a', '', 'b']` and rejoins to `'a  b'`, so a run of spaces in the message is not silently
+  // tidied into one -- the text on stderr is the text that was written.
+  for (const word of body.split(' ')) {
+    if (current === '') current = word;
+    else if (current.length + 1 + word.length <= room) current += ` ${word}`;
+    else {
+      out.push(indent + current);
+      current = word;
+    }
+  }
+
+  out.push(indent + current);
+  return out;
+}

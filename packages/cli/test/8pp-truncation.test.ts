@@ -20,18 +20,30 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * end-to-end statement available about delivery of a large message. What it is NOT is a check on
  * `installPipeGuards`: removing the call from `src/bin.ts` -- mutation M8 -- changes nothing here.
  * Measured in both directions on this file's own fixture (type `demanding`, 240 required
- * properties): 75,441 bytes in all 24 runs -- eight through an attentive reader, four through a
+ * properties): byte-identical in all 24 runs -- eight through an attentive reader, four through a
  * reader that does not read for a full second, each with the guard installed and with it removed.
- * The 2,000-property variant of the same fixture behaves the same way at 628,078 bytes (n=4 each).
- * Byte-identical, every arm.
+ * The 2,000-property variant of the same fixture behaved the same way (n=4 each). Every arm agreed.
+ *
+ * **The message those 24 runs carried was 75,441 bytes, and it is 70,154 bytes now.** `asc-98c`
+ * moved the rendering of a failure from oclif to `errors.ts`, which dropped a `›` and the gutter
+ * spaces from every continuation line; the arms were NOT re-run afterwards, and the two counts here
+ * were re-measured directly against the built binary instead (240 and 2,000 properties: 70,154 and
+ * 588,075 bytes, n=1 each). What the 24 runs established is an EQUALITY between two arms -- guard
+ * absent, guard present, same bytes -- and a change to how a line is rendered moves both arms
+ * together, so that equality is not something the renderer can affect. That is what the numbers in
+ * this paragraph are evidence for, and it is why the study is cited rather than repeated.
  *
  * **Why that is so, and the part of it that is not known.** The mechanism is real: a bare
  * `process.stderr.write('x'.repeat(400001)); process.exit(2)` does lose its tail with the fix
  * absent -- 65,536 bytes in 10 of 10 runs through `spawnSync`, and 131,072 through a shell pipe.
  * So libuv does drop what it has not pushed. What differs inside the real CLI is that its write
  * has already completed before `process.exit` runs: instrumented in ascend's own process, the
- * single 75,441-byte write returns `true` with `writableLength === 0`. A pipe that is never
- * drained absorbs 131,072 bytes here and blocks at 400,001, so the 628,078-byte arm arriving whole
+ * single 70,154-byte write returns `true` with `writableLength === 0`. That instrumentation was
+ * re-run after `asc-98c` moved the write site -- the one large write is now `BaseCommand.emitStderr`
+ * calling `process.stderr.write`, where it used to be oclif's `console.error` -- and the property
+ * survived the move (`returned: true`, `writableLength: 0`; the 2,000-property variant at 588,075
+ * bytes, the same two values). A pipe that is never
+ * drained absorbs 131,072 bytes here and blocks at 400,001, so the 588,075-byte arm arriving whole
  * through a reader that is asleep for a second means that write waited for the reader rather than
  * being dropped. The write on this path is therefore already synchronous, without the guard.
  * WHICH layer makes it so is NOT identified, and is recorded as an open question rather than
@@ -45,9 +57,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * that call it directly.
  *
  * **Why `record`, and a fixture with 240 required properties.** The loss happens on the
- * error path specifically, because oclif renders an error with ONE `console.error()` and then calls
+ * error path specifically, because a failure is delivered as ONE large write and then
  * `process.exit()`: a single large write is the shape libuv has least of pushed when the process
- * dies. A message under the pipe capacity is never affected, so the fixture has to be genuinely
+ * dies. (Before `asc-98c` that write was `console.error`; it is now `emitStderr`'s direct
+ * `process.stderr.write`, with oclif reached afterwards only to exit -- see the paragraph above.)
+ * A message under the pipe capacity is never affected, so the fixture has to be genuinely
  * over it -- and `asc record` against a type declaring many required properties is the one real
  * command that produces such a message, at one line per missing property. Nothing here is
  * synthetic: no wrapper script, no `repeat(400_000)`, just the product being wrong in a way that
@@ -171,9 +185,16 @@ beforeAll(() => {
 /** The failing `record`, with stderr delivered through a PIPE. This is the arm at risk. */
 function pipedStderr(): Buffer {
   // No `encoding`, so stdout and stderr come back as Buffers -- which is the unit that matters
-  // here. A `utf8` round trip would count CHARACTERS, and the message contains `›` and `…`, so
-  // comparing character counts against a file's byte count would show a loss that isn't there.
-  // That mistake was made and caught once already; the comment is here so it is not made again.
+  // here. A `utf8` round trip would count CHARACTERS, and comparing character counts against a
+  // file's byte count shows a loss that isn't there. That mistake was made and caught once already;
+  // the comment is here so it is not made again.
+  //
+  // **The specific reason once given for this is now wrong, and is corrected rather than deleted.**
+  // It said the message contains `›` and `…`. Measured against the built binary after `asc-98c`:
+  // this fixture's stderr is 70,154 bytes and holds no code point above U+007E at all -- the `›`
+  // was oclif's gutter, and ascend no longer writes one. The Buffer is still the right unit, for a
+  // reason that does not depend on today's bytes: the message is built from a type's own property
+  // names, and `output.ts` marks an over-wide cell with `…`, so nothing here promises ASCII.
   const result = spawnSync(process.execPath, [bin, 'record', TYPE, '-'], {
     cwd: dir,
     env: env(dir),
