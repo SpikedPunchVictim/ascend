@@ -1,0 +1,129 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { findType, openStore, type Store } from '@ascend/store';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { TypeDocument } from '../src/document.js';
+import { registerDocument } from '../src/register-document.js';
+
+/**
+ * `registerDocument` unit-tested directly against a real store, the same way
+ * `errors.test.ts` tests the error boundary directly -- no CLI subprocess and no `dist/`
+ * build, because nothing here needs argv parsing, streams or an exit code: the behaviour
+ * under test lives entirely between this function and the store.
+ */
+
+const dirs: string[] = [];
+
+const tempDir = (): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'ascend-register-document-'));
+  dirs.push(dir);
+  return dir;
+};
+
+afterEach(() => {
+  while (dirs.length > 0) rmSync(dirs.pop() as string, { recursive: true, force: true });
+});
+
+const withStore = (body: (store: Store) => void): void => {
+  const store = openStore({ dir: tempDir() });
+  try {
+    body(store);
+  } finally {
+    store.close();
+  }
+};
+
+const AT = '2026-09-17T10:00:00.000Z';
+const LATER = '2026-09-17T11:00:00.000Z';
+const THIRD = '2026-09-17T12:00:00.000Z';
+
+const document = (widgetDescription: string, extra: Partial<TypeDocument> = {}): TypeDocument => ({
+  name: 'widget_reviewed',
+  properties: [{ name: 'widget_kind', type: 'string', description: widgetDescription }],
+  ...extra,
+});
+
+describe('asc-v7t -- per-property prose on re-registering an existing type', () => {
+  it('reports `prose-updated`, not `unchanged`, when only an inline property description changed', () => {
+    withStore((store) => {
+      const created = registerDocument(store, document('ORIGINAL'), {
+        registeredAt: AT,
+        dryRun: false,
+      });
+      expect(created.outcome).toBe('created');
+
+      const second = registerDocument(store, document('UPDATED'), {
+        registeredAt: LATER,
+        dryRun: false,
+      });
+
+      // The bug reported `unchanged` here while leaving the stored prose at 'ORIGINAL' --
+      // the weakest possible signal for a dropped edit.
+      expect(second.outcome).toBe('prose-updated');
+      expect(second.version).toBe(created.version);
+
+      const stored = findType(store.db, 'widget_reviewed', created.version);
+      expect(stored?.prose['widget_kind']).toBe('UPDATED');
+    });
+  });
+
+  it('does not drop the inline property prose when a top-level field changes too', () => {
+    withStore((store) => {
+      const created = registerDocument(store, document('ORIGINAL'), {
+        registeredAt: AT,
+        dryRun: false,
+      });
+
+      // The second reproduction step from the bead: a top-level `description` is ALSO new,
+      // which used to make the command report `prose-updated` while the property prose
+      // underneath stayed at 'ORIGINAL' -- a claimed success for work that was dropped.
+      const second = registerDocument(
+        store,
+        document('THIRD', { description: 'a brand new top-level description' }),
+        { registeredAt: THIRD, dryRun: false },
+      );
+
+      expect(second.outcome).toBe('prose-updated');
+      const stored = findType(store.db, 'widget_reviewed', created.version);
+      expect(stored?.prose['widget_kind']).toBe('THIRD');
+      expect(stored?.description).toBe('a brand new top-level description');
+    });
+  });
+
+  it('is idempotent -- re-registering the exact same document twice reports `unchanged`', () => {
+    withStore((store) => {
+      registerDocument(store, document('ORIGINAL'), { registeredAt: AT, dryRun: false });
+      const again = registerDocument(store, document('ORIGINAL'), {
+        registeredAt: LATER,
+        dryRun: false,
+      });
+
+      expect(again.outcome).toBe('unchanged');
+    });
+  });
+
+  it('the top-level `prose` map still overrides an inline description for the same property', () => {
+    // Precedence must match `toStorage`'s create path (inline first, top-level overrides), or
+    // create and update would disagree about which spelling wins for one property.
+    withStore((store) => {
+      const created = registerDocument(
+        store,
+        document('inline wins here', { prose: { widget_kind: 'CREATE-TIME OVERRIDE' } }),
+        { registeredAt: AT, dryRun: false },
+      );
+      expect(findType(store.db, 'widget_reviewed', created.version)?.prose['widget_kind']).toBe(
+        'CREATE-TIME OVERRIDE',
+      );
+
+      registerDocument(
+        store,
+        document('inline still loses', { prose: { widget_kind: 'UPDATE-TIME OVERRIDE' } }),
+        { registeredAt: LATER, dryRun: false },
+      );
+      expect(findType(store.db, 'widget_reviewed', created.version)?.prose['widget_kind']).toBe(
+        'UPDATE-TIME OVERRIDE',
+      );
+    });
+  });
+});

@@ -1135,4 +1135,118 @@ describe('deprecation is a status, not a version', () => {
       expect(deprecateType(store.db, 'never_defined')).toBe(0);
     });
   });
+
+  it('asc-9bd: a shape change to a deprecated type keeps the new version deprecated', () => {
+    // Reproduces the bead's own repro exactly: define, deprecate, then change the shape.
+    // Before the fix, the new-version INSERT never named a `status` column, so it took the
+    // DDL's bare `DEFAULT 'active'` regardless of what the type being versioned was -- the
+    // status this asserts is the whole bug, not merely that a version was minted.
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      deprecateType(store.db, 'review_completed');
+      expect(findType(store.db, 'review_completed')?.status).toBe('deprecated');
+
+      const result = registerType(store.db, spec([{ name: 'extra', type: 'string' }]), {
+        registeredAt: LATER,
+      });
+
+      expect(result.outcome).toBe('created');
+      expect(result.version).toBe(2);
+      const after = findType(store.db, 'review_completed');
+      expect(after?.version).toBe(2);
+      expect(after?.status).toBe('deprecated');
+      // Every version of the family stays deprecated, not just the latest -- there is only one
+      // `status` per name in this schema, and v1 must not now disagree with v2 about it.
+      expect(typeVersions(store.db, 'review_completed').map((v) => v.status)).toEqual([
+        'deprecated',
+        'deprecated',
+      ]);
+    });
+  });
+
+  it('asc-9bd: says so, rather than leaving the reactivation-that-did-not-happen undiscoverable', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      deprecateType(store.db, 'review_completed');
+
+      const result = registerType(store.db, spec([{ name: 'extra', type: 'string' }]), {
+        registeredAt: LATER,
+      });
+
+      expect(result.warnings.some((warning) => warning.includes('deprecated'))).toBe(true);
+    });
+  });
+
+  it('asc-9bd: a shape change to an ACTIVE type is unaffected -- stays active as before', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      const result = registerType(store.db, spec([{ name: 'extra', type: 'string' }]), {
+        registeredAt: LATER,
+      });
+
+      expect(findType(store.db, 'review_completed')?.status).toBe('active');
+      expect(result.warnings.some((warning) => warning.includes('deprecated'))).toBe(false);
+    });
+  });
+});
+
+describe('updateTypeProse opens its own transaction around the read and the write (asc-vnn)', () => {
+  /**
+   * `updateTypeProse` used to read `existing`, merge in JS, and issue a bare UPDATE with no
+   * `BEGIN IMMEDIATE` -- a read-modify-write with no lock spanning the two, which is the class
+   * of race `registerType`'s own transaction restructure (this file, above) closed for
+   * registration. These tests assert the transaction-join CONTRACT the fix adds -- the same
+   * contract `registerType` is tested against just above -- not a genuine cross-process race:
+   * the bead this closes says plainly that a same-process simulation would not exercise the
+   * real lock/snapshot behaviour honestly, and no test here claims to.
+   */
+  const assertNoOpenTransaction = (store: Store): void => {
+    expect(store.db.isTransaction).toBe(false);
+    store.db.exec('BEGIN');
+    store.db.exec('ROLLBACK');
+  };
+
+  it('releases the lock after updating prose', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      updateTypeProse(store.db, 'review_completed', 1, { description: 'edited' });
+      assertNoOpenTransaction(store);
+    });
+  });
+
+  it('releases the lock even when the update is refused', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      expect(() => {
+        updateTypeProse(store.db, 'review_completed', 1, { propertyProse: { nope: 'x' } });
+      }).toThrow(UnusableProseError);
+      assertNoOpenTransaction(store);
+    });
+  });
+
+  it("joins a caller's transaction instead of committing it", () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      withTransaction(store.db, () => {
+        updateTypeProse(store.db, 'review_completed', 1, { description: 'joined' });
+        // Still open -- ending it here would be updateTypeProse deciding the fate of a
+        // transaction it did not open.
+        expect(store.db.isTransaction).toBe(true);
+      });
+      expect(store.db.isTransaction).toBe(false);
+      expect(findType(store.db, 'review_completed')?.description).toBe('joined');
+    });
+  });
+
+  it("a caller's ROLLBACK takes the prose update with it", () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT, description: 'original' });
+      withRollback(store.db, () => {
+        updateTypeProse(store.db, 'review_completed', 1, { description: 'rolled back' });
+        expect(findType(store.db, 'review_completed')?.description).toBe('rolled back');
+      });
+      expect(findType(store.db, 'review_completed')?.description).toBe('original');
+      expect(store.db.isTransaction).toBe(false);
+    });
+  });
 });

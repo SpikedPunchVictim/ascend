@@ -522,14 +522,18 @@ export function registerType(
 
     const latest = db
       .prepare(
-        'SELECT version, major, spec_json FROM entry_types WHERE name = ? ORDER BY version DESC LIMIT 1',
+        'SELECT version, major, spec_json, status FROM entry_types WHERE name = ? ORDER BY version DESC LIMIT 1',
       )
-      .get(shape.name) as { version: number; major: number; spec_json: string } | undefined;
+      .get(shape.name) as
+      { version: number; major: number; spec_json: string; status: string } | undefined;
 
     let version = 1;
     let major = 1;
     let bump: Bump = 'major';
     let changes: readonly SpecChange[] = [];
+    // The DDL's own default for a first version -- there is no earlier status to inherit, so a
+    // brand-new type is active. `latest` below is the only thing that can change this.
+    let status: 'active' | 'deprecated' = 'active';
 
     if (latest !== undefined) {
       // Both sides are already the stored projection: prose-free, canonical, and with the
@@ -556,6 +560,14 @@ export function registerType(
       major = diff.bump === 'major' ? latest.major + 1 : latest.major;
       bump = diff.bump;
       changes = diff.changes;
+      // Inherited, never defaulted (asc-9bd). Before this, the INSERT below named no `status`
+      // column at all, so it took the DDL's bare default of 'active' regardless of what the
+      // type being versioned was -- a shape change to a deprecated type silently reactivated it,
+      // with no warning, because nothing here had ever asked. `deprecateType` is the only writer
+      // of `status`, and a version row is a fact about a SHAPE, not a re-litigation of whether
+      // the type is retired -- so the status a shape change produces is the status the type
+      // already had, and only `asc types deprecate` can change it going forward.
+      status = latest.status === 'deprecated' ? 'deprecated' : 'active';
     }
 
     // Computed BEFORE the insert, and that ordering is load-bearing rather than tidy. The check
@@ -566,10 +578,21 @@ export function registerType(
     // the registry hold when this definition was proposed?
     const notes = vocabularyNotes(db, shape);
 
+    // Told, not left to be discovered later in `asc types list`: a caller who just changed the
+    // shape of a deprecated type is about to see `created`, and without this the only signal
+    // that nothing reactivated is the status column they did not ask to look at.
+    const deprecatedNotice =
+      status === 'deprecated'
+        ? [
+            `'${shape.name}' is deprecated; this new version keeps that status rather than ` +
+              `reactivating it. Nothing currently undoes a deprecation.`,
+          ]
+        : [];
+
     db.prepare(
       `INSERT INTO entry_types
-         (name, version, major, type_hash, spec_json, description, record_when, prose_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (name, version, major, type_hash, spec_json, description, record_when, prose_json, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       shape.name,
       version,
@@ -579,6 +602,7 @@ export function registerType(
       options.description ?? null,
       options.recordWhen ?? null,
       proseJson,
+      status,
       options.registeredAt,
     );
 
@@ -603,7 +627,7 @@ export function registerType(
       bump,
       changes,
       renames: canonical.renames,
-      warnings: [...canonical.warnings, ...notes],
+      warnings: [...canonical.warnings, ...notes, ...deprecatedNotice],
     };
   } catch (error) {
     // `ended` as well as `ownsTransaction`, so a rollback that has already run -- the dry-run
@@ -802,35 +826,56 @@ export function updateTypeProse(
     readonly propertyProse?: Readonly<Record<string, string>>;
   },
 ): void {
-  const existing = findType(db, name, version);
-  if (existing === undefined) {
-    throw new Error(`type '${name}' version ${String(version)} is not registered`);
+  // The same protocol `registerType` uses, and for the same reason (asc-vnn): the read of
+  // `existing` below and the UPDATE at the end are one decision -- "what is the merged prose?" --
+  // so they must be atomic with each other. Without a transaction spanning both, two concurrent
+  // callers each merge from the same stale snapshot and the second UPDATE silently overwrites the
+  // first caller's edit -- no error, no warning, the exact silent-loss class this store refuses
+  // everywhere else. `BEGIN IMMEDIATE` rather than deferred so a concurrent caller waits here,
+  // where the busy timeout applies, instead of taking a snapshot that a concurrent commit can
+  // invalidate. `isTransaction` means a caller's own transaction is joined rather than nested.
+  const ownsTransaction = !db.isTransaction;
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
+
+  try {
+    const existing = findType(db, name, version);
+    if (existing === undefined) {
+      throw new Error(`type '${name}' version ${String(version)} is not registered`);
+    }
+
+    // The second writer, and it needs the same fold for the same reason -- it is the one reachable
+    // WITHOUT a shape change (`asc types define` on an already-known shape), so a fix applied only
+    // to registration would leave this half storing the key verbatim.
+    //
+    // The merge keeps the canonical spelling already stored, and `existing.prose` is used as-is
+    // rather than re-keyed: a row may hold a key from before this fix, and silently renaming a
+    // caller's unrelated prose is a different decision from refusing the key they just sent.
+    const { prose: canonical, problems } =
+      prose.propertyProse === undefined
+        ? { prose: undefined, problems: [] }
+        : canonicalProseKeys(existing.name, existing.spec, prose.propertyProse);
+    if (problems.length > 0) throw new UnusableProseError(existing.name, problems);
+
+    const nextProse =
+      canonical === undefined ? existing.prose : { ...existing.prose, ...canonical };
+
+    db.prepare(
+      `UPDATE entry_types
+          SET description = ?, record_when = ?, prose_json = ?
+        WHERE name = ? AND version = ?`,
+    ).run(
+      prose.description === undefined ? existing.description : prose.description,
+      prose.recordWhen === undefined ? existing.recordWhen : prose.recordWhen,
+      Object.keys(nextProse).length === 0 ? null : JSON.stringify(nextProse),
+      name,
+      version,
+    );
+
+    if (ownsTransaction) db.exec('COMMIT');
+  } catch (error) {
+    // Whether there is still something of ours to unwind: a caller's own transaction is theirs to
+    // roll back, not ours -- the same reasoning `registerType`'s catch documents.
+    if (ownsTransaction) db.exec('ROLLBACK');
+    throw error;
   }
-
-  // The second writer, and it needs the same fold for the same reason -- it is the one reachable
-  // WITHOUT a shape change (`asc types define` on an already-known shape), so a fix applied only
-  // to registration would leave this half storing the key verbatim.
-  //
-  // The merge keeps the canonical spelling already stored, and `existing.prose` is used as-is
-  // rather than re-keyed: a row may hold a key from before this fix, and silently renaming a
-  // caller's unrelated prose is a different decision from refusing the key they just sent.
-  const { prose: canonical, problems } =
-    prose.propertyProse === undefined
-      ? { prose: undefined, problems: [] }
-      : canonicalProseKeys(existing.name, existing.spec, prose.propertyProse);
-  if (problems.length > 0) throw new UnusableProseError(existing.name, problems);
-
-  const nextProse = canonical === undefined ? existing.prose : { ...existing.prose, ...canonical };
-
-  db.prepare(
-    `UPDATE entry_types
-        SET description = ?, record_when = ?, prose_json = ?
-      WHERE name = ? AND version = ?`,
-  ).run(
-    prose.description === undefined ? existing.description : prose.description,
-    prose.recordWhen === undefined ? existing.recordWhen : prose.recordWhen,
-    Object.keys(nextProse).length === 0 ? null : JSON.stringify(nextProse),
-    name,
-    version,
-  );
 }

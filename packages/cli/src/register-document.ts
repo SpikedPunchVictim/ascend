@@ -74,10 +74,11 @@ export function registerDocument(
   if (outcome === 'prose-updated' && !options.dryRun) {
     // Merges property prose rather than replacing it, so a document that mentions one
     // property leaves the prose of the others alone.
+    const propertyProse = documentPropertyProse(document);
     updateTypeProse(store.db, result.name, result.version, {
       ...(document.description === undefined ? {} : { description: document.description }),
       ...(document.record_when === undefined ? {} : { recordWhen: document.record_when }),
-      ...(document.prose === undefined ? {} : { propertyProse: document.prose }),
+      ...(Object.keys(propertyProse).length === 0 ? {} : { propertyProse }),
     });
   }
 
@@ -92,6 +93,29 @@ export function registerDocument(
     renames: result.renames,
     warnings: result.warnings,
   };
+}
+
+/**
+ * A document's per-property prose, keyed as the document spells the property name.
+ *
+ * Two spellings exist in the document format (`document.ts`'s file comment): a property's own
+ * `description`, and the top-level `prose` map. `toStorage` (`registry.ts`) folds both into one
+ * map on the CREATE path -- inline first, then the top-level map overrides -- and this is the
+ * same fold, so a document that uses both spellings for one property is resolved identically
+ * whether it is registering a first version or updating an existing one. Reusing that precedence
+ * rather than re-deciding it here is what asc-v7t's fix direction calls out explicitly: create
+ * and update disagreeing about which spelling wins would be a new cross-implementation
+ * divergence of exactly the kind this module's file comment already warns about.
+ */
+function documentPropertyProse(document: TypeDocument): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const property of document.properties) {
+    if (property.description !== undefined) merged[property.name] = property.description;
+  }
+  for (const [key, value] of Object.entries(document.prose ?? {})) {
+    merged[key] = value;
+  }
+  return merged;
 }
 
 /**
@@ -125,7 +149,10 @@ function pendingProseChange(
   ) {
     return 'pending';
   }
-  for (const [property, text] of Object.entries(document.prose ?? {})) {
+  // Inline `properties[].description` and the top-level `prose` map both land here (asc-v7t):
+  // comparing only the top-level map is how a re-registration with an edited INLINE description
+  // reported `unchanged` while the prose sat un-updated in the store.
+  for (const [property, text] of Object.entries(documentPropertyProse(document))) {
     // Folded, because the store folded it on the way in: a document that spells a property
     // `reviewKind` has its prose stored under `review_kind` (`canonicalProseKeys`), and comparing
     // the document's raw key against the stored map would miss -- so this would answer `pending`

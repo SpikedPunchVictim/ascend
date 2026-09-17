@@ -178,10 +178,30 @@ export function parseDocument(text: string, source: string): TypeDocument {
   if (description !== undefined && typeof description !== 'string') {
     fieldError(source, 'description', 'a string', description);
   }
+  // Refused here rather than left to the database (asc-zrx). `schema.ts`'s `entry_types` table
+  // carries `CHECK (description IS NULL OR description <> '')`, and until this guard existed
+  // nothing upstream re-checked it: an empty string passed every parse and validation check in
+  // this file and reached the store, which refused it with SQLite's own CHECK-constraint text --
+  // naming a table and a column, not a document. Matched to the CHECK's own rule: `undefined`
+  // (the key omitted) is still the way to leave the field unset; `''` is refused the same as any
+  // other malformed field, with a message that says which document and what to do about it.
+  if (description === '') {
+    throw refusal(
+      `${source}: description is '' (empty). The store never stores an empty description -- ` +
+        `omit the field entirely to leave it unset, or give it real text.`,
+    );
+  }
 
   const recordWhen = raw['record_when'];
   if (recordWhen !== undefined && typeof recordWhen !== 'string') {
     fieldError(source, 'record_when', 'a string', recordWhen);
+  }
+  // Same CHECK, same reasoning, the other column it guards.
+  if (recordWhen === '') {
+    throw refusal(
+      `${source}: record_when is '' (empty). The store never stores an empty record_when -- ` +
+        `omit the field entirely to leave it unset, or give it real text.`,
+    );
   }
 
   const prose = raw['prose'];
