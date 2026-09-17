@@ -20,6 +20,10 @@
  *     from the spike twice on purpose; both departures and their reasons are in that
  *     file's comment, and the anchors are carried into `test/proportion.test.ts`.
  *   - `crosstab` / `chiSquare` / `cramerV` -- still to port (asc-0tw).
+ *   - Cohen's kappa -- DONE, `agreement.ts` (asc-8ju), written rather than ported: the spike never
+ *     implemented it (`spike/FINDINGS.md` records it as entirely unexercised), so it arrived with
+ *     hand-computed anchors instead of ported ones. It reports kappa and the two numbers behind it
+ *     but NO interval -- see that file for why Wilson's is the wrong variance for it.
  *   - the seeded permutation control -- still to port, and it is the same problem
  *     `sample.ts` solves below. `sample.ts` is the answer that landed first: build it
  *     on that generator rather than beside it, so one store has one notion of a seed.
@@ -50,3 +54,12 @@ export {
   type ConfidenceLevel,
   type Proportion,
 } from './proportion.js';
+
+export {
+  AgreementError,
+  cohenKappa,
+  type Agreement,
+  type AgreementMeasure,
+  type LabelMarginal,
+  type Labelled,
+} from './agreement.js';
