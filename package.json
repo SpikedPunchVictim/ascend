@@ -19,6 +19,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "align": "./node_modules/.bin/align check",
+    "dogfood:types": "node packages/cli/dist/bin.js types import dogfood/types.json",
     "quality-gate": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && pnpm align",
     "hook:install": "node scripts/install-hooks.mjs",
     "hook:uninstall": "node scripts/install-hooks.mjs --uninstall",

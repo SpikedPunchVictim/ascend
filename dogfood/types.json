@@ -1,0 +1,73 @@
+[
+  {
+    "name": "evidence_record",
+    "properties": [
+      {
+        "name": "arms",
+        "type": "json"
+      },
+      {
+        "name": "bead",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "confidence",
+        "type": "text",
+        "required": true
+      },
+      {
+        "name": "decision",
+        "type": "text",
+        "required": true
+      },
+      {
+        "name": "measured_on",
+        "type": "timestamp"
+      },
+      {
+        "name": "measurement",
+        "type": "text",
+        "required": true
+      },
+      {
+        "name": "method",
+        "type": "text",
+        "required": true
+      },
+      {
+        "name": "question",
+        "type": "text",
+        "required": true
+      }
+    ],
+    "description": "One EV-protocol measurement: a question asked before anything ran, what was run to answer it, the raw numbers, and what was decided.",
+    "record_when": "you finish a measurement taken to answer a question you named before running anything -- a benchmark, a comparison, a spike, a kappa or interval computation, an A/B of two approaches. Record it once the numbers are in and a decision follows from them, not while still iterating. Copy `measurement` verbatim, exact text, as the tool printed it -- a paraphrase of a number is a new number, and only the exact text is what a later search or re-check can match against.",
+    "prose": {
+      "arms": "A JSON object or array, one entry per arm compared, each carrying its own count and n -- for example `{\"a\": {\"count\": 3, \"n\": 40}, \"b\": {\"count\": 11, \"n\": 40}}`. The point is to make the losing arm a queryable field rather than a sentence buried in `measurement`'s prose, so a later query can pull every record where a named arm lost without re-reading the text. An EMPTY array is a real measurement meaning \"looked and found nothing\" -- leave the property out entirely to say nobody looked.",
+      "bead": "The task this record belongs to, e.g. `asc-c9h`. Grouping records by this field is how a later reader assembles everything measured for one piece of work without re-reading every entry.",
+      "confidence": "What this measurement does NOT establish -- its sample size, its scope, what a different input might change. This is required in the sense that the omission must be a DECISION, not silence: if there is truly nothing to caveat, say that plainly (\"n is large enough that this generalizes\", \"no known limitation\") rather than leaving the property out or inventing a limitation that was not actually considered.",
+      "decision": "What was chosen, and the threshold that decided it. Name the specific cutoff or comparison that made this outcome win -- 'it looked better' is not a threshold, and without one the decision cannot be checked against a different measurement later.",
+      "measured_on": "When the measurement was actually taken, if that differs from when this entry was written. The envelope's own `recorded_at` is when the ENTRY was written, which can trail the measurement by however long it took to write it up -- leave this out when the two coincide.",
+      "measurement": "The numbers, raw, with n. Exact text, as printed by whatever produced them -- not a summary, not a rounded restatement. A number without the sample size it came from is not a measurement a later reader can trust.",
+      "method": "What was run, against what data, and how many times. Name the tool or script, the input it ran over, and the repeat count -- a method that does not say how many times something ran cannot be told apart from a single lucky sample.",
+      "question": "The question, named BEFORE anything was run. Write it as it was asked at the start, not as it reads now that the answer is known -- a question restated in light of its own answer stops being a question and becomes a justification."
+    },
+    "type_hash": "f2f796ca3c0beaaeac9289e4773e92ee63316df6eb5f8e97ab2bac6002663707"
+  },
+  {
+    "name": "note",
+    "properties": [
+      {
+        "name": "text",
+        "type": "string"
+      }
+    ],
+    "description": "A correction to an earlier entry, or a finding that fits no other registered type.",
+    "record_when": "you need to correct something an earlier entry got wrong, or you have something worth recording that does not match any other type's shape. `note` is the type of last resort: reach for a more specific type first, and use `note` only when none fits -- a corpus where everything is a `note` is a corpus where nothing can be queried by shape.",
+    "prose": {
+      "text": "The correction or finding, in prose. State plainly what it corrects if it corrects something -- naming the entry or claim being corrected is what makes this findable later instead of just another unattached sentence."
+    },
+    "type_hash": "96880b60e9c795766c5b6eb02da5a42611683b14bbe9a7e5e77a558b8a2e4b77"
+  }
+]
