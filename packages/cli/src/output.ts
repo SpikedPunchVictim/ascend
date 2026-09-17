@@ -489,6 +489,10 @@ export function renderJson(output: Output): string {
  * marked with `…` rather than silently cut, so what you see is never a plausible-looking
  * value that is actually a prefix. The full value is in `--json` and `--csv`, which do
  * not truncate.
+ *
+ * The elision keeps a HEAD and a TAIL rather than only a head (`truncateCell`, `asc-i36`): this
+ * store's ids are a long shared prefix plus a short discriminating suffix, and a head-only cut kept
+ * exactly the part every row shares.
  */
 const MAX_CELL_WIDTH = 60;
 
@@ -536,6 +540,91 @@ function lastUnitToKeep(text: string, budget: number): number {
   return end;
 }
 
+/**
+ * Where to START a tail-kept region, given the number of trailing UTF-16 units its budget allows.
+ * The mirror of `lastUnitToKeep`, for the other boundary a head+tail elision has (`asc-i36`).
+ *
+ * A head-only cut has one boundary, and `lastUnitToKeep` is the whole rule for it: a cut AFTER an
+ * index is unsafe exactly when that index holds a high surrogate and the next holds its low half.
+ * Keeping a TAIL adds a second boundary, and it is the mirror image: a cut BEFORE an index is unsafe
+ * exactly when that index holds a LOW surrogate and the PRECEDING one holds its high half -- the
+ * pair would otherwise be split with the high half discarded and the low half kept, which is a
+ * different malformed string but an equally real one.
+ *
+ * Backs off by moving the start FORWARD, i.e. by shrinking the tail, for the same reason
+ * `lastUnitToKeep` only ever shrinks the head: a truncation is a promise to fit within `budget`, and
+ * growing the kept region to preserve a pair would break that promise by one unit. The pair is
+ * dropped in its entirety rather than split, which is the same choice `lastUnitToKeep` makes.
+ */
+function firstUnitToKeepFromEnd(text: string, budget: number): number {
+  const start = Math.max(0, text.length - Math.max(0, budget));
+  if (
+    start >= 1 &&
+    start < text.length &&
+    isLowSurrogate(text.charCodeAt(start)) &&
+    isHighSurrogate(text.charCodeAt(start - 1))
+  ) {
+    return start + 1;
+  }
+  return start;
+}
+
+/**
+ * Elide the middle of `text` rather than the end, keeping both a head and a tail, when there is
+ * room for both (`asc-i36`).
+ *
+ * **WHY THE MIDDLE AND NOT THE END.** This store's ids are a long shared prefix plus a short
+ * discriminating suffix -- `derived:claude-code:verification_run:<run-id>:<tool-use-id>` -- and a
+ * tail-only cut keeps exactly the part every row shares and drops exactly the part that tells them
+ * apart. `asc-i36` measured this against the frozen EV-11 store: `asc explore verification_run
+ * --page --limit 40 --json`, each id rendered the way the table did, produced 40 distinct ids as 6
+ * distinct cells under the old head-only rule. Keeping a tail as well as a head is what a reader
+ * needs to tell rows apart at a glance, without widening the column.
+ *
+ * **THE SPLIT IS EVEN, AND THAT IS A CHOICE RATHER THAN A MEASUREMENT.** Nothing here knows which
+ * half of an arbitrary value is the discriminating one, so there is no principled reason to weight
+ * one side over the other; splitting the elidable budget in half (the head taking the odd unit, so
+ * behaviour at odd widths is deterministic) treats every value the same way regardless of shape.
+ *
+ * **BOTH BOUNDARIES ARE SURROGATE-SAFE, INDEPENDENTLY.** `lastUnitToKeep` guards the head cut exactly
+ * as it always has; `firstUnitToKeepFromEnd` guards the tail cut the same way from its own side. Each
+ * can narrow its half by at most one unit, on its own, so the two adjustments cannot compound into
+ * more than a two-unit narrowing of the whole cell -- and the overlap guard below covers the case
+ * where a budget too small for both halves would make them narrow into or past each other.
+ *
+ * **NEITHER BOUNDARY IS GRAPHEME-CLUSTER-SAFE, and this does not change that.** `asc-bcv.23` is the
+ * open, unrelated decision about a cut landing INSIDE a valid cluster -- a combining mark, a ZWJ
+ * sequence, a flag -- rather than through a surrogate pair: the bytes stay valid, but the cell can
+ * show a different character than the value holds. This function does not resolve that ticket, and
+ * does not need to: it reuses `lastUnitToKeep`'s existing surrogate guard unchanged at the head and
+ * adds only its mirror at the tail, so the class of defect asc-bcv.23 describes is exactly as
+ * possible here as it was before this change, at whichever boundary a cluster happens to sit on --
+ * there are now two such boundaries instead of one, not zero. `asc-bcv.23` still needs its own design
+ * decision (which boundary rule to use, and whether the width budget may be exceeded) independent of
+ * this function's head/tail split.
+ */
+function truncateCell(text: string, maxCellWidth: number): string {
+  const budget = Math.max(0, maxCellWidth - 1); // one unit reserved for the ellipsis itself
+  if (budget === 0) return '…';
+
+  const headBudget = Math.ceil(budget / 2);
+  const tailBudget = budget - headBudget;
+
+  const headEnd = lastUnitToKeep(text, headBudget);
+  const tailStart = tailBudget === 0 ? text.length : firstUnitToKeepFromEnd(text, tailBudget);
+
+  // A budget too small to hold both a head and a tail without them meeting or crossing -- reachable
+  // only at very small `maxCellWidth`, where a surrogate-safety backoff on one or both sides can
+  // erase the gap between them. Falling back to a head-only cut is the same rule `lastUnitToKeep`
+  // already applies on its own, so a narrow column degrades to the old behaviour rather than to
+  // reordered or duplicated content.
+  if (tailStart <= headEnd) {
+    return `${text.slice(0, lastUnitToKeep(text, budget))}…`;
+  }
+
+  return `${text.slice(0, headEnd)}…${text.slice(tailStart)}`;
+}
+
 /** What a value looks like in a table or a CSV cell. */
 function cellText(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -560,7 +649,7 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
       // the one a human reads with the other two available beside it.
       const text = cellText(row[column]).replace(/\s+/g, ' ').trim();
       if (text.length <= maxCellWidth) return text;
-      return `${text.slice(0, lastUnitToKeep(text, maxCellWidth - 1))}…`;
+      return truncateCell(text, maxCellWidth);
     }),
   );
 
@@ -650,34 +739,67 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
  * the last record is a row with the wrong number of fields in it. The `--json` envelope is where
  * a script reads `coverage`, and `--csv` is not the format a consumer asks for a proportion in.
  *
- * Quote a CSV field per RFC 4180 when it needs it.
+ * Quote a CSV field per RFC 4180 when it needs it, and neutralise a leading formula trigger.
  *
  * `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` are on repo-wide, but this
  * function is deliberately regex-and-string only: a CSV writer with a state machine is
  * how a quoting bug gets in.
  *
- * **RFC 4180 QUOTING ONLY -- NOT SPREADSHEET FORMULA NEUTRALISATION, AND THAT IS DECLINED RATHER
- * THAN OVERLOOKED (`asc-7mv`).** A cell beginning `=`, `+`, `-` or `@` can be evaluated as a formula
- * by a spreadsheet application that opens this file with default settings -- Excel and Sheets both
- * decide from the cell's leading character, not from whether the CSV field was quoted, so wrapping
- * such a field in quotes (the other folklore fix) would not neutralise anything here even if this
- * function did it. The fix that does work -- prefixing the cell with a leading `'` -- was considered
- * and rejected, because it does not distinguish an injected formula from the far more common cells
- * that legitimately start with one of those four characters: a negative number, a `+`-prefixed
- * identifier, an `@`-handle, free text that opens with a hyphen. `--csv`'s stated reader, two
- * comments up, is a Unix pipeline that parses `-5` back as the number it is; silently rewriting that
- * cell to `'-5` on every row of every numeric column that can go negative would break the common,
- * legitimate case to guard a threat this project does not itself create. The threat model, stated
- * rather than waved at: nothing in `ascend` ever evaluates a formula, so this is not code execution
- * in the CLI -- it requires untrusted text to reach a stored field, a human to export it with
- * `--csv`, AND that human's spreadsheet application to run with default formula evaluation still on.
- * All three have to line up. A caller who is going to open `--csv` output in a spreadsheet they do
- * not fully trust the contents of should sanitise on the way in (or use `--json`, which no
- * spreadsheet auto-evaluates); this function is not the layer that should be silently rewriting
- * their data to compensate.
+ * **THE DECISION REVERSED (`asc-7mv`).** This function used to apply RFC 4180 quoting only, on the
+ * argument that a leading `'` cannot tell an injected formula from the far more common cell that
+ * legitimately starts with `=`, `+`, `-` or `@` -- a negative number chief among them -- and that
+ * rewriting the common case to guard a threat `ascend` does not itself create was the wrong trade.
+ * That argument is still correct about the threat model: nothing here evaluates a formula, so this
+ * is hardening against a spreadsheet application's default behaviour, not a vulnerability in the
+ * CLI. It was wrong about the cost, because the negative-number case -- the one legitimate case that
+ * actually matters here -- can be told apart from an injected formula by trying to parse the cell as
+ * a number: `-5` is exempted below because it IS one, and `=CMD(bad)` is neutralised because it is
+ * not. That test is what makes the mitigation affordable, and it is also its entire cost: a cell
+ * that starts with one of the trigger characters and is NOT a bare finite number -- a `+`-prefixed
+ * identifier, an `@`-handle, free text that opens with a hyphen -- now gets a leading `'` it did not
+ * have before, which changes the bytes a Unix pipeline reads back. `--csv`'s stated contract is that
+ * those bytes are unchanged, so `--csv-raw` (below) is what keeps that contract for a caller who
+ * needs it; the default now favours the caller who opens the file in a spreadsheet, since that
+ * caller had no way to opt in to safety at all, while the pipeline caller can opt out of this one.
+ *
+ * **THE EXEMPTION, EXACTLY.** A field is left untouched, even when it starts with a trigger
+ * character, when the WHOLE field parses as a finite number (`Number(text)` is finite) -- `-3.14`,
+ * `+5`, `-0` and `1e6` all qualify. The empty string is excluded from that test by hand:
+ * `Number('')` is `0` in JavaScript, and an empty field is not a number, it is nothing. A field that
+ * is only a trigger character with nothing after it -- `-`, `+`, `=` alone -- is therefore NOT
+ * exempt (`Number('-')` etc. are all `NaN`) and gets neutralised like any other non-numeric trigger
+ * cell.
  */
-function csvField(value: unknown): string {
-  const text = cellText(value);
+const FORMULA_TRIGGERS = new Set(['=', '+', '-', '@', '\t', '\r']);
+
+/** Whether `text`, taken as a whole, is a number a formula-safe cell is allowed to pass through. */
+function isFiniteNumericField(text: string): boolean {
+  // `Number('')` is `0`, which would otherwise exempt the empty field from a check it never
+  // triggers a need for anyway (an empty string has no leading character to match `FORMULA_TRIGGERS`
+  // in the first place) -- excluded explicitly so this function is correct on its own, not only in
+  // combination with its one caller.
+  if (text === '') return false;
+  return Number.isFinite(Number(text));
+}
+
+/** Prefix a leading formula-trigger character with `'`, unless the field is a bare finite number. */
+function neutralizeFormulaTrigger(text: string): string {
+  const first = text.charAt(0);
+  if (!FORMULA_TRIGGERS.has(first)) return text;
+  if (isFiniteNumericField(text)) return text;
+  return `'${text}`;
+}
+
+/**
+ * `raw` is `--csv-raw`: skip the neutralisation above and emit the byte-faithful RFC 4180 field, for
+ * a pipeline whose contract with `--csv` (`renderCsv` above) is that the bytes it reads back are
+ * exactly the ones a stored value holds. Quoting still applies either way -- it is orthogonal to the
+ * formula rule, not a substitute for it, since a spreadsheet reads the leading character regardless
+ * of whether the field around it is quoted.
+ */
+function csvField(value: unknown, raw: boolean): string {
+  const cell = cellText(value);
+  const text = raw ? cell : neutralizeFormulaTrigger(cell);
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
@@ -689,20 +811,25 @@ function csvField(value: unknown): string {
  * (a value that compares unequal to itself, a filename that does not resolve) than a
  * non-conforming terminator is of a rejected file.
  */
-export function renderCsv(output: Output): string {
-  const head = output.columns.map(csvField).join(',');
+export function renderCsv(output: Output, raw = false): string {
+  const head = output.columns.map((column) => csvField(column, raw)).join(',');
   const body = output.rows.map((row) =>
-    output.columns.map((column) => csvField(row[column])).join(','),
+    output.columns.map((column) => csvField(row[column], raw)).join(','),
   );
   return [head, ...body].join('\n');
 }
 
-export function render(format: OutputFormat, output: Output): string {
+/**
+ * `csvRaw` only changes anything for `format === 'csv'`; `json` and `table` never neutralise a
+ * leading character, so passing it for those formats is inert rather than a silent no-op that could
+ * mislead a caller -- there is nothing for it to do.
+ */
+export function render(format: OutputFormat, output: Output, csvRaw = false): string {
   switch (format) {
     case 'json':
       return renderJson(output);
     case 'csv':
-      return renderCsv(output);
+      return renderCsv(output, csvRaw);
     case 'table':
       return renderTable(output);
   }

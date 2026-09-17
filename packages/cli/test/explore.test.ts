@@ -270,12 +270,23 @@ describe('asc explore: the map', () => {
     expect(find(list, 'recorded_at_min')).toBeUndefined();
     expect(find(list, 'recorded_at_max')).toBeUndefined();
     // Every property is still reported, at zero -- a registered type with no entries is a real
-    // profile, and the difference between it and an unregistered name is the whole point.
+    // profile, and the difference between it and an unregistered name is the whole point. Each
+    // property's summary row is followed by its four state rows (`asc-cbk`), so this asserts the
+    // full sequence rather than only the summary rows -- a regression that dropped a state row
+    // would otherwise pass a check that only counted 'property.<name>' rows.
+    const stateFields = (name: string): readonly string[] =>
+      ['measured', 'not_applicable', 'not_measured', 'not_declared'].map(
+        (state) => `property.${name}.${state}`,
+      );
     expect(fields(list, 'property.')).toStrictEqual([
       'property.at',
+      ...stateFields('at'),
       'property.count',
+      ...stateFields('count'),
       'property.note',
+      ...stateFields('note'),
       'property.outcome',
+      ...stateFields('outcome'),
     ]);
     expect(property(list, 'outcome').values).toBe('no value measured');
     // Nor is a version row invented for a version that has recorded nothing.
@@ -630,5 +641,94 @@ describe('asc explore: the surfaces every command owes', () => {
     expect(run.stdout).toBe('');
     // The fix is in the message: the argument is missing, and that is what exit 2 is reporting.
     expect(flatten(run.stderr)).toContain('Missing 1 required arg: type');
+  });
+});
+
+/**
+ * `asc-cbk` -- the default table's own per-property tally can no longer collapse two of the four
+ * states behind an ellipsis, because every state is now also its own short row. This is asserted
+ * through the TABLE specifically, since `--json` never truncated the states in the first place;
+ * the defect was only ever visible in the human-readable view.
+ *
+ * NOT EXECUTED BY THE AGENT THAT WROTE IT: this file drives a `tsc -b` build in `beforeAll`, and
+ * doing so while another agent's concurrent build is in flight in the same tree corrupts both
+ * (shared `dist/`, shared `.tsbuildinfo`). Written against the shape `propertyRow` and
+ * `propertyStateRows` (`explore.ts`) actually produce; not run end to end.
+ */
+describe('asc explore: every property state reaches the default table (asc-cbk)', () => {
+  it('names all four states as their own rows, even when the combined line would truncate', () => {
+    const dir = emptyProject();
+    // One entry per state combination is enough for `states` to be non-degenerate; the point is
+    // that every one of the four names appears in the DEFAULT table, not the exact counts.
+    expect(
+      asc(['record', SPEC.name, '--prop', 'count=1', '--prop', 'outcome=ok'], dir).status,
+    ).toBe(0);
+    expect(asc(['record', SPEC.name, '--prop', 'count=2'], dir).status).toBe(0);
+
+    const table = asc(['explore', SPEC.name], dir).stdout;
+
+    for (const state of ['measured', 'not_applicable', 'not_measured', 'not_declared']) {
+      expect(table).toContain(`property.outcome.${state}`);
+    }
+    // Additive, not a replacement: the combined summary row is still there too.
+    expect(table).toContain('property.outcome');
+  });
+});
+
+/**
+ * `asc-i36` -- the default table's cell elision now keeps a head AND a tail, so two long values
+ * that share a prefix and differ only in their tail no longer render to one indistinguishable cell.
+ *
+ * NOT EXECUTED, for the same reason as the block above.
+ */
+describe('asc explore --page: distinct long values render to distinct cells (asc-i36)', () => {
+  it('tells apart two evidence_text values that share a 60+ character prefix', () => {
+    const dir = emptyProject();
+    // `evidence_text` is a dedicated top-level column (unlike `--prop`, which nests under
+    // `properties` and would be JSON-wrapped), so this is exact control over what one cell holds.
+    const prefix = 'shared-prefix-segment-'.repeat(4); // well past MAX_CELL_WIDTH on its own
+    expect(
+      asc(['record', SPEC.name, '--prop', 'count=1', '--evidence', `${prefix}AAAA`], dir).status,
+    ).toBe(0);
+    expect(
+      asc(['record', SPEC.name, '--prop', 'count=1', '--evidence', `${prefix}BBBB`], dir).status,
+    ).toBe(0);
+
+    const table = asc(['explore', SPEC.name, '--page'], dir).stdout;
+    const cutLines = table.split('\n').filter((line) => line.includes('…'));
+
+    // Both rows must render to DIFFERENT lines: under the old head-only rule both would have cut
+    // to the identical 60-character prefix, which is the exact collision this bead fixes.
+    expect(cutLines.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(cutLines).size).toBe(cutLines.length);
+    // The discriminating suffix survives the cut, on at least one of the two rendered lines.
+    expect(cutLines.some((line) => line.includes('AAAA'))).toBe(true);
+    expect(cutLines.some((line) => line.includes('BBBB'))).toBe(true);
+  });
+});
+
+/**
+ * `asc-7mv` -- `--csv-raw` end to end through `explore.ts`'s budgeted render path, which threads
+ * the flag independently of `emit` (`this.csvRaw()` is read once in `run()` and passed to every
+ * direct `render(format, ...)` call). Proves the two call sites cannot disagree about the flag.
+ *
+ * NOT EXECUTED, for the same reason as the two blocks above.
+ */
+describe('asc explore --page --csv: --csv-raw opts out of formula neutralisation (asc-7mv)', () => {
+  it('prefixes a leading = by default, and does not when --csv-raw is passed', () => {
+    const dir = emptyProject();
+    // `evidence_text` again, for the same reason as the `asc-i36` block: a top-level column
+    // whose CSV field is exactly this string, not a JSON-wrapped one starting with `{`.
+    expect(
+      asc(['record', SPEC.name, '--prop', 'count=1', '--evidence', '=CMD(bad)'], dir).status,
+    ).toBe(0);
+
+    const guarded = asc(['explore', SPEC.name, '--page', '--csv'], dir).stdout;
+    expect(guarded).toContain("'=CMD(bad)");
+    expect(guarded).not.toContain('\n=CMD(bad)');
+
+    const raw = asc(['explore', SPEC.name, '--page', '--csv', '--csv-raw'], dir).stdout;
+    expect(raw).not.toContain("'=CMD(bad)");
+    expect(raw).toContain('=CMD(bad)');
   });
 });

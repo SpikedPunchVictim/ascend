@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  LedgerMismatchError,
   MIGRATIONS,
   NewerSchemaError,
   PragmaError,
   SCHEMA_VERSION,
+  STORE_FILE,
   migrate,
   openStore,
   userVersion,
@@ -87,6 +89,7 @@ describe('migration', () => {
         version: 2,
         name: 'deliberately broken',
         sql: 'CREATE TABLE half_applied (x TEXT); THIS IS NOT SQL;',
+        marker: 'half_applied',
       },
     ];
 
@@ -117,12 +120,99 @@ describe('migration', () => {
         version: 2,
         name: 'closes its own transaction before failing',
         sql: 'ROLLBACK; SELECT no_such_column;',
+        marker: 'never_created',
       },
     ];
 
     expect(() => migrate(db, broken)).toThrow(/migration 2 .* no_such_column/);
     // And not the masking error the unconditional ROLLBACK used to produce.
     expect(() => migrate(db, broken)).not.toThrow(/no transaction is active/);
+    db.close();
+  });
+
+  it('refuses with a repair command instead of failing on the DDL when the ledger is reset (asc-u11)', () => {
+    // The bead's own reproduction: a store whose user_version was reset to 0 by something other
+    // than ascend (a backup that did not carry the pragma, a copy that rewrote the header). Before
+    // this fix, the file was permanently unopenable -- migrate would run migration 1's DDL against
+    // tables that already exist, fail with SQLite's own "entry_types already exists", and every
+    // later command would hit the exact same failure because nothing about running it again
+    // changes the wrong ledger.
+    const dir = tempDir();
+    const store = openStore({ dir });
+    register(store.db);
+    insertEntry(store.db, 'e1');
+    store.db.exec('PRAGMA user_version = 0');
+    store.close();
+
+    let caught: unknown;
+    try {
+      openStore({ dir });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(LedgerMismatchError);
+    const err = caught as LedgerMismatchError;
+    expect(err.ledgerVersion).toBe(0);
+    expect(err.inferredVersion).toBe(SCHEMA_VERSION);
+    const dbFile = join(dir, STORE_FILE);
+    expect(err.message).toContain(dbFile);
+    expect(err.message).toContain(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
+
+    // The refusal touched nothing: the file's content and its (wrong) ledger are exactly as they
+    // were before the failed open -- not a "fix" of its own, and not further damage either.
+    const verify = new DatabaseSync(dbFile);
+    try {
+      expect(userVersion(verify)).toBe(0);
+      expect(verify.prepare('SELECT COUNT(*) AS n FROM entries').get()?.['n']).toBe(1);
+    } finally {
+      verify.close();
+    }
+
+    // The repair path this error names, run literally: one PRAGMA write, through a tool ascend
+    // never invokes on the operator's behalf, so it cannot happen except on purpose.
+    const repair = new DatabaseSync(dbFile);
+    repair.exec(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
+    repair.close();
+
+    const repaired = openStore({ dir });
+    try {
+      expect(userVersion(repaired.db)).toBe(SCHEMA_VERSION);
+      expect(repaired.migrations.applied).toEqual([]);
+      expect(repaired.db.prepare("SELECT id FROM entries WHERE id = 'e1'").get()).toBeDefined();
+    } finally {
+      repaired.close();
+    }
+  });
+
+  it('names the correct target when the ledger understates by more than one migration', () => {
+    const dir = tempDir();
+    const store = openStore({ dir });
+    store.db.exec('PRAGMA user_version = 1');
+    store.close();
+
+    let caught: unknown;
+    try {
+      openStore({ dir });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(LedgerMismatchError);
+    const err = caught as LedgerMismatchError;
+    expect(err.ledgerVersion).toBe(1);
+    expect(err.inferredVersion).toBe(SCHEMA_VERSION);
+  });
+
+  it('names the file in the repair command when migrate is given one, and a placeholder otherwise', () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db, MIGRATIONS);
+    db.exec('PRAGMA user_version = 0');
+
+    expect(() => migrate(db, MIGRATIONS, '/example/project/.ascend/ascend.db')).toThrow(
+      'sqlite3 /example/project/.ascend/ascend.db "PRAGMA user_version = 2"',
+    );
+    expect(() => migrate(db, MIGRATIONS)).toThrow(/this store's database file/);
     db.close();
   });
 

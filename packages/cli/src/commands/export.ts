@@ -48,10 +48,15 @@ export default class ExportCorpus extends BaseCommand {
     '<%= config.bin %> <%= command.id %> --json',
   ];
 
-  /** The same override, and the same reasoning, as `asc types export` -- see that file. */
+  /**
+   * The same override, and the same reasoning, as `asc types export` -- see that file. `csv-raw`
+   * is hidden alongside `csv` for the same reason: it only qualifies a format this command
+   * refuses, so advertising it in `--help` would offer a flag that cannot be honoured here.
+   */
   static override baseFlags = {
     ...OUTPUT_FLAGS,
     csv: Flags.boolean({ description: 'Print RFC 4180 CSV.', hidden: true }),
+    'csv-raw': Flags.boolean({ ...OUTPUT_FLAGS['csv-raw'], hidden: true }),
   };
 
   public async run(): Promise<void> {

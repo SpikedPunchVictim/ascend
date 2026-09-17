@@ -27,6 +27,7 @@ import {
   detachStore,
   foldDatabaseName,
   DuplicateProjectError,
+  requireStore,
   sqlitePrimaryCode,
   STORE_DIR,
   STORE_FILE,
@@ -523,6 +524,16 @@ export default class Query extends BaseCommand {
         }
 
         seen.set(attachment.file, target.label);
+
+        // asc-4og: checked here, right after the attach, rather than left for the caller's own SQL
+        // to discover. A foreign project named directly (`SELECT ... FROM f.entries`) never goes
+        // through the union's `readProject`, so without this it reached SQLite's own `no such
+        // table: f.entries` -- true, but naming ascend's schema instead of the actual problem, and
+        // inconsistent with `asc query --across` on the union path, which already refuses the same
+        // project with `NotAnAscendStoreError`. Shared with the union rather than duplicated, so
+        // the two cannot drift into refusing differently again.
+        requireStore(handle, alias, target);
+
         taken.add(foldDatabaseName(alias));
         attachments.push(attachment);
         this.warn(`${target.label} attached as '${alias}'`);

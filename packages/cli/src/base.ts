@@ -50,6 +50,18 @@ export const OUTPUT_FLAGS = {
   }),
   table: Flags.boolean({ description: 'Print an aligned table (the default).' }),
   csv: Flags.boolean({ description: 'Print RFC 4180 CSV.' }),
+  /**
+   * `asc-7mv`. `--csv` neutralises a leading `=`, `+`, `-`, `@`, tab or CR by prefixing it with `'`,
+   * unless the whole field is a finite number -- see `output.ts`'s `csvField`. That changes the
+   * bytes a non-spreadsheet consumer reads back, which is the one thing `--csv`'s pipeline contract
+   * promises not to do, so this is the escape hatch: byte-faithful RFC 4180, no neutralisation, for
+   * a caller who is not opening the file in a spreadsheet and needs the original bytes.
+   */
+  'csv-raw': Flags.boolean({
+    description:
+      'With --csv, skip the leading-character safeguard against spreadsheet formula injection ' +
+      'and emit the field exactly. For a pipeline that needs the original bytes back.',
+  }),
   debug: Flags.boolean({
     description: 'Include stack traces and internal detail when something fails.',
   }),
@@ -87,9 +99,22 @@ export abstract class BaseCommand extends Command {
     return requested[0] ?? 'table';
   }
 
+  /**
+   * Whether `--csv-raw` was passed.
+   *
+   * Read from argv rather than from `this.parse()`'s flags, so `emit` can honour the flag without
+   * every command that already calls `emit` -- there are more than a dozen -- being changed to
+   * thread a flag it otherwise never touches. `explore.ts`'s budgeted renders, which build a `--csv`
+   * string directly rather than through `emit`, call this too, so the two paths cannot disagree
+   * about what the flag meant on a given invocation.
+   */
+  protected csvRaw(): boolean {
+    return this.argv.includes('--csv-raw');
+  }
+
   /** Write a result to stdout in the requested format. */
   protected emit(format: OutputFormat, output: Output): void {
-    this.emitText(render(format, output));
+    this.emitText(render(format, output, this.csvRaw()));
   }
 
   /**

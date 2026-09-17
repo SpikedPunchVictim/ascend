@@ -72,14 +72,25 @@ export default class TypesExport extends BaseCommand {
    * that explains nothing. `hidden: true` removes the line from help and changes no behaviour:
    * `--csv` still parses, still reaches `resolveFormat`, and still gets that refusal.
    *
+   * **`--csv-raw` is hidden alongside it, for the same reason `asc-7mv` gave it its own flag: it
+   * has no meaning except as a modifier of `--csv`.** A caller reading this command's `--help`
+   * must not be offered a flag that only qualifies a format this command refuses -- `asc types
+   * export --csv --csv-raw` fails on the same refusal below either way, so advertising `--csv-raw`
+   * here would be a promise the command cannot keep. It is still accepted (as a harmless no-op,
+   * exactly like passing it to any command that ends up rendering `table` or `json`), just not
+   * advertised. Measured: hiding `csv` alone left `--csv-raw` in `--help`, and `--csv-raw` contains
+   * `--csv` as a substring, which is what made the help-text assertion below fail before this flag
+   * existed at all.
+   *
    * This is the only command that overrides `baseFlags`, and it overrides only the presentation of
-   * one flag. `base.ts` puts the output flags in one place so that format RESOLUTION cannot vary
+   * two flags. `base.ts` puts the output flags in one place so that format RESOLUTION cannot vary
    * between commands -- and it still cannot: this command resolves through `resolveFormat` like
    * every other, and the set of formats it accepts is unchanged.
    */
   static override baseFlags = {
     ...OUTPUT_FLAGS,
     csv: Flags.boolean({ description: 'Print RFC 4180 CSV.', hidden: true }),
+    'csv-raw': Flags.boolean({ ...OUTPUT_FLAGS['csv-raw'], hidden: true }),
   };
 
   static override args = {

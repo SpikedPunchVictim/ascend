@@ -745,7 +745,9 @@ export function openStore(options: OpenOptions): Store {
     const migrations =
       options.migrate === false || readOnly
         ? { from: before, to: before, applied: [] }
-        : migrate(db);
+        : // `file` is passed through so a `LedgerMismatchError` (asc-u11) can name the exact
+          // repair command against the exact path, rather than a placeholder.
+          migrate(db, undefined, file);
 
     if (options.ascendVersion !== undefined && !readOnly) {
       db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run(

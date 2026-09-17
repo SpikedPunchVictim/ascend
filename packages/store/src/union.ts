@@ -493,8 +493,22 @@ function resolvedPath(db: DatabaseSync, name: string): string {
   return row.file;
 }
 
-/** Fail before reading if the attached database is not an ascend store this build can read. */
-function requireStore(db: DatabaseSync, name: string, source: ProjectSource): void {
+/**
+ * Fail before reading if the attached database is not an ascend store this build can read.
+ *
+ * **Exported so `asc query --across` shares this refusal instead of writing a second one**
+ * (asc-4og). The union always called this from `readProject` below, so a query built by
+ * `unionEntries` refused a foreign project with `NotAnAscendStoreError`, naming the missing
+ * table. `--across` runs SQL the caller wrote, which attaches every project up front and never
+ * goes through `readProject` -- so the same foreign project reached a hand-written statement
+ * naming the alias directly (`SELECT ... FROM f.entries`) and failed with SQLite's own `no such
+ * table: f.entries`, which names ascend's schema rather than the fact that the project is not an
+ * ascend store at all. Both paths get an unreadable project reported as an error rather than an
+ * empty result either way (`union.ts`'s file comment on "Treating an unreadable project as
+ * empty"), so this was never a correctness gap -- only which message the caller sees, and now
+ * both call the one function that decides it.
+ */
+export function requireStore(db: DatabaseSync, name: string, source: ProjectSource): void {
   const found = (
     db
       .prepare(

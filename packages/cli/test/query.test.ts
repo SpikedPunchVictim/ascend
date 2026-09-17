@@ -180,15 +180,26 @@ describe('running one statement', () => {
   it('does not corrupt a value it has to truncate, which is a claim about the bytes', () => {
     const dir = project();
     // `char(128512)` is U+1F600, built in SQL so the renderer can be driven with a two-unit
-    // character at an exact offset without writing anything to the store. 58 a's put it at units
-    // 58-59, which is where the 60-unit budget's cut lands, and the trailing b's exist only to
-    // push the value past 60 so that a cut happens at all -- without them the value is exactly 60
-    // units, `> maxCellWidth` is false, and there is nothing to corrupt. That is why the audit's
-    // stated repro did not reproduce through the rendered cell.
+    // character at an exact offset without writing anything to the store.
+    //
+    // The table cut used to have one boundary; it now has two (`truncateCell`, `asc-i36`: a
+    // 60-unit cell keeps a 30-unit HEAD and a 29-unit TAIL around a dropped middle, rather than
+    // only a 59-unit head, because this store's ids are a long shared prefix plus a short
+    // discriminating suffix and a head-only cut kept exactly the part every row shares). That is
+    // a rendering-shape decision, not a safety one: the safety claim this test makes -- a
+    // surrogate pair is never split, so the wire never carries U+FFFD -- still has to hold at
+    // BOTH boundaries, and this drives it through the real binary at the head boundary, which is
+    // where the old single-sided cut used to sit.
+    //
+    // 29 a's put the emoji at units 29-30, exactly where the head's 30-unit budget would slice
+    // through it; the trailing b's push the value past 60 so a cut happens at all. Backing off
+    // the boundary drops the whole character rather than half of it, so the head keeps only the
+    // a's and the tail -- computed from the far end, unaffected by where the emoji sits near the
+    // head -- keeps the last 29 b's.
     const value = (pad: number): string =>
-      `SELECT '${'a'.repeat(pad)}' || char(128512) || '${'b'.repeat(20)}' AS v`;
-    const split = asc(['query', value(58)], dir);
-    const intact = asc(['query', value(57)], dir);
+      `SELECT '${'a'.repeat(pad)}' || char(128512) || '${'b'.repeat(40)}' AS v`;
+    const split = asc(['query', value(29)], dir);
+    const intact = asc(['query', value(28)], dir);
 
     expect(split.status).toBe(0);
     expect(intact.status).toBe(0);
@@ -198,15 +209,17 @@ describe('running one statement', () => {
     // other side: the replacement character can only come from the bytes that were written.
     expect(split.stdout).not.toContain('�');
     // And the half-character is dropped rather than half-written: backing off the high surrogate
-    // takes the whole character with it, so the ellipsis follows the last a.
-    expect(split.stdout.split('\n')[2]).toBe(`${'a'.repeat(58)}…`);
+    // takes the whole character with it, so the head ends at the last a and the tail -- computed
+    // independently from the end of the value -- is unaffected.
+    expect(split.stdout.split('\n')[2]).toBe(`${'a'.repeat(29)}…${'b'.repeat(29)}`);
     // The control is the proof that the assertion above is about the CUT and not about emoji:
-    // one unit earlier and nothing is split, so the character survives intact.
+    // one unit earlier and the emoji fits inside the head's budget without splitting, so it
+    // survives intact (the tail, past it, is still elided -- this value is still over budget).
     expect(intact.stdout).toContain('😀');
     expect(intact.stdout).not.toContain('�');
     // Both views agree about the row; only the table elides (`output.ts`).
-    expect(asc(['query', value(58), '--csv'], dir).stdout).toContain('😀');
-    expect(asc(['query', value(58), '--json'], dir).stdout).toContain('😀');
+    expect(asc(['query', value(29), '--csv'], dir).stdout).toContain('😀');
+    expect(asc(['query', value(29), '--json'], dir).stdout).toContain('😀');
   });
 
   it('refuses two output flags at once', () => {
@@ -601,6 +614,39 @@ describe('--across', () => {
     expect(flatten(result.stderr)).toContain('is not an ascend store');
   });
 
+  it('refuses a foreign project with the union\'s own message, not SQLite\'s raw "no such table" (asc-4og)', () => {
+    // The test above covers a match with no store FILE at all, which `attachStore` itself catches
+    // before ATTACH ever runs. This one has a file -- a real SQLite database, just not one ascend
+    // wrote -- so the ATTACH succeeds and the only thing left to catch it is `requireStore`. Before
+    // this fix, a statement naming the alias directly (rather than reading a TYPE through the union,
+    // which is the only path that called `requireStore`) reached SQLite's own `no such table: f.
+    // entries`, true but naming ascend's schema instead of the actual problem -- and inconsistent
+    // with `asc query --across` on the union's own path, which already refused the identical project
+    // with `NotAnAscendStoreError`. Measured on the real binary, matching the bead's own repro
+    // (a project whose store holds one table named 'mine').
+    const parent = scratch('asc-query-foreign-across-');
+    const foreignDb = join(parent, 'not-ascend', '.ascend', 'ascend.db');
+    mkdirSync(join(parent, 'not-ascend', '.ascend'), { recursive: true });
+    const raw = new DatabaseSync(foreignDb);
+    try {
+      raw.exec('CREATE TABLE mine (id INTEGER PRIMARY KEY)');
+    } finally {
+      raw.close();
+    }
+
+    const result = asc(
+      ['query', 'SELECT count(*) AS n FROM not_ascend.entries', '--across', `${parent}/*`],
+      parent,
+    );
+
+    expect(result.status).toBe(1);
+    const rendered = flatten(result.stderr);
+    expect(rendered).toContain('is not an ascend store');
+    expect(rendered).toContain("it has no 'entries' table");
+    // The bug this closes: SQLite's own wording must not be what the caller sees instead.
+    expect(rendered).not.toContain('no such table');
+  });
+
   it('refuses two paths that are one store, so a union cannot count it twice', () => {
     const { parent, members } = neighbourhood(1);
     const [first] = members as [string];
@@ -769,11 +815,26 @@ describe('a reader that goes away', () => {
    * was installed -- measured, `@oclif/core` installs an equivalent EPIPE handler on stdout when
    * `lib/command.js` loads, so removing ascend's changes nothing observable here. That is recorded
    * rather than papered over; the wiring stays unproven, and `bin.ts` says so.
+   *
+   * **The row count is 5,000, not 200,000 (asc-quy).** `render()` builds the WHOLE table as one
+   * string before anything reaches the pipe (`base.ts`'s `emit` -> `emitText` -> `this.log`), so
+   * every row is SQLite CTE work and JS string-building that happens before the write this test
+   * is actually about even starts -- none of it exercises the pipe-close path, it only delays
+   * reaching it. At 200,000 rows that CPU-bound prefix measured 888ms alone and exceeded a 5s
+   * `testTimeout` under the full suite's parallel load (the bead's own measurement, not
+   * reproduced here under this session's build-discipline constraint against a live tree). What
+   * this test needs is only enough output to overflow the 64 KiB pipe buffer so the write blocks
+   * long enough for `child.stdout.destroy()` to land before it finishes on its own -- it does not
+   * need the 200,000-row count that a DIFFERENT concern once needed (see the test below). Measured
+   * directly against `renderTable` (`pnpm vitest run` on a throwaway harness, not the real binary,
+   * so build discipline was not at risk): this exact two-column shape renders to 150,039 bytes at
+   * 5,000 rows and 6,400,043 at 200,000 -- so 5,000 clears the 64 KiB threshold better than 2x over
+   * while cutting the CPU-bound prefix by roughly 40x.
    */
   it('exits 0 with nothing on stderr when the reader closes the pipe', async () => {
     const dir = project();
     const sql =
-      'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 200000) ' +
+      'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 5000) ' +
       "SELECT x, 'padding-padding-padding' AS pad FROM c";
 
     const child = spawn(process.execPath, [bin, 'query', sql], {
@@ -799,6 +860,61 @@ describe('a reader that goes away', () => {
     expect(stderr).toBe('');
     expect(code).toBe(0);
   });
+
+  /**
+   * The regression the old 200,000-row count actually guarded, kept alive on its own now that the
+   * test above no longer carries it (asc-quy).
+   *
+   * `output.ts`'s `renderTable` used to compute each column's width with
+   * `Math.max(column.length, ...rows.map(...))`, spreading one argument per row -- and died with
+   * `Maximum call stack size exceeded` at ~119,726 rows, measured against V8's argument-list limit
+   * of ~124,179 (`output.ts`, "Folded rather than spread"). 200,000 was chosen there specifically
+   * to sit above that limit with margin, and this file's pipe-close test above borrowed the same
+   * number opportunistically -- one row count doing two unrelated jobs, which is what made shrinking
+   * it for the pipe-close case (above) a regression risk rather than a free cut. This test keeps the
+   * >120,000-row case exercised through the real binary without also racing a pipe close: it reads
+   * stdout to completion instead of destroying it, so there is nothing timing-sensitive left to make
+   * flaky.
+   *
+   * The explicit timeout matches this file's other real-process, CPU-heavy test (the attachment
+   * ceiling, above) for the same stated reason: a large recursive CTE plus rendering 200,000 rows is
+   * real, priced work, not a wait on anything external, and the default 5s budget is what asc-quy
+   * was filed about -- tight enough to be load-sensitive rather than wrong to need raising here,
+   * where nothing is being waited OUT rather than computed.
+   */
+  it('renders past the row count that once overflowed a spread argument list, with nothing closing the pipe early', async () => {
+    const dir = project();
+    const sql =
+      'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 200000) ' +
+      "SELECT x, 'padding-padding-padding' AS pad FROM c";
+
+    const child = spawn(process.execPath, [bin, 'query', sql], {
+      cwd: dir,
+      env: env(dir),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const code = await new Promise<number | null>((resolve) => {
+      child.on('close', resolve);
+    });
+
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    // The last row, proof the table rendered all the way through rather than stopping where the
+    // old bug did.
+    expect(stdout).toContain('200000');
+  }, 30_000);
 });
 
 describe('the store file is where the tests say it is', () => {

@@ -335,13 +335,15 @@ describe('asc explore --max-tokens: what it drops, it says it dropped', () => {
 
     const extra = ['--json'];
     // The smallest budget that fits anything at all: it keeps the four header rows and drops the
-    // rest, which is the widest set of named drops this fixture can produce.
+    // rest, which is the widest set of drops this fixture can produce.
     const budget = namedMinimum(dir, extra);
     const run = asc(['explore', SPEC.name, ...extra, '--max-tokens', String(budget)], dir);
     const parsed = expectHonest(run, budget);
 
     // The first four rows are the type, the count, the property count and the version count. A map
-    // that dropped one of those is not a smaller map, so the floor holds and the loss is named.
+    // that dropped one of those is not a smaller map, so the floor holds -- and this is the test's
+    // whole point, unaffected by anything below: `asc-cbk` did not touch what the map IS or how many
+    // of its rows are unconditionally kept.
     expect(parsed.rows.map((row) => row['field'])).toStrictEqual([
       'type',
       'count',
@@ -349,7 +351,19 @@ describe('asc explore --max-tokens: what it drops, it says it dropped', () => {
       'version_count',
     ]);
     expect(parsed.trim?.dropped).toBeGreaterThan(0);
-    expect(parsed.trim?.dropped_keys?.length).toBeGreaterThan(0);
+    // `asc-cbk` gave every property four state rows alongside its own summary row, so this
+    // fixture's two properties, plus its recorded-range pair and its one version, now drop 13 rows
+    // at the floor (measured: `coverage.total` 17 minus the 4-row floor) -- past `MAX_NAMED_DROPS`
+    // (8, `budget.ts`), where the cap stops naming individual rows because the names would cost more
+    // of the budget than the drop just saved. Below the cap, `dropped_keys` is undefined rather than
+    // an empty array (`budget.ts`'s `dropped_keys.length < dropped` signal), and that is itself the
+    // fact worth pinning here: this fixture used to demonstrate the NAMED side of that cap, and
+    // `asc-cbk`'s added rows moved it to the other side. The cap's behaviour on both sides is
+    // already pinned independently of any fixture in `budget.test.ts`, so this test's job is only
+    // the floor's identity, asserted above -- not which side of the naming cap a particular type
+    // profile happens to land on.
+    expect(parsed.trim?.dropped).toBe(13);
+    expect(parsed.trim?.dropped_keys).toBeUndefined();
   });
 
   it('keeps the sample report true when a tight budget re-draws the sample', () => {

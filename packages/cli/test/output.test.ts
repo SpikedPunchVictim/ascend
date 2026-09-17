@@ -72,47 +72,106 @@ const CJK_EXT_B = '\u{20000}'; // also two, and not an emoji -- the class is "ab
 const oldCell = (text: string, maxCellWidth: number): string =>
   text.length > maxCellWidth ? `${text.slice(0, maxCellWidth - 1)}…` : text;
 
+/**
+ * The new rule (`asc-i36`): keep a head AND a tail, split the elidable budget evenly, head taking
+ * the odd unit. This is a plain reference with no surrogate awareness -- correct only for text with
+ * no astral characters near either cut -- so the tests below use it strictly for ASCII content, and
+ * check surrogate safety at each boundary separately.
+ */
+const newCell = (text: string, maxCellWidth: number): string => {
+  if (text.length <= maxCellWidth) return text;
+  const budget = Math.max(0, maxCellWidth - 1);
+  if (budget === 0) return '…';
+  const head = Math.ceil(budget / 2);
+  const tail = budget - head;
+  return tail === 0
+    ? `${text.slice(0, head)}…`
+    : `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
+};
+
+/** The head and tail budgets `truncateCell` computes for `maxCellWidth`, restated for the tests. */
+const budgets = (maxCellWidth: number): { readonly head: number; readonly tail: number } => {
+  const budget = Math.max(0, maxCellWidth - 1);
+  const head = Math.ceil(budget / 2);
+  return { head, tail: budget - head };
+};
+
 describe('the table never cuts a character in half', () => {
-  it('keeps both halves of a surrogate pair that straddles the cut', () => {
-    // 58 a's put the emoji at units 58-59, and the trailing 20 push the value past the
-    // width so a cut happens at all. Without them the value is 60 units and is not cut --
-    // which is exactly how the audit's repro missed the rendered cell.
-    const value = `${'a'.repeat(58)}${EMOJI}${'b'.repeat(20)}`;
+  it('keeps both halves of a surrogate pair straddling the HEAD cut', () => {
+    // `head - 1` a's put the pair's high half at the last unit the head keeps and its low half
+    // one past it -- exactly the straddling condition `lastUnitToKeep` exists to catch.
+    const { head } = budgets(DEFAULT_WIDTH);
+    const value = `${'a'.repeat(head - 1)}${EMOJI}${'b'.repeat(DEFAULT_WIDTH + 20)}`;
     const rendered = cell(value);
 
     expect(unpairedSurrogates(rendered)).toEqual([]);
     expect(encodes(rendered)).toBe(true);
-    expect(rendered).toBe(`${'a'.repeat(58)}…`);
+    // Backs off by exactly one unit: the pair is dropped whole into the elided middle rather
+    // than split, so the kept head is one unit SHORTER than the budget, not the pair kept intact.
+    expect(rendered.startsWith(`${'a'.repeat(head - 1)}…`)).toBe(true);
   });
 
-  it('cuts every offset in the neighbourhood cleanly, not only the reported one', () => {
-    // The bead named one offset. This walks the whole neighbourhood of the cut, because a
-    // fix written against a single offset is a fix that may cover only that offset.
+  it('keeps both halves of a surrogate pair straddling the TAIL cut', () => {
+    // The mirror construction: `tail - 1` b's after the pair put its low half exactly at the
+    // first unit the tail keeps and its high half one before it.
+    const { tail } = budgets(DEFAULT_WIDTH);
+    const value = `${'a'.repeat(DEFAULT_WIDTH + 20)}${EMOJI}${'b'.repeat(Math.max(tail - 1, 0))}`;
+    const rendered = cell(value);
+
+    expect(unpairedSurrogates(rendered)).toEqual([]);
+    expect(encodes(rendered)).toBe(true);
+    expect(rendered.endsWith(`…${'b'.repeat(Math.max(tail - 1, 0))}`)).toBe(true);
+  });
+
+  it('cuts every offset in the neighbourhood of BOTH boundaries cleanly, not only the reported one', () => {
+    // The bead named one offset, for one boundary. This walks the neighbourhood of each boundary
+    // at several widths, because a fix written against a single offset is a fix that may cover
+    // only that offset -- and a head+tail cut has two boundaries to miss.
     const failures: string[] = [];
-    for (let pad = 40; pad <= 70; pad++) {
-      const rendered = cell(`${'a'.repeat(pad)}${EMOJI}${'b'.repeat(20)}`);
-      if (!encodes(rendered))
-        failures.push(`pad=${String(pad)} ${JSON.stringify(rendered.slice(-3))}`);
+    for (const width of [10, 30, DEFAULT_WIDTH, 61, 120]) {
+      const { head, tail } = budgets(width);
+      for (let offset = -3; offset <= 3; offset++) {
+        const headPad = Math.max(0, head - 1 + offset);
+        const headValue = `${'a'.repeat(headPad)}${EMOJI}${'b'.repeat(width + 20)}`;
+        const headRendered = cell(headValue, width);
+        if (!encodes(headRendered) || unpairedSurrogates(headRendered).length > 0) {
+          failures.push(`head width=${String(width)} offset=${String(offset)}`);
+        }
+
+        const tailPad = Math.max(0, tail - 1 + offset);
+        const tailValue = `${'a'.repeat(width + 20)}${EMOJI}${'b'.repeat(tailPad)}`;
+        const tailRendered = cell(tailValue, width);
+        if (!encodes(tailRendered) || unpairedSurrogates(tailRendered).length > 0) {
+          failures.push(`tail width=${String(width)} offset=${String(offset)}`);
+        }
+      }
     }
     expect(failures).toEqual([]);
   });
 
   it('holds for every astral character, not only the emoji the audit happened to use', () => {
     // The mechanism is "a character above U+FFFF is two code units", so the test has to
-    // come from the class rather than from one member of it.
+    // come from the class rather than from one member of it. Checked at both boundaries.
     const astral = [0x1f600, 0x20000, 0x10ffff, 0x1d11e, 0x1f1ef, 0x10000];
+    const { head, tail } = budgets(DEFAULT_WIDTH);
     const failures: string[] = [];
     for (const point of astral) {
-      for (let pad = 57; pad <= 60; pad++) {
-        const rendered = cell(`${'a'.repeat(pad)}${String.fromCodePoint(point)}${'b'.repeat(20)}`);
-        if (!encodes(rendered)) failures.push(`U+${point.toString(16)} pad=${String(pad)}`);
+      const char = String.fromCodePoint(point);
+      for (let offset = -1; offset <= 1; offset++) {
+        const headValue = `${'a'.repeat(Math.max(0, head - 1 + offset))}${char}${'b'.repeat(80)}`;
+        if (!encodes(cell(headValue)))
+          failures.push(`head U+${point.toString(16)} o=${String(offset)}`);
+
+        const tailValue = `${'a'.repeat(80)}${char}${'b'.repeat(Math.max(0, tail - 1 + offset))}`;
+        if (!encodes(cell(tailValue)))
+          failures.push(`tail U+${point.toString(16)} o=${String(offset)}`);
       }
     }
     expect(failures).toEqual([]);
   });
 
   it('survives a value that is nothing but astral characters', () => {
-    // No ASCII anywhere to anchor the cut: several consecutive pairs, so the cut lands
+    // No ASCII anywhere to anchor either cut: several consecutive pairs, so both cuts land
     // inside the sequence rather than at either edge of it.
     const failures: string[] = [];
     for (let n = 1; n <= 40; n++) {
@@ -138,11 +197,36 @@ describe('the table never cuts a character in half', () => {
   });
 });
 
-describe('the cut changed nothing except the defect', () => {
-  it('renders every non-astral value exactly as the old rule did', () => {
-    // The strongest available statement that this fix did not quietly re-width the table.
-    // A corpus of ASCII-only values, each rendered at several widths, compared byte for
-    // byte against the rule the fix replaced.
+/**
+ * `asc-i36` deliberately changed WHAT is elided (a head-only cut became a head+tail cut), so this
+ * block no longer compares against `oldCell` for every width -- it does that only at the widths
+ * where the two rules agree by construction (no room for a tail), and against `newCell` -- the
+ * documented new rule -- everywhere else. The width and the ellipsis-marks-a-cut contract are
+ * exactly what did NOT change, and that is what the rest of this block asserts.
+ */
+describe('the cut changed nothing except which side is elided', () => {
+  it('matches the old rule exactly at widths with no room for a tail', () => {
+    // Budget `maxCellWidth - 1` below 2 leaves nothing for a tail (`tail === 0`), so
+    // `truncateCell` degenerates to the same head-only cut the old rule always was.
+    const corpus = ['short', 'x'.repeat(DEFAULT_WIDTH), 'no astral here but long enough'];
+    const differences: string[] = [];
+    for (const value of corpus) {
+      for (const width of [1, 2]) {
+        const flattened = value.replace(/\s+/g, ' ').trim();
+        const expected = oldCell(flattened, width);
+        const actual = cell(value, width);
+        if (actual !== expected)
+          differences.push(`${JSON.stringify(value.slice(0, 12))} w=${String(width)}`);
+      }
+    }
+    expect(differences).toEqual([]);
+  });
+
+  it('matches the documented new rule exactly, for every ASCII-only value', () => {
+    // The strongest available statement that the implementation does what `truncateCell`'s
+    // comment says: a corpus of ASCII-only values (so `newCell`'s lack of surrogate awareness
+    // cannot matter), each rendered at several widths, compared byte for byte against the plain
+    // reference split.
     const corpus = [
       '',
       'short',
@@ -155,9 +239,9 @@ describe('the cut changed nothing except the defect', () => {
     ];
     const differences: string[] = [];
     for (const value of corpus) {
-      for (const width of [1, 2, 10, DEFAULT_WIDTH, 120]) {
+      for (const width of [1, 2, 3, 10, DEFAULT_WIDTH, 120]) {
         const flattened = value.replace(/\s+/g, ' ').trim();
-        const expected = oldCell(flattened, width);
+        const expected = newCell(flattened, width);
         const actual = cell(value, width);
         if (actual !== expected)
           differences.push(`${JSON.stringify(value.slice(0, 12))} w=${String(width)}`);
@@ -166,9 +250,11 @@ describe('the cut changed nothing except the defect', () => {
     expect(differences).toEqual([]);
   });
 
-  it('still marks a truncation with the ellipsis, so a prefix is never passed off as a value', () => {
+  it('still marks a cut with the ellipsis, so a prefix is never passed off as a value', () => {
+    // The ellipsis now sits BETWEEN the head and the tail rather than at the end -- `includes`,
+    // not `endsWith`, is the correct assertion once a value has a tail to end with instead.
     const rendered = cell('y'.repeat(200));
-    expect(rendered.endsWith('…')).toBe(true);
+    expect(rendered).toContain('…');
     expect(rendered.length).toBe(DEFAULT_WIDTH);
   });
 
@@ -180,14 +266,53 @@ describe('the cut changed nothing except the defect', () => {
   });
 });
 
+/**
+ * `asc-i36`'s own motivating case, reproduced without a store: two ids with a long shared prefix
+ * and a short discriminating suffix, which the old head-only rule rendered identically.
+ */
+describe('a head+tail cut tells apart what a head-only cut could not (asc-i36)', () => {
+  const idA =
+    'derived:claude-code:verification_run:09054587-df6b-4091-8698-8ba05bcd6636:toolu_015cLxDpX8GQSi3CtuKSnzYi';
+  const idB =
+    'derived:claude-code:verification_run:09054587-df6b-4091-8698-8ba05bcd6636:toolu_019LZNEkMTxbkGfaySaFv6ke';
+
+  it('collided under the old head-only rule -- the defect this bead fixes, pinned as a fact', () => {
+    expect(idA).not.toBe(idB);
+    expect(oldCell(idA, DEFAULT_WIDTH)).toBe(oldCell(idB, DEFAULT_WIDTH));
+  });
+
+  it('renders the two ids to two distinct cells under the new rule', () => {
+    const renderedA = cell(idA);
+    const renderedB = cell(idB);
+    expect(renderedA).not.toBe(renderedB);
+    expect(renderedA).toContain('…');
+    expect(renderedB).toContain('…');
+    // Both the shared prefix and each id's own discriminating suffix survive the cut.
+    expect(renderedA.startsWith('derived:claude-code:')).toBe(true);
+    expect(renderedA.endsWith(idA.slice(-10))).toBe(true);
+    expect(renderedB.endsWith(idB.slice(-10))).toBe(true);
+  });
+});
+
 describe('a malformed value already in the input is carried, not hidden', () => {
   it('passes through an unpaired surrogate the caller supplied', () => {
     // Deliberately NOT sanitised. A lone surrogate in a stored value is a defect about the
     // write path; `--json` escapes it, `--csv` carries it verbatim, and a table that
     // silently rewrote it would make the three views disagree about the same row. The
     // claim this fix makes is the narrow one: truncation never CREATES one.
-    const malformed = `${'a'.repeat(58)}\uD83D${'b'.repeat(20)}`;
-    expect(unpairedSurrogates(cell(malformed))).toEqual([58]);
+    //
+    // Placed as the very first unit, so it lands inside the kept HEAD regardless of exactly
+    // where the head/tail split falls -- the expected position does not depend on that split.
+    const malformed = `\uD83D${'a'.repeat(70)}`;
+    expect(unpairedSurrogates(cell(malformed))).toEqual([0]);
+  });
+
+  it('passes through an unpaired surrogate the caller supplied, in the TAIL', () => {
+    // The mirror case: a lone low surrogate as the very last unit lands inside the kept tail
+    // regardless of the split, since the tail always ends where the value does.
+    const malformed = `${'a'.repeat(70)}\uDC00`;
+    const rendered = cell(malformed);
+    expect(unpairedSurrogates(rendered)).toEqual([rendered.length - 1]);
   });
 });
 
@@ -206,30 +331,68 @@ describe('the version a consumer branches on', () => {
 });
 
 /**
- * `asc-7mv` -- CSV formula injection was reviewed, not overlooked. `csvField`'s comment
- * (`packages/cli/src/output.ts`) records why a leading `=`/`+`/`-`/`@` is carried verbatim rather
- * than neutralised: the conventional fix cannot tell an injected formula from an ordinary negative
- * number or `@`-handle, and `--csv`'s own contract is a Unix pipeline reading its bytes back
- * unchanged. This test pins the documented behaviour so a future change to `csvField` has to update
- * the comment deliberately rather than by drifting past it.
+ * `asc-7mv` -- CSV formula injection, mitigated. `csvField`'s comment (`packages/cli/src/output.ts`)
+ * records the reversal: a leading `=`/`+`/`-`/`@`/tab/CR now gets a leading `'`, UNLESS the whole
+ * field parses as a finite number -- which is what keeps an ordinary negative number readable while
+ * still catching an injected formula. `--csv-raw` is the escape hatch for a caller who needs the
+ * original bytes back regardless. This test pins the new behaviour so a future change to `csvField`
+ * has to update it deliberately rather than by drifting past it.
  */
-describe('CSV carries a leading formula-trigger character verbatim -- a decision, not a gap', () => {
-  it('does not prefix or otherwise alter a cell starting with =, +, - or @', () => {
+describe('CSV neutralises a leading formula-trigger character, except a bare finite number (asc-7mv)', () => {
+  it('prefixes a leading =, +, - or @ with a single quote', () => {
+    const output = {
+      columns: ['v'],
+      rows: [{ v: '=CMD(bad)' }, { v: '+mention' }, { v: '-danger' }, { v: '@handle' }],
+    };
+
+    const lines = renderCsv(output).split('\n');
+    expect(lines).toStrictEqual(['v', "'=CMD(bad)", "'+mention", "'-danger", "'@handle"]);
+  });
+
+  it('leaves a bare finite number untouched, however it is written', () => {
+    // This exemption is the whole reason the mitigation is affordable: a negative number is
+    // ordinary output from this CLI, and `-3.14` must read back as the number it is.
+    const output = {
+      columns: ['v'],
+      rows: [{ v: '-3.14' }, { v: '+5' }, { v: '-0' }, { v: '1e6' }],
+    };
+    const lines = renderCsv(output).split('\n');
+    expect(lines).toStrictEqual(['v', '-3.14', '+5', '-0', '1e6']);
+  });
+
+  it('treats a bare trigger character with nothing after it as text, not a number', () => {
+    // `Number('-')`, `Number('+')` and `Number('=')` are all `NaN` -- none of these is the numeric
+    // exemption, so each is neutralised like any other non-numeric trigger cell.
+    const output = { columns: ['v'], rows: [{ v: '-' }, { v: '+' }, { v: '=' }] };
+    const lines = renderCsv(output).split('\n');
+    expect(lines).toStrictEqual(['v', "'-", "'+", "'="]);
+  });
+
+  it("leaves an empty field empty -- Number('') is 0 in JavaScript, which is not this field", () => {
+    const output = { columns: ['v'], rows: [{ v: '' }] };
+    expect(renderCsv(output)).toBe('v\n');
+  });
+
+  it('still quotes a neutralised cell per RFC 4180 when it also needs it', () => {
+    // A comma forces quoting regardless of the leading character -- the two rules are independent,
+    // and this proves the quoting rule did not change just because the neutralisation rule did.
+    const output = { columns: ['v'], rows: [{ v: '=A,B' }] };
+    expect(renderCsv(output)).toBe('v\n"\'=A,B"');
+  });
+
+  it('--csv-raw skips neutralisation and emits the byte-faithful RFC 4180 field', () => {
     const output = {
       columns: ['v'],
       rows: [{ v: '=CMD(bad)' }, { v: '+1' }, { v: '-5' }, { v: '@mention' }],
     };
 
-    const lines = renderCsv(output).split('\n');
+    const lines = renderCsv(output, true).split('\n');
     expect(lines).toStrictEqual(['v', '=CMD(bad)', '+1', '-5', '@mention']);
   });
 
-  it('still quotes those same cells per RFC 4180 when they also need it', () => {
-    // A comma forces quoting regardless of the leading character -- the two rules are independent,
-    // and this is what proves this function did not silently start treating the leading character
-    // as a reason to quote (which would be the first step toward the neutralisation it declines).
+  it('--csv-raw still quotes per RFC 4180 -- the two rules stay orthogonal either way', () => {
     const output = { columns: ['v'], rows: [{ v: '=A,B' }] };
-    expect(renderCsv(output)).toBe('v\n"=A,B"');
+    expect(renderCsv(output, true)).toBe('v\n"=A,B"');
   });
 });
 
@@ -249,8 +412,10 @@ describe('the other two renderers are unchanged by any of this', () => {
   it('renders the same astral value in all three views, agreeing about what it holds', () => {
     // `render` is the seam a command goes through, so the three formats are checked
     // through it rather than through their own functions: a command that picked one
-    // renderer directly would bypass this.
-    const value = `${'a'.repeat(30)}${EMOJI}${'b'.repeat(30)}`;
+    // renderer directly would bypass this. The emoji sits at unit 10, well inside the head
+    // half of the table's cut, so it survives the table's truncation as well as the other two
+    // renderers' lack of one.
+    const value = `${'a'.repeat(10)}${EMOJI}${'b'.repeat(60)}`;
     const output = { columns: ['v'], rows: [{ v: value }] };
     expect(render('csv', output)).toContain(value);
     expect(render('json', output)).toContain(value);
@@ -305,11 +470,13 @@ describe('the elision is bounded by the width it was given', () => {
   });
 
   it('narrows by at most one unit when it has to step over a surrogate half', () => {
-    // The one visible consequence of the fix, pinned so it cannot grow silently: a cell
-    // whose cut splits a pair is one unit narrower than the budget allowed.
-    const split = cell(`${'a'.repeat(58)}${EMOJI}${'b'.repeat(20)}`);
+    // The one visible consequence of the fix, pinned so it cannot grow silently: a HEAD cut
+    // that splits a pair is one unit narrower than the budget allowed; a placement one unit
+    // earlier does not straddle the boundary at all and loses nothing to the backoff.
+    const { head } = budgets(DEFAULT_WIDTH);
+    const split = cell(`${'a'.repeat(head - 1)}${EMOJI}${'b'.repeat(100)}`);
     expect(split.length).toBe(DEFAULT_WIDTH - 1);
-    const intact = cell(`${'a'.repeat(59)}${EMOJI}${'b'.repeat(20)}`);
+    const intact = cell(`${'a'.repeat(head)}${EMOJI}${'b'.repeat(100)}`);
     expect(intact.length).toBe(DEFAULT_WIDTH);
   });
 });

@@ -29,17 +29,15 @@
  * so the common case is one flag, and every page reports its coverage and, when there is more, the
  * cursor that resumes it.
  *
- * **The page's table elides ids at their shared prefix, so distinct rows can look identical, and
- * that is a stated limitation rather than a hidden one.** `renderTable` cuts every cell past 60
- * characters and keeps the HEAD, but an id here is a long shared prefix plus a short discriminating
- * suffix. Measured by driving this command against the frozen EV-11 store --
+ * **The page's table elides ids at a shared prefix AND a discriminating suffix, not the head alone
+ * (`asc-i36`, fixed in `output.ts`'s `truncateCell`).** An id here is a long shared prefix plus a
+ * short discriminating suffix, and a head-only cut used to keep exactly the part every row shares:
+ * measured by driving this command against the frozen EV-11 store --
  * `asc explore verification_run --page --limit 40 --json`, then rendering each id the same way the
- * table does -- **40 distinct ids produce 6 distinct cells**, in groups of 12, 13 and 12. `--json`
- * and `--csv` carry the ids verbatim and are not truncated, so the data is one flag away, and the
- * `…` marks that a cell was cut. What no marker can say is that a *different* row rendered the
- * same, which is why this is filed as `asc-i36` rather than only noted here. The fix is a rule in
- * the renderer (keep the head and the tail) and not a width for this command, so it is not this
- * bead's to make.
+ * table did -- **40 distinct ids produced 6 distinct cells**, in groups of 12, 13 and 12, under the
+ * old head-only rule. `renderTable` now keeps a head AND a tail around the `…`, which is a rule in
+ * the renderer and not a width for this command, so every other table in this CLI got the same fix.
+ * `--json` and `--csv` still carry ids verbatim and are never truncated at all.
  *
  * **Rows, and one column set for all of them.** Header facts (`count`, the `recorded_at` range,
  * one row per registered version), then one row per declared property. The property rows carry the
@@ -59,16 +57,18 @@
  * entries. Every row carries `summary`, so an absent key is never read as "nothing there" -- it is
  * read as "this kind of property does not have that" (`TASKS.md` #7).
  *
- * **The table truncates the tally, and that is a stated limitation rather than a hidden one.** The
- * full line runs 92 characters at the corpus's own numbers --
+ * **A property's tally is ALSO four short rows, one per state, not only the combined line
+ * (`asc-cbk`).** The combined line runs 92 characters at the corpus's own numbers --
  * `measured 51 (58.6%), not_applicable 0 (0.0%), not_measured 36 (41.4%), not_declared 0 (0.0%)` --
- * and `renderTable` elides every cell past its shared 60-character limit, so the default view cuts
- * after `not_measured ` and the `…` marks it. No reformatting closes the gap: the four state NAMES
- * are 55 of those 92 characters, and naming every state is what the line is for. `--json` and
- * `--csv` do not truncate, so the exact counts are one flag away, and the `…` is the signal to ask
- * for them. Closing it properly means a layout where each state is its own row, or a wider cell for
- * this command -- both change the shape `asc-wsa`, `asc-52u` and `asc-hg3` build on, so neither is
- * this bead's call.
+ * and `renderTable` elides every cell past its shared 60-character limit, so the combined line alone
+ * would cut after `not_measured ` and hide two of the four states behind the `…`. Rather than widen
+ * the cell for this command (a truncation rule that differs per command) or delete the combined
+ * line, `propertyStateRows` adds one row per property PER STATE -- `field: property.<name>.measured`,
+ * `value: 51 (58.6%)` -- immediately after the property's own summary row. Each is short enough that
+ * `renderTable` never truncates it, so the default table cannot collapse "measured" and "nobody
+ * looked" into one appearance, which is the failure the three-state model exists to prevent. The
+ * summary row and its combined line are unchanged, additive rather than replaced, so a consumer
+ * reading `tally` today keeps reading exactly what it read before.
  */
 
 import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
@@ -194,6 +194,14 @@ function versionRow(row: VersionProfile): Row {
 }
 
 /**
+ * How many entries could have declared this property at all -- the denominator `renderStates` and
+ * `propertyStateRows` both share, so the two cannot silently disagree about what a share is over.
+ */
+function declaredCount(property: PropertyProfile): number {
+  return property.states.measured + property.states.not_applicable + property.states.not_measured;
+}
+
+/**
  * One property row.
  *
  * `min`, `max` and `top` are attached CONDITIONALLY, and that is the whole reason this is a
@@ -202,8 +210,7 @@ function versionRow(row: VersionProfile): Row {
  * is always present, so the reader can tell which keys to expect.
  */
 function propertyRow(property: PropertyProfile): Row {
-  const declared =
-    property.states.measured + property.states.not_applicable + property.states.not_measured;
+  const declared = declaredCount(property);
 
   return {
     field: `property.${property.name}`,
@@ -223,6 +230,39 @@ function propertyRow(property: PropertyProfile): Row {
     ...(property.summary === 'top' ? { top: property.top } : {}),
     ...(property.summary === 'range' ? { min: property.min, max: property.max } : {}),
   };
+}
+
+/**
+ * One row per property PER STATE, immediately after the property's own summary row (`asc-cbk`).
+ *
+ * **Additive, not a replacement.** `propertyRow`'s `tally` line is unchanged, and everything this
+ * function reports is already in that row's `states` field -- `--json` never hid a count, only the
+ * default TABLE did, by cutting the combined line at 60 characters. So this exists to make the same
+ * numbers visible in the table specifically, at the cost of four more rows per property, rather than
+ * to carry information that was not already on the output.
+ *
+ * `field` is namespaced under the property's own (`property.<name>.<state>`) rather than flattened
+ * to the state name alone, because a type can declare a property called `measured`, and a field name
+ * that collided with a state name would be ambiguous about which one a reader was looking at.
+ *
+ * Only `field` and `value` are populated -- `type`, `distinct` and `values` describe the PROPERTY,
+ * not one of its states, and repeating them on all four rows would be four copies of one fact next
+ * to the row that already states it once. Left absent rather than duplicated, per the rule the rest
+ * of this command's rows already follow (`min`/`max`/`top` above).
+ */
+function propertyStateRows(property: PropertyProfile): readonly Row[] {
+  const declared = declaredCount(property);
+  const share = (n: number): string =>
+    declared === 0 ? String(n) : `${String(n)} (${((n / declared) * 100).toFixed(1)}%)`;
+
+  return STATES.map((state) => ({
+    field: `property.${property.name}.${state}`,
+    value: share(property.states[state]),
+    name: property.name,
+    state,
+    count: property.states[state],
+    declared_entries: declared,
+  }));
 }
 
 export default class Explore extends BaseCommand {
@@ -324,6 +364,10 @@ export default class Explore extends BaseCommand {
   public async run(): Promise<void> {
     const { args, flags } = await this.parse(Explore);
     const format = this.resolveFormat(flags);
+    // Read once and threaded through every direct `render(format, ...)` call below, so a budgeted
+    // render (built by `fitToBudget`, outside `emit`) and a plain one cannot disagree about whether
+    // `--csv-raw` was passed for this invocation.
+    const csvRaw = this.csvRaw();
     const budget = this.optionalFlag(flags['max-tokens']);
 
     if (budget !== undefined && (!Number.isInteger(budget) || budget < 1)) {
@@ -498,21 +542,25 @@ export default class Explore extends BaseCommand {
           keysOf: (kept) => kept.map((row) => String(row['file'])),
           noun: ['file', 'files'],
           render: (kept, trim) =>
-            render(format, {
-              columns: ['file', 'count', 'tokens', 'recorded_at_min', 'recorded_at_max'],
-              rows: kept,
-              // The same guard the map carries, and it was found the same way -- by driving this
-              // against the real corpus rather than by reading it. Without it the coverage block
-              // defaults to `complete(kept)`, so `--dump --max-tokens 500` printed **"showing 4 of
-              // 4"** beside a trim block saying it had dropped 9 rows. A consumer reading
-              // `coverage` alone -- which is what the field is for -- concludes the dump holds four
-              // files. That is the "reports success wrongly" class, in the one output whose whole
-              // job is to say what exists on disk.
-              ...(trim === undefined || trim.dropped === 0
-                ? {}
-                : { coverage: subset(kept.length, rows.length, true) }),
-              ...(trim === undefined ? {} : { trim }),
-            }),
+            render(
+              format,
+              {
+                columns: ['file', 'count', 'tokens', 'recorded_at_min', 'recorded_at_max'],
+                rows: kept,
+                // The same guard the map carries, and it was found the same way -- by driving this
+                // against the real corpus rather than by reading it. Without it the coverage block
+                // defaults to `complete(kept)`, so `--dump --max-tokens 500` printed **"showing 4 of
+                // 4"** beside a trim block saying it had dropped 9 rows. A consumer reading
+                // `coverage` alone -- which is what the field is for -- concludes the dump holds four
+                // files. That is the "reports success wrongly" class, in the one output whose whole
+                // job is to say what exists on disk.
+                ...(trim === undefined || trim.dropped === 0
+                  ? {}
+                  : { coverage: subset(kept.length, rows.length, true) }),
+                ...(trim === undefined ? {} : { trim }),
+              },
+              csvRaw,
+            ),
         });
 
         if (dryRun) {
@@ -629,15 +677,19 @@ export default class Explore extends BaseCommand {
           rowsOf: (built) => built.rows.length,
           noun: ['entry', 'entries'],
           render: (built, trim) =>
-            render(format, {
-              columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
-              rows: built.rows,
-              // A sample has no remainder to resume, so `has_more` is false however small the share
-              // -- there is no cursor to hand back, and saying "more" would promise one.
-              coverage: subset(built.rows.length, profile.count, false),
-              sample: built.sample,
-              ...(trim === undefined ? {} : { trim }),
-            }),
+            render(
+              format,
+              {
+                columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
+                rows: built.rows,
+                // A sample has no remainder to resume, so `has_more` is false however small the share
+                // -- there is no cursor to hand back, and saying "more" would promise one.
+                coverage: subset(built.rows.length, profile.count, false),
+                sample: built.sample,
+                ...(trim === undefined ? {} : { trim }),
+              },
+              csvRaw,
+            ),
         });
         return;
       }
@@ -671,13 +723,17 @@ export default class Explore extends BaseCommand {
           keysOf: (page) => page.rows.map((row) => row.id),
           noun: ['entry', 'entries'],
           render: (page, trim) =>
-            render(format, {
-              columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
-              rows: page.rows.map(entryRow),
-              coverage: subset(page.rows.length, page.total, page.hasMore),
-              ...(page.nextCursor === null ? {} : { next_cursor: page.nextCursor }),
-              ...(trim === undefined ? {} : { trim }),
-            }),
+            render(
+              format,
+              {
+                columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
+                rows: page.rows.map(entryRow),
+                coverage: subset(page.rows.length, page.total, page.hasMore),
+                ...(page.nextCursor === null ? {} : { next_cursor: page.nextCursor }),
+                ...(trim === undefined ? {} : { trim }),
+              },
+              csvRaw,
+            ),
         });
         return;
       }
@@ -708,7 +764,13 @@ export default class Explore extends BaseCommand {
         );
       }
 
-      rows.push(...profile.versions.map(versionRow), ...profile.properties.map(propertyRow));
+      rows.push(
+        ...profile.versions.map(versionRow),
+        ...profile.properties.flatMap((property) => [
+          propertyRow(property),
+          ...propertyStateRows(property),
+        ]),
+      );
 
       // Everything past the header is droppable, and the ORDER it is dropped in is the row order:
       // properties first -- from the end, which is where a reader is least likely to have got to --
@@ -723,17 +785,21 @@ export default class Explore extends BaseCommand {
         keysOf: (kept) => kept.map((row) => String(row['field'])),
         noun: ['row', 'rows'],
         render: (kept, trim) =>
-          render(format, {
-            columns: ['field', 'value', 'type', 'tally', 'distinct', 'values'],
-            rows: kept,
-            // Coverage only when something went: an untrimmed map shows every row it built, and
-            // `complete` is the honest statement of that. A trimmed one is a subset of its own row
-            // list, which is a fact `coverage` is exactly the right shape to carry.
-            ...(trim === undefined || trim.dropped === 0
-              ? {}
-              : { coverage: subset(kept.length, rows.length, true) }),
-            ...(trim === undefined ? {} : { trim }),
-          }),
+          render(
+            format,
+            {
+              columns: ['field', 'value', 'type', 'tally', 'distinct', 'values'],
+              rows: kept,
+              // Coverage only when something went: an untrimmed map shows every row it built, and
+              // `complete` is the honest statement of that. A trimmed one is a subset of its own row
+              // list, which is a fact `coverage` is exactly the right shape to carry.
+              ...(trim === undefined || trim.dropped === 0
+                ? {}
+                : { coverage: subset(kept.length, rows.length, true) }),
+              ...(trim === undefined ? {} : { trim }),
+            },
+            csvRaw,
+          ),
       });
     });
   }

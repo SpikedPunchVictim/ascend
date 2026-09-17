@@ -39,6 +39,7 @@ export {
 
 export {
   assertNotAhead,
+  LedgerMismatchError,
   migrate,
   MIGRATIONS,
   NewerSchemaError,
@@ -157,6 +158,7 @@ export {
   DuplicateProjectError,
   IncompatibleDefinitionsError,
   NotAnAscendStoreError,
+  requireStore,
   TypeNotInAnyProjectError,
   unionEntries,
   UnknownTypeHashError,

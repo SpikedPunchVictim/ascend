@@ -29,6 +29,15 @@ export interface Migration {
   readonly version: number;
   readonly name: string;
   readonly sql: string;
+  /**
+   * One name this migration's DDL adds to `sqlite_master` that no earlier migration adds --
+   * proof, read from the file itself, that this migration ran, independent of what the
+   * `user_version` ledger claims. See `LedgerMismatchError`: the ledger is one integer with no
+   * content check, so it is one wrong write away from disagreeing with the tables it describes
+   * (asc-u11), and this is what lets `migrate` tell "genuinely pending" from "the ledger is
+   * wrong" before it runs DDL against an object that already exists.
+   */
+  readonly marker: string;
 }
 
 const INITIAL = `
@@ -327,8 +336,10 @@ END;
  * migration path, and the reason its test opens a version-1 store and migrates it.
  */
 export const MIGRATIONS: readonly Migration[] = [
-  { version: 1, name: 'initial schema', sql: INITIAL },
-  { version: 2, name: 'full-text search over evidence_text', sql: FTS },
+  // 'entry_types' is one of the three names STORE_MARKER_TABLES (db.ts) already treats as proof
+  // a file is an ascend store; reused here as proof migration 1 specifically has run.
+  { version: 1, name: 'initial schema', sql: INITIAL, marker: 'entry_types' },
+  { version: 2, name: 'full-text search over evidence_text', sql: FTS, marker: 'entries_fts' },
 ];
 
 /** The schema version this build of ascend writes. */
@@ -385,6 +396,74 @@ export function assertNotAhead(observed: number, target: number = SCHEMA_VERSION
   if (observed > target) throw new NewerSchemaError(observed, target);
 }
 
+function objectExists(db: DatabaseSync, name: string): boolean {
+  return db.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(name) !== undefined;
+}
+
+/**
+ * The highest migration whose own marker is already present in the file, determined from
+ * `sqlite_master` rather than from `user_version`.
+ *
+ * Used only to word `LedgerMismatchError`'s repair command -- never to decide what `migrate`
+ * itself does. Content agreeing with a candidate version is strong evidence that version ran,
+ * but it is evidence, not proof (a hand-restored table would look the same), so it names the
+ * number for an operator to confirm and apply rather than applying it here.
+ */
+function inferAppliedVersion(db: DatabaseSync, migrations: readonly Migration[]): number {
+  let inferred = 0;
+  for (const migration of [...migrations].sort((left, right) => left.version - right.version)) {
+    if (!objectExists(db, migration.marker)) break;
+    inferred = migration.version;
+  }
+  return inferred;
+}
+
+/**
+ * Thrown when `user_version` says a migration has not run, but the object that migration
+ * creates is already in the file (asc-u11).
+ *
+ * The ledger is one unsigned integer with no content check, so it is one wrong write away from
+ * disagreeing with the tables it is supposed to describe -- a backup that did not carry `PRAGMA
+ * user_version`, a copy through a tool that rewrites the header, a hand edit. When that happens,
+ * `migrate` would otherwise trust the wrong number, attempt a migration that already ran, and
+ * fail on the object's own CREATE -- rolled back cleanly, but naming whichever migration the
+ * ledger happens to point at rather than the actual problem (measured: reset to 0, the first
+ * failure is migration 1's "entry_types already exists", not the "entries_fts already exists"
+ * asc-63v had predicted -- the message depends on the damage, not on the store). Worse, that
+ * failure repeats identically on every subsequent command, because nothing about running it
+ * again changes the ledger: a store in this state was permanently unopenable before this class
+ * existed, which is the half of asc-u11 that matters most.
+ *
+ * **Why this refuses instead of repairing the ledger itself.** `inferAppliedVersion` already
+ * computes the right number from the same `sqlite_master` read `assertNotForeign` (db.ts) uses
+ * to decide whether a file is ascend's at all. But writing that number automatically, on an
+ * ordinary open, would mean every future command silently corrects a store's ledger whenever the
+ * two disagree -- and "the ledger disagrees with the content" is also what a genuinely damaged
+ * store looks like from here (a hand-edited row, a partially restored table). Content-derived
+ * agreement is strong evidence, not proof, and a silent auto-repair cannot tell those two cases
+ * apart; an operator who has actually looked at the schema can. So this throws and states the
+ * exact command instead of running it -- one `PRAGMA` write, via a tool ascend never invokes on
+ * the operator's behalf, so there is no way to trigger it by accident.
+ */
+export class LedgerMismatchError extends Error {
+  constructor(
+    readonly ledgerVersion: number,
+    readonly inferredVersion: number,
+    file?: string,
+  ) {
+    const target = file ?? "this store's database file (<project>/.ascend/ascend.db)";
+    super(
+      `this store's user_version ledger says ${String(ledgerVersion)}, but its tables already ` +
+        `match migration ${String(inferredVersion)} -- ascend will not guess which one is right, ` +
+        `so migration refuses rather than run DDL against objects that already exist. If you have ` +
+        `confirmed this store's schema really does match migration ${String(inferredVersion)} (for ` +
+        `example, it was restored from a backup that did not carry the pragma), repair the ledger ` +
+        `directly and re-run: sqlite3 ${target} "PRAGMA user_version = ${String(inferredVersion)}"`,
+    );
+    this.name = 'LedgerMismatchError';
+  }
+}
+
 /**
  * Apply every migration this store has not yet run.
  *
@@ -393,14 +472,20 @@ export function assertNotAhead(observed: number, target: number = SCHEMA_VERSION
  * migrated. `PRAGMA user_version` is transactional -- verified, not assumed -- which
  * is what makes that atomic.
  *
- * Idempotent: running it against a current store applies nothing.
+ * Idempotent: running it against a current store applies nothing, and running it against a
+ * store whose ledger UNDERSTATES its content (asc-u11) refuses with `LedgerMismatchError`
+ * instead of failing on the DDL -- deterministically the same refusal every time, rather than
+ * "whichever migration the ledger happens to point at".
  *
  * `migrations` is injectable so the rollback path can be tested with a deliberately
- * failing migration. Production always uses the default.
+ * failing migration. Production always uses the default. `file` is used only to word
+ * `LedgerMismatchError`'s repair command; omit it (as the in-memory tests do) to get a generic
+ * placeholder instead of a path that does not exist.
  */
 export function migrate(
   db: DatabaseSync,
   migrations: readonly Migration[] = MIGRATIONS,
+  file?: string,
 ): MigrationResult {
   const observed = userVersion(db);
   const target = migrations.reduce((highest, m) => Math.max(highest, m.version), 0);
@@ -453,10 +538,29 @@ export function migrate(
         continue;
       }
 
+      // The re-read above still says this migration is pending, so a well-behaved concurrent
+      // migration is ruled out -- one always bumps `user_version` and creates its marker in the
+      // same commit, so `current >= migration.version` above would have caught it instead. An
+      // object that exists anyway means the LEDGER is wrong, not that we lost a race (asc-u11):
+      // check before running DDL that would otherwise fail on the object's own CREATE and blame
+      // whichever migration the ledger happened to point at.
+      if (objectExists(db, migration.marker)) {
+        throw new LedgerMismatchError(current, inferAppliedVersion(db, migrations), file);
+      }
+
       db.exec(migration.sql);
       db.exec(`PRAGMA user_version = ${String(migration.version)}`);
       db.exec('COMMIT');
     } catch (error) {
+      if (error instanceof LedgerMismatchError) {
+        // Not a DDL failure -- the migration was never attempted, so this is the same
+        // isTransaction guard below (asc-k3b) rather than a second implementation of it: nothing
+        // above has closed the transaction on its own, but checking is the point of that fix, and
+        // assuming it here would undo it.
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
+
       const detail = error instanceof Error ? error.message : String(error);
 
       // The `isTransaction` guard `registerType` uses (registry.ts) for the same reason: some
