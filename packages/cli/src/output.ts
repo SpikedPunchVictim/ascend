@@ -24,6 +24,7 @@
  * budget (`asc-9y1` measures exactly that), and `jq .` is one keystroke away for a human.
  */
 
+import { MIN_N, type Proportion } from '@ascend/analysis';
 import type { EntryState, RecordedEntry } from '@ascend/store';
 import { renderTrim, type Trim } from './budget.js';
 import { renderAssist, type SearchAssist } from './search-assist.js';
@@ -128,10 +129,64 @@ export function subset(shown: number, total: number, hasMore: boolean): Coverage
   return coverageOf(shown, total, hasMore);
 }
 
-/** The coverage line as a person reads it: `showing 40 of 512, 7.8%`. */
+/**
+ * The coverage line as a person reads it: `showing 40 of 512, 7.8%`.
+ *
+ * NOT A PROPORTION, and it must not be converted into one. The `%` here is a census of what this
+ * command emitted -- `shown` of `total` are both counts in hand, and the whole truth about this
+ * output -- not an estimate of a rate in a population. `renderProportion` is for the second thing,
+ * and putting a confidence interval on the first would invent an uncertainty that does not exist.
+ * See that function for the boundary.
+ */
 export function renderCoverage(coverage: Coverage): string {
   const of = `showing ${String(coverage.shown)} of ${String(coverage.total)}`;
   return coverage.percent === undefined ? of : `${of}, ${coverage.percent.toFixed(1)}%`;
+}
+
+/**
+ * A proportion as a person reads it: `60% (95% CI 44-74%, n=25)`.
+ *
+ * THE QUALIFICATION IS PART OF THE STRING, NOT A SECOND CALL. `ARCHITECTURE.md` requires that a
+ * group below `MIN_N` be flagged rather than printed as a seductive percentage, and a flag offered
+ * as its own function is one a call site can forget -- which is the failure mode the requirement
+ * exists to prevent. So the small-group marker is appended here, from the `smallGroup` field the
+ * proportion already carries, and there is no way to render a proportion without it.
+ *
+ * The marker keeps the spike's wording, including the threshold it was compared against. The
+ * interval is still printed for a small group rather than suppressed: the arithmetic is right, and
+ * hiding a correct number because it is weakly evidenced is its own dishonesty -- what the reader
+ * needs is the number AND the reason not to lean on it.
+ *
+ * THE SEPARATOR IS AN ASCII HYPHEN, AND THAT IS A DECISION WITH A RECEIPT. `ARCHITECTURE.md`'s
+ * example wrote the interval with an en dash (U+2013) between its bounds; the evidence overruled it
+ * (asc-bmf decision entry, and `ARCHITECTURE.md` corrected in the same commit). Measured
+ * 2026-09-17: of every TypeScript file in this repository's package `src` and `test` trees, **0
+ * contain a non-ASCII byte** -- this string would be the first, in a project whose prose uses em
+ * dashes freely and whose code does not use one at all. Every string `asc` has ever printed is
+ * likewise ASCII, and this one lands in
+ * `--table` cells and `--csv` fields, where a non-ASCII byte is a liability for anyone aligning
+ * columns or opening the CSV under a non-UTF-8 default. The prescription's meaning -- percentage,
+ * then interval, then n -- is unchanged by the character.
+ *
+ * `null` renders as the spike rendered it, `n=0 (no estimate)`, which is now the rendering of an
+ * honest absence rather than a cover for a fabricated zero. See `proportion.ts`, departure 2.
+ */
+export function renderProportion(proportion: Proportion | null): string {
+  if (proportion === null) return 'n=0 (no estimate)';
+
+  // Rounded from the level rather than stored beside it, so the label cannot drift from the
+  // arithmetic the way the spike's hardcoded "95% CI" could. `Math.round` handles the binary
+  // representation of the three supported levels: 0.95 * 100 is 95.00000000000001, and rounding is
+  // what keeps that from rendering as "95.00000000000001%".
+  const level = `${String(Math.round(proportion.confidence * 100))}%`;
+  const pct = (100 * proportion.p).toFixed(1);
+  const low = (100 * proportion.lower).toFixed(1);
+  const high = (100 * proportion.upper).toFixed(1);
+  const line = `${pct}% (${level} CI ${low}-${high}%, n=${String(proportion.n)})`;
+
+  return proportion.smallGroup
+    ? `${line}  [SMALL GROUP n=${String(proportion.n)} < ${String(MIN_N)} -- treat as anecdote, not estimate]`
+    : line;
 }
 
 /** One result row. Keys are the column names, in the order the command chose. */

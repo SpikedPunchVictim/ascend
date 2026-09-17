@@ -389,7 +389,7 @@ Everything a computer does better than an LLM, computed so the LLM doesn't appro
   severity=high, 78%, support 42."* Finds cross-property patterns nobody thought to query.
 
 **Honesty — so it doesn't overclaim**
-- **Wilson score intervals on every proportion**: `60% (95% CI 44–74%, n=25)`. This is the
+- **Wilson score intervals on every proportion**: `60% (95% CI 44-74%, n=25)`. This is the
   "directional, not controlled" discipline from `COLLECTIVE_BUILD_REPORT.md`, mechanized so it
   cannot be skipped.
 - **Minimum-N flagging** — flag small groups rather than printing a seductive percentage.

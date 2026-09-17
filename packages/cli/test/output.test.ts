@@ -1,8 +1,10 @@
+import { wilson } from '@ascend/analysis';
 import {
   OUTPUT_CONTRACT_VERSION,
   render,
   renderCsv,
   renderJson,
+  renderProportion,
   renderTable,
   type JsonEnvelope,
 } from '@ascend/cli';
@@ -248,5 +250,115 @@ describe('the elision is bounded by the width it was given', () => {
     expect(split.length).toBe(DEFAULT_WIDTH - 1);
     const intact = cell(`${'a'.repeat(59)}${EMOJI}${'b'.repeat(20)}`);
     expect(intact.length).toBe(DEFAULT_WIDTH);
+  });
+});
+
+/**
+ * Every byte outside printable ASCII, scanning the whole string.
+ *
+ * The same shape as `unpairedSurrogates` above and for the same reason: the claim is "this
+ * rendering is ASCII", and a check that looked only at the separator would accept a non-ASCII
+ * character anywhere else in it.
+ */
+function nonAscii(text: string): readonly string[] {
+  const found: string[] = [];
+  // `for...of` rather than a spread or `.split('')`: it iterates code POINTS, so a character
+  // above U+FFFF is one element and is reported as the character rather than as two halves.
+  for (const character of text) {
+    const code = character.codePointAt(0);
+    if (code === undefined || code < 0x20 || code > 0x7e) found.push(character);
+  }
+  return found;
+}
+
+describe('renderProportion', () => {
+  it('renders the shape ARCHITECTURE.md prescribes, and the spike produced', () => {
+    // The spike's own anchor, character for character: `formatProportion(25, 100)` in
+    // `spike/lib/stats.mjs` returned exactly this. A port that changed the rendering would
+    // still be a port, but this is what makes the two provably the same output.
+    expect(renderProportion(wilson(25, 100))).toBe('25.0% (95% CI 17.5-34.3%, n=100)');
+  });
+
+  it('renders no estimate for n=0, rather than 0%', () => {
+    expect(renderProportion(wilson(0, 0))).toBe('n=0 (no estimate)');
+    // The distinction that matters: a group with nothing in it must not print a percentage.
+    expect(renderProportion(wilson(0, 0))).not.toContain('0.0%');
+  });
+
+  it('takes the level from the proportion, so the label cannot contradict the arithmetic', () => {
+    // The defect the port closed. In the spike, `formatProportion(25, 100, z)` printed the
+    // literal "95% CI" whatever `z` was, so any other level produced a label that disagreed
+    // with the bounds beside it.
+    expect(renderProportion(wilson(25, 100, 0.9))).toContain('(90% CI');
+    expect(renderProportion(wilson(25, 100, 0.95))).toContain('(95% CI');
+    expect(renderProportion(wilson(25, 100, 0.99))).toContain('(99% CI');
+    // And the wider level really is wider, so the label is not merely relabelling one interval.
+    const ninety = renderProportion(wilson(25, 100, 0.9));
+    const ninetyNine = renderProportion(wilson(25, 100, 0.99));
+    expect(ninety).not.toBe(ninetyNine);
+  });
+
+  it('carries the small-group flag with the threshold it was compared against', () => {
+    const flagged = renderProportion(wilson(3, 9));
+    expect(flagged).toContain('SMALL GROUP');
+    expect(flagged).toContain('n=9 < 20');
+    expect(flagged).toContain('treat as anecdote, not estimate');
+  });
+
+  it('still prints the interval for a small group rather than suppressing it', () => {
+    // Hiding a correct number because it is weakly evidenced is its own dishonesty. A reader
+    // needs the number AND the reason not to lean on it, so both must be present.
+    const flagged = renderProportion(wilson(3, 9));
+    expect(flagged).toContain('33.3%');
+    expect(flagged).toContain('CI');
+    expect(flagged).toContain('n=9');
+  });
+
+  it('does not flag a group at or above the threshold', () => {
+    expect(renderProportion(wilson(4, 20))).not.toContain('SMALL GROUP');
+    expect(renderProportion(wilson(5, 21))).not.toContain('SMALL GROUP');
+  });
+
+  it('never prints a percentage without a denominator', () => {
+    // The smallest thing that makes a percentage safe to read, checked across the sweep rather
+    // than at one n. A rendering that dropped `n` would pass every test above it.
+    for (const [successes, n] of [
+      [0, 1],
+      [3, 9],
+      [4, 20],
+      [25, 100],
+      [222, 409],
+    ] as const) {
+      const rendered = renderProportion(wilson(successes, n));
+      expect(rendered).toContain(`n=${String(n)}`);
+      expect(rendered).toContain('CI');
+    }
+  });
+
+  it('is ASCII, which is a decision and not an accident', () => {
+    // ARCHITECTURE.md's example wrote the interval with an en dash (U+2013) between the bounds.
+    // The evidence overruled it -- 0 of every file under `packages/*/src` and `packages/*/test`
+    // contain a non-ASCII byte, and this string lands in table cells and CSV fields. Pinned as a
+    // check rather than left as a comment, because "we decided ASCII" is exactly the kind of
+    // decision that gets silently reverted by the next person who copies the example from the doc.
+    const failures: string[] = [];
+    for (const [successes, n] of [
+      [0, 1],
+      [3, 9],
+      [4, 20],
+      [25, 100],
+      [222, 409],
+      [10, 10],
+    ] as const) {
+      for (const level of [0.9, 0.95, 0.99] as const) {
+        const rendered = renderProportion(wilson(successes, n, level));
+        const found = nonAscii(rendered);
+        if (found.length > 0)
+          failures.push(
+            `n=${String(n)}: ${found.map((c) => `U+${c.codePointAt(0)?.toString(16) ?? '?'}`).join(' ')}`,
+          );
+      }
+    }
+    expect(failures).toEqual([]);
   });
 });

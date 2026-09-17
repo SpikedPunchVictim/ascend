@@ -48,5 +48,12 @@ export { statementCount } from './sql.js';
  * `renderTable` also takes its width as a parameter, so the whole boundary sweep runs
  * against the real function with no fixture and no mock.
  */
-export { renderTable, renderCsv, renderJson, render, OUTPUT_CONTRACT_VERSION } from './output.js';
+export {
+  renderTable,
+  renderCsv,
+  renderJson,
+  render,
+  renderProportion,
+  OUTPUT_CONTRACT_VERSION,
+} from './output.js';
 export type { Output, OutputFormat, Row, JsonEnvelope } from './output.js';

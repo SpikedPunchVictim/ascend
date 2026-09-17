@@ -9,19 +9,21 @@
  * sample from a corpus it has not been taught to choose from. The statistical
  * layer lands at E7 -- see beads `asc-analysis-*`.
  *
- * NOTE FOR E7: the Stage 0 spike validated `wilson`, `chiSquare`, `cramerV` and
- * the seeded permutation control against hand-computed anchors, with 10 passing
- * tests, in `spike/lib/stats.mjs` + `spike/lib/stats.test.mjs`. That work is
- * validated and is the intended starting point -- port it rather than rewriting.
- * The anchors (chi2=3.841458820694124 @ df=1 -> p=0.05; Wilson 25/100 ->
+ * THE SPIKE IS BEING PORTED, BY BEAD, NOT REWRITTEN. The Stage 0 spike validated
+ * `wilson`, `chiSquare`, `cramerV` and the seeded permutation control against
+ * hand-computed anchors, with 10 passing tests, in `spike/lib/stats.mjs` +
+ * `spike/lib/stats.test.mjs`. That work is validated and is the intended starting
+ * point, and the anchors (chi2=3.841458820694124 @ df=1 -> p=0.05; Wilson 25/100 ->
  * (0.1754534, 0.3430444)) exist so the port can be checked, not just trusted.
- * The seeded permutation control there is the same problem `sample.ts` solves
- * below, and `sample.ts` is the answer that landed first: port the statistics to
- * its generator rather than beside it, so one store has one notion of a seed.
+ *
+ *   - `wilson` + the minimum-N rule -- DONE, `proportion.ts` (asc-bmf). It departed
+ *     from the spike twice on purpose; both departures and their reasons are in that
+ *     file's comment, and the anchors are carried into `test/proportion.test.ts`.
+ *   - `crosstab` / `chiSquare` / `cramerV` -- still to port (asc-0tw).
+ *   - the seeded permutation control -- still to port, and it is the same problem
+ *     `sample.ts` solves below. `sample.ts` is the answer that landed first: build it
+ *     on that generator rather than beside it, so one store has one notion of a seed.
  */
-
-/** Minimum group size below which a proportion is an anecdote, not an estimate. */
-export const MIN_N = 20;
 
 export {
   allocate,
@@ -39,3 +41,12 @@ export {
   type StratifiedSample,
   type StratumReport,
 } from './sample.js';
+
+export {
+  isSmallGroup,
+  MIN_N,
+  ProportionError,
+  wilson,
+  type ConfidenceLevel,
+  type Proportion,
+} from './proportion.js';
