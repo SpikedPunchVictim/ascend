@@ -71,6 +71,35 @@
  * envelope column for the transcript at all. Repeating them is the price of the envelope
  * being fixed, and it is worth paying -- without `occurred_at` every derived corpus would be
  * a single point in time and every question about trend would be unanswerable.
+ *
+ * WHERE THE EVENT HAPPENED IS THE ENVELOPE'S, NOT A PROPERTY (`asc-5hs`), and the split is
+ * not arbitrary -- it is where a name is available. `entries` already carries `cwd` and
+ * `branch` columns, and a generated view already projects them, so a derived entry populates
+ * those columns from the record's own `cwd` and `gitBranch` and is queryable through
+ * `v_<type>_v<version>` with no join. Declaring them as *properties* instead is not merely
+ * redundant, it is refused: `reservedPropertyName` in `@ascend/core` rejects a property whose
+ * name an envelope column already occupies, because SQLite does not error on the collision --
+ * it keeps the envelope's column and renames the loser, so the query ARCHITECTURE.md
+ * prescribes would return the envelope value under the property's name. Measured, not
+ * assumed: `asc types define` refuses a `cwd` property outright.
+ *
+ * The consequence is worth stating because it makes this a small change rather than a
+ * versioned one: `definitionShape` hashes the DECLARED PROPERTIES, and this adds none, so no
+ * type mints a new version and no count splits across a version boundary. What the entries
+ * gained is a column that was always there and was always NULL.
+ *
+ * The reason to care is the size of what the label loses. `project` is one encoded directory
+ * per project, and an agent works in subdirectories and worktrees under one: re-measured
+ * 2026-09-16 over every record, **20 encoded directories hold 301 distinct real working
+ * directories** (15.1:1), the largest collapsing 123:1. Over the derived entries themselves --
+ * 1,607 of them, the population this module produces -- 14 projects hold 84 real working
+ * directories, 6.0:1, and every one of those entries carries a `cwd` and a `branch`.
+ *
+ * A prior measurement of the same quantity on 2026-09-15 read 15 / 282 / 115:1. The corpus is
+ * live, so those are a date, not a constant; what is stable across both is the direction and the
+ * order of magnitude. `cwd` is the value the directory name cannot express, and `branch` is the
+ * other -- 10 distinct values including `HEAD` and real feature branches, so "before or after
+ * the branch moved" is answerable from here and was not before.
  */
 
 import type { TypeSpec } from '@ascend/core';
@@ -148,7 +177,11 @@ const PROVENANCE: readonly TypeSpec['properties'][number][] = [
       'The transcript’s project directory under ~/.claude/projects, in ENCODED form ' +
       '("-Users-me-src-app"), which is the name on disk. Not decoded: a "-" in that name ' +
       'stands for both a path separator and a literal hyphen, so decoding is lossy and two ' +
-      'projects can collide. The encoded name never does.',
+      'projects can collide. The encoded name never does. This is a COARSE label by ' +
+      'construction -- one per project, however many directories the work happened in. For ' +
+      'the real working directory, select the envelope’s `cwd` column, which this type’s ' +
+      'generated view already projects and which is populated from the transcript’s own ' +
+      'record.',
   },
   {
     name: 'occurred_at',

@@ -64,6 +64,29 @@ export interface DerivedEntry {
   readonly source: typeof DERIVED_SOURCE;
   /** The transcript's own timestamp, when it has one. Never the ingest clock. */
   readonly occurredAt: string | undefined;
+  /**
+   * The real working directory the event happened in, from the record's own `cwd`.
+   *
+   * NOT the `project` property, and the difference is the whole of `asc-5hs`. `project` is the
+   * ENCODED directory name under `~/.claude/projects` -- one label per project, because that is
+   * the name on disk. An agent works in subdirectories and worktrees under a project, so those
+   * labels collapse -- and the collapse is measured, not argued. RE-MEASURED 2026-09-16 over
+   * every record, because the corpus is live and any figure about it is a date: 20 encoded
+   * directories hold 301 distinct real working directories (15.1:1), the largest collapsing
+   * 123:1. The bead's figures (15 / 282 / 115, 2026-09-15) moved in the same direction for the
+   * obvious reason. Over the derived ENTRIES alone -- the population this adapter actually
+   * produces -- it is 14 projects over 84 real directories, 6.0:1. Either way this field is the
+   * value the directory name cannot express.
+   *
+   * It belongs to the ENVELOPE (`entries.cwd`), not to the type's properties. A property may not
+   * be named `cwd`: `reservedPropertyName` in `@ascend/core` refuses it, because the generated
+   * view already projects the envelope's column under that name and SQLite would keep the first
+   * and rename the loser rather than error -- returning the envelope value under the property's
+   * name. Measured, not assumed: `asc types define` refuses the definition outright.
+   */
+  readonly cwd?: string;
+  /** The checked-out branch, from the record's own `gitBranch`. Envelope column `branch`. */
+  readonly branch?: string;
   readonly properties: Readonly<Record<string, unknown>>;
   /**
    * Raw text for the envelope's `evidence_text`, on the ONE type whose value is prose.
@@ -162,6 +185,41 @@ function blocks(record: TranscriptRecord): readonly Record<string, unknown>[] {
     if (one !== undefined) out.push(one);
   }
   return out;
+}
+
+/**
+ * Where an event happened, as the record that triggered it reports it -- both halves optional.
+ *
+ * Read from the TRIGGER record itself, never carried forward and never derived from the
+ * transcript's own directory name. Measured 2026-09-15: 340,137 of 432,471 records (78.6%)
+ * carry a string `cwd`, and the SAME 340,137 carry `gitBranch`. Re-measured 2026-09-16 on a
+ * larger corpus: 356,331 of 459,399 (77.6%), again the same set -- the two co-occur exactly,
+ * on both dates, which is the property this function relies on.
+ *
+ * The per-trigger breakdown was taken on 2026-09-15 too -- `toolDenialKind` 457/457,
+ * `compactMetadata` 441/441, `userFeedback` 20/20, `attributionSkill` 6,395/6,395,
+ * `attributionAgent` 69,698/69,698, i.e. every record that can trigger a derived event carries
+ * both. The claim was re-checked at the ENTRIES level on 2026-09-16 rather than guessed forward:
+ * 1,607 derived entries, 0 without a `cwd`, 0 without a `branch`. So for these five types this
+ * is a copy, not a lookup.
+ *
+ * The 21.4% that carry neither are CONTROL records -- `mode`, `permission-mode`, `last-prompt`,
+ * `ai-title`, `agent-name`, `bridge-session`. None of them triggers a derived event today, so
+ * the omission below is not a gap in practice. It would become one the day a derived type keys
+ * off a control record, which is why the omission is a value rather than a default.
+ *
+ * Both are `undefined` rather than `''` on absence, and that is not tidiness: `entries` has
+ * `CHECK (cwd IS NULL OR cwd <> '')`, so an empty string is a REFUSED write, while a `null` is
+ * the honest "the transcript did not say". `str` already folds both absences into `undefined`.
+ */
+interface Locality {
+  readonly cwd: string | undefined;
+  readonly branch: string | undefined;
+}
+
+/** The two transcript fields, under their own names, with absence preserved. */
+function localityOf(record: TranscriptRecord): Locality {
+  return { cwd: str(record['cwd']), branch: str(record['gitBranch']) };
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +423,8 @@ interface SkillRun {
   readonly sessionId: string;
   readonly project: string;
   readonly occurredAt: string | undefined;
+  /** The FIRST record's cwd and branch, for the same reason as the rest of this struct. */
+  readonly locality: Locality;
   /** The FIRST record's uuid. The run's identity, and stable across a re-ingest. */
   readonly uuid: string;
 }
@@ -428,6 +488,7 @@ export function createDeriver(): Deriver {
     sessionId: string,
     project: string,
     occurredAt: string | undefined,
+    locality: Locality,
     properties: Record<string, unknown>,
     evidenceText?: string,
   ): void => {
@@ -436,6 +497,10 @@ export function createDeriver(): Deriver {
       key: key(rawKey),
       source: DERIVED_SOURCE,
       occurredAt,
+      // OMITTED, never `''`, when the transcript carries neither -- `entries` refuses an empty
+      // string and treats NULL as "not said", which is the distinction this project is built on.
+      ...(locality.cwd === undefined ? {} : { cwd: locality.cwd }),
+      ...(locality.branch === undefined ? {} : { branch: locality.branch }),
       properties: {
         ...properties,
         session_id: sessionId,
@@ -474,6 +539,7 @@ export function createDeriver(): Deriver {
       pending.sessionId,
       pending.project,
       pending.occurredAt,
+      pending.locality,
       {
         skill: pending.skill,
         ...(pending.agent === undefined ? {} : { agent: pending.agent }),
@@ -502,6 +568,7 @@ export function createDeriver(): Deriver {
     const sessionId = str(record['sessionId']);
     const occurredAt = str(record['timestamp']);
     const uuid = str(record['uuid']);
+    const locality = localityOf(record);
     const blocksIn = blocks(record);
 
     // Index this record's tool invocations before reading its results: a denial and the
@@ -525,11 +592,20 @@ export function createDeriver(): Deriver {
         counters.unkeyable += 1;
       } else {
         const name = invocations.get(useId)?.name;
-        emit(out, 'tool_denial', `${sessionId}:${useId}`, sessionId, file.project, occurredAt, {
-          denial_kind: denialKind,
-          tool_use_id: useId,
-          ...(name === undefined ? {} : { tool_name: name }),
-        });
+        emit(
+          out,
+          'tool_denial',
+          `${sessionId}:${useId}`,
+          sessionId,
+          file.project,
+          occurredAt,
+          locality,
+          {
+            denial_kind: denialKind,
+            tool_use_id: useId,
+            ...(name === undefined ? {} : { tool_name: name }),
+          },
+        );
       }
     }
 
@@ -567,6 +643,7 @@ export function createDeriver(): Deriver {
           sessionId,
           file.project,
           occurredAt,
+          locality,
           {
             trigger,
             pre_tokens: pre,
@@ -597,6 +674,7 @@ export function createDeriver(): Deriver {
             sessionId,
             project: file.project,
             occurredAt,
+            locality,
             uuid,
           };
         }
@@ -646,6 +724,7 @@ export function createDeriver(): Deriver {
                   sessionId,
                   file.project,
                   occurredAt,
+                  locality,
                   {
                     runner,
                     verdict: verdict ? 'passed' : 'failed',
@@ -677,6 +756,7 @@ export function createDeriver(): Deriver {
           sessionId,
           file.project,
           occurredAt,
+          locality,
           { ...(name === undefined ? {} : { tool_name: name }) },
           feedback,
         );

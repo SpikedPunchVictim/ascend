@@ -86,55 +86,75 @@ function project(): string {
 const PROJECT_DIR = '-Users-me-scratch';
 
 /**
+ * The real working directory and branch every fixture record was made in.
+ *
+ * CHOSEN SO THAT NO READ OF THE PROJECT LABEL COULD PRODUCE THEM, which is what makes the
+ * assertion below mean something. `PROJECT_DIR` is `-Users-me-scratch`; this is a SUBDIRECTORY
+ * of the path it encodes. The encoding replaces both `/` and `-` with `-`, so it cannot express
+ * a subdirectory even decoded correctly, and it carries no branch at all. A deriver that took
+ * either value from the directory name fails here rather than passing by coincidence.
+ */
+const RECORD_AT = { cwd: '/Users/me/scratch/packages/core', gitBranch: 'feat/locality' };
+
+/**
  * One record per derived type, in the order the deriver needs them.
  *
  * Order is load-bearing in two places, and both are the deriver's real mechanism rather than test
  * convenience. A denial names its tool by joining back to a `tool_use` block that has already
  * streamed past, so the invocation must precede it. A check's verdict chain is per file and starts
  * at the first verified pass, so the result must follow its invocation.
+ *
+ * Objects rather than pre-stringified lines, so `RECORD_AT` can be spread into every one of them
+ * in a single place. Each record carrying it is the measured reality -- 100% of the records that
+ * trigger a derived event carry both fields -- not a fixture convenience.
  */
-const RECORDS: readonly string[] = [
+const RECORDS: readonly Record<string, unknown>[] = [
   // The Bash invocation a check result will be joined back to.
-  JSON.stringify({
+  {
     sessionId: 's-1',
     uuid: 'u-1',
     timestamp: '2026-01-02T03:04:05.000Z',
+    ...RECORD_AT,
     message: {
       content: [
         { type: 'tool_use', id: 'toolu-bash', name: 'Bash', input: { command: 'pnpm test' } },
       ],
     },
-  }),
+  },
   // Its result: `is_error: false` and no earlier verdict, so this is a FIRST verified pass.
-  JSON.stringify({
+  {
     sessionId: 's-1',
     uuid: 'u-2',
     timestamp: '2026-01-02T03:04:06.000Z',
+    ...RECORD_AT,
     message: { content: [{ type: 'tool_result', tool_use_id: 'toolu-bash', is_error: false }] },
-  }),
+  },
   // A writer invocation, for the denial below to resolve a tool name against.
-  JSON.stringify({
+  {
     sessionId: 's-1',
     uuid: 'u-3',
     timestamp: '2026-01-02T03:04:07.000Z',
+    ...RECORD_AT,
     message: {
       content: [{ type: 'tool_use', id: 'toolu-write', name: 'Write', input: { file_path: '/x' } }],
     },
-  }),
+  },
   // The denial itself. Its `tool_use_id` is NOT a Bash invocation, so it is not also a check.
-  JSON.stringify({
+  {
     sessionId: 's-1',
     uuid: 'u-3b',
     timestamp: '2026-01-02T03:04:07.500Z',
+    ...RECORD_AT,
     toolDenialKind: 'user-rejected',
     message: { content: [{ type: 'tool_result', tool_use_id: 'toolu-write' }] },
-  }),
+  },
   // A compaction, with `preCompactDiscoveredTools` ABSENT -- the real 156-of-438 case, which must
   // be omitted rather than written as an empty array.
-  JSON.stringify({
+  {
     sessionId: 's-1',
     uuid: 'u-4',
     timestamp: '2026-01-02T03:04:08.000Z',
+    ...RECORD_AT,
     compactMetadata: {
       trigger: 'auto',
       preTokens: 1000,
@@ -142,27 +162,46 @@ const RECORDS: readonly string[] = [
       cumulativeDroppedTokens: 800,
       durationMs: 1234,
     },
-  }),
-  JSON.stringify({
+  },
+  {
     sessionId: 's-1',
     uuid: 'u-5',
     timestamp: '2026-01-02T03:04:09.000Z',
+    ...RECORD_AT,
     attributionSkill: 'cli-best-practices',
-  }),
+  },
   // The one type whose value IS prose, so this is where `evidence_text` is exercised.
-  JSON.stringify({
+  {
+    sessionId: 's-1',
+    uuid: 'u-6',
+    timestamp: '2026-01-02T03:04:10.000Z',
+    ...RECORD_AT,
+    userFeedback: 'no, use the other one',
+  },
+];
+
+/**
+ * One record per derived type, with neither `cwd` nor `gitBranch`.
+ *
+ * The 21.4% case: control records -- `mode`, `permission-mode`, `ai-title` -- carry neither, and
+ * `entries` has `CHECK (cwd IS NULL OR cwd <> '')`, so the deriver must OMIT rather than default.
+ * None of these triggers a derived event on the real corpus today; this fixture exists so the
+ * omission is a branch something can reach, rather than an untested line.
+ */
+const RECORDS_WITHOUT_LOCALITY: readonly Record<string, unknown>[] = [
+  {
     sessionId: 's-1',
     uuid: 'u-6',
     timestamp: '2026-01-02T03:04:10.000Z',
     userFeedback: 'no, use the other one',
-  }),
+  },
 ];
 
 /** Write a transcript fixture under `dir`'s own `~/.claude/projects`, and return its path. */
-function transcripts(dir: string, records: readonly string[] = RECORDS): string {
+function transcripts(dir: string, records: readonly Record<string, unknown>[] = RECORDS): string {
   const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
   mkdirSync(corpus, { recursive: true });
-  writeFileSync(join(corpus, 's-1.jsonl'), `${records.join('\n')}\n`);
+  writeFileSync(join(corpus, 's-1.jsonl'), `${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
   return corpus;
 }
 
@@ -286,6 +325,64 @@ describe('asc ingest claude-code', () => {
         verdict: 'passed',
       });
       expect(properties('verification_run')).not.toHaveProperty('previous_verdict');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('writes the real cwd and branch into the envelope, not the encoded project label', () => {
+    // `asc-5hs`, driven end to end rather than through the deriver alone, because the two halves
+    // live in different packages: the deriver reads the record, and THIS command is what puts the
+    // value on `RecordContext`. A deriver that carried it and a command that dropped it would pass
+    // every unit test in the adapter and store nothing.
+    const dir = project();
+    transcripts(dir);
+    asc(['ingest', 'claude-code'], dir);
+
+    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    try {
+      const rows = db
+        .prepare('SELECT type_name AS t, cwd, branch FROM entries ORDER BY type_name')
+        .all() as { t: string; cwd: string | null; branch: string | null }[];
+
+      // A guard on the guard: an ingest that wrote nothing would satisfy the loop below.
+      expect(rows.length).toBe(5);
+      for (const row of rows) {
+        expect(row.cwd, `${row.t} lost its cwd`).toBe(RECORD_AT.cwd);
+        expect(row.branch, `${row.t} lost its branch`).toBe(RECORD_AT.gitBranch);
+        // The whole point, asserted separately so a value read off the DIRECTORY cannot pass by
+        // coincidence -- and the label is what the `project` property still carries, so this is
+        // also the statement that the two are no longer the same fact.
+        expect(row.cwd).not.toBe(PROJECT_DIR);
+      }
+
+      // The column a query actually reads: the generated view projects the envelope's `cwd`, so
+      // this is reachable with no join -- which is what makes the fix worth having.
+      const grouped = db
+        .prepare('SELECT cwd, count(*) AS n FROM v_tool_denial_v1 GROUP BY 1')
+        .all() as { cwd: string | null; n: number }[];
+      expect(grouped).toEqual([{ cwd: RECORD_AT.cwd, n: 1 }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('OMITS the locality columns when the record carries neither, rather than writing ""', () => {
+    // `''` is a REFUSED write -- `CHECK (cwd IS NULL OR cwd <> '')` -- so a defaulted empty string
+    // would not be a quiet wrong answer, it would abort the ingest. NULL is the honest "the
+    // transcript did not say", and this is where that branch is reached.
+    const dir = project();
+    transcripts(dir, RECORDS_WITHOUT_LOCALITY);
+
+    const run = asc(['ingest', 'claude-code'], dir);
+    expect(run.status).toBe(0);
+
+    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    try {
+      const row = db
+        .prepare('SELECT cwd, branch FROM entries WHERE type_name = ?')
+        .get('user_correction') as { cwd: string | null; branch: string | null };
+      expect(row).toEqual({ cwd: null, branch: null });
     } finally {
       db.close();
     }

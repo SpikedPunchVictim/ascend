@@ -715,3 +715,108 @@ describe('keys and counters', () => {
     for (const entry of entries) expect(entry.source).toBe('derived:claude-code');
   });
 });
+
+/**
+ * `asc-5hs`: a derived entry records the REAL working directory and branch, not the label.
+ *
+ * THE FIXTURE'S `cwd` IS CHOSEN SO THAT NO READ OF THE PROJECT LABEL COULD PRODUCE IT. The file
+ * above is `-Users-me-app`, so the record's cwd is a SUBDIRECTORY of it
+ * (`/Users/me/app/packages/core`) and the branch is a feature branch. Both differ from anything
+ * the encoded directory name carries, which is the point: the encoded name replaces both `/`
+ * and `-` with `-`, so even a correct decoder could only ever reach `/Users/me/app` -- it cannot
+ * produce a subdirectory, and it carries no branch at all. A deriver that took either value
+ * from the label fails here.
+ *
+ * The measurement behind the size of the loss, re-taken 2026-09-16 because a live corpus makes
+ * any such figure a date: 20 encoded project directories hold 301 distinct real working
+ * directories (15.1:1), the largest collapsing 123:1. The bead's 15 / 282 / 115:1 of 2026-09-15
+ * says the same thing about a smaller corpus.
+ */
+describe('the real cwd and branch, which the project label cannot express', () => {
+  const AT = { cwd: '/Users/me/app/packages/core', gitBranch: 'feat/locality' };
+
+  it('carries both on every one of the five types', () => {
+    // All five, so "each type's emit path passes it" is one assertion rather than five. The
+    // ids are distinct per record because a compaction, a skill run and a correction all key
+    // on their record's uuid -- sharing one would collide them into a single key.
+    const entries = derive([
+      record(
+        [{ type: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'pnpm test' } }],
+        AT,
+      ),
+      record([{ type: 'tool_result', tool_use_id: 'bash-1', is_error: false }], AT),
+      record([{ type: 'tool_result', tool_use_id: 'write-1' }], {
+        uuid: 'denial',
+        toolDenialKind: 'user-rejected',
+        ...AT,
+      }),
+      record([], {
+        uuid: 'compact',
+        compactMetadata: {
+          trigger: 'auto',
+          preTokens: 1000,
+          postTokens: 200,
+          cumulativeDroppedTokens: 800,
+          durationMs: 1234,
+        },
+        ...AT,
+      }),
+      record([], { uuid: 'skill', attributionSkill: 'sk', ...AT }),
+      record([], { uuid: 'correct', userFeedback: 'no, use the other one', ...AT }),
+    ]);
+
+    // A guard on the guard: if a rule stops emitting, the loop below would pass over an
+    // empty set and assert nothing.
+    expect(new Set(entries.map((entry) => entry.type)).size).toBe(5);
+    for (const entry of entries) {
+      expect(entry.cwd, `${entry.type} lost its cwd`).toBe(AT.cwd);
+      expect(entry.branch, `${entry.type} lost its branch`).toBe(AT.gitBranch);
+      // Asserted separately from the equality above, so a deriver reading the DIRECTORY cannot
+      // pass by coincidence. The label is `-Users-me-app`; even a correct DECODER could only
+      // reach `/Users/me/app`, and the fixture's cwd is a subdirectory of that.
+      expect(entry.cwd).not.toBe(FILE.project);
+      expect(entry.cwd).not.toBe('/Users/me/app');
+    }
+  });
+
+  it('reads them per RECORD, so an entry mid-file takes the cwd in force where it happened', () => {
+    // The measured shape of the loss: one project label, many directories. A record that moves
+    // under a subdirectory or a worktree must not inherit the previous record's.
+    const entries = derive([
+      record([], { uuid: 'a', userFeedback: 'first', ...AT }),
+      record([], { uuid: 'b', userFeedback: 'second', cwd: '/Users/me/app/.worktrees/x' }),
+    ]);
+    const [first, second] = ofType(entries, 'user_correction');
+
+    expect(first?.cwd).toBe('/Users/me/app/packages/core');
+    expect(second?.cwd).toBe('/Users/me/app/.worktrees/x');
+    // Absent on the second record, so OMITTED on the second entry -- never carried forward.
+    expect(second?.branch).toBeUndefined();
+  });
+
+  it('OMITS both when the record carries neither, rather than writing an empty string', () => {
+    // 21.4% of corpus records are control records -- `mode`, `permission-mode`, `ai-title` --
+    // and carry neither field. `entries` has `CHECK (cwd IS NULL OR cwd <> '')`, so `''` is a
+    // REFUSED write while an absent field is the honest "the transcript did not say".
+    const entries = derive([record([], { uuid: 'f', userFeedback: 'x' })]);
+    const [correction] = ofType(entries, 'user_correction');
+
+    expect(correction).not.toHaveProperty('cwd');
+    expect(correction).not.toHaveProperty('branch');
+  });
+
+  it('takes a skill activation’s locality from the FIRST record of the run', () => {
+    // Same rule as `session_id`, `project` and `occurred_at`, and for the same reason: one
+    // activation is one event, so the facts that belong to it are the ones in force when it
+    // started. A run that carries the LAST record's facts would move the activation to wherever
+    // it happened to end.
+    const entries = derive([
+      record([], { uuid: 'a', attributionSkill: 'sk', ...AT }),
+      record([], { uuid: 'b', attributionSkill: 'sk', cwd: '/Users/me/app/elsewhere' }),
+    ]);
+    const [activation] = ofType(entries, 'skill_activation');
+
+    expect(activation?.cwd).toBe('/Users/me/app/packages/core');
+    expect(activation?.branch).toBe('feat/locality');
+  });
+});

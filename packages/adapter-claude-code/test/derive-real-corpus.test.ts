@@ -75,6 +75,14 @@ interface Sweep {
   readonly warned: readonly string[];
   readonly duplicateKeys: readonly string[];
   readonly missingProvenance: readonly string[];
+  /** Entries with no envelope `cwd` / `branch`, named by type. */
+  readonly withoutCwd: readonly string[];
+  readonly withoutBranch: readonly string[];
+  /** How many distinct REAL working directories and branches the sweep saw. */
+  readonly distinctCwds: number;
+  readonly distinctBranches: number;
+  /** How many distinct encoded project labels those collapse into -- `project`, not `cwd`. */
+  readonly distinctProjects: number;
   readonly keyCollisions: number;
   readonly unkeyable: number;
   readonly unverdictable: number;
@@ -91,6 +99,11 @@ async function sweep(): Promise<Sweep> {
   const warned: string[] = [];
   const duplicateKeys: string[] = [];
   const missingProvenance: string[] = [];
+  const withoutCwd: string[] = [];
+  const withoutBranch: string[] = [];
+  const cwds = new Set<string>();
+  const branches = new Set<string>();
+  const projects = new Set<string>();
   const seen = new Set<string>();
 
   const collect = (entry: DerivedEntry): void => {
@@ -104,6 +117,13 @@ async function sweep(): Promise<Sweep> {
     for (const name of ['session_id', 'project']) {
       if (!Object.hasOwn(entry.properties, name)) missingProvenance.push(`${entry.type}.${name}`);
     }
+
+    if (entry.cwd === undefined) withoutCwd.push(entry.type);
+    else cwds.add(entry.cwd);
+    if (entry.branch === undefined) withoutBranch.push(entry.type);
+    else branches.add(entry.branch);
+    const project = entry.properties['project'];
+    if (typeof project === 'string') projects.add(project);
 
     const spec = specs.get(entry.type);
     if (spec === undefined) {
@@ -133,6 +153,11 @@ async function sweep(): Promise<Sweep> {
     warned,
     duplicateKeys,
     missingProvenance,
+    withoutCwd,
+    withoutBranch,
+    distinctCwds: cwds.size,
+    distinctBranches: branches.size,
+    distinctProjects: projects.size,
     keyCollisions: deriver.counters.keyCollisions,
     unkeyable: deriver.counters.unkeyable,
     unverdictable: deriver.counters.unverdictable,
@@ -232,6 +257,46 @@ describe.skipIf(!available)('the deriver against the real corpus', () => {
     // corpus has one, and the day that stops being true this test says so rather
     // than the number quietly falling.
     expect(withoutTime.length).toBe(0);
+  }, 120_000);
+
+  it('carries the real cwd and branch, which the project label cannot express', async () => {
+    // `asc-5hs`. The measurement behind it: `project` is the ENCODED directory name, one per
+    // project, and an agent works in subdirectories and worktrees under one -- so the labels
+    // collapse. RE-MEASURED 2026-09-16 across every record, because the corpus is live and the
+    // bead's own numbers are a date, not a constant:
+    //
+    //   records              459,399    of which 356,331 (77.6%) carry a `cwd`
+    //   gitBranch            356,331    the SAME records -- the two co-occur exactly
+    //   encoded projects          20    holding 301 distinct real working directories (15.1:1)
+    //   worst collapse           123    123 distinct real working directories under ONE label
+    //
+    // The label's name is deliberately not quoted: this repository is public and the label is an
+    // encoded absolute path, i.e. somebody's private project. The number is the evidence; the
+    // name is not, and the assertion below never reads one.
+    //
+    // The bead measured 15 / 282 / 115 on 2026-09-15. Every one of those moved, in the same
+    // direction, for the obvious reason: the corpus grew.
+    //
+    // The entries-only figures are smaller and are what the assertions below use, because the
+    // five types key off TRIGGER records, not off every record: 1,607 entries, 0 without a cwd,
+    // 0 without a branch, over 14 projects and 84 real working directories (6.0:1).
+    const result = await once();
+
+    expect(result.withoutCwd.slice(0, 20)).toEqual([]);
+    expect(result.withoutBranch.slice(0, 20)).toEqual([]);
+
+    // THE ASSERTION THAT WOULD FAIL IF THE VALUE CAME FROM THE DIRECTORY NAME. A deriver reading
+    // the label produces exactly one cwd per project, so this ratio would be 1:1 and the
+    // assertion -- whose floor of 2 is deliberately far below the measured 6.0 -- goes red. It is
+    // the check the emptiness assertions above cannot be, because "every entry has a cwd" is
+    // satisfied by the label too: the label is never absent.
+    expect(result.distinctProjects).toBeGreaterThan(1);
+    expect(result.distinctCwds).toBeGreaterThan(result.distinctProjects * 2);
+
+    // The second discarded dimension: 10 distinct branches measured, including `HEAD` and real
+    // feature branches (`fix/search-scope`, `align/fixes-2026-08-20`), so "before or after the
+    // branch moved" is answerable from here and was not before.
+    expect(result.distinctBranches).toBeGreaterThan(1);
   }, 120_000);
 
   it('keeps transcript prose out of the entries, except where the type IS the text', async () => {

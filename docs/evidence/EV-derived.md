@@ -190,3 +190,104 @@ while measuring something else* — is the one that destroys trust in every othe
   frozen-input label deltas, where the input is provably identical.
 - **`derive.test.ts` pins the rules; it cannot pin the corpus.** Numbers that move are asserted as
   floors and invariants in `derive-real-corpus.test.ts`, never as counts.
+
+---
+
+# Amendment, 2026-09-16: where an event happened is the ENVELOPE's, not a property — and the bead said otherwise
+
+`asc-5hs` reported that a derived entry keeps only the lossy encoded project label and drops the real
+`cwd` and `branch` the transcript carries. That much was true and is now fixed. Its DONE WHEN also
+specified the shape of the fix — *"the five type definitions carry that property"* — and **that clause
+is not implementable.** The evidence overturned it, so the fix took a different route than the bead
+described and the deviation is recorded here rather than taken silently (`KICKOFF.md`: *"If the design
+and the evidence disagree, the evidence wins — record what it overturned"*).
+
+## What was measured
+
+The loss is real and three measurements say so. The `project` property is the **encoded directory name**
+under `~/.claude/projects` — one label per project, because that is the name on disk — while an agent
+works in subdirectories and worktrees beneath it. Re-measured across every record on 2026-09-16:
+
+| | bead, 2026-09-15 | re-measured, 2026-09-16 |
+|---|---|---|
+| records | 432,471 | **459,399** |
+| records carrying `cwd` | 340,137 (78.6 %) | **356,331 (77.6 %)** |
+| records carrying `gitBranch` | the same 340,137 | **the same 356,331** |
+| encoded project labels | 15 | **20** |
+| distinct real working directories | 282 | **301** |
+| collapse ratio | 18.8 : 1 | **15.1 : 1** |
+| worst single label | 115 real dirs | **123 real dirs** |
+
+Both sets are real; they measure a **live** directory on different days, so the bead's table stands
+rather than being edited — the same convention the 2026-09-15 amendment used. Every figure moved in the
+direction the corpus grew. `cwd` and `gitBranch` co-occur **exactly**, on both dates: the record either
+carries both or neither, which is what makes one omission branch sufficient for the pair.
+
+A second population matters and must not be conflated with the first: over the **derived entries
+themselves** — the population this adapter produces, since the five types key off *trigger* records and
+not off every record — 2026-09-16 measured **1,607 entries, 0 without a `cwd`, 0 without a `branch`**,
+across **14 projects and 84 real working directories (6.0 : 1)**, 10 distinct branches including `HEAD`
+and real feature branches. The corpus-wide ratio is larger because control records dominate the
+count; the entries-level ratio is the one the adapter's own assertions are set against.
+
+## Why the bead's fix could not be built
+
+Three independent probes, each refusing it:
+
+1. `reservedPropertyName('cwd')` in `@ascend/core` returns `RESERVED -> cwd_value`. The name is refused
+   at the core level, before any type could be defined.
+2. `asc types define` on a document declaring a `cwd` property exits 1: *"property 'cwd' cannot be
+   projected: the entry envelope already carries a column called 'cwd', so a query selecting 'cwd' would
+   read the envelope value instead of the property. Rename it -- 'cwd_value' projects faithfully."*
+3. The live generated view already projects the envelope's column under exactly that name — read from
+   `sqlite_master`, `v_tool_denial_v1` ends with `e.cwd AS "cwd"`, `e.branch AS "branch"`.
+
+The mechanism behind all three is that **SQLite does not error on the collision.** It keeps the first
+column and renames the loser, so a `cwd` *property* would have made the query `ARCHITECTURE.md`
+prescribes — select the property, read it from the view — return the **envelope** value under the
+property's name. That is the severity-zero class this project rates highest: a query that looks like it
+worked and answers a different question.
+
+## What was built instead
+
+The derived entry populates the **envelope columns** `entries.cwd` and `entries.branch`, which the
+generated view already projects and which were always present and always NULL. The bead's intent —
+*"a derived entry records the real cwd (and branch) it occurred in"* — is met, and the consequence is
+strictly **smaller** than the bead assumed:
+
+- `definitionShape` hashes only the **declared properties** (`name` + per-property `name, type,
+  required, enum_values, unit`). Adding no properties means **no type mints a new version** and no count
+  splits across a version boundary. The bead predicted *"adding properties mints a new version of all
+  five types"*; that prediction is void, not deferred.
+- No `entry_types` row changes, so the immutability triggers are never approached and no migration
+  exists to write.
+
+Absence is preserved rather than defaulted: `entries` carries `CHECK (cwd IS NULL OR cwd <> '')`, so an
+empty string is a **refused** write while NULL is the honest "the transcript did not say". The 21.4 %
+of records carrying neither are **control records** (`mode`, `permission-mode`, `last-prompt`,
+`ai-title`, `agent-name`, `bridge-session`); none triggers a derived event today, so the omission is a
+real branch only for a future type keyed off a control record — which is why it is written as an
+omission and not a default.
+
+## Verification
+
+Every new assertion was **mutation-tested**, per the project invariant that a check must be shown to
+FAIL before it is trusted to pass: taking `cwd` from `file.project` turns 4 tests red; forcing `branch`
+to `undefined` turns 2 red; taking a skill run's locality from its **last** record instead of its first
+turns 1 red. The corpus-level assertion — `distinctCwds > distinctProjects * 2`, floor 2 against a
+measured 6.0 — is specifically the one that fails if the value is read from the directory name, since a
+deriver reading the label produces exactly one `cwd` per project and the ratio would be 1 : 1. The
+per-entry "every entry has a cwd" assertions cannot catch that: the label is never absent.
+
+Driven against the real corpus read-only after the change: **1,607 derived entries, 0 without a `cwd`,
+0 without a `branch`**, 14 projects over 84 real working directories, 10 branches.
+
+## Limitations, stated plainly
+
+- **The re-measured table is a snapshot of a live directory**, taken while this session's own transcript
+  was being written into it. Both dates are real; neither is a constant, and the assertions are floors.
+- **The entries-level and corpus-wide ratios are different quantities** (6.0 : 1 over 14 projects vs
+  15.1 : 1 over 20). Any figure quoted from this amendment must name which population it is over.
+- **The 100 %-of-trigger-records claim was re-checked at the entries level, not per trigger kind.** The
+  per-kind breakdown (457/457, 441/441, …) is the 2026-09-15 measurement and is cited as such; the
+  2026-09-16 confirmation is the aggregate — 1,607 entries, none missing either field.

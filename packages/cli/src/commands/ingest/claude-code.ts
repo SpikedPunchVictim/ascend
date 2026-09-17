@@ -255,6 +255,18 @@ export default class IngestClaudeCode extends BaseCommand {
               recordedAt,
               ascendVersion,
               source: DERIVED_SOURCE,
+              // The real place and branch the EVENT happened in, read off the transcript's own
+              // record -- not `process.cwd()`, which here is wherever the operator ran the
+              // ingest, and not the `project` property, which is the lossy encoded directory
+              // name (re-measured 2026-09-16: 20 labels over 301 real working directories,
+              // 15.1:1, largest collapse 123:1).
+              //
+              // OMITTED when the transcript's record carries neither. `entries` refuses `''`
+              // and reads NULL as "not said", so a defaulted value would be a fabrication --
+              // and on this corpus 100% of trigger records carry both, so the omission is a
+              // real branch only for a future derived type keyed off a control record.
+              ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
+              ...(entry.branch === undefined ? {} : { branch: entry.branch }),
               // The one type whose value IS prose. Every other derived entry carries none, so the
               // reader's contract -- no raw transcript text reaches a caller that prints -- holds
               // through the whole sweep.
