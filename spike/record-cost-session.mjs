@@ -33,7 +33,7 @@
  * in the analysis cannot cost a re-run, and so the raw stream survives as the primary record.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -115,7 +115,18 @@ const { shimDir } = scratch(dir);
 const init = spawnSync(process.execPath, [bin, 'init'], { cwd: dir, encoding: 'utf8' });
 if (init.status !== 0) throw new Error(`asc init failed: ${init.stderr}`);
 
-const prompt = buildPrompt(records);
+/**
+ * The grant is overridable so the harness can also be pointed at a tool the session is NOT allowed.
+ * That is the negative control for the one question a real session is the only way to answer: the
+ * count of permission denials is the evidence that the allowlist worked, and a count of zero is not
+ * evidence of anything until the detector has been shown to fire on a denial. Same harness, same
+ * bounded grant mechanism, one tool narrower -- never a bypass flag either way.
+ */
+const allowed = process.env.EV18_ALLOWED ?? 'Bash(asc record:*)';
+const prompt =
+  process.env.EV18_PROMPT === undefined
+    ? buildPrompt(records)
+    : readFileSync(process.env.EV18_PROMPT, 'utf8');
 mkdirSync(join(root, 'spike', 'tmp'), { recursive: true });
 writeFileSync(join(root, 'spike', 'tmp', 'ev18-arm-b-prompt.txt'), prompt);
 
@@ -127,7 +138,7 @@ const argv = [
   'stream-json',
   '--verbose',
   '--allowedTools',
-  'Bash(asc record:*)',
+  allowed,
   '--permission-mode',
   'dontAsk',
 ];
@@ -168,38 +179,76 @@ if (process.env.EV18_DRY_RUN === '1') {
 }
 
 const started = Date.now();
-const child = spawn('claude', argv, {
-  cwd: dir,
-  env: { ...process.env, PATH: `${shimDir}:${process.env.PATH ?? ''}` },
-  stdio: ['pipe', 'pipe', 'pipe'],
-});
+const replay = process.env.EV18_REPLAY;
 
-const chunks = [];
-const errChunks = [];
-child.stdout.on('data', (chunk) => chunks.push(chunk));
-child.stderr.on('data', (chunk) => errChunks.push(chunk));
-child.stdin.end(prompt);
+/**
+ * `EV18_REPLAY=<stream.jsonl>` re-analyses a session already on disk instead of spending another one.
+ * The stream is the expensive half of this harness and the analysis is the half that gets edited, so
+ * without this every correction to a percentile or a denominator costs a session to re-verify -- and
+ * the temptation in that situation is to trust the new code because re-running it is annoying. With
+ * it, a change to the analysis is checked against the same bytes the run produced.
+ */
+let exitCode;
+let wallMs = null;
+let stderrBytes = null;
+let stream;
+let errChunks = [];
+if (replay !== undefined) {
+  stream = readFileSync(replay, 'utf8');
+  exitCode = 0;
+  /**
+   * A replay re-analyses the stream and cannot know how long the session took, so the wall clock is
+   * carried in explicitly rather than defaulted. `EV18_WALL_MS` is passed from the run's own record;
+   * without it the field stays null and says so, because a replay that quietly reported 0 ms would
+   * be a fast session that never happened.
+   */
+  wallMs = process.env.EV18_WALL_MS === undefined ? null : Number(process.env.EV18_WALL_MS);
+  stderrBytes =
+    process.env.EV18_STDERR_BYTES === undefined ? null : Number(process.env.EV18_STDERR_BYTES);
+} else {
+  const child = spawn('claude', argv, {
+    cwd: dir,
+    env: { ...process.env, PATH: `${shimDir}:${process.env.PATH ?? ''}` },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
 
-const exitCode = await new Promise((resolve) => {
-  child.on('close', resolve);
-});
-const wallMs = Date.now() - started;
+  const chunks = [];
+  child.stdout.on('data', (chunk) => chunks.push(chunk));
+  child.stderr.on('data', (chunk) => errChunks.push(chunk));
+  child.stdin.end(prompt);
 
-const stream = Buffer.concat(chunks).toString('utf8');
-writeFileSync(join(root, 'spike', 'tmp', 'ev18-arm-b-stream.jsonl'), stream);
-writeFileSync(join(root, 'spike', 'tmp', 'ev18-arm-b-stderr.txt'), Buffer.concat(errChunks));
+  exitCode = await new Promise((resolve) => {
+    child.on('close', resolve);
+  });
+  wallMs = Date.now() - started;
+
+  stream = Buffer.concat(chunks).toString('utf8');
+  errChunks = Buffer.concat(errChunks);
+  stderrBytes = errChunks.length;
+  writeFileSync(join(root, 'spike', 'tmp', 'ev18-arm-b-stream.jsonl'), stream);
+  writeFileSync(join(root, 'spike', 'tmp', 'ev18-arm-b-stderr.txt'), errChunks);
+}
 
 /**
  * Read the store back rather than trusting the session's own report of what it did. This is the
  * primary evidence for question 4: an entry that exists was written by a command that ran, and a
  * command that ran is a command that was not stopped by a prompt.
  */
-const count = spawnSync(
-  process.execPath,
-  [bin, 'query', '--json', 'SELECT COUNT(*) AS n FROM entries'],
-  { cwd: dir, encoding: 'utf8' },
-);
-const inStore = count.status === 0 ? JSON.parse(count.stdout).rows[0].n : null;
+const storeDir = process.env.EV18_STORE_DIR ?? dir;
+const count =
+  replay !== undefined && process.env.EV18_STORE_DIR === undefined
+    ? null
+    : spawnSync(process.execPath, [bin, 'query', '--json', 'SELECT COUNT(*) AS n FROM entries'], {
+        cwd: storeDir,
+        encoding: 'utf8',
+      });
+/**
+ * `null`, not `0`, when the store was not read back. A replay re-analyses a stream and the scratch
+ * store it was recorded against is a `mktemp` directory that may be gone; reporting `0` there would
+ * turn "not looked at" into a measured absence, which is the distinction this project's rule 7
+ * exists to keep. The shortfall check below is skipped when it is null for the same reason.
+ */
+const inStore = count === null || count.status !== 0 ? null : JSON.parse(count.stdout).rows[0].n;
 
 /** Walk the stream once, collecting the four things the record needs. */
 const events = stream
@@ -207,9 +256,18 @@ const events = stream
   .filter((line) => line.trim() !== '')
   .map((line) => JSON.parse(line));
 
+/**
+ * The directory the session actually ran in, which in a replay is NOT the scratch directory this
+ * process just made. The stream's own `init` event names it, so a replay takes it from there rather
+ * than recording a path no session ever used.
+ */
+const initCwd = events.find((event) => event.subtype === 'init')?.cwd;
+const ranIn = replay !== undefined ? (initCwd ?? null) : dir;
+
 const recordCalls = [];
 const toolResults = [];
 const usageByTurn = [];
+const contextByTurn = [];
 const denials = [];
 let resultEvent = null;
 
@@ -218,12 +276,16 @@ for (const event of events) {
   const message = event.message;
   if (message === undefined) continue;
   if (event.type === 'assistant') {
-    usageByTurn.push(message.usage ?? null);
+    const usage = message.usage ?? null;
+    let calls = 0;
     for (const block of message.content ?? []) {
       if (block.type === 'tool_use' && block.name === 'Bash') {
         recordCalls.push({ command: block.input.command, tool_use_id: block.id });
+        calls += 1;
       }
     }
+    usageByTurn.push(usage);
+    contextByTurn.push({ input_tokens: usage?.input_tokens ?? 0, calls });
   }
   if (event.type === 'user') {
     for (const block of message.content ?? []) {
@@ -257,43 +319,114 @@ const usageSum = usageByTurn.reduce(
   { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
 );
 
+/**
+ * The marginal context a recording adds -- the number the bead's question is actually about.
+ *
+ * `usage.input_tokens` on a turn is the WHOLE conversation the model was sent, not that turn's own
+ * cost. Summing it across turns counts the growing context once per turn, and dividing that sum by
+ * the call count produces a figure with no unit: the first live run of this harness reported
+ * `realized_tokens_per_call: 82053.8` that way, against a prompt of 29,096 bytes. What a recording
+ * costs is the context it APPENDS -- the difference in `input_tokens` between a turn that made a call
+ * and the turn after it, which is the tool call the model wrote plus the result the tool returned.
+ * That is also the quantity arm A measures, so the two arms are comparable at all.
+ *
+ * Nearest-rank percentiles, the same convention as `record-cost.mjs`, so the two arms' p50s are the
+ * same statistic rather than two different ones that happen to share a name.
+ */
+function percentile(values, p) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
+  return sorted[Math.max(0, index)];
+}
+
+const marginal = [];
+for (let i = 1; i < contextByTurn.length; i += 1) {
+  if (contextByTurn[i - 1].calls === 0) continue;
+  marginal.push(contextByTurn[i].input_tokens - contextByTurn[i - 1].input_tokens);
+}
+
 const failed = recordCalls.filter((call) => !/^asc record /.test(call.command));
 const errored = toolResults.filter((result) => result.is_error);
 
+/**
+ * A run that recorded nothing is not a measurement of anything, and it must not be allowed to look
+ * like one. The first live run of this harness ended with `is_error: true` and 0 of 20 entries in the
+ * store, and still wrote an analysis file whose `failures` array was empty -- because `failures` only
+ * names bash calls that were not `asc record`, and there had been no bash calls at all. An instrument
+ * that reports a clean run when nothing happened is the defect class this project ranks severity
+ * zero, so the run-level reasons are collected separately and the process exits non-zero on any of
+ * them. The session's own error text is carried into the record for the same reason: it is what
+ * made this failure diagnosable, and reading it out of the raw stream by hand is not a substitute.
+ */
+const blocking = [];
+if (resultEvent?.is_error === true) {
+  blocking.push(`the session ended in error: ${String(resultEvent.result ?? '').slice(0, 400)}`);
+}
+/**
+ * A negative control is EXPECTED to record nothing, so the count it is held to is stated by the run
+ * rather than assumed to be 20. Defaulting it means the ordinary arm is unchanged.
+ */
+const expected = Number(process.env.EV18_EXPECT_ENTRIES ?? N);
+if (inStore !== null && inStore < expected) {
+  blocking.push(`the store holds ${inStore} of the ${expected} entries the prompt asked for`);
+}
+if (failed.length > 0) {
+  blocking.push(`${failed.length} bash call(s) were not asc record`);
+}
+
 const meta = {
   invocation: ['claude', ...argv],
-  grant: { allowedTools: 'Bash(asc record:*)', permissionMode: 'dontAsk', bypass: false },
+  grant: { allowedTools: allowed, permissionMode: 'dontAsk', bypass: false },
   model,
-  cwd: dir,
+  cwd: ranIn,
+  replayed: replay !== undefined,
   exit_code: exitCode,
   wall_ms: wallMs,
+  wall_ms_source: replay === undefined ? 'measured' : wallMs === null ? 'not measured' : 'carried',
   stream_bytes: stream.length,
-  stderr_bytes: Buffer.concat(errChunks).length,
-  expected: N,
+  stderr_bytes: stderrBytes,
+  expected,
   entries_in_store: inStore,
   assistant_turns: usageByTurn.length,
   bash_calls: recordCalls.length,
   bash_calls_not_asc_record: failed.length,
   tool_errors: errored.length,
   permission_denials: denials.length,
-  usage_sum_over_turns: usageSum,
+  turn_input_tokens_summed: usageSum.input_tokens,
+  turn_output_tokens_summed: usageSum.output_tokens,
+  output_tokens_reported_per_turn: usageSum.output_tokens > 0,
+  context_first_turn: contextByTurn[0]?.input_tokens ?? null,
+  context_last_turn: contextByTurn[contextByTurn.length - 1]?.input_tokens ?? null,
   result_usage: resultEvent?.usage ?? null,
   result_num_turns: resultEvent?.num_turns ?? null,
   result_cost_usd: resultEvent?.total_cost_usd ?? null,
   result_duration_ms: resultEvent?.duration_ms ?? null,
   result_is_error: resultEvent?.is_error ?? null,
+  result_text: resultEvent?.result ?? null,
   realized_tokens_per_call:
-    recordCalls.length === 0
+    marginal.length === 0
       ? null
-      : (usageSum.input_tokens +
-          usageSum.output_tokens +
-          usageSum.cache_creation_input_tokens +
-          usageSum.cache_read_input_tokens) /
-        recordCalls.length,
+      : {
+          n: marginal.length,
+          min: Math.min(...marginal),
+          p50: percentile(marginal, 50),
+          p95: percentile(marginal, 95),
+          max: Math.max(...marginal),
+          mean: Number((marginal.reduce((a, b) => a + b, 0) / marginal.length).toFixed(2)),
+        },
+  realized_ms_per_call:
+    wallMs === null || recordCalls.length === 0
+      ? null
+      : Number((wallMs / recordCalls.length).toFixed(1)),
   arm_a_estimate_mean: 794.15,
   commands: recordCalls.map((call) => call.command),
   failures: failed.map((call) => call.command),
+  blocking_failures: blocking,
   denials,
 };
-writeFileSync(join(root, 'spike', 'tmp', 'ev18-arm-b-analysis.json'), JSON.stringify(meta, null, 2));
+writeFileSync(
+  process.env.EV18_OUT ?? join(root, 'spike', 'tmp', 'ev18-arm-b-analysis.json'),
+  JSON.stringify(meta, null, 2),
+);
 console.log(JSON.stringify({ ...meta, commands: undefined, denials: undefined }, null, 2));
+if (blocking.length > 0) process.exit(1);
