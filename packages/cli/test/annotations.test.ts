@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,6 +55,33 @@ function asc(args: readonly string[], cwd: string, stdin?: string): Run {
     ...(stdin === undefined ? {} : { input: stdin }),
   });
   return { status: result.status ?? null, stdout: result.stdout, stderr: result.stderr };
+}
+
+/**
+ * The same binary, started without waiting for it -- the one test in this file (asc-q4p) that needs
+ * two runs actually overlapping, which `spawnSync` cannot give: it blocks Node's own event loop
+ * until the child exits, so two `spawnSync` calls can never be in flight at once. `spawn` starts
+ * both processes before either has necessarily finished, and the OS -- not this test -- decides how
+ * they interleave.
+ */
+function ascAsync(args: readonly string[], cwd: string): Promise<Run> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [bin, ...args], {
+      cwd,
+      env: { ...process.env, HOME: cwd, XDG_CACHE_HOME: join(cwd, '.cache') },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('close', (status) => {
+      resolve({ status, stdout, stderr });
+    });
+  });
 }
 
 /** The `--json` envelope's rows. One place, so its shape is stated once. */
@@ -479,7 +506,52 @@ describe('asc annotate: hand labelling', () => {
     expect(run.status).toBe(1);
     // Labelling e1 under an install-only scope would make `labelled + unclassified` exceed
     // `considered`, so the report would be incoherent rather than merely incomplete.
-    expect(flatten(run.stderr)).toContain("entry 'e1' is not in this run's scope");
+    // asc-nd6: e1 is a real entry excluded by the scope, not a nonexistent id, so the message names
+    // that cause specifically rather than the ambiguous "is not in this run's scope".
+    expect(flatten(run.stderr)).toContain("entry 'e1' exists but is excluded by this run's scope");
+    expect(annotations(dir)).toStrictEqual([]);
+  });
+
+  it('tells a nonexistent id apart from one that exists but is excluded by --scope (asc-q4p sibling: asc-nd6)', () => {
+    const dir = seeded();
+
+    // Same phrasing today for two different causes: a typo in the id, and a real id the scope
+    // predicate excludes. Both go through `--ids` with a narrowing `--scope` so the only variable
+    // between the two runs is whether the id names a real entry.
+    const typo = asc(
+      [
+        'annotate',
+        '--scheme',
+        'hand',
+        '--ids',
+        'bug=nope',
+        '--scope',
+        "properties_json LIKE '%install%'",
+      ],
+      dir,
+    );
+    const excluded = asc(
+      [
+        'annotate',
+        '--scheme',
+        'hand',
+        '--ids',
+        'bug=e1',
+        '--scope',
+        "properties_json LIKE '%install%'",
+      ],
+      dir,
+    );
+
+    expect(typo.status).toBe(1);
+    expect(excluded.status).toBe(1);
+    expect(flatten(typo.stderr)).toContain("entry 'nope' does not exist");
+    expect(flatten(excluded.stderr)).toContain(
+      "entry 'e1' exists but is excluded by this run's scope",
+    );
+    // The two messages are not the same one reused with the id swapped in.
+    expect(flatten(typo.stderr)).not.toContain('excluded by');
+    expect(flatten(excluded.stderr)).not.toContain('does not exist');
     expect(annotations(dir)).toStrictEqual([]);
   });
 
@@ -619,6 +691,37 @@ describe('asc annotate: refusals', () => {
   });
 });
 
+describe('asc annotate: concurrent runs (asc-q4p)', () => {
+  it("keeps both labels when two runs add to the same new scheme at once, rather than dropping the loser's", async () => {
+    const dir = seeded();
+
+    // Two real ascend processes sharing one store -- the scenario `db.ts`'s own header names as the
+    // reason a write lock exists at all. Neither names the other's label, so the defect this guards
+    // against is unambiguous: a vocabulary union computed from a snapshot the other run's commit had
+    // already invalidated drops the label that snapshot did not know about. Whichever process's
+    // commit lands second must see the first one's write and union with it, not overwrite it -- and
+    // that has to hold whichever order the OS actually runs them in, which is why the assertion below
+    // does not care which.
+    const [a, b] = await Promise.all([
+      ascAsync(['annotate', '--scheme', 'concurrent', '--ids', 'from_a=e1'], dir),
+      ascAsync(['annotate', '--scheme', 'concurrent', '--ids', 'from_b=e2'], dir),
+    ]);
+
+    expect(a.status, a.stderr).toBe(0);
+    expect(b.status, b.stderr).toBe(0);
+
+    // The LATEST version's vocabulary, not either run's own report of it: a report is what a
+    // process believed it wrote, and the bug is a process that believed correctly about its own
+    // write while a concurrent commit had invalidated the read behind it.
+    expect(vocabulary(dir, 'concurrent')).toStrictEqual(['from_a', 'from_b']);
+    expect(
+      annotations(dir)
+        .map((row) => row[1])
+        .sort(),
+    ).toStrictEqual(['from_a', 'from_b']);
+  });
+});
+
 describe('asc annotate: --dry-run', () => {
   it('previews the census the real run then reports, and writes nothing', () => {
     const dir = seeded();
@@ -711,9 +814,11 @@ describe('asc kappa: two schemes', () => {
     // passes therefore sit under version 1, and which of them is read is visible in what got
     // compared -- the first pass labelled all six entries, this one labels one.
     //
-    // Same version on purpose: `annotationPasses` reads the scheme's LATEST version, so two passes
-    // under two versions would leave the pass ordering untested -- there would be one candidate in
-    // the list and first would equal last.
+    // Same version on purpose, though no longer because it has to be: before asc-nf4,
+    // `annotationPasses` read only the scheme's LATEST version, so two passes under two versions
+    // left the pass ordering untested -- one candidate in the list, first equal to last. It now
+    // reads every version, so this case would survive a version bump; keeping both passes under
+    // one version keeps this test about ordering alone.
     const second = asc(['annotate', '--scheme', 'review', '--ids', 'bug=e1', '--json'], dir);
     expect(second.status, second.stderr).toBe(0);
     const latest = one(second.stdout)['pass'] as string;
@@ -856,6 +961,40 @@ describe('asc kappa: two schemes', () => {
     expect(Object.hasOwn(row, 'kappa')).toBe(false);
     expect(flatten(run.stderr)).toContain("scheme 'never_run' has no annotations");
   });
+
+  it('finds a pass under an earlier version, rather than reporting no annotations, after a version bump that wrote none', () => {
+    const dir = seeded();
+    expect(reviewRun(dir).status).toBe(0);
+    expect(versionOf(dir, 'review')).toBe(1);
+
+    // A rule change that matches nothing mints a new version -- the shape changed -- but writes no
+    // pass (annotate.ts's own "empty pass is not written"). `review` is now on version 2, and
+    // version 2 has zero rows in `annotations`; the six-entry pass from the run above is still
+    // there, pinned to version 1.
+    const bump = asc(['annotate', '--scheme', 'review', '--rule', 'none=sql: 0 = 1'], dir);
+    expect(bump.status, bump.stderr).toBe(0);
+    expect(versionOf(dir, 'review')).toBe(2);
+    expect(
+      column(
+        dir,
+        "SELECT count(*) FROM annotations WHERE scheme = 'review' AND scheme_version = 2",
+      ),
+    ).toStrictEqual([[0]]);
+
+    expect(
+      asc(['annotate', '--scheme', 'hand', '--ids', 'bug=e1,e2,e3,e4', '--ids', 'docs=e5,e6'], dir)
+        .status,
+    ).toBe(0);
+
+    const run = asc(['kappa', '--scheme', 'review', '--scheme', 'hand', '--json'], dir);
+
+    expect(run.status, run.stderr).toBe(0);
+    // "Each rater's latest pass" means the latest PASS review has ever written, not the (empty)
+    // result of filtering to whichever version happens to be newest -- so this is version 1's pass,
+    // compared against all six of hand's labels, agreeing on every one.
+    expect(one(run.stdout)).toMatchObject({ scheme_a: 'review', compared: 6, kappa: 1 });
+    expect(flatten(run.stderr)).not.toContain('has no annotations');
+  });
 });
 
 describe('asc kappa: two passes of one scheme', () => {
@@ -961,6 +1100,9 @@ describe('asc kappa: the flag combinations', () => {
     { args: [], says: 'no --scheme given' },
     { args: ['--scheme', 'a'], says: 'names one rater' },
     { args: ['--scheme', 'a', '--scheme', 'b', '--scheme', 'c'], says: 'given 3 times' },
+    // asc-o9m: naming the same scheme twice is a single rater in disguise -- not caught by the
+    // `schemes.length === 1` guard above, but the same defect and the same refusal.
+    { args: ['--scheme', 'x', '--scheme', 'x'], says: 'compared with itself' },
     { args: ['--scheme', 'a', '--pass', 'x'], says: 'given 1 time(s)' },
     {
       args: ['--scheme', 'a', '--scheme', 'b', '--pass', 'x', '--pass', 'y'],

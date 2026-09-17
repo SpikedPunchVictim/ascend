@@ -52,6 +52,7 @@ import {
   wrapPredicate,
   type SchemeCensus,
   type SchemeSpec,
+  type SchemeSummary,
 } from '@ascend/store';
 import { parseAssignments, parseRules } from '../annotation-rules.js';
 import { BaseCommand } from '../base.js';
@@ -180,16 +181,17 @@ export default class Annotate extends BaseCommand {
     // this is the run's addition rather than the whole vocabulary.
     const added = [...new Set([...parsed.labels, ...assignments.labels])].sort();
 
+    // The union and the replacement described at the top of this file: the vocabulary only grows,
+    // the rules are what this run says they are. Takes `existing` as a parameter rather than
+    // reading it itself, because WHERE that read happens is the whole fix for asc-q4p -- see the
+    // real write below.
+    const nextSpec = (existing: SchemeSummary | undefined): SchemeSpec => ({
+      labels: [...new Set([...(existing?.spec.labels ?? []), ...added])].sort(),
+      rules: parsed.rules.length > 0 ? parsed.rules : (existing?.spec.rules ?? []),
+    });
+
     await this.withProject(({ store }) => {
       const schemeName = flags.scheme;
-      const existing = listSchemes(store.db).find((scheme) => scheme.name === schemeName);
-
-      // The union and the replacement described at the top of this file: the vocabulary only grows,
-      // the rules are what this run says they are.
-      const spec: SchemeSpec = {
-        labels: [...new Set([...(existing?.spec.labels ?? []), ...added])].sort(),
-        rules: parsed.rules.length > 0 ? parsed.rules : (existing?.spec.rules ?? []),
-      };
 
       // Through `wrapPredicate`, so a scope carrying a second statement is refused here rather than
       // silently truncated by `prepare` -- the same guard a stored predicate gets.
@@ -200,6 +202,19 @@ export default class Annotate extends BaseCommand {
           (row) => row.id,
         ),
       );
+
+      // Every entry that exists, scope or no scope -- fetched only when `--ids` might need to tell
+      // a nonexistent id apart from one this run's `--scope` excludes. Without a `--scope`,
+      // `scopeIds` already names every entry that exists, so there is no second question to ask and
+      // no second query to run.
+      const allIds =
+        rawIds.length === 0 || scope === undefined
+          ? scopeIds
+          : new Set(
+              (store.db.prepare('SELECT id FROM entries').all() as unknown as { id: string }[]).map(
+                (row) => row.id,
+              ),
+            );
 
       const assigned = new Map<string, string>();
 
@@ -215,10 +230,19 @@ export default class Annotate extends BaseCommand {
         for (const [entryId, label] of assignments.pairs) {
           // An id outside the scope makes the report incoherent, not just incomplete: the entry is
           // labelled while the scope that the remainder is computed over does not contain it, so
-          // `labelled + unclassified` would exceed `considered`.
+          // `labelled + unclassified` would exceed `considered`. But "not in scope" is ambiguous
+          // between a typo and a real id the scope predicate excludes, and the two need different
+          // fixes -- so a nonexistent id is named as one, and only a real id that fails the scope
+          // predicate is told to drop it or widen --scope.
           if (!scopeIds.has(entryId)) {
+            if (!allIds.has(entryId)) {
+              throw refusal(
+                `entry '${entryId}' does not exist, so there is nothing to annotate under ` +
+                  `'${label}'. Check the id -- 'asc query' lists what is actually recorded.`,
+              );
+            }
             throw refusal(
-              `entry '${entryId}' is not in this run's scope ` +
+              `entry '${entryId}' exists but is excluded by this run's scope ` +
                 `${scope === undefined ? '(every entry)' : `'${scope}'`}, so it cannot be ` +
                 `annotated by a run whose remainder is computed over that scope. Drop it from ` +
                 `--ids, or widen --scope.`,
@@ -253,6 +277,11 @@ export default class Annotate extends BaseCommand {
 
       if (dryRun) {
         this.warn('dry run: nothing was written.');
+
+        // Read here, outside any transaction -- a preview writes nothing, so there is no write for
+        // a concurrent run to invalidate the input of, unlike the real write below (asc-q4p).
+        const existing = listSchemes(store.db).find((scheme) => scheme.name === schemeName);
+        const spec = nextSpec(existing);
 
         // The version is OMITTED rather than predicted. Mirroring `registerScheme`'s arithmetic here
         // would be a second implementation of "which version comes next", and a preview that
@@ -289,6 +318,21 @@ export default class Annotate extends BaseCommand {
       }
 
       const registered = withTransaction(store.db, () => {
+        // `existing` is read HERE, inside the transaction `withTransaction` opens with `BEGIN
+        // IMMEDIATE`, rather than before it. That placement is the entire fix for asc-q4p: the
+        // vocabulary union below is a read that decides what `registerScheme` writes, and a read
+        // taken before the write lock is a snapshot a concurrent `asc annotate` can invalidate
+        // between the read and the write -- check-then-act across a transaction boundary. The test
+        // in `annotations.test.ts` measures it: two `asc annotate` processes started without
+        // waiting for each other, each adding one label to the same scheme, and both labels must
+        // survive. asc-q4p records a longer four-run trace of the unfixed behaviour; it is that
+        // bead's measurement, not this one's. `registerType` (`registry.ts`) is the reference for
+        // this placement and measures the same race the other way -- a version collision instead of
+        // a dropped label -- with the fix in the same place: the read joins the transaction that
+        // commits it.
+        const existing = listSchemes(store.db).find((scheme) => scheme.name === schemeName);
+        const spec = nextSpec(existing);
+
         // One transaction, so a pass is never registered into a version that the write then fails
         // against. `registerScheme` joins this transaction rather than nesting into it.
         const scheme = registerScheme(store.db, schemeName, spec, { createdAt: now });

@@ -714,16 +714,31 @@ export function annotationPasses(
   name: string,
   version?: number,
 ): readonly AnnotationPassRow[] {
-  const scheme = requireScheme(db, name, version);
+  // Only to confirm the scheme is registered (and to resolve a named `version` to a real row) --
+  // its LATEST version is not what an unspecified `version` filters by below. A shape change that
+  // wrote no pass (a rule edited to match nothing, or run against an empty `--scope`) still mints a
+  // new version, and scoping to "the latest version" would then hide every earlier pass behind a
+  // version that itself has none -- the scheme reads as never annotated when `annotations` holds
+  // rows under an older version. An unspecified version therefore means "every pass this scheme has
+  // ever run", not "every pass under whichever version happens to be newest".
+  requireScheme(db, name, version);
+
+  const clauses = ['scheme = ?'];
+  const parameters: (string | number)[] = [name];
+  if (version !== undefined) {
+    clauses.push('scheme_version = ?');
+    parameters.push(version);
+  }
+
   const rows = db
     .prepare(
       `SELECT created_at AS created_at, count(*) AS n, max(created_by) AS created_by
          FROM annotations
-        WHERE scheme = ? AND scheme_version = ?
+        WHERE ${clauses.join(' AND ')}
         GROUP BY created_at
         ORDER BY created_at ASC`,
     )
-    .all(name, scheme.version) as unknown as {
+    .all(...parameters) as unknown as {
     created_at: string;
     n: number;
     created_by: string | null;
@@ -846,7 +861,14 @@ export function schemeCensus(
     readonly scope?: string;
   },
 ): SchemeCensus {
-  const scheme = requireScheme(db, options.scheme, options.version);
+  // Same resolution `annotationRows` uses, and for the same reason: a `pass` names its own version,
+  // so defaulting an unnamed `version` to the LATEST registered one would look up this pass under a
+  // version that never wrote it whenever a later shape change minted a version with no pass of its
+  // own. An explicit `version` still wins, so pinning stays possible.
+  const version =
+    options.version ??
+    (options.pass === undefined ? undefined : versionOfPass(db, options.scheme, options.pass));
+  const scheme = requireScheme(db, options.scheme, version);
   // Through `wrapPredicate`, so a fragment carrying a second statement is refused here rather than
   // silently truncated -- and so a caller passing a stored predicate cannot skip that refusal by
   // never having read `asc query`.

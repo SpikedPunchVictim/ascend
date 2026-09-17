@@ -135,6 +135,17 @@ export default class Kappa extends BaseCommand {
           `--pass to compare two runs of '${firstScheme}'.`,
       );
     }
+    // Two --scheme flags name two raters only when they name two DIFFERENT schemes. The same name
+    // twice resolves both raters to the one scheme (`resolve` below falls back to `secondScheme ??
+    // firstScheme`, and here they are equal), which is the single-rater case above wearing a second
+    // flag -- and undetected, it would compare a pass with itself and report kappa 1.
+    if (passes.length === 0 && schemes.length === 2 && firstScheme === secondScheme) {
+      throw usageError(
+        `--scheme was given '${firstScheme}' twice, and kappa is between two raters. A scheme ` +
+          `compared with itself agrees perfectly and measures nothing. Pass a second, different ` +
+          `--scheme, or two --pass to compare two runs of '${firstScheme}'.`,
+      );
+    }
 
     await this.withProject(({ store }) => {
       const registered = listSchemes(store.db);
