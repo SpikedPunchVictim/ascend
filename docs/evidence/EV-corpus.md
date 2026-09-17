@@ -172,6 +172,25 @@ project invariant:
 
 The second row is why the demonstration does not rely on a real concurrent writer: the write is
 ordered into the reader's own per-line callback, so the hazard is exhibited deterministically rather
-than raced for. Stated plainly — **the assertion that actually went red in the observed failure was
-never identified.** The frame was truncated by `| tail -12`, and the mechanism above is the one the
-evidence supports, not one observed directly.
+than raced for.
+
+**The assertion that fired IS identified, and an earlier version of this paragraph said it never
+could be.** The frame was truncated by `| tail -12`, but `tail` cuts the TOP, and what survived was
+the bottom of the code frame — old-file lines 231 and 232, `judgedBytes`' floor and `judgedLines`,
+with no `^` marker between them. That is not a failure *at* line 231: vitest prints two lines either
+side, so a failure at 231 has its `^` between 231 and 232. A frame whose last line is 232 with no
+marker ends there is a failure at **230**, and the marker that belonged to 230 is exactly what `tail`
+ate. Reproduced rather than argued: forcing the byte floor to fail yields the 231-with-`^` frame, and
+forcing a phantom disagreement yields the 230 frame whose last two lines are `231` / `232` — byte for
+byte the recovered fragment.
+
+So the assertion was `expect(problems).toEqual([])` — a NON-EMPTY problems list. The bead inferred
+that mechanism from reading the code; the frame confirms it was the one that actually fired.
+
+**And the bracket did not fire in any run measured after the fix.** Five runs — three isolated, two
+full suites — reported `moved = 0`. That is consistent with a rare hazard rather than a refuted one
+(the write must land inside one file's census/reader pair, and the loop is 4.2× longer under a loaded
+full suite, which is where the incident happened), but it is the honest reading: the mechanism is
+confirmed as the cause of the *observed* failure, and the fix was not observed preventing a repeat.
+The other thresholds in the file were measured alongside it and all sit far from their limits —
+`rssRatio` **0.018–0.037** against a **0.4** ceiling, `failures = 0`, `skipped = 0`.
