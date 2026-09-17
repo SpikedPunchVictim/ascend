@@ -95,3 +95,20 @@ pnpm-debug.log*
 # Not added speculatively: no such fixture exists yet, and a negation for a directory
 # that is not there is a rule nobody can verify.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# The spike's raw dumps, by directory rather than by extension.
+#
+# The harnesses write whole transcripts, whole prompts and whole entry documents into
+# spike/tmp/ — the content itself, not a summary of it. That content is real: it is
+# other people's recorded work, and it is what the measurements above are measuring.
+# This repository is public, so a stray `git add -A` would publish it, and the earlier
+# `*.db` rule would not have stopped it because the dumps are `.json` and `.txt`.
+#
+# Ignoring the DIRECTORY, not the extensions, is the point: the next harness will write
+# a fifth extension and should not have to remember this. The harnesses regenerate
+# everything under here from `~/.claude/projects` and the store, so nothing in it is
+# the only copy of anything. `spike/` itself stays tracked — eslint.config.js keeps it
+# precisely because re-litigating a measured decision requires re-running it.
+# ---------------------------------------------------------------------------
+spike/tmp/
