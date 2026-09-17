@@ -403,6 +403,25 @@ describe('diverseSample', () => {
     expect(idsOf(diverseSample(tiny, { size: 2 }))).toHaveLength(1);
   });
 
+  /**
+   * `asc-tif`'s cited measurement, re-run here rather than only quoted: ten items spread over three
+   * key values, `size: 5`, returns three. This is the shape that made the bug more than the
+   * no-categorical-property corner it was originally filed as -- ANY population whose distinct
+   * combinations are fewer than the requested size hits this, which is an ordinary shape rather than
+   * an exotic one. The under-return itself stays correct (padding would misrepresent the spread, per
+   * the test above); what has to change is that a caller can no longer be left unable to tell this
+   * apart from a small sample chosen on purpose -- see `chooseSample`'s `requested` field in
+   * `packages/cli/src/explore-sample.ts` and `SampleReport.requested` in `packages/cli/src/output.ts`.
+   */
+  it('under-returns for any population whose distinct keys are fewer than the request, not only the no-categorical-property corner', () => {
+    const tenOverThree: SignedItem[] = Array.from({ length: 10 }, (_unused, index) => ({
+      id: `e${String(index)}`,
+      keys: [`k:${String(index % 3)}`],
+    }));
+
+    expect(idsOf(diverseSample(tenOverThree, { size: 5 }))).toHaveLength(3);
+  });
+
   it('returns the whole population when the sample is at least as large', () => {
     expect(idsOf(diverseSample(population, { size: 500 }))).toHaveLength(population.length);
   });

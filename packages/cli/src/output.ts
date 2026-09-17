@@ -346,6 +346,20 @@ export interface SampleReport {
   readonly seed?: string;
   /** The achieved distribution. Empty when the mode was given no property to report on. */
   readonly strata: readonly SampleStratum[];
+  /**
+   * What the caller asked `size` to be, present ONLY when the sampler held fewer rows than that.
+   *
+   * `diverse` and `outlier` are maximisations, not draws: `diverse` in particular can run out of
+   * value space to cover before it runs out of `size` (`packages/analysis`'s greedy coverage loop
+   * stops once no remaining item adds anything new), and the population is not required to have
+   * enough distinct combinations to fill an arbitrary request. `coverage` alone cannot say so --
+   * "showing 3 of 39" reads exactly like an ordinary small sample, and a reader has no way to tell
+   * "chosen small on purpose" from "asked for more and silently got less". This field is that
+   * difference, made visible: present with the requested size whenever the sampler undershot it,
+   * omitted whenever it did not -- never present merely because the whole population was smaller
+   * than the request, since `coverage.total` already states that on its own.
+   */
+  readonly requested?: number;
 }
 
 /**
@@ -366,16 +380,34 @@ export function renderSample(sample: SampleReport): string {
   // JSON-quoted so a seed with a space or a quote in it reads as one token rather than as more
   // prose -- the seed is an operand a caller retypes, and it has to survive the round trip.
   if (sample.seed !== undefined) parts.push(`seed ${JSON.stringify(sample.seed)}`);
-  if (sample.strata.length === 0) return parts.join(', ');
+  const head = parts.join(', ');
 
-  const missed = sample.strata.filter((stratum) => stratum.selected === 0).length;
-  const lines = [
-    `${parts.join(', ')}: ${String(sample.strata.length)} strata, ${String(missed)} unsampled`,
-    ...sample.strata.map(
-      (stratum) =>
-        `  ${stratum.value ?? stratum.state}  ${String(stratum.selected)} of ${String(stratum.population)}`,
-    ),
-  ];
+  // No early return any more: a shortfall line can follow either shape of block, so both arms fall
+  // through to the same append below.
+  const lines: string[] = [];
+  if (sample.strata.length === 0) {
+    lines.push(head);
+  } else {
+    const missed = sample.strata.filter((stratum) => stratum.selected === 0).length;
+    lines.push(
+      `${head}: ${String(sample.strata.length)} strata, ${String(missed)} unsampled`,
+      ...sample.strata.map(
+        (stratum) =>
+          `  ${stratum.value ?? stratum.state}  ${String(stratum.selected)} of ${String(stratum.population)}`,
+      ),
+    );
+  }
+
+  // The reason `SampleReport.requested` exists, said in words. Its own sentence rather than folded
+  // into the head, because it is the one fact in this block that changes what a reader should do
+  // next: re-run with a smaller `--limit`, or accept that the value space is this narrow.
+  if (sample.requested !== undefined) {
+    lines.push(
+      `${sample.mode} held fewer rows than the ${String(sample.requested)} requested: the value ` +
+        'space ran out first, and padding would have misrepresented the spread.',
+    );
+  }
+
   return lines.join('\n');
 }
 
@@ -623,6 +655,26 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
  * `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` are on repo-wide, but this
  * function is deliberately regex-and-string only: a CSV writer with a state machine is
  * how a quoting bug gets in.
+ *
+ * **RFC 4180 QUOTING ONLY -- NOT SPREADSHEET FORMULA NEUTRALISATION, AND THAT IS DECLINED RATHER
+ * THAN OVERLOOKED (`asc-7mv`).** A cell beginning `=`, `+`, `-` or `@` can be evaluated as a formula
+ * by a spreadsheet application that opens this file with default settings -- Excel and Sheets both
+ * decide from the cell's leading character, not from whether the CSV field was quoted, so wrapping
+ * such a field in quotes (the other folklore fix) would not neutralise anything here even if this
+ * function did it. The fix that does work -- prefixing the cell with a leading `'` -- was considered
+ * and rejected, because it does not distinguish an injected formula from the far more common cells
+ * that legitimately start with one of those four characters: a negative number, a `+`-prefixed
+ * identifier, an `@`-handle, free text that opens with a hyphen. `--csv`'s stated reader, two
+ * comments up, is a Unix pipeline that parses `-5` back as the number it is; silently rewriting that
+ * cell to `'-5` on every row of every numeric column that can go negative would break the common,
+ * legitimate case to guard a threat this project does not itself create. The threat model, stated
+ * rather than waved at: nothing in `ascend` ever evaluates a formula, so this is not code execution
+ * in the CLI -- it requires untrusted text to reach a stored field, a human to export it with
+ * `--csv`, AND that human's spreadsheet application to run with default formula evaluation still on.
+ * All three have to line up. A caller who is going to open `--csv` output in a spreadsheet they do
+ * not fully trust the contents of should sanitise on the way in (or use `--json`, which no
+ * spreadsheet auto-evaluates); this function is not the layer that should be silently rewriting
+ * their data to compensate.
  */
 function csvField(value: unknown): string {
   const text = cellText(value);

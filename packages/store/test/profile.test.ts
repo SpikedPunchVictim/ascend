@@ -457,6 +457,58 @@ describe('profileType: the envelope around the properties', () => {
     }
   });
 
+  /**
+   * `asc-ato`: a property retyped and then reverted must be summarised by its NEWEST type, not by
+   * the last type the version scan happened to see for the first time.
+   *
+   * `declaredTypes` dedups by first occurrence, so `string -> integer -> string` leaves it as
+   * `['string', 'integer']` -- correct as a history, but its last element is `integer`, which is
+   * NOT what version 3 declares. A summary read from that element renders a string property as a
+   * numeric range.
+   */
+  it('summarises a retyped-and-reverted property by the newest version, not the last new type seen', () => {
+    const asString: TypeSpec = { name: SPEC.name, properties: [{ name: 'x', type: 'string' }] };
+    const asInteger: TypeSpec = { name: SPEC.name, properties: [{ name: 'x', type: 'integer' }] };
+    const backToString: TypeSpec = {
+      name: SPEC.name,
+      properties: [
+        { name: 'x', type: 'string' },
+        { name: 'y', type: 'boolean' },
+      ],
+    };
+
+    const store = openStore({ dir: tempDir() });
+    try {
+      registerType(store.db, asString, { registeredAt: AT });
+      registerType(store.db, asInteger, { registeredAt: AT });
+      registerType(store.db, backToString, { registeredAt: AT });
+
+      const versions = typeVersions(store.db, SPEC.name);
+      // The premise: three distinct versions, not two changes collapsed into one registration.
+      expect(versions.map((row) => row.version)).toStrictEqual([1, 2, 3]);
+
+      recordEntry(
+        store.db,
+        { type: SPEC.name, properties: { x: 'hello world', y: true } },
+        context('e-1'),
+      );
+
+      const profile = profileType(store.db, SPEC.name);
+      const x = profile?.properties.find((property) => property.name === 'x');
+
+      // The honest history is kept -- both types this property has ever held, not reduced to one.
+      expect(x?.declaredTypes).toStrictEqual(['string', 'integer']);
+      // But the SUMMARY strategy follows version 3's declaration, which is `string`: a `top`
+      // summary of the measured value, never the `range` strategy version 2 would have earned.
+      expect(x?.summary).toBe('top');
+      expect(x?.top.map((entry) => entry.value)).toStrictEqual(['hello world']);
+      expect(x?.min).toBeNull();
+      expect(x?.max).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it('reports required for a property the newest version requires', () => {
     const required: TypeSpec = {
       name: SPEC.name,

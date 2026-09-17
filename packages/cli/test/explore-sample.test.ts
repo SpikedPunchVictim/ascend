@@ -78,6 +78,7 @@ interface Envelope {
     readonly by?: string;
     readonly seed?: string;
     readonly strata: readonly Stratum[];
+    readonly requested?: number;
   };
 }
 
@@ -533,10 +534,12 @@ describe('asc explore --sample: the modes that do not allocate by a property', (
    * exhausted rather than padding to the requested size.
    *
    * One categorical property with three values means at most three rows carry any spread, so a
-   * request for eight returns three -- and the coverage line is what says so. Padding would report a
-   * diverse sample of eight where the value space had simply run out.
+   * request for eight returns three. `coverage` alone ("showing 3 of 39") reads exactly like a small
+   * sample chosen on purpose, so it is `sample.requested` that has to say a caller asked for eight --
+   * `asc-tif`: this used to be silent, and a reader had no way to tell "diverse chose three on
+   * purpose" from "diverse was asked for eight and quietly returned fewer".
    */
-  it('stops early rather than padding when the value space is exhausted', () => {
+  it('stops early rather than padding when the value space is exhausted, and says so', () => {
     const dir = project();
 
     const run = asc(['explore', SPEC.name, '--sample', 'diverse', '--limit', '8', '--json'], dir);
@@ -545,8 +548,10 @@ describe('asc explore --sample: the modes that do not allocate by a property', (
     const body = envelope(run.stdout);
     expect(body.rows).toHaveLength(3);
     expect(body.coverage).toStrictEqual({ shown: 3, total: 39, has_more: false, percent: 7.7 });
-    // No `by`, because none was asked for -- and the strata list is empty rather than invented.
-    expect(body.sample).toStrictEqual({ mode: 'diverse', strata: [] });
+    // No `by`, because none was asked for, and the strata list is empty rather than invented -- but
+    // `requested` names the shortfall `coverage` cannot: 8 were asked for, 3 were all the value
+    // space held.
+    expect(body.sample).toStrictEqual({ mode: 'diverse', strata: [], requested: 8 });
   });
 });
 

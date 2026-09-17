@@ -264,10 +264,19 @@ export function chooseSample(
     strata = [...counted.entries()].map(([key, held]) => ({ key, ...held }));
   }
 
+  // `diverse`'s greedy coverage loop (and, in principle, `outlier`'s) can run out of value space to
+  // cover before `ids.length` reaches `request.size` -- see `packages/analysis/src/sample.ts`. That
+  // is silent unless something on the report says so: `coverage` alone renders "showing 3 of 39"
+  // exactly like a small sample chosen on purpose. So `requested` is set here, once, and ONLY when
+  // the shortfall is the sampler's -- never when the whole population was smaller than `size`,
+  // which `entries.length <= ids.length` already covers and `coverage.total` already states.
+  const undershot = ids.length < request.size && ids.length < entries.length;
+
   const report: SampleReport = {
     mode: request.mode,
     ...(by === null ? {} : { by: by.name }),
     ...(seed === undefined ? {} : { seed }),
+    ...(undershot ? { requested: request.size } : {}),
     strata: strata
       .map((stratum) => {
         const label = labels.get(stratum.key);

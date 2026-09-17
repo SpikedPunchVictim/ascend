@@ -84,8 +84,9 @@ export interface PropertyProfile {
   /**
    * Every declared type this property has across the versions that declare it, deduplicated and
    * sorted. Usually one. More than one is a definition that changed a property's type between
-   * versions, which is legal -- and which `summary` can only describe for one of them (see
-   * `declaringVersions`), so the conflict is stated here rather than resolved invisibly.
+   * versions, which is legal -- and which `summary` can only describe for the NEWEST declaring
+   * version (see `declaringVersions`), so the conflict is stated here rather than resolved
+   * invisibly.
    */
   readonly declaredTypes: readonly PropertyType[];
   /** Whether the newest version declaring this property requires a decision for it. */
@@ -337,11 +338,23 @@ export function profileType(
     const newest = versions.find(
       (row) => row.version === seen.declaring[seen.declaring.length - 1],
     );
-    const declared = seen.declaredTypes[seen.declaredTypes.length - 1];
-    if (newest === undefined || declared === undefined) {
-      // Unreachable: `declaring` and `declaredTypes` are pushed together, so both have at least
-      // one element and the version they name came from `versions`.
+    if (newest === undefined) {
+      // Unreachable: `declaring` is pushed from `versions`, so the version it names came from
+      // `versions`.
       throw new Error(`profile: no declaring version for property '${name}' of '${type}'`);
+    }
+
+    // The NEWEST version's own type, not `seen.declaredTypes[length - 1]` -- that array is built by
+    // first-occurrence dedup (`propertiesOf` above), so its last element is the last type NEWLY SEEN
+    // across versions, not the newest version's type. A property retyped and then reverted (string ->
+    // integer -> string) leaves `declaredTypes` as `['string', 'integer']`, whose last element is
+    // `integer` -- summarising a string property as a numeric range. `required` two lines below
+    // already reads from `newest.spec.properties`, which is the correct pattern; this now matches it.
+    const declared = newest.spec.properties.find((property) => property.name === name)?.type;
+    if (declared === undefined) {
+      // Unreachable: `newest` is drawn from `seen.declaring`, which `propertiesOf` only ever pushes
+      // for a version whose `spec.properties` contains this property's name.
+      throw new Error(`profile: '${type}' v${String(newest.version)} does not declare '${name}'`);
     }
 
     const summary = summaryFor(declared);

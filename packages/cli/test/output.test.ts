@@ -205,6 +205,34 @@ describe('the version a consumer branches on', () => {
   });
 });
 
+/**
+ * `asc-7mv` -- CSV formula injection was reviewed, not overlooked. `csvField`'s comment
+ * (`packages/cli/src/output.ts`) records why a leading `=`/`+`/`-`/`@` is carried verbatim rather
+ * than neutralised: the conventional fix cannot tell an injected formula from an ordinary negative
+ * number or `@`-handle, and `--csv`'s own contract is a Unix pipeline reading its bytes back
+ * unchanged. This test pins the documented behaviour so a future change to `csvField` has to update
+ * the comment deliberately rather than by drifting past it.
+ */
+describe('CSV carries a leading formula-trigger character verbatim -- a decision, not a gap', () => {
+  it('does not prefix or otherwise alter a cell starting with =, +, - or @', () => {
+    const output = {
+      columns: ['v'],
+      rows: [{ v: '=CMD(bad)' }, { v: '+1' }, { v: '-5' }, { v: '@mention' }],
+    };
+
+    const lines = renderCsv(output).split('\n');
+    expect(lines).toStrictEqual(['v', '=CMD(bad)', '+1', '-5', '@mention']);
+  });
+
+  it('still quotes those same cells per RFC 4180 when they also need it', () => {
+    // A comma forces quoting regardless of the leading character -- the two rules are independent,
+    // and this is what proves this function did not silently start treating the leading character
+    // as a reason to quote (which would be the first step toward the neutralisation it declines).
+    const output = { columns: ['v'], rows: [{ v: '=A,B' }] };
+    expect(renderCsv(output)).toBe('v\n"=A,B"');
+  });
+});
+
 describe('the other two renderers are unchanged by any of this', () => {
   it('does not truncate at all, so no cut exists to get wrong', () => {
     const value = `${'a'.repeat(58)}${EMOJI}${'b'.repeat(20)}`;
@@ -227,6 +255,39 @@ describe('the other two renderers are unchanged by any of this', () => {
     expect(render('csv', output)).toContain(value);
     expect(render('json', output)).toContain(value);
     expect(render('table', output)).toContain(EMOJI);
+  });
+});
+
+/**
+ * `asc-tif` -- `SampleReport.requested`, the field that makes a sampler's silent under-return
+ * visible. `chooseSample` (`packages/cli/src/explore-sample.ts`) is what decides when to set it;
+ * this only checks that once set, the table renderer says something a reader would notice rather
+ * than folding it away.
+ */
+describe('the sample block names a shortfall the sampler did not fill', () => {
+  it('adds a line when the sample fell short of what was requested', () => {
+    const output = {
+      columns: ['v'],
+      rows: [{ v: 1 }, { v: 2 }, { v: 3 }],
+      coverage: { shown: 3, total: 39, has_more: false, percent: 7.7 },
+      sample: { mode: 'diverse', strata: [], requested: 8 },
+    };
+
+    const table = renderTable(output);
+    expect(table).toContain('diverse');
+    expect(table).toContain('held fewer rows than the 8 requested');
+  });
+
+  it('says nothing extra when the sample met its request', () => {
+    const output = {
+      columns: ['v'],
+      rows: [{ v: 1 }, { v: 2 }],
+      coverage: { shown: 2, total: 39, has_more: false, percent: 5.1 },
+      sample: { mode: 'diverse', strata: [] },
+    };
+
+    const table = renderTable(output);
+    expect(table).not.toContain('requested');
   });
 });
 
