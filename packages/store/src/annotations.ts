@@ -42,11 +42,16 @@
  * rather than written. The refusal is cheap because a failed pass writes nothing (the batch is one
  * transaction), so a genuine retry is a fresh attempt whose clock has moved on.
  *
- * WHAT THIS MODULE DOES NOT DO: it does not evaluate a rule. Reading the corpus is a query, and a
- * query needs a connection, a scope and a read path that this module has no reason to own -- the CLI
- * already runs caller SQL for `asc query`. What it does own is `wrapPredicate` (`statements.ts`),
- * which every caller must go through to turn a stored predicate into a statement, so the
- * silent-truncation hazard cannot be skipped by a future caller who never read `asc query`.
+ * WHAT THIS MODULE OWNS, AND WHAT IT REVISED. An earlier draft of this comment said the module does
+ * not evaluate a rule, on the grounds that reading the corpus is a query and the CLI already runs
+ * caller SQL for `asc query`. That was wrong, and the difference is what the two callers actually
+ * are: `asc query` takes the SQL from the user and hands it back, so the CLI never constructs a
+ * statement. Applying a stored rule is not passthrough -- something has to know the FTS table is
+ * `entries_fts` and its key column is `entry_id` and it is matched by trigram, and something has to
+ * hold the predicate up against `wrapPredicate` before interpolating it. Those are facts about the
+ * schema, so they belong here (`matchingEntryIds`), and a CLI that spelled this SQL itself would be
+ * the second place the schema is written down. What the module still does NOT own is the SCOPE of a
+ * run -- which entries a caller chose to consider -- or the reporting of the result.
  *
  * Time and ids are INJECTED, never read: see `recorder.ts` for why a default would mean this package
  * touching a clock or drawing randomness, which `test/recorder.test.ts` fails the build over.
@@ -54,7 +59,7 @@
 
 import { canonicalJson, nonJsonReason, sha256Hex } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
-import { withTransaction } from './db.js';
+import { toFtsMatch } from './search.js';
 import { wrapPredicate } from './statements.js';
 
 /**
@@ -201,7 +206,7 @@ export interface AnnotationRow {
 export interface SchemeCensus {
   /** Entries examined. Every entry unless the caller narrowed the scope. */
   readonly considered: number;
-  /** Distinct entries carrying at least one label from this scheme. */
+  /** Distinct entries IN SCOPE carrying at least one label from this scheme. */
   readonly labelled: number;
   /** Entries in scope with no label from this scheme -- the remainder. */
   readonly unclassified: number;
@@ -252,6 +257,12 @@ function normalizeSpec(spec: SchemeSpec): SchemeSpec {
           `rather than a classification.`,
       );
     }
+    // A text query that leaves no term long enough to index is the empty query's defect wearing a
+    // non-empty string: `search.ts` measures the minimum at 3 characters for the trigram tokenizer,
+    // so `fts: !!` is a rule that runs cleanly and labels nothing. Checked here rather than only
+    // where the rule is applied, because a rule that cannot match anything should not be storable --
+    // a later reader of the scheme would otherwise have to run it to discover it is dead.
+    if (rule.kind === 'fts') requireFtsMatch(rule.query, rule.label);
     return { label: rule.label, kind: rule.kind, query: rule.query };
   });
 
@@ -261,6 +272,64 @@ function normalizeSpec(spec: SchemeSpec): SchemeSpec {
 /** The stable identity of a scheme shape. Over the normalized projection, never a raw spec. */
 export function schemeHash(spec: SchemeSpec): string {
   return sha256Hex(canonicalJson(normalizeSpec(spec)));
+}
+
+/**
+ * The FTS5 match expression for a text rule, or a refusal.
+ *
+ * One function for two callers -- registration and application -- so the refusal cannot be worded
+ * two ways for the same defect, and so applying a rule cannot reach a different answer about whether
+ * it is usable than storing it did.
+ */
+function requireFtsMatch(query: string, label: string): string {
+  const match = toFtsMatch(query);
+  if (match === null) {
+    throw new SchemeError(
+      `rule for label '${label}' is the text query ${JSON.stringify(query)}, which has no term long ` +
+        `enough to match anything. The index is trigram, so terms of fewer than 3 character(s) are ` +
+        `not searchable: a rule like this runs cleanly, matches nothing, and reads as a rule that ` +
+        `was applied and found no entry. Write a longer term, or use a 'sql' rule for a condition ` +
+        `that is not a text search.`,
+    );
+  }
+  return match;
+}
+
+/**
+ * The ids of the entries one rule selects.
+ *
+ * The schema is written down here and nowhere else: `entries_fts` is the table, `entry_id` is its
+ * key column, and it is matched by trigram. A caller cannot run a stored rule without those three
+ * facts, so a caller that runs one from outside this package would be the second place they exist.
+ *
+ * The SQL kind goes through `wrapPredicate`, so a stored predicate carrying a statement terminator
+ * is refused here rather than truncated by `prepare` -- and it is refused at application time as well
+ * as at registration time, because a scheme written by a newer ascend is a legitimate thing to read
+ * and the guard has to hold for text this package did not write.
+ *
+ * The `fts` kind searches `evidence_text` only, which is what the index covers: a text rule cannot
+ * see a property value. That is a limitation of the index rather than of this function, and it is
+ * stated because a rule that silently missed half the corpus would be indistinguishable from a
+ * taxonomy that does not fit.
+ *
+ * Order is the table's, not the corpus's: the caller is selecting a set. A caller that needs a
+ * stable reading order sorts by entry id, which is what `annotationRows` does.
+ */
+export function matchingEntryIds(
+  db: DatabaseSync,
+  rule: { readonly label: string; readonly kind: SchemeRuleKind; readonly query: string },
+): readonly string[] {
+  if (rule.kind === 'sql') {
+    const rows = db.prepare(wrapPredicate('entries', rule.query)).all() as unknown as {
+      id: string;
+    }[];
+    return rows.map((row) => row.id);
+  }
+
+  const rows = db
+    .prepare('SELECT entry_id AS id FROM entries_fts WHERE entries_fts MATCH ?')
+    .all(requireFtsMatch(rule.query, rule.label)) as unknown as { id: string }[];
+  return rows.map((row) => row.id);
 }
 
 /** The registered scheme names, for the error message that tells a caller what exists. */
@@ -436,7 +505,10 @@ function requireUtc(value: string, field: string): void {
  * Write one pass of annotations. The only way an annotation is ever written.
  *
  * Atomic: every row lands or none does, so a pass is never half-written and a retry after a refusal
- * cannot have to reason about the part that got through.
+ * cannot have to reason about the part that got through. Called inside a caller's transaction the
+ * atomic unit is the caller's, which is what `asc annotate` needs -- it registers the scheme version
+ * and writes the pass under it as one commit, so no pass can ever name a version that was rolled
+ * back.
  *
  * Refuses rather than persists on: an unknown scheme or version, a label outside the scheme's
  * vocabulary, an entry that does not exist, a non-JSON value, an out-of-range confidence, an empty
@@ -459,7 +531,27 @@ export function recordAnnotations(
   const scheme = requireScheme(db, pass.scheme, pass.schemeVersion);
   const spec = JSON.parse(scheme.spec_json) as SchemeSpec;
 
-  return withTransaction(db, () => {
+  // The caller's transaction is JOINED rather than nested into, the same template `registerScheme`
+  // uses and for the same reason: SQLite rejects a nested BEGIN outright. This one is not
+  // hypothetical either -- `asc annotate` registers the scheme version and writes the pass that
+  // belongs to it in ONE transaction, so that a pass can never be recorded into a version the write
+  // then fails against. Called on its own the transaction is still opened here, so the atomicity
+  // this function promises to a single caller is unchanged; called from inside a batch, the batch
+  // is the atomic unit and this joins it.
+  const ownsTransaction = !db.isTransaction;
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
+
+  let ended = false;
+  const finish = (statement: 'COMMIT' | 'ROLLBACK'): void => {
+    if (ownsTransaction) db.exec(statement);
+    ended = true;
+  };
+  // A function rather than the inline condition, for the reason `registerType` records: TypeScript
+  // does not model a closure assigning to a captured `let`, so at the catch below the guard reads as
+  // dead while guarding the double-rollback it exists to prevent.
+  const hasOpenTransaction = (): boolean => ownsTransaction && !ended;
+
+  try {
     // Before any insert, and it has to be: with the rows already written the check could not tell
     // which of the two passes it was looking at, and neither could `asc kappa`.
     const existing = db
@@ -478,10 +570,28 @@ export function recordAnnotations(
       );
     }
 
+    // A pass is a function from entry to label, and that is a guarantee this API gives rather than
+    // one the DDL does: `annotations` carries no uniqueness constraint, so two rows for one entry
+    // in one pass are writable. They are refused here because the reader that matters cannot use
+    // them -- `cohenKappa` pairs two raters by entry id and refuses a rater who labelled an entry
+    // twice, so a pass with a duplicate would be one `asc kappa` could not read at all. Refusing at
+    // the write keeps every stored pass readable, which is the only state worth having.
+    const labelled = new Set<string>();
+
     for (const annotation of pass.annotations) {
       if (annotation.id === '') {
         throw new AnnotationError('an annotation id is empty. Every annotation names its own row.');
       }
+      if (labelled.has(annotation.entryId)) {
+        throw new AnnotationError(
+          `entry '${annotation.entryId}' appears twice in one pass of scheme '${pass.scheme}'. One ` +
+            `pass gives one label per entry, because that is what a pass is to a reader comparing ` +
+            `two of them: kappa pairs the raters by entry id and cannot rank two labels for one ` +
+            `entry. Give each pass one label per entry -- an entry with two labels under one pass ` +
+            `is either two passes or a contradiction.`,
+        );
+      }
+      labelled.add(annotation.entryId);
       if (annotation.label === '') {
         throw new AnnotationError(
           `annotation for entry '${annotation.entryId}' has an empty label. An empty label is a ` +
@@ -559,13 +669,18 @@ export function recordAnnotations(
       );
     }
 
+    finish('COMMIT');
+
     return {
       scheme: pass.scheme,
       schemeVersion: scheme.version,
       createdAt: context.createdAt,
       count: pass.annotations.length,
     };
-  });
+  } catch (error) {
+    if (hasOpenTransaction()) db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 /** Every registered scheme's latest version, oldest name first. */
@@ -622,6 +737,26 @@ export function annotationPasses(
 }
 
 /**
+ * Which version of `name` wrote the pass at `pass`, or `undefined` when no pass has that timestamp.
+ *
+ * Ordered by version descending so an ambiguous timestamp resolves to the newest, deterministically
+ * rather than by row order. Two versions cannot share a pass timestamp through this API -- a pass
+ * exists only as the `created_at` of its rows, and `recordAnnotations` refuses a second pass at a
+ * millisecond that version already used -- but the ORDER BY is what makes that a fact about the
+ * answer rather than about the plan the query planner happened to choose.
+ */
+function versionOfPass(db: DatabaseSync, name: string, pass: string): number | undefined {
+  const row = db
+    .prepare(
+      'SELECT scheme_version AS version FROM annotations WHERE scheme = ? AND created_at = ? ' +
+        'ORDER BY scheme_version DESC LIMIT 1',
+    )
+    .get(name, pass) as { version: number } | undefined;
+
+  return row?.version;
+}
+
+/**
  * The annotations of one scheme, optionally narrowed to one version or one pass.
  *
  * Order is `created_at`, then entry id: a caller building a rater's label list gets a stable order
@@ -632,7 +767,17 @@ export function annotationRows(
   db: DatabaseSync,
   options: { readonly scheme: string; readonly version?: number; readonly pass?: string },
 ): readonly AnnotationRow[] {
-  const scheme = requireScheme(db, options.scheme, options.version);
+  // A pass names its own version, so a caller holding a pass timestamp does not also have to know
+  // which version wrote it. `recordAnnotations` says the pass IS its timestamp, and the identity is
+  // only useful if a read can be driven by it alone -- otherwise the one thing that identifies a
+  // pass is the one thing insufficient to find it. An explicit `version` still wins, so pinning
+  // stays possible. The version is not defaulted to the latest first: doing that would look up an
+  // older pass under the newest version and report an empty pass, which is the answer for "there is
+  // no such pass" rather than for "that pass is under another version".
+  const version =
+    options.version ??
+    (options.pass === undefined ? undefined : versionOfPass(db, options.scheme, options.pass));
+  const scheme = requireScheme(db, options.scheme, version);
   const clauses = ['scheme = ?', 'scheme_version = ?'];
   const parameters: (string | number)[] = [options.scheme, scheme.version];
   if (options.pass !== undefined) {
@@ -683,6 +828,14 @@ export function annotationRows(
  * `label` filtering and the pass filter are separate on purpose: a census over ALL passes answers
  * "what has this scheme ever said", while a census over one pass answers "what did this run say".
  * Both are real questions and the caller has to say which one it is asking.
+ *
+ * **`labelled` is restricted to the scope, so `labelled + unclassified = considered` holds for every
+ * input rather than for the inputs that happen to satisfy it.** Counting every entry the pass
+ * labelled and subtracting that from a narrowed `considered` makes `unclassified` a subtraction
+ * between two different bodies: a pass that labelled four entries outside a scope of one reports
+ * `1 - 4`, and the remainder -- the number the architecture calls the signal that a taxonomy is
+ * incomplete -- comes out negative. The scope is what defines the body, so an annotation outside it
+ * is not part of what is being measured.
  */
 export function schemeCensus(
   db: DatabaseSync,
@@ -710,12 +863,16 @@ export function schemeCensus(
   const parameters: (string | number)[] = [options.scheme, scheme.version];
   if (options.pass !== undefined) parameters.push(options.pass);
 
+  // One fragment, used by both queries below, so the two cannot drift into counting different
+  // bodies -- which is the shape of the bug this clause was added to close.
+  const inScope = ` AND a.entry_id IN (SELECT id FROM (${scopeStatement}))`;
+
   const labelled = (
     db
       .prepare(
         `SELECT count(DISTINCT a.entry_id) AS n
            FROM annotations a
-          WHERE a.scheme = ? AND a.scheme_version = ?${passClause}`,
+          WHERE a.scheme = ? AND a.scheme_version = ?${passClause}${inScope}`,
       )
       .get(...parameters) as { n: number }
   ).n;
@@ -724,7 +881,7 @@ export function schemeCensus(
     .prepare(
       `SELECT a.label AS label, count(DISTINCT a.entry_id) AS n
          FROM annotations a
-        WHERE a.scheme = ? AND a.scheme_version = ?${passClause}
+        WHERE a.scheme = ? AND a.scheme_version = ?${passClause}${inScope}
         GROUP BY a.label
         ORDER BY n DESC, a.label ASC`,
     )

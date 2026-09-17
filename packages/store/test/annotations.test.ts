@@ -8,6 +8,7 @@ import {
   annotationPasses,
   annotationRows,
   listSchemes,
+  matchingEntryIds,
   openStore,
   recordAnnotations,
   recordEntry,
@@ -326,6 +327,87 @@ describe('writing annotations', () => {
     });
   });
 
+  it('refuses two labels for one entry inside one pass', () => {
+    // `annotations` has no uniqueness constraint, so this is writable and the refusal is an API
+    // guarantee. It exists for the reader: `cohenKappa` pairs two raters by entry id and refuses a
+    // rater who labelled an entry twice, so a stored pass with a duplicate is one nothing can read.
+    withStore((store) => {
+      const ids = seed(store, 1);
+      registerScheme(store.db, 'review', spec(['bug', 'docs']), { createdAt: AT });
+
+      expect(() =>
+        recordAnnotations(
+          store.db,
+          {
+            scheme: 'review',
+            annotations: [
+              { id: 'a1', entryId: ids[0] as string, label: 'bug' },
+              { id: 'a2', entryId: ids[0] as string, label: 'docs' },
+            ],
+          },
+          { createdAt: LATER },
+        ),
+      ).toThrow(/appears twice in one pass/);
+
+      // And across passes it is ordinary, which is the line this draws: what is refused is one pass
+      // disagreeing with itself, not a scheme being re-run.
+      recordAnnotations(
+        store.db,
+        { scheme: 'review', annotations: [{ id: 'a1', entryId: ids[0] as string, label: 'bug' }] },
+        { createdAt: AT },
+      );
+      recordAnnotations(
+        store.db,
+        { scheme: 'review', annotations: [{ id: 'a2', entryId: ids[0] as string, label: 'docs' }] },
+        { createdAt: LATER },
+      );
+
+      expect(annotationPasses(store.db, 'review').map((pass) => pass.count)).toEqual([1, 1]);
+    });
+  });
+
+  it('finds a pass by its timestamp alone, without being told which version wrote it', () => {
+    // A pass IS its timestamp (`recordAnnotations`), and that identity is only useful if a read can
+    // be driven by it: a scheme that has been edited has passes under more than one version, so a
+    // caller holding a pass timestamp would otherwise have to know the version to read back the pass
+    // it already has.
+    withStore((store) => {
+      const ids = seed(store, 2);
+      registerScheme(store.db, 'review', spec(['bug']), { createdAt: AT });
+      recordAnnotations(
+        store.db,
+        { scheme: 'review', annotations: [{ id: 'a1', entryId: ids[0] as string, label: 'bug' }] },
+        { createdAt: AT },
+      );
+
+      // A rule change mints version 2, so AT's pass now sits under a version that is no longer
+      // latest -- which is exactly the state the resolution exists for.
+      registerScheme(
+        store.db,
+        'review',
+        spec(['bug'], [{ label: 'bug', kind: 'sql', query: '1=1' }]),
+        { createdAt: LATER },
+      );
+      recordAnnotations(
+        store.db,
+        { scheme: 'review', annotations: [{ id: 'b1', entryId: ids[1] as string, label: 'bug' }] },
+        { createdAt: LATER },
+      );
+
+      expect(listSchemes(store.db)[0]?.version).toBe(2);
+      expect(
+        annotationRows(store.db, { scheme: 'review', pass: AT }).map((row) => row.entryId),
+      ).toEqual([ids[0]]);
+      // An explicit version still wins, so pinning stays possible and the resolution cannot quietly
+      // override a caller who named one.
+      expect(annotationRows(store.db, { scheme: 'review', version: 2, pass: AT })).toEqual([]);
+      // With no pass and no version the answer is the latest version, unchanged.
+      expect(annotationRows(store.db, { scheme: 'review' }).map((row) => row.entryId)).toEqual([
+        ids[1],
+      ]);
+    });
+  });
+
   it('refuses a second pass in the same millisecond as the first', () => {
     // A pass IS its timestamp -- there is no run column -- so two passes sharing one are one pass as
     // far as any reader can tell, and `asc kappa` comparing them would compare a pass with itself
@@ -476,6 +558,88 @@ describe('writing annotations', () => {
   });
 });
 
+describe('applying a rule to the corpus', () => {
+  /** Entries whose `text` property and evidence text are both the same word, so a rule can name one. */
+  const ruleStore = (body: (store: Store) => void): void => {
+    withStore((store) => {
+      registerType(store.db, type, { registeredAt: AT });
+      const words = ['crash', 'install', 'crash'];
+      words.forEach((word, index) => {
+        recordEntry(
+          store.db,
+          { type: 'note', properties: { text: word } },
+          {
+            id: `e${String(index + 1)}`,
+            recordedAt: AT,
+            ascendVersion: '0.0.0',
+            evidenceText: `the ${word} happened`,
+          },
+        );
+      });
+      body(store);
+    });
+  };
+
+  it('selects the entries a SQL predicate matches', () => {
+    ruleStore((store) => {
+      expect(
+        matchingEntryIds(store.db, {
+          label: 'bug',
+          kind: 'sql',
+          query: "evidence_text LIKE '%crash%'",
+        }),
+      ).toEqual(['e1', 'e3']);
+    });
+  });
+
+  it('searches evidence text only, which is what the index covers', () => {
+    // Stated rather than discovered: a `fts:` rule cannot see a property value, so `install` is a
+    // match in the evidence text above and NOT a match on `properties.text`, which says the same
+    // word. A rule that silently missed half the corpus would read as a taxonomy that does not fit.
+    ruleStore((store) => {
+      const ids = matchingEntryIds(store.db, { label: 'docs', kind: 'fts', query: 'install' });
+      expect(ids).toEqual(['e2']);
+      expect(
+        matchingEntryIds(store.db, { label: 'docs', kind: 'fts', query: 'properties.text' }),
+      ).toEqual([]);
+    });
+  });
+
+  it('refuses a stored predicate carrying a second statement, at application time too', () => {
+    // The guard has to hold for text this package did not write: a scheme registered by a newer
+    // ascend, or by an older one, is a legitimate thing to read.
+    ruleStore((store) => {
+      expect(() =>
+        matchingEntryIds(store.db, {
+          label: 'bug',
+          kind: 'sql',
+          query: '1=1); DELETE FROM annotations; --',
+        }),
+      ).toThrow(/must be a single condition/);
+    });
+  });
+
+  it('refuses a text rule with no searchable term, so it can never be stored or run', () => {
+    // `fts: !!` is non-empty and matches nothing -- the empty query's defect wearing a non-empty
+    // string. Refused at registration (so a dead rule is not storable) and again at application
+    // (so a stored one cannot run).
+    ruleStore((store) => {
+      expect(() =>
+        registerScheme(
+          store.db,
+          'review',
+          spec(['docs'], [{ label: 'docs', kind: 'fts', query: '!!' }]),
+          { createdAt: AT },
+        ),
+      ).toThrow(/no term long enough/);
+
+      expect(() => matchingEntryIds(store.db, { label: 'docs', kind: 'fts', query: 'ab' })).toThrow(
+        /no term long enough/,
+      );
+    });
+  });
+});
+
 describe('the census, and the remainder that is the signal', () => {
   const censusStore = (body: (store: Store, ids: readonly string[]) => void): void => {
     withStore((store) => {
@@ -535,9 +699,12 @@ describe('the census, and the remainder that is the signal', () => {
     });
   });
 
-  it('counts an entry once even when a scheme labelled it twice', () => {
-    // Distinct entries, not rows. Two rules of one scheme can both fire on an entry, and a census
-    // that counted rows would report more labelled entries than the corpus holds.
+  it('counts only the labels inside the scope, so the remainder cannot come out negative', () => {
+    // The scope narrows `labelled` as well as `considered`. Without that, a pass that labelled four
+    // entries reports four against a scope of one, and the remainder -- the number this function
+    // exists to produce -- comes out as 1 - 4. The labels are chosen so a filter on `considered`
+    // alone cannot pass: four entries carry a label, one of them is in scope, and only that one may
+    // be counted or listed.
     censusStore((store, ids) => {
       recordAnnotations(
         store.db,
@@ -545,20 +712,63 @@ describe('the census, and the remainder that is the signal', () => {
           scheme: 'review',
           annotations: [
             { id: 'a1', entryId: ids[0] as string, label: 'bug' },
-            { id: 'a2', entryId: ids[0] as string, label: 'docs' },
+            { id: 'a2', entryId: ids[1] as string, label: 'zzz' },
+            { id: 'a3', entryId: ids[2] as string, label: 'zzz' },
+            { id: 'a4', entryId: ids[3] as string, label: 'docs' },
           ],
+        },
+        { createdAt: LATER },
+      );
+
+      expect(schemeCensus(store.db, { scheme: 'review', scope: "id = 'e2'" })).toEqual({
+        considered: 1,
+        labelled: 1,
+        unclassified: 0,
+        labels: [{ label: 'zzz', count: 1 }],
+      });
+    });
+  });
+
+  it('counts DISTINCT entries, so a second pass over one entry is not a second labelled entry', () => {
+    // Distinct entries, not rows -- and this is now the ONLY way to reach the difference, because
+    // `recordAnnotations` refuses two labels for one entry inside a single pass. Across passes it is
+    // ordinary: a re-run labels the same entries again, and a census over all passes answers "what
+    // has this scheme ever said" with as many rows as there have been passes.
+    censusStore((store, ids) => {
+      recordAnnotations(
+        store.db,
+        {
+          scheme: 'review',
+          annotations: [{ id: 'a1', entryId: ids[0] as string, label: 'bug' }],
+        },
+        { createdAt: AT },
+      );
+      recordAnnotations(
+        store.db,
+        {
+          scheme: 'review',
+          annotations: [{ id: 'a2', entryId: ids[0] as string, label: 'docs' }],
         },
         { createdAt: LATER },
       );
 
       const census = schemeCensus(store.db, { scheme: 'review' });
 
+      // Two rows, one entry. A row count would report 2 of 5 labelled and a remainder of 3.
       expect(census.labelled).toBe(1);
       expect(census.unclassified).toBe(4);
       expect(census.labels).toEqual([
         { label: 'bug', count: 1 },
         { label: 'docs', count: 1 },
       ]);
+      // And the same facts over one pass, where the remainder is about that run rather than the
+      // scheme's history: one entry considered out of the five in scope.
+      expect(schemeCensus(store.db, { scheme: 'review', pass: LATER })).toEqual({
+        considered: 5,
+        labelled: 1,
+        unclassified: 4,
+        labels: [{ label: 'docs', count: 1 }],
+      });
     });
   });
 

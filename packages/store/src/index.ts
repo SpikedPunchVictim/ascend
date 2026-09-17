@@ -104,6 +104,7 @@ export {
   annotationPasses,
   annotationRows,
   listSchemes,
+  matchingEntryIds,
   recordAnnotations,
   registerScheme,
   RESERVED_SCHEME,
