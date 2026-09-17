@@ -1,7 +1,19 @@
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import {
+  appendFileSync,
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  classifyTranscript,
   defaultTranscriptRoot,
   scanTranscripts,
   streamCorpus,
@@ -56,18 +68,33 @@ const MIN_BYTES = 100 * 1024 * 1024;
  * Only files untouched for this long are judged by the conservation law.
  *
  * `~/.claude/projects` is a LIVE directory: other Claude Code sessions append to
- * it while this runs, and the census and the sweep are two separate reads. A file
- * written between them would fail a law it never broke. A file quiet for a minute
- * is not going to be written in the next ten milliseconds.
+ * it while this runs, and the census and the reader are two separate reads of the
+ * same path. A file written between them fails a law it never broke.
  *
- * The excluded files are COUNTED and asserted against, not silently dropped --
- * on this machine the active session is usually one of them, and a filter that
- * quietly excluded everything would turn this test into the vacuous one it
- * replaced.
+ * The age test alone does not close that, and an earlier version of this file
+ * said it did -- "a file quiet for a minute is not going to be written in the next
+ * ten milliseconds". The judgement loop measured 29,037 ms in a passing full-suite
+ * run, so the window is the whole loop rather than the instant after the filter,
+ * and a file one millisecond past the boundary is exposed to all of it. The age
+ * test narrows the population; `judgeQuiet` below is what brackets each file that
+ * is in it.
+ *
+ * Files excluded this way -- too young, or written while being judged -- are
+ * COUNTED and asserted against, not silently dropped. On this machine the active
+ * session is usually one of them, and a filter that quietly excluded everything
+ * would turn this test into the vacuous one it replaced.
  */
 const QUIET_MS = 60_000;
 
-/** How much of the corpus the law must actually have judged. */
+/**
+ * How much of the corpus the quiet filter must have selected.
+ *
+ * Checked BEFORE the loop, deliberately: this is the cheap statement that the
+ * filter did not swallow the corpus, and the loop costs half a minute, so a
+ * corpus that would never be judged should fail in milliseconds instead. How
+ * much of it the law actually reached is a different question, and `judgedBytes`
+ * is what answers that one.
+ */
 const MIN_JUDGED_FILES = 400;
 
 const FIXTURE_CORPUS = fileURLToPath(new URL('./fixtures/corpus', import.meta.url));
@@ -115,9 +142,18 @@ const expectedLines = (c: Census): number =>
  * malformed lines there would contradict the input rather than test the code.
  * A quiet file in the real corpus has nothing writing it and was measured at
  * zero malformed, so there the same check is the strongest statement available.
+ *
+ * `visit` is the reader's own per-line callback, passed straight through. The
+ * real-corpus caller uses the default no-op; the bracket demonstration below
+ * uses it to order a write into the reader's pass with no sleep and no race.
  */
-async function disagreements(file: TranscriptFile, c: Census, quiet: boolean): Promise<string[]> {
-  const counters = await streamTranscript(file, () => {});
+async function disagreements(
+  file: TranscriptFile,
+  c: Census,
+  quiet: boolean,
+  visit: () => void = () => {},
+): Promise<string[]> {
+  const counters = await streamTranscript(file, visit);
   const problems: string[] = [];
 
   const expected = expectedLines(c);
@@ -150,6 +186,52 @@ async function disagreements(file: TranscriptFile, c: Census, quiet: boolean): P
   }
 
   return problems;
+}
+
+/**
+ * A file's mtime, or `null` when it cannot be read.
+ *
+ * Both a `null` stat and a changed one mean the same thing to every caller here:
+ * the file is in flight, and no law may be applied to the bytes under it.
+ */
+function mtimeMs(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+interface Judged {
+  readonly problems: readonly string[];
+  /** What the law says the reader must deliver, from the census alone. */
+  readonly lines: number;
+  readonly bytes: number;
+}
+
+/**
+ * Judge one quiet file, bracketed by a stat on each side of the pair.
+ *
+ * `null` means the file was written while it was being judged, so the caller
+ * counts it as excluded rather than holding it to a law the bytes under it broke.
+ *
+ * The bracket spans BOTH passes -- `census` reads the file off the disk and the
+ * reader inside `disagreements` reads it again -- because the phantom problem
+ * needs only the write to land between them, and nothing narrower catches that.
+ * A stat taken before the loop instead brackets nothing: the loop runs for tens
+ * of seconds, and the age filter cannot speak for what happens during them.
+ */
+async function judgeQuiet(
+  file: TranscriptFile,
+  visit: () => void = () => {},
+): Promise<Judged | null> {
+  const before = mtimeMs(file.path);
+  const c = await census(file.path);
+  const problems = await disagreements(file, c, true, visit);
+  const after = mtimeMs(file.path);
+
+  if (before === null || after === null || before !== after) return null;
+  return { problems, lines: expectedLines(c), bytes: c.bytes };
 }
 
 describe('the conservation law itself', () => {
@@ -191,6 +273,56 @@ describe('the conservation law itself', () => {
   });
 });
 
+describe('the quiet-window bracket', () => {
+  /**
+   * A transcript of `n` well-formed lines.
+   *
+   * The reader and the census are the REAL ones here; only the bytes are made
+   * up. `~/.claude/projects` is read-only, and the hazard cannot be demonstrated
+   * against it without writing to it -- so the corpus is a scratch copy of the
+   * shape, which is the part that matters, rather than the real thing.
+   */
+  const lines = (n: number): string =>
+    `${Array.from({ length: n }, (_unused, i) => JSON.stringify({ type: 'user', text: `line ${String(i)}` })).join('\n')}\n`;
+
+  it('discards a judgement made across a write, and reports one unbracketed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ascend-dh0-2-'));
+    try {
+      const project = join(root, '-tmp-project');
+      mkdirSync(project, { recursive: true });
+      const path = join(project, 'session.jsonl');
+      writeFileSync(path, lines(3), 'utf8');
+      const file = classifyTranscript(root, path);
+
+      // THE LOSING ARM. The same census/reader pair with no stat on either side
+      // -- which is what this file did before the bracket existed. The write is
+      // ORDERED between the two passes rather than raced into them, so this is
+      // the hazard itself and not a coin flip. If it ever stops disagreeing, the
+      // bracket below is guarding against nothing and this test should say so.
+      const c = await census(path);
+      appendFileSync(path, lines(1), 'utf8');
+      expect(await disagreements(file, c, true)).not.toEqual([]);
+
+      // THE SHIPPED BRACKET, over the same scenario. Its write is triggered from
+      // the reader's own per-line callback, so it lands inside the pair without a
+      // sleep and without depending on how the kernel schedules an append against
+      // a read. Written once: the point is one write inside the window, not a
+      // file that grows while it is being read.
+      let wrote = false;
+      const judged = await judgeQuiet(file, () => {
+        if (wrote) return;
+        wrote = true;
+        appendFileSync(path, lines(1), 'utf8');
+      });
+
+      expect(wrote).toBe(true); // the bracket was actually exercised
+      expect(judged).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe.skipIf(!available)('the reader against the real corpus', () => {
   it('delivers exactly the lines the bytes contain, for every quiet file', async () => {
     const scan = await scanTranscripts(ROOT);
@@ -201,14 +333,9 @@ describe.skipIf(!available)('the reader against the real corpus', () => {
     for (const file of scan.files) {
       // An unreadable `stat` means the file left between the walk and here; that
       // is the same in-flight traffic the quiet window exists to exclude.
-      let mtime = 0;
-      try {
-        mtime = statSync(file.path).mtimeMs;
-      } catch {
-        active.push(file.path);
-        continue;
-      }
-      if (mtime < cutoff) quiet.push(file);
+      const mtime = mtimeMs(file.path);
+      if (mtime === null) active.push(file.path);
+      else if (mtime < cutoff) quiet.push(file);
       else active.push(file.path);
     }
 
@@ -216,13 +343,22 @@ describe.skipIf(!available)('the reader against the real corpus', () => {
     expect(quiet.length).toBeGreaterThanOrEqual(MIN_JUDGED_FILES);
 
     const problems: string[] = [];
+    const moved: string[] = [];
+    let judgedFiles = 0;
     let judgedLines = 0;
     let judgedBytes = 0;
     for (const file of quiet) {
-      const c = await census(file.path);
-      problems.push(...(await disagreements(file, c, true)));
-      judgedLines += expectedLines(c);
-      judgedBytes += c.bytes;
+      const judged = await judgeQuiet(file);
+      if (judged === null) {
+        // Written while this loop was running. Counted, and counted as NOT
+        // judged: no law was applied to it, so it must not pad the totals below.
+        moved.push(file.path);
+        continue;
+      }
+      problems.push(...judged.problems);
+      judgedFiles += 1;
+      judgedLines += judged.lines;
+      judgedBytes += judged.bytes;
       if (problems.length > 20) break; // enough to diagnose; not 843 lines of it
     }
 
@@ -230,6 +366,13 @@ describe.skipIf(!available)('the reader against the real corpus', () => {
     expect(problems).toEqual([]);
     expect(judgedBytes).toBeGreaterThanOrEqual(MIN_BYTES);
     expect(judgedLines).toBeGreaterThan(0);
+    // Every quiet file is accounted for -- judged, or written while the loop ran.
+    // Stated only when the loop reached the end, because an early break is
+    // already reported by `problems` above and would otherwise fail here too,
+    // with a message that says less about what went wrong.
+    if (problems.length === 0) {
+      expect(judgedFiles + moved.length).toBe(quiet.length);
+    }
     // The excluded files are reported, so a filter that swallowed the corpus
     // cannot read as a clean pass.
     expect(active.length + quiet.length).toBe(scan.files.length);

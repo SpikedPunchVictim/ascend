@@ -144,3 +144,34 @@ character, the spike's arithmetic reports **31**.
   `subagents/` directory, silently collapsing 94 % of the corpus into one group. Recorded because it
   was caught by measuring the corpus shape and would otherwise have shipped.
 - n ≥ 2 still does not hold. One corpus, one user, one machine.
+
+# Amendment, 2026-09-16: the check above went red on a correct reader, and the harness was at fault
+
+The conservation law was sound. The **apparatus around it** was not, and this is the amendment for it
+(`asc-dh0.2`). `reader-real-corpus.test.ts` decides, once before its loop, which files are quiet
+enough to judge — and then judged each one with **two** reads of the same path, the byte census and
+the reader, with nothing between them. A file another Claude Code session appended to between those
+two reads disagrees with itself, and the harness reported it as corruption in the reader. Observed:
+**1 failure in 4 runs**, one of them the pre-commit hook, and it blocked `asc-9y1`'s first commit.
+
+The docblock justified the age filter with a margin that does not exist: *"a file quiet for a minute
+is not going to be written in the next ten milliseconds."* Measured loop duration — the actual window
+of opportunity — is **29,037 ms** in a passing full-suite run and **6,877 ms** isolated. The claim is
+off by roughly **2,900×**, and the exposure is the whole loop rather than the instant after the
+filter, so the margin also moves with machine load by **4.2×** on its own. A file one millisecond
+past the 60 s boundary was exposed to all of it.
+
+The fix brackets each file with a stat on either side of the pair and refuses to judge one whose
+mtime moved, counting it instead. Two things were then shown to FAIL before being trusted, per the
+project invariant:
+
+| mutation | result |
+|---|---|
+| the re-stat comparison removed | `expected { problems: [], lines: 4, bytes: 128 } to be null` |
+| the demonstration's ordered write removed | `expected [] to not deeply equal []` |
+
+The second row is why the demonstration does not rely on a real concurrent writer: the write is
+ordered into the reader's own per-line callback, so the hazard is exhibited deterministically rather
+than raced for. Stated plainly — **the assertion that actually went red in the observed failure was
+never identified.** The frame was truncated by `| tail -12`, and the mechanism above is the one the
+evidence supports, not one observed directly.
