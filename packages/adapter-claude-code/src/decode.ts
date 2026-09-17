@@ -44,19 +44,38 @@ export type DecodedLine =
   | { readonly ok: true; readonly record: TranscriptRecord }
   | { readonly ok: false; readonly failure: DecodeFailure };
 
+/** The byte-order mark a text editor or a BOM-emitting writer prepends. Not JSON whitespace. */
+const BOM = '\uFEFF';
+
 /**
  * Decode one line. Total: never throws, for any input.
  *
  * `empty` is decided on the TRIMMED line, so a whitespace-only line is blank
  * rather than malformed. `JSON.parse` accepts leading/trailing whitespace, so
- * this only moves genuinely-blank lines out of the malformed count.
+ * this only moves genuinely-blank lines out of the malformed count. `String.prototype.trim`
+ * treats U+FEFF as whitespace too (ECMAScript's own `WhiteSpace` production includes it), which
+ * is why a line holding nothing BUT a BOM already classifies as `empty` rather than reaching the
+ * strip below.
+ *
+ * A SINGLE leading BOM is stripped before parsing (`asc-c10`): `JSON.parse` rejects U+FEFF as a
+ * syntax error even though it is invisible in an editor and legal at the front of a UTF-8 file
+ * per the Unicode standard, so a line whose JSON payload is perfectly well formed classified as
+ * `not_json` -- indistinguishable, in the reader's undifferentiated `malformed` total, from
+ * genuine truncation. Only ONE is stripped, and only at the very front: a line with two,
+ * `\uFEFF\uFEFF{...}`, still fails to parse and is reported as `not_json` rather than silently
+ * unwrapped twice, because a doubled mark is evidence of something stranger than routine
+ * encoding and this function's job is to tolerate the routine case, not every case. A BOM
+ * appearing anywhere else in the line -- inside a JSON string's own content, say -- is untouched:
+ * only a match at index 0 is a byte-order mark, everywhere else it is data.
  */
 export function decodeLine(line: string): DecodedLine {
   if (line.trim().length === 0) return { ok: false, failure: 'empty' };
 
+  const unmarked = line.startsWith(BOM) ? line.slice(BOM.length) : line;
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(line);
+    parsed = JSON.parse(unmarked);
   } catch {
     return { ok: false, failure: 'not_json' };
   }

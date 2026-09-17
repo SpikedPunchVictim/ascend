@@ -103,6 +103,52 @@ describe('classifyTranscript: a trailing separator on the root changes nothing',
   });
 });
 
+describe('classifyTranscript: a non-canonical root still matches the paths found under it', () => {
+  // `asc-c8g`: `reader.ts` discovers files with `node:path`'s `join`, which normalizes as it
+  // joins -- so a root spelled with a `./` prefix, an `a/../` detour, or a doubled separator
+  // must still be recognised as the same root the discovered paths were built from. Before the
+  // fix, `segmentsUnder` folded `\` to `/` but never collapsed any of these, so EVERY file
+  // compared unequal to it, fell into the "not under this root" branch, and was fabricated a
+  // project label off the root's own `basename` -- for the whole corpus, not just one file.
+  //
+  // Each fixture's `path` is what `path.join(root, ...)` actually returns for that `root` --
+  // i.e. what `reader.ts` would hand `classifyTranscript` -- so these are not hypothetical
+  // inputs; they are the exact pairing a non-canonical `--root` produces today.
+
+  it('matches a root spelled with a leading "./"', () => {
+    const classified = classifyTranscript('./corpus', `corpus/proj/${UUID}.jsonl`);
+    expect(classified.kind).toBe('session');
+    expect(classified.project).toBe('proj');
+    expect(classified.session).toBe(UUID);
+  });
+
+  it('matches a root spelled with an "a/../b" detour', () => {
+    const classified = classifyTranscript(
+      `${ROOT}/alpha/../beta`,
+      `${ROOT}/beta/proj/${UUID}.jsonl`,
+    );
+    expect(classified.kind).toBe('session');
+    expect(classified.project).toBe('proj');
+  });
+
+  it('matches a root spelled with a doubled separator', () => {
+    const classified = classifyTranscript(
+      `${ROOT}//projects`,
+      `${ROOT}/projects/proj/${UUID}.jsonl`,
+    );
+    expect(classified.kind).toBe('session');
+    expect(classified.project).toBe('proj');
+  });
+
+  it('still reports the path exactly as given, even when the root was non-canonical', () => {
+    // The identity field is untouched by the comparison's own normalization -- only the
+    // decision of WHICH project a path falls under is affected.
+    const rawPath = `corpus/proj/${UUID}.jsonl`;
+    const classified = classifyTranscript('./corpus', rawPath);
+    expect(classified.path).toBe(rawPath);
+  });
+});
+
 describe('classifyTranscript: separators do not change the answer', () => {
   it('classifies a Windows path identically to the POSIX path it describes', () => {
     // The corpus is `~/.claude/projects` on whatever platform the user runs. If

@@ -122,9 +122,12 @@ export interface DeriveCounters {
    * Events recognised but NOT emitted, because they had no stable identity: a denial or
    * compaction with no `session_id`, a skill activation with no record uuid, or a verification
    * run whose verdict was readable but could not be attributed to a session and would
-   * otherwise have been a first pass or a change. Should be zero; a non-zero value means the
-   * corpus holds rows nothing can key, which is a real limitation to state rather than a bug
-   * to hide.
+   * otherwise have been a first pass or a change. Also a denial or a correction whose record
+   * carries MORE than one `tool_result` block (`toolUseId`, `asc-ik9`): `toolDenialKind` and
+   * `userFeedback` are record-level facts, so with more than one candidate invocation there is
+   * no way to know which one they name, and guessing would be a silent misattribution rather
+   * than a visible drop. Should be zero; a non-zero value means the corpus holds rows nothing
+   * can key, which is a real limitation to state rather than a bug to hide.
    */
   unkeyable: number;
   /**
@@ -797,13 +800,35 @@ export function createDeriver(): Deriver {
   };
 }
 
-/** The tool_use id a record's first block refers to, when it refers to one. */
+/**
+ * The tool_use id a record's `tool_result` block refers to, when the record carries EXACTLY
+ * one such block.
+ *
+ * `asc-ik9`: this used to be first-match-wins, which was correct only because every record
+ * measured across the whole local corpus carries at most one `tool_result` -- never proven, only
+ * observed, and the transcript format is a third party's, not this project's. `toolDenialKind`
+ * and `userFeedback` (the two callers of this function, `tool_denial` and `user_correction`) are
+ * RECORD-level facts: the record says a denial or a correction happened, but not which of
+ * several tool_result blocks it is about. Picking the first one when there is more than one
+ * would silently attribute the fact to a possibly-wrong tool call -- a wrong entry recorded is a
+ * worse failure than a dropped one, because a drop is visible in `counters.unkeyable` (both
+ * callers already treat `undefined` that way) and a wrong attribution is invisible until
+ * something else contradicts it. So more than one candidate refuses the id entirely, exactly
+ * like zero candidates already did.
+ *
+ * `verification_run`, below, is deliberately NOT built on this function: "did any of this
+ * record's tool_result blocks report a Bash check?" is well-defined per block, with no record-
+ * level fact to attribute, so it loops over every block rather than requiring exactly one.
+ */
 function toolUseId(blocksIn: readonly Record<string, unknown>[]): string | undefined {
+  let found: string | undefined;
   for (const block of blocksIn) {
     const id = str(block['tool_use_id']);
-    if (id !== undefined) return id;
+    if (id === undefined) continue;
+    if (found !== undefined) return undefined;
+    found = id;
   }
-  return undefined;
+  return found;
 }
 
 /**

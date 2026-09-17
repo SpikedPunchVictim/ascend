@@ -81,6 +81,36 @@ describe('decodeLine: malformed has two distinct causes', () => {
   });
 });
 
+describe('decodeLine: a UTF-8 BOM is not corruption', () => {
+  // `asc-c10`: this exact line, `'\uFEFF{}'`, was already in the hostile-input list below --
+  // but that test only asserted `not.toThrow()`, never the classification, so a decoder that
+  // classified it `not_json` (which it did) passed anyway. That is the gap this block closes.
+
+  it('decodes JSON preceded by a single leading BOM', () => {
+    expect(decodeLine('\uFEFF{}')).toEqual({ ok: true, record: {} });
+    expect(recordOf('\uFEFF{"type":"user","n":0}')).toEqual({ type: 'user', n: 0 });
+  });
+
+  it('classifies a line holding ONLY a BOM as empty, not malformed', () => {
+    // `String.prototype.trim` treats U+FEFF as whitespace, so this reaches the same `empty`
+    // branch a blank line does, before the strip below it ever runs.
+    expect(decodeLine('\uFEFF')).toEqual({ ok: false, failure: 'empty' });
+  });
+
+  it('does NOT unwrap a second, doubled BOM', () => {
+    // Only the routine case -- one writer, one mark -- is tolerated. Two is a stranger shape
+    // than a BOM-emitting writer produces, and reported honestly as malformed rather than
+    // silently stripped twice.
+    expect(decodeLine('\uFEFF\uFEFF{}')).toEqual({ ok: false, failure: 'not_json' });
+  });
+
+  it('leaves a BOM alone when it is not at the very front', () => {
+    // Only a match at index 0 is a byte-order mark; here it is a character inside the JSON
+    // string's own content, and stripping it would corrupt the value the transcript recorded.
+    expect(recordOf('{"a":"\uFEFF"}')).toEqual({ a: '\uFEFF' });
+  });
+});
+
 describe('decodeLine is total', () => {
   it('never throws, for any input', () => {
     // "Advisory analysis must never crash the thing it observes." A decoder that

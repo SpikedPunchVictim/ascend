@@ -52,22 +52,26 @@
  * cannot regenerate.
  */
 
+import { resolve } from 'node:path';
 import { Flags } from '@oclif/core';
 import {
   DERIVED_SOURCE,
   DERIVED_TYPES,
   createDeriver,
   defaultTranscriptRoot,
+  derivedType,
   streamCorpus,
   type CorpusTotals,
   type DeriveCounters,
   type DerivedEntry,
 } from '@ascend/adapter-claude-code';
+import { canonicalJson, validateEntry } from '@ascend/core';
 import {
   DuplicateEntryError,
   findEntry,
   recordEntry,
   withTransaction,
+  type RecordedEntry,
   type Store,
 } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
@@ -99,7 +103,16 @@ function idFor(entry: DerivedEntry): string {
 interface TypeOutcome {
   readonly written: number;
   readonly present: number;
+  /** Failed the type's own value constraints and was never offered to the store. */
+  readonly rejected: number;
+  /**
+   * Proposed an id an entry with DIFFERENT content already occupies. Distinct from `present`,
+   * which is the id proposing the SAME content again -- ordinary idempotency. See `asc-90h`.
+   */
+  readonly collided: number;
 }
+
+const ZERO_OUTCOME: TypeOutcome = { written: 0, present: 0, rejected: 0, collided: 0 };
 
 /** The corpus read: what was there, and what could not be used. */
 interface Sweep {
@@ -112,6 +125,39 @@ interface Sweep {
 interface Writes {
   readonly counts: ReadonlyMap<string, TypeOutcome>;
   readonly warnings: readonly string[];
+  /** One line per rejected entry, naming the id, the field and why it failed. */
+  readonly rejections: readonly string[];
+  /** One line per cross-file id collision. See `asc-90h`. */
+  readonly collisions: readonly string[];
+}
+
+/**
+ * A fingerprint of everything about an entry that is NOT its id -- the content a re-ingest of
+ * the same event must reproduce exactly.
+ *
+ * `entry.key` and hence `idFor(entry)` deliberately excludes the file path (`asc-90h`'s own
+ * mechanism note: the per-file collision counter cannot see a cross-file reuse of a
+ * `(session_id, uuid)` or `(session_id, tool_use_id)` pair). So the id alone cannot tell a
+ * genuine re-run of the same event from two DIFFERENT events that happened to reuse that pair
+ * across two transcript files. Comparing content is the cheapest thing that can: two files
+ * describing the same event will always agree on it, and `properties_json`/`cwd`/`branch`/
+ * `evidence_text` together are the entirety of what a derived entry says beyond its id.
+ */
+function fingerprint(entry: {
+  readonly properties: Readonly<Record<string, unknown>>;
+  // Optional rather than `| undefined`: a `DerivedEntry` OMITS a locality it does not have rather
+  // than carrying it as undefined, and the two spellings are not assignable to one another. The
+  // `?? null` below folds either into the one value the fingerprint compares.
+  readonly cwd?: string | null;
+  readonly branch?: string | null;
+  readonly evidenceText?: string | null;
+}): string {
+  return canonicalJson({
+    properties: entry.properties,
+    cwd: entry.cwd ?? null,
+    branch: entry.branch ?? null,
+    evidenceText: entry.evidenceText ?? null,
+  });
 }
 
 export default class IngestClaudeCode extends BaseCommand {
@@ -129,7 +175,8 @@ export default class IngestClaudeCode extends BaseCommand {
     root: Flags.string({
       description:
         'The directory holding transcript projects. Defaults to ~/.claude/projects, which is ' +
-        'where Claude Code writes them.',
+        'where Claude Code writes them. Resolved to an absolute, normalized path before use, ' +
+        'so `./corpus` and `/abs/path/corpus` name the same run.',
     }),
     'dry-run': Flags.boolean({
       description:
@@ -141,7 +188,18 @@ export default class IngestClaudeCode extends BaseCommand {
     const { flags } = await this.parse(IngestClaudeCode);
     const format = this.resolveFormat(flags);
     const dryRun = this.flagValue(flags['dry-run']);
-    const root = this.optionalFlag(flags.root) ?? defaultTranscriptRoot();
+    // CANONICALIZED, not refused (`asc-c8g`). `--root ./corpus` or `--root a/../corpus` is an
+    // entirely ordinary thing to type, and `resolve` (pure, lexical, no filesystem access) turns
+    // either into the exact absolute path `scanTranscripts` will walk and `classifyTranscript`
+    // will compare against -- so the two can no longer disagree about what is "under" it. Before
+    // this, a non-canonical `--root` was passed through verbatim: `segmentsUnder`'s prefix
+    // comparison folded separators but never collapsed a `./` or `..` segment, so the SAME
+    // directory reached through `path.join` (already normalized) compared unequal to it, every
+    // file read as "not under this root", and the fallback branch fabricated a project label
+    // from the root's own basename for the whole corpus -- unrepairable afterward, because entry
+    // ids are keyed on `session_id`, not on `project`, so a corrected re-run reports the
+    // mislabelled rows `already present` and leaves them exactly as they are.
+    const root = resolve(this.optionalFlag(flags.root) ?? defaultTranscriptRoot());
 
     await this.withProject(async (project) => {
       const rows: Record<string, unknown>[] = [];
@@ -166,7 +224,7 @@ export default class IngestClaudeCode extends BaseCommand {
         rows.push({
           [ACTION]: 'entry',
           [TARGET]: spec.name,
-          [OUTCOME]: describe(writes.counts.get(spec.name) ?? { written: 0, present: 0 }),
+          [OUTCOME]: describe(writes.counts.get(spec.name) ?? ZERO_OUTCOME),
         });
       }
 
@@ -229,23 +287,86 @@ export default class IngestClaudeCode extends BaseCommand {
     const recordedAt = this.now();
     const ascendVersion = this.ascendVersion();
 
-    const tally = (type: string, wrote: boolean): void => {
-      const current = counts.get(type) ?? { written: 0, present: 0 };
-      counts.set(type, {
-        written: current.written + (wrote ? 1 : 0),
-        present: current.present + (wrote ? 0 : 1),
-      });
+    const tally = (type: string, outcome: keyof TypeOutcome): void => {
+      const current = counts.get(type) ?? ZERO_OUTCOME;
+      counts.set(type, { ...current, [outcome]: current[outcome] + 1 });
     };
 
-    if (dryRun) {
-      for (const entry of entries) {
-        tally(entry.type, findEntry(store.db, idFor(entry)) === undefined);
+    /**
+     * Enforce the value constraints the derived types declare, on EVERY entry, before either
+     * branch below sees one -- `asc-vaw`.
+     *
+     * `derive.ts` narrows fields by JS type only (a number, a non-empty string); the range and
+     * format constraints (a nonnegative duration, an offset timestamp) live solely in the type's
+     * own spec, by that file's own design -- the deriver must not invent a property the spec
+     * does not declare, and `validateEntry` is what proves the two agree
+     * (`derive-real-corpus.test.ts` runs exactly this check over the live corpus).
+     *
+     * Before this, the only place that ran `validateEntry` was `recordEntry`, deep inside the
+     * one transaction the whole sweep shares. A single out-of-range value threw
+     * `EntryRejectedError` -- deliberately NOT in the set `errors.ts` handles -- which unwound
+     * the transaction and rolled back every entry from every project in the corpus. Filtering
+     * here means a bad value is skipped and counted exactly like a malformed line
+     * (`index.ts`'s own contract: "a malformed line is counted and skipped, never fatal"),
+     * and it never reaches the transaction at all -- so the existing one-transaction-per-sweep
+     * shape stays safe without having to be narrowed to per-file or per-project.
+     *
+     * Run before the `dryRun` branch too, which is the other half of the same bug: a preview
+     * that only asked `findEntry(...) === undefined` cannot see a rejection the real run would
+     * hit, so `--dry-run` reported a corpus as clean that the real run then died on.
+     */
+    const rejections: string[] = [];
+    const collisions: string[] = [];
+    const valid: DerivedEntry[] = [];
+    for (const entry of entries) {
+      const spec = derivedType(entry.type);
+      if (spec === undefined) {
+        // Not a transcript problem: every `entry.type` the deriver emits names one of the five
+        // types declared in `derived-types.ts`, so this would mean the two had drifted apart.
+        tally(entry.type, 'rejected');
+        rejections.push(
+          `${entry.type} ${idFor(entry)}: type: no definition named '${entry.type}' is ` +
+            `registered by this adapter -- this is an adapter bug, not a transcript problem.`,
+        );
+        continue;
       }
-      return { counts, warnings };
+      const validated = validateEntry(spec, { properties: entry.properties });
+      if (!validated.ok) {
+        tally(entry.type, 'rejected');
+        for (const issue of validated.errors) {
+          rejections.push(
+            `${entry.type} ${idFor(entry)}: ${issue.field}: ${issue.problem} (${issue.fix})`,
+          );
+        }
+        continue;
+      }
+      valid.push(entry);
+    }
+
+    if (dryRun) {
+      for (const entry of valid) {
+        // Same content check as the real run's `DuplicateEntryError` branch (`asc-90h`), so a
+        // preview cannot describe a collision as an ordinary "already present" the real run
+        // would not agree with.
+        const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
+        if (existing === undefined) {
+          tally(entry.type, 'written');
+        } else if (fingerprint(existing) === fingerprint(entry)) {
+          tally(entry.type, 'present');
+        } else {
+          tally(entry.type, 'collided');
+          collisions.push(
+            `${entry.type} ${idFor(entry)}: this id already holds a DIFFERENT entry. Two ` +
+              `transcript files reused the same (session, record) identity for different ` +
+              `content, so the second one would be refused rather than silently dropped.`,
+          );
+        }
+      }
+      return { counts, warnings, rejections, collisions };
     }
 
     withTransaction(store.db, () => {
-      for (const entry of entries) {
+      for (const entry of valid) {
         try {
           const { warnings: issues } = recordEntry(
             store.db,
@@ -273,7 +394,7 @@ export default class IngestClaudeCode extends BaseCommand {
               ...(entry.evidenceText === undefined ? {} : { evidenceText: entry.evidenceText }),
             },
           );
-          tally(entry.type, true);
+          tally(entry.type, 'written');
           for (const issue of issues) {
             warnings.push(`${entry.type} ${idFor(entry)}: ${issue.field}: ${issue.problem}`);
           }
@@ -282,7 +403,27 @@ export default class IngestClaudeCode extends BaseCommand {
           // exactly what this command promises. Every other error is rethrown, so a real problem
           // cannot be mistaken for idempotency working.
           if (error instanceof DuplicateEntryError) {
-            tally(entry.type, false);
+            // `asc-90h`: a duplicate id is ordinary idempotency ONLY when it is a re-proposal of
+            // the SAME content. `derive.ts`'s id has no file component, so two files that reuse a
+            // `(session_id, uuid)` or `(session_id, tool_use_id)` pair for DIFFERENT events
+            // collide on id -- and the per-file `keyCollisions` counter cannot see it, because it
+            // resets on every file change. Reading the existing row back and comparing content is
+            // what tells the two cases apart; skipping the comparison is exactly how this bug
+            // stayed invisible.
+            const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
+            const sameContent =
+              existing !== undefined && fingerprint(existing) === fingerprint(entry);
+            if (sameContent) {
+              tally(entry.type, 'present');
+            } else {
+              tally(entry.type, 'collided');
+              collisions.push(
+                `${entry.type} ${idFor(entry)}: this id already holds a DIFFERENT entry. Two ` +
+                  `transcript files reused the same (session, record) identity for different ` +
+                  `content, so the second one was refused rather than silently dropped. This ` +
+                  `event is not recoverable without a key that also names the file it came from.`,
+              );
+            }
             continue;
           }
           throw error;
@@ -290,7 +431,7 @@ export default class IngestClaudeCode extends BaseCommand {
       }
     });
 
-    return { counts, warnings };
+    return { counts, warnings, rejections, collisions };
   }
 
   /**
@@ -358,6 +499,40 @@ export default class IngestClaudeCode extends BaseCommand {
       );
     }
 
+    // A rejected entry is a real event the transcript held that failed one of its own type's
+    // value constraints (`asc-vaw`) -- reported the same way as `unkeyable` and
+    // `unverdictable` above, rather than aborting the run: one bad value must not cost the
+    // corpus every valid entry from every other project. `--dry-run` reaches this too, since
+    // the check runs before either branch, so the two can no longer disagree about which
+    // entries would land.
+    const rejected = [...writes.counts.values()].reduce((sum, one) => sum + one.rejected, 0);
+    if (rejected > 0) {
+      this.warn(
+        `${String(rejected)} derived entr${rejected === 1 ? 'y' : 'ies'} failed validation ` +
+          `against ${rejected === 1 ? 'its' : 'their'} own type definition and ` +
+          `${rejected === 1 ? 'was' : 'were'} not written. They are not recoverable by ` +
+          `re-running unless the source transcript changes: see the line(s) below for what ` +
+          `failed and why.`,
+      );
+    }
+    for (const rejection of writes.rejections) this.warn(rejection);
+
+    // A cross-file id collision (`asc-90h`): two transcripts reused the same per-event identity
+    // for different content. The second one cannot be recorded -- entries are immutable and this
+    // id is taken -- so, like a rejection, it must be a visible count rather than folded into the
+    // "already present" that ordinary idempotency produces.
+    const collided = [...writes.counts.values()].reduce((sum, one) => sum + one.collided, 0);
+    if (collided > 0) {
+      this.warn(
+        `${String(collided)} derived entr${collided === 1 ? 'y' : 'ies'} collided with a ` +
+          `DIFFERENT entry already recorded under the same id, and ` +
+          `${collided === 1 ? 'was' : 'were'} not written. See the line(s) below; recovering ` +
+          `${collided === 1 ? 'it' : 'them'} needs a re-ingest under a key that also names the ` +
+          `file it came from.`,
+      );
+    }
+    for (const collision of writes.collisions) this.warn(collision);
+
     for (const warning of writes.warnings) this.warn(warning);
   }
 }
@@ -367,12 +542,17 @@ export default class IngestClaudeCode extends BaseCommand {
  *
  * `already present` is spelled out rather than left as a bare zero, because on a re-run every row
  * says it and the reader's question is "did this work?" -- which a row of zeroes answers
- * ambiguously. `none` is a third state, not a flavour of the first two: it means the deriver found
- * nothing of this type at all, which is a fact about the corpus rather than about the store.
+ * ambiguously. `none` is a fifth state, not a flavour of the other four: it means the deriver
+ * found nothing of this type at all, which is a fact about the corpus rather than about the store.
+ * `rejected` (`asc-vaw`) and `collided` (`asc-90h`) are each reported alongside the others rather
+ * than folded into one of them, because neither is written AND neither is ordinary idempotency --
+ * each is a real event the store refused, for a different reason.
  */
 function describe(counts: TypeOutcome): string {
-  if (counts.written === 0 && counts.present === 0) return 'none';
-  if (counts.written === 0) return `${String(counts.present)} already present`;
-  if (counts.present === 0) return `${String(counts.written)} new`;
-  return `${String(counts.written)} new, ${String(counts.present)} already present`;
+  const parts: string[] = [];
+  if (counts.written > 0) parts.push(`${String(counts.written)} new`);
+  if (counts.present > 0) parts.push(`${String(counts.present)} already present`);
+  if (counts.rejected > 0) parts.push(`${String(counts.rejected)} rejected`);
+  if (counts.collided > 0) parts.push(`${String(counts.collided)} collided`);
+  return parts.length === 0 ? 'none' : parts.join(', ');
 }

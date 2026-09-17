@@ -20,7 +20,7 @@
  * about two things at once.
  */
 
-import { basename } from 'node:path';
+import { basename, posix } from 'node:path';
 
 export const JSONL_SUFFIX = '.jsonl';
 
@@ -41,7 +41,16 @@ export type TranscriptKind =
   | 'unclassified';
 
 export interface TranscriptFile {
-  /** The path as given. Not resolved: the caller's path is the caller's identity. */
+  /**
+   * The path as given. Not resolved: the caller's path is the caller's identity.
+   *
+   * This is about WHAT IS STORED, not about how `root` and `path` are COMPARED to decide
+   * `project` -- see `segmentsUnder`'s own doc (`asc-c8g`) for the latter. Normalizing this
+   * field would mean two callers who read the identical bytes through differently-spelled
+   * paths could no longer tell their `TranscriptFile`s apart, which is the identity this
+   * comment protects; it says nothing about the arithmetic that decides which project a path
+   * falls under.
+   */
   readonly path: string;
   /**
    * The first path segment under the root -- Claude Code's encoded project
@@ -67,10 +76,23 @@ export interface TranscriptFile {
  * the OS would file the same record differently on two machines while looking
  * perfectly correct on each. Separators are folded to `/` first so a Windows
  * path classifies exactly as the POSIX path it describes.
+ *
+ * Both sides are also collapsed with `posix.normalize` before the prefix comparison --
+ * `asc-c8g`. `reader.ts` builds a discovered file's path with `node:path`'s own `join`, which
+ * normalizes as it joins, so a `root` spelled `./corpus`, `corpus//sub`, or `a/../corpus`
+ * folded to `/` but left otherwise untouched compared UNEQUAL to the very same directory
+ * reached through the normalized path `join` produced. Every file then read as "not under this
+ * root" and the fallback branch below guessed a project name off the root's own basename for
+ * the WHOLE corpus -- silent, and, because entry ids are keyed on `session_id` rather than on
+ * `project`, unrepairable by a corrected re-run (a later `--root corpus` reports the mislabelled
+ * rows `already present` and leaves them as they are).
+ *
+ * This normalizes ONLY the two strings being compared here, and never the `path` a
+ * `TranscriptFile` reports -- see that field's own doc for why its spelling is left alone.
  */
 function segmentsUnder(root: string, path: string): string[] | null {
-  const prefix = `${foldSeparators(root)}/`;
-  const folded = foldSeparators(path);
+  const prefix = `${normalizeForComparison(root)}/`;
+  const folded = normalizeForComparison(path);
   if (!folded.startsWith(prefix)) return null;
   return folded
     .slice(prefix.length)
@@ -81,6 +103,18 @@ function segmentsUnder(root: string, path: string): string[] | null {
 /** `/`-separated, with any trailing separators removed. */
 function foldSeparators(value: string): string {
   return value.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/**
+ * `foldSeparators`, plus `.` and `..` segments collapsed the same way `node:path`'s `join`
+ * (which built the `path` half of this comparison) already collapses them. `posix.normalize`
+ * is used rather than the platform `normalize` for the same reason `path.relative` is avoided
+ * above: a Windows-spelled root has already been folded to `/` by this point, and running it
+ * through the WINDOWS normalizer would refold it back to `\`.
+ */
+function normalizeForComparison(value: string): string {
+  const folded = foldSeparators(value);
+  return posix.normalize(folded === '' ? '.' : folded).replace(/\/+$/, '');
 }
 
 /**

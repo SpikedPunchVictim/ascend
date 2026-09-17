@@ -648,6 +648,144 @@ describe('asc ingest claude-code', () => {
     expect(run.stdout).toContain('--dry-run');
     expect(run.stdout).toContain('--root');
   });
+
+  /**
+   * `asc-vaw`: an out-of-range value must be skipped and counted, like a malformed line, rather
+   * than aborting the whole corpus-wide transaction.
+   *
+   * The adapter narrows `durationMs` by JS type only (`derive.ts`'s `num`): a negative number is
+   * still a number, so it reaches the store, where `context_compaction`'s `duration_ms` is a
+   * `duration` and `buildSchema` (`schema.ts`) refuses a negative one. Before the fix that threw
+   * `EntryRejectedError` inside the one `withTransaction` the whole sweep shares, and
+   * `EntryRejectedError` is deliberately not in the set `errors.ts` catches -- so it unwound the
+   * transaction and rolled back every entry, including these five from an entirely unrelated
+   * project's transcript.
+   */
+  it('skips and counts one out-of-range value rather than rolling back an unrelated project', () => {
+    const dir = project();
+    transcripts(dir);
+
+    const otherProject = join(dir, '.claude', 'projects', '-Users-me-other');
+    mkdirSync(otherProject, { recursive: true });
+    const badRecord = {
+      sessionId: 'bad-sess',
+      uuid: 'bad-uuid',
+      timestamp: '2026-01-02T03:04:11.000Z',
+      ...RECORD_AT,
+      compactMetadata: {
+        trigger: 'auto',
+        preTokens: 1000,
+        postTokens: 200,
+        cumulativeDroppedTokens: 800,
+        // Out of range: `duration` is `nonnegative` (schema.ts). Type-narrowing alone (`num` in
+        // derive.ts) accepts this; only the type's own spec refuses it.
+        durationMs: -5,
+      },
+    };
+    writeFileSync(join(otherProject, 'bad-sess.jsonl'), `${JSON.stringify(badRecord)}\n`);
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    // Exit 0, not 1: one bad value is a drop, not a failure of the whole run.
+    expect(run.status).toBe(0);
+
+    // The five entries from the UNRELATED, valid project all landed -- the failure this test
+    // guards against is exactly their loss.
+    expect(stored(dir).entries).toBe(5);
+
+    // The bad entry is visible in the report rather than silently absorbed into "1 new".
+    expect(outcomes(run.stdout)['context_compaction']).toBe('1 new, 1 rejected');
+    expect(run.stderr).toContain('1 derived entry failed validation');
+    expect(run.stderr).toContain('duration_ms');
+  });
+
+  it('DRY-RUN: sees the same out-of-range value the real run would refuse, rather than a false green', () => {
+    // `asc-vaw`'s other half: `--dry-run` used to ask only `findEntry(...) === undefined`, which
+    // cannot see a rejection the real run would hit -- so it reported a corpus as cleanly
+    // ingestable that the real run then died on. Same fixture as the previous test, `--dry-run`
+    // instead.
+    const dir = project();
+    transcripts(dir);
+
+    const otherProject = join(dir, '.claude', 'projects', '-Users-me-other');
+    mkdirSync(otherProject, { recursive: true });
+    const badRecord = {
+      sessionId: 'bad-sess',
+      uuid: 'bad-uuid',
+      timestamp: '2026-01-02T03:04:11.000Z',
+      ...RECORD_AT,
+      compactMetadata: {
+        trigger: 'auto',
+        preTokens: 1000,
+        postTokens: 200,
+        cumulativeDroppedTokens: 800,
+        durationMs: -5,
+      },
+    };
+    writeFileSync(join(otherProject, 'bad-sess.jsonl'), `${JSON.stringify(badRecord)}\n`);
+
+    const run = asc(['ingest', 'claude-code', '--dry-run'], dir);
+
+    expect(run.status).toBe(0);
+    // The preview already shows the rejection the real run would hit -- the whole point.
+    expect(outcomes(run.stdout)['context_compaction']).toBe('1 new, 1 rejected');
+    expect(run.stderr).toContain('1 derived entry failed validation');
+    // And still nothing was written: a dry run stays a dry run.
+    expect(stored(dir)).toMatchObject({ entries: 0, types: 0 });
+  });
+
+  /**
+   * `asc-90h`: two transcript files that reuse a `(session_id, uuid)` pair for two DIFFERENT
+   * events collide on id -- `derive.ts`'s key carries no file component -- and the per-file
+   * `keyCollisions` counter cannot see it, because it resets on every file change. The second
+   * file's event used to be swallowed as ordinary idempotency ("1 already present"); it must
+   * now be a visible, distinct outcome.
+   */
+  it('reports a cross-file id collision rather than swallowing it as idempotency', () => {
+    const dir = project();
+    const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
+    mkdirSync(corpus, { recursive: true });
+
+    const feedbackRecord = (feedback: string, timestamp: string): Record<string, unknown> => ({
+      sessionId: 'sess-collide',
+      uuid: 'shared-uuid-1',
+      timestamp,
+      ...RECORD_AT,
+      userFeedback: feedback,
+    });
+
+    // Two DIFFERENT physical files, deliberately not two records in one file: the mechanism is
+    // the deriver's per-file reset, which only a real file boundary exercises.
+    writeFileSync(
+      join(corpus, 'sess-collide-a.jsonl'),
+      `${JSON.stringify(feedbackRecord('use approach A', '2026-01-02T03:05:00.000Z'))}\n`,
+    );
+    writeFileSync(
+      join(corpus, 'sess-collide-b.jsonl'),
+      `${JSON.stringify(feedbackRecord('actually use approach B', '2026-01-02T03:05:05.000Z'))}\n`,
+    );
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    expect(run.status).toBe(0);
+
+    // The FIRST file's event landed -- sorted path order, so `sess-collide-a.jsonl` is read
+    // before `sess-collide-b.jsonl`.
+    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    try {
+      const row = db
+        .prepare('SELECT evidence_text AS t FROM entries WHERE type_name = ?')
+        .get('user_correction') as { t: string };
+      expect(row.t).toBe('use approach A');
+    } finally {
+      db.close();
+    }
+
+    // The SECOND is reported as a collision, not folded into "already present" -- the exact
+    // silent drop `asc-90h` names.
+    expect(outcomes(run.stdout)['user_correction']).toBe('1 new, 1 collided');
+    expect(run.stderr).toContain('1 derived entry collided with a DIFFERENT entry');
+  });
 });
 
 /**

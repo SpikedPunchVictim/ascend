@@ -268,6 +268,27 @@ describe('tool_denial', () => {
     expect(out).toEqual([]);
     expect(deriver.counters.unkeyable).toBe(1);
   });
+
+  it('FRAGILE no more (asc-ik9): refuses to guess which tool a record with TWO tool_results denies', () => {
+    // `toolDenialKind` is a fact about the RECORD, not about either block, so with two
+    // candidate invocations there is no way to know which one it names. Before the fix this
+    // silently resolved to the FIRST block's id -- indistinguishable from a correct denial
+    // unless the first id happened to be the right one.
+    const deriver = createDeriver();
+    const out = deriver.accept(
+      record(
+        [
+          { type: 'tool_result', tool_use_id: 'toolu_a', is_error: true },
+          { type: 'tool_result', tool_use_id: 'toolu_b', is_error: true },
+        ],
+        { toolDenialKind: 'user-rejected' },
+      ),
+      FILE,
+    );
+    deriver.drain();
+    expect(out).toEqual([]);
+    expect(deriver.counters.unkeyable).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -665,6 +686,27 @@ describe('user_correction', () => {
   it('keys on the record uuid', () => {
     const entries = derive([record([], { uuid: 'fuuid', userFeedback: 'stop' })]);
     expect(ofType(entries, 'user_correction')[0]?.key).toBe('sess-1:fuuid');
+  });
+
+  it('FRAGILE no more (asc-ik9): OMITS tool_name rather than guessing when a record has TWO tool_results', () => {
+    // The entry itself keys on `sessionId:uuid`, not on the tool call, so ambiguity here does
+    // not drop the entry -- but before the fix `tool_name` silently took the FIRST block's
+    // invocation, which is a fabricated attribution when that is the wrong one. Omitting is the
+    // honest answer: "which tool" is not knowable from this record alone.
+    const entries = derive([
+      invoke('t1', 'Bash', 'rm -rf build'),
+      invoke('t2', 'Write', 'notes.md'),
+      record(
+        [
+          { type: 'tool_result', tool_use_id: 't1' },
+          { type: 'tool_result', tool_use_id: 't2' },
+        ],
+        { uuid: 'fuuid', userFeedback: 'stop' },
+      ),
+    ]);
+    const [correction] = ofType(entries, 'user_correction');
+    expect(correction).toBeDefined();
+    expect(correction?.properties).not.toHaveProperty('tool_name');
   });
 
   it('attaches evidence_text ONLY to this type', () => {
