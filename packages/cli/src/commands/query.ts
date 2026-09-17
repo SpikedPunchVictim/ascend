@@ -40,7 +40,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { BaseCommand } from '../base.js';
 import { refusal, usageError } from '../errors.js';
 import { normalizeRow } from '../query-values.js';
-import { statementCount } from '../sql.js';
+import { statementCount } from '@ascend/store';
 import type { Output } from '../output.js';
 
 /**

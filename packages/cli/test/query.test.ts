@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { OUTPUT_CONTRACT_VERSION, statementCount } from '@ascend/cli';
+import { OUTPUT_CONTRACT_VERSION } from '@ascend/cli';
 import { attachHeadroom, openStore } from '@ascend/store';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -138,44 +138,11 @@ function rows(stdout: string): readonly Record<string, unknown>[] {
   return (JSON.parse(stdout) as { rows: Record<string, unknown>[] }).rows;
 }
 
-describe('the statement scanner', () => {
-  it('counts one statement however it is spelled', () => {
-    // Each of these is ONE statement with a `;` that must not separate: a literal, a doubled escape
-    // inside a literal, a doubled quote inside an identifier, a bracket, and a line comment. An
-    // undercount here is the defect the scanner exists to prevent, and it is invisible from the
-    // command -- a dropped second statement looks exactly like a query that returned fewer rows.
-    for (const sql of [
-      'SELECT 1',
-      'SELECT 1;',
-      "SELECT ';' AS semi",
-      "SELECT 'it''s; fine' AS quoted",
-      'SELECT "a"";b" AS ident',
-      'SELECT `a``;b` AS backtick',
-      'SELECT [a;b] AS bracketed',
-      'SELECT 1 -- ; not a separator',
-      'SELECT 1 /* ; neither is this */',
-      '  SELECT 1  ;  ',
-    ]) {
-      expect(statementCount(sql), sql).toBe(1);
-    }
-  });
-
-  it('counts what is genuinely more than one', () => {
-    expect(statementCount('SELECT 1; SELECT 2')).toBe(2);
-    expect(statementCount('SELECT 1; SELECT 2; SELECT 3')).toBe(3);
-    expect(statementCount('SELECT 1;;SELECT 2')).toBe(2);
-    // A `;` inside a comment does not hide a real separator that follows it.
-    expect(statementCount('SELECT 1 -- x\n; SELECT 2')).toBe(2);
-  });
-
-  it('counts nothing for what SQLite would refuse as an empty statement', () => {
-    expect(statementCount('')).toBe(0);
-    expect(statementCount('   \n\t ')).toBe(0);
-    expect(statementCount(';')).toBe(0);
-    expect(statementCount('-- only a comment')).toBe(0);
-    expect(statementCount('/* only a comment */')).toBe(0);
-  });
-});
+// The statement scanner's own cases moved to `packages/store/test/statements.test.ts` on
+// 2026-09-17, with the function: it stopped being a CLI detail when `asc annotate`'s rule predicate
+// became its second caller and the check had to run where the predicate is wrapped into a statement.
+// What remains here is the behaviour that only the command can show -- that a multi-statement query
+// is refused before the store is opened -- which is asserted above.
 
 describe('running one statement', () => {
   it('prints a table by default and the versioned envelope with --json', () => {

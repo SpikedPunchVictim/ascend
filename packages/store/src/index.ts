@@ -97,6 +97,34 @@ export {
 
 export { entryIds, pageEntries, type PageOptions, type PageResult } from './pages.js';
 
+export { statementCount, wrapPredicate } from './statements.js';
+
+export {
+  AnnotationError,
+  annotationPasses,
+  annotationRows,
+  listSchemes,
+  recordAnnotations,
+  registerScheme,
+  RESERVED_SCHEME,
+  schemeCensus,
+  schemeHash,
+  SchemeError,
+  type AnnotationContext,
+  type AnnotationInput,
+  type AnnotationPass,
+  type AnnotationPassRow,
+  type AnnotationRow,
+  type RecordedAnnotations,
+  type RegisteredScheme,
+  type SchemeCensus,
+  type SchemeContext,
+  type SchemeRule,
+  type SchemeRuleKind,
+  type SchemeSpec,
+  type SchemeSummary,
+} from './annotations.js';
+
 export {
   signatures,
   type EntrySignature,

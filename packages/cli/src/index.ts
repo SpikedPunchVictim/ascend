@@ -32,8 +32,13 @@ export type { BlockingCapable, ErrorEmitting, PipeGuardDeps } from './streams.js
  * to the point it would test the count only where it changes an exit code: a scanner that
  * UNDERCOUNTS is the defect this exists to prevent, and an undercount is exactly the case where the
  * command succeeds and the test sees nothing.
+ *
+ * It is now the STORE's function, not this package's (`@ascend/store`'s `statements.ts`), and this
+ * re-export keeps the CLI's public surface unchanged rather than leaving two spellings of it around.
+ * `asc annotate`'s rule predicate is the second caller, which is why it stopped being a CLI detail:
+ * the check has to run where the predicate is wrapped into a statement, and that is the store.
  */
-export { statementCount } from './sql.js';
+export { statementCount } from '@ascend/store';
 
 /**
  * Re-exported for the same reason again, and here the case is a boundary rather than a case.
