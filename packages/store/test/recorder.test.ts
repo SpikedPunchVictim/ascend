@@ -185,6 +185,23 @@ describe('the recorder builds the envelope', () => {
       });
     });
   });
+
+  it('records against a type named under any spelling that canonicalizes to it (asc-pw2)', () => {
+    // The bead's own repro: a type authored `reviewKind` is stored as `review_kind`
+    // (registerType canonicalizes on write), and `asc record reviewKind` -- this call, one
+    // layer down -- used to throw UnknownTypeError even though the type plainly existed.
+    const camelSpec: TypeSpec = {
+      name: 'reviewKind',
+      properties: [{ name: 'outcome', type: 'string' }],
+    };
+    withStore((store) => {
+      const { entry } = recordEntry(store.db, { type: 'reviewKind' }, context());
+      expect(entry.typeName).toBe('review_kind');
+
+      const other = recordEntry(store.db, { type: 'review-kind' }, context({ id: 'e2' })).entry;
+      expect(other.typeName).toBe('review_kind');
+    }, camelSpec);
+  });
 });
 
 describe('the three states survive the round trip', () => {

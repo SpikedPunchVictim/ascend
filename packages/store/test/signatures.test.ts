@@ -370,3 +370,30 @@ describe('signatures: the property name is refused rather than escaped', () => {
     });
   });
 });
+
+describe('signatures: a type named under a non-canonical spelling (asc-pw2)', () => {
+  it('projects the same rows regardless of which spelling of the type is asked for', () => {
+    const CAMEL: TypeSpec = {
+      name: 'reviewKind',
+      properties: [{ name: 'verdict', type: 'enum', enum_values: ['passed', 'failed'] }],
+    };
+    const store = openStore({ dir: tempDir() });
+    try {
+      registerType(store.db, CAMEL, { registeredAt: AT });
+      recordEntry(
+        store.db,
+        { type: 'reviewKind', properties: { verdict: 'passed' } },
+        context('e1'),
+      );
+
+      const properties = propertiesOf(store, 'reviewKind', 'verdict');
+      const byRaw = signatures(store.db, 'reviewKind', properties);
+      const byCanonical = signatures(store.db, 'review_kind', properties);
+
+      expect(byRaw).toHaveLength(1);
+      expect(byCanonical).toStrictEqual(byRaw);
+    } finally {
+      store.close();
+    }
+  });
+});

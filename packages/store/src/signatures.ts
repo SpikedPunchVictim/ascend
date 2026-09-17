@@ -26,6 +26,7 @@
  * compare between runs.
  */
 
+import { canonicalName } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
 import { literal, stateCase, type EntryState } from './sql.js';
 
@@ -83,12 +84,18 @@ function valueExpr(property: string): string {
  * registration, so what is stored in `spec_json` and handed here has no quote, no `$` and no
  * separator left in it. Asserted here rather than assumed, because the assertion is three lines and
  * the failure it prevents is a generated statement that means something other than what it says.
+ *
+ * `type`, unlike `properties[].name` above, is NOT asserted already-canonical -- it is
+ * canonicalized here (asc-pw2), because `entries.type_name` is always the canonical spelling and a
+ * caller of this function (the sampler) has no reason to have folded its own argument first.
  */
 export function signatures(
   db: DatabaseSync,
-  type: string,
+  rawType: string,
   properties: readonly SignatureProperty[],
 ): readonly EntrySignature[] {
+  const type = canonicalName(rawType);
+
   for (const property of properties) {
     if (!/^[a-z0-9_]+$/.test(property.name)) {
       throw new Error(

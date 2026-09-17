@@ -85,10 +85,27 @@ export interface TypeSpec {
  * property names only 9.1% were shared (Jaccard 0.300, thresholds 0.70 / 0.60), with
  * snake_case and camelCase mixed freely. `reviewKind`, `review-kind` and `review_kind`
  * must not be three different properties.
+ *
+ * `normalize('NFC')` runs before anything else, and it closes a second, unrelated fold:
+ * without it, the same VISIBLE name folds two ways depending only on which Unicode
+ * normalization form produced the bytes -- macOS filesystem APIs hand back NFD, most
+ * editors produce NFC, and a combining mark (NFD) is a non-alphanumeric code point the
+ * regex below folds to `_` while the precomposed character (NFC) it is equivalent to is
+ * a single code point folded the same way, so the two forms disagree about how many
+ * underscores they leave behind. Measured (packages/core/test/spec.test.ts, "folds NFC and
+ * NFD spellings of the same visible name identically"): `'caf\u00e9_note'` (NFC, one
+ * precomposed code point for the e-acute) and `'cafe\u0301_note'` (NFD, same visible text:
+ * ASCII 'e' plus a combining acute mark) canonicalize to `caf_note` and `cafe_note` without
+ * this line, and identically to `caf_note` with it.
+ *
+ * `toLowerCase`, not `toLocaleLowerCase`, is deliberate and unrelated to the above: the
+ * latter is locale-sensitive (Turkish folds `I` to dotless `ı`), which would make a name's
+ * canonical form depend on the runtime's locale rather than on the name.
  */
 export function canonicalName(raw: string): string {
   return (
     raw
+      .normalize('NFC')
       // camelCase / PascalCase boundaries: reviewKind -> review_Kind
       .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
       // acronym runs: HTTPServer -> HTTP_Server

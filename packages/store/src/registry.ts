@@ -665,11 +665,18 @@ const SELECT_VERSION = `SELECT name, version, major, type_hash, spec_json, descr
  *
  * All of them, not just the latest: a query that unions minor versions needs each
  * version's own property list, since that is what its entries were validated against.
+ *
+ * `name` is canonicalized before the lookup (asc-pw2): `registerType` stores
+ * `canonicalizeTypeSpec(spec).spec.name`, so a type authored as `reviewKind` is on
+ * disk as `review_kind`. A caller who asks for it back under the spelling it was
+ * authored with is not asking a different question -- `canonicalName` is
+ * deterministic, so the answer is knowable -- and matching the raw string exactly
+ * would refuse the very spelling a user is most likely to type.
  */
 export function typeVersions(db: DatabaseSync, name: string): readonly TypeVersionRow[] {
   const rows = db
     .prepare(`${SELECT_VERSION} WHERE name = ? ORDER BY version ASC`)
-    .all(name) as unknown as VersionRowShape[];
+    .all(canonicalName(name)) as unknown as VersionRowShape[];
   return rows.map(rowToVersion);
 }
 
@@ -774,17 +781,23 @@ export function listTypes(db: DatabaseSync): readonly TypeSummary[] {
  *
  * Returns undefined rather than throwing: "not registered" is an ordinary answer for
  * `asc types show`, and the caller decides what it means.
+ *
+ * `name` is canonicalized before the lookup, for the reason given on `typeVersions` above
+ * (asc-pw2): the stored name is already canonical, so matching the caller's raw spelling
+ * exactly refuses a type under the very name it was defined with.
  */
 export function findType(
   db: DatabaseSync,
   name: string,
   version?: number,
 ): TypeVersionRow | undefined {
+  const canonical = canonicalName(name);
   const row =
     version === undefined
-      ? (db.prepare(`${SELECT_VERSION} WHERE name = ? ORDER BY version DESC LIMIT 1`).get(name) as
-          VersionRowShape | undefined)
-      : (db.prepare(`${SELECT_VERSION} WHERE name = ? AND version = ?`).get(name, version) as
+      ? (db
+          .prepare(`${SELECT_VERSION} WHERE name = ? ORDER BY version DESC LIMIT 1`)
+          .get(canonical) as VersionRowShape | undefined)
+      : (db.prepare(`${SELECT_VERSION} WHERE name = ? AND version = ?`).get(canonical, version) as
           VersionRowShape | undefined);
   return row === undefined ? undefined : rowToVersion(row);
 }
@@ -795,13 +808,17 @@ export function findType(
  * Deprecation is a status change, not a version: entries recorded under a deprecated
  * type remain valid and remain queryable. Deleting or editing them would be the
  * rewrite the whole store is built to prevent.
+ *
+ * `name` is canonicalized before the lookup, for the reason given on `typeVersions` above
+ * (asc-pw2): the stored name is already canonical, so matching the caller's raw spelling
+ * exactly refuses a type under the very name it was defined with.
  */
 export function deprecateType(db: DatabaseSync, name: string): number {
   const result = db
     .prepare(
       "UPDATE entry_types SET status = 'deprecated' WHERE name = ? AND status <> 'deprecated'",
     )
-    .run(name);
+    .run(canonicalName(name));
   return Number(result.changes);
 }
 

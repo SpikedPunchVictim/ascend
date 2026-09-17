@@ -18,6 +18,7 @@
 
 import {
   assertCursorScope,
+  canonicalName,
   CURSOR_ORDER,
   CursorError,
   DEFAULT_PAGE_SIZE,
@@ -111,6 +112,15 @@ const ALL_IN_ORDER = `SELECT id FROM entries
  * satisfies its own spec is a loud failure on the read path instead of data reported as
  * though it were sound. Duplicating the projection here would have been faster and would
  * have dropped that check.
+ *
+ * `options.type` is canonicalized once, into `type`, before it reaches the scope fingerprint or
+ * any query (asc-pw2): `entries.type_name` is always the canonical spelling (the recorder's one
+ * write path never stores anything else), so a page requested under the spelling a type was
+ * authored with -- `reviewKind` rather than `review_kind` -- matched no rows and looked
+ * indistinguishable from an empty type. Canonicalizing here also means the scope fingerprint is a
+ * function of the type's IDENTITY rather than of the caller's spelling of it, so a page issued for
+ * `reviewKind` and resumed with a cursor for `review_kind` (or vice versa) are recognised as the
+ * same scope instead of refused as a mismatch.
  */
 export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult {
   // The default comes from core rather than being written here, because the CLI prints it in
@@ -118,12 +128,13 @@ export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult 
   const limit = options.limit ?? DEFAULT_PAGE_SIZE;
   if (!Number.isInteger(limit) || limit < 1) throw new PageSizeError(limit);
 
-  const scope = scopeFingerprint({ type: options.type, order: CURSOR_ORDER });
+  const type = canonicalName(options.type);
+  const scope = scopeFingerprint({ type, order: CURSOR_ORDER });
 
   let position: Cursor | undefined;
   if (options.cursor !== undefined) {
     const decoded = decodeCursor(options.cursor);
-    assertCursorScope(decoded, { type: options.type, order: CURSOR_ORDER });
+    assertCursorScope(decoded, { type, order: CURSOR_ORDER });
     position = decoded;
   }
 
@@ -132,8 +143,8 @@ export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult 
   const probe = limit + 1;
   const ids = (
     position === undefined
-      ? db.prepare(FROM_START).all(options.type, probe)
-      : db.prepare(AFTER_POSITION).all(options.type, position.recordedAt, position.id, probe)
+      ? db.prepare(FROM_START).all(type, probe)
+      : db.prepare(AFTER_POSITION).all(type, position.recordedAt, position.id, probe)
   ) as { id: string }[];
 
   const hasMore = ids.length > limit;
@@ -156,9 +167,9 @@ export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult 
       ? encodeCursor({ id: last.id, recordedAt: last.recordedAt, scope })
       : null;
 
-  const counted = db
-    .prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?')
-    .get(options.type) as { n: number };
+  const counted = db.prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?').get(type) as {
+    n: number;
+  };
 
   return { rows, total: counted.n, hasMore, nextCursor, scope };
 }
@@ -173,8 +184,11 @@ export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult 
  * Ids are hydrated by the caller through `findEntry`, so the per-row validation that makes the read
  * path loud about a row that no longer satisfies its own definition applies to a dump exactly as it
  * applies to a page. See `ALL_IN_ORDER` for why this returns ids rather than entries.
+ *
+ * `type` is canonicalized before the lookup, for the reason given on `pageEntries` above
+ * (asc-pw2): `entries.type_name` is always the canonical spelling.
  */
 export function entryIds(db: DatabaseSync, type: string): readonly string[] {
-  const rows = db.prepare(ALL_IN_ORDER).all(type) as { id: string }[];
+  const rows = db.prepare(ALL_IN_ORDER).all(canonicalName(type)) as { id: string }[];
   return rows.map((row) => row.id);
 }

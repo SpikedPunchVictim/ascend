@@ -720,3 +720,62 @@ describe('propertyValueMatches finds values that exist, and only those', () => {
     });
   });
 });
+
+describe('a type named under a non-canonical spelling (asc-pw2)', () => {
+  const CAMEL: TypeSpec = {
+    name: 'reviewKind',
+    properties: [{ name: 'runner', type: 'string' }],
+  };
+
+  const withCamel = (body: (store: Store) => void): void => {
+    withStore((store) => {
+      registerType(store.db, CAMEL, { registeredAt: AT });
+      recordEntry(
+        store.db,
+        { type: 'reviewKind', properties: { runner: 'npm_run_build' } },
+        context('c1', 'built with npm'),
+      );
+      body(store);
+    });
+  };
+
+  it('searchEntries matches entries whether the type filter is given canonical or not', () => {
+    withCamel((store) => {
+      const byRaw = searchEntries(store.db, 'npm', { type: 'reviewKind' });
+      const byCanonical = searchEntries(store.db, 'npm', { type: 'review_kind' });
+      expect(byRaw.map((hit) => hit.entryId)).toEqual(['c1']);
+      expect(byCanonical.map((hit) => hit.entryId)).toEqual(['c1']);
+    });
+  });
+
+  it('countSearchMatches counts the same regardless of the type filter spelling', () => {
+    withCamel((store) => {
+      expect(countSearchMatches(store.db, 'npm', { type: 'reviewKind' })).toBe(1);
+      expect(countSearchMatches(store.db, 'npm', { type: 'review_kind' })).toBe(1);
+    });
+  });
+
+  it('searchScope reports the same counts under any spelling of the type', () => {
+    withCamel((store) => {
+      expect(searchScope(store.db, 'reviewKind')).toEqual({ entries: 1, indexed: 1 });
+      expect(searchScope(store.db, 'review_kind')).toEqual({ entries: 1, indexed: 1 });
+    });
+  });
+
+  it('propertyValueMatches resolves entries under any spelling of the type', () => {
+    withCamel((store) => {
+      const byRaw = propertyValueMatches(store.db, {
+        type: 'reviewKind',
+        terms: ['npm'],
+        limit: 5,
+      });
+      const byCanonical = propertyValueMatches(store.db, {
+        type: 'review_kind',
+        terms: ['npm'],
+        limit: 5,
+      });
+      expect(byRaw).toEqual([{ property: 'runner', value: 'npm_run_build', entries: 1 }]);
+      expect(byCanonical).toEqual(byRaw);
+    });
+  });
+});

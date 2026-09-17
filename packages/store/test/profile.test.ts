@@ -116,6 +116,28 @@ describe('profileType: an unknown name is not an empty type', () => {
       }
     });
   });
+
+  it('resolves a type under any spelling that canonicalizes to the registered one (asc-pw2)', () => {
+    // Before this fix, `typeVersions` (called first, to build the empty-profile shell) had
+    // already been canonicalized, so a non-canonical spelling looked like an unregistered type
+    // here too -- not the worse, silent failure this fix specifically targets (see the
+    // `profile.ts` doc comment), but still the wrong half of the "unknown vs empty" distinction
+    // this describe block exists to protect.
+    const camelSpec: TypeSpec = { name: 'reviewKind', properties: [{ name: 'v', type: 'string' }] };
+    withStore(
+      (store) => {
+        const byRaw = profileType(store.db, 'reviewKind');
+        const byCanonical = profileType(store.db, 'review_kind');
+        const byOtherSpelling = profileType(store.db, 'REVIEW-KIND');
+
+        expect(byRaw).toBeDefined();
+        expect(byRaw?.type).toBe('review_kind');
+        expect(byCanonical).toStrictEqual(byRaw);
+        expect(byOtherSpelling).toStrictEqual(byRaw);
+      },
+      [camelSpec],
+    );
+  });
 });
 
 describe('profileType: the state tally', () => {

@@ -30,6 +30,7 @@
 
 import {
   canonicalJson,
+  canonicalName,
   validateEntry,
   type EntryInput,
   type PropertyState,
@@ -331,24 +332,36 @@ export function recordEntry(
   };
 }
 
-/** The registered version to record against: the named one, or the latest. */
+/**
+ * The registered version to record against: the named one, or the latest.
+ *
+ * `name` is canonicalized before the lookup (asc-pw2): `registerType` (registry.ts) stores
+ * `canonicalizeTypeSpec(spec).spec.name`, so a type authored as `reviewKind` is on disk as
+ * `review_kind`. This is the one write path (module comment above), so a caller naming the
+ * type back under the spelling it was authored with -- the spelling `asc record` is most
+ * likely to be handed -- was refused here even though `canonicalName` makes the row
+ * findable. The ERROR still names the caller's raw spelling, not the canonical one: a typo
+ * that matches nothing should be echoed back as typed, not silently refolded into a
+ * near-miss the caller never wrote.
+ */
 function findRegisteredType(
   db: DatabaseSync,
   name: string,
   version: number | undefined,
 ): { name: string; version: number; typeHash: string; spec: TypeSpec; status: string } {
+  const canonical = canonicalName(name);
   const row =
     version === undefined
       ? (db
           .prepare(
             'SELECT name, version, type_hash, spec_json, status FROM entry_types WHERE name = ? ORDER BY version DESC LIMIT 1',
           )
-          .get(name) as TypeRow | undefined)
+          .get(canonical) as TypeRow | undefined)
       : (db
           .prepare(
             'SELECT name, version, type_hash, spec_json, status FROM entry_types WHERE name = ? AND version = ?',
           )
-          .get(name, version) as TypeRow | undefined);
+          .get(canonical, version) as TypeRow | undefined);
 
   if (row === undefined) throw new UnknownTypeError(name, version, registeredTypes(db));
 

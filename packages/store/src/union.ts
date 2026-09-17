@@ -58,6 +58,7 @@
  */
 
 import {
+  canonicalName,
   emptyPropertyName,
   unaddressablePropertyName,
   type TypeSpec,
@@ -527,7 +528,16 @@ function requireStore(db: DatabaseSync, name: string, source: ProjectSource): vo
   }
 }
 
-/** Read one project: attach, check it, read its versions of the type, detach. */
+/**
+ * Read one project: attach, check it, read its versions of the type, detach.
+ *
+ * `type` is canonicalized right at the bound parameter (asc-pw2), not before: `type` is also
+ * what `survey`'s error messages quote below, and those should echo what the caller actually
+ * typed, not the folded form -- the same choice `recorder.ts`'s `findRegisteredType` makes for
+ * the same reason. Every project's `entry_types.name` is canonical (each project's own
+ * `registerType` guarantees that locally), so the query needs the folded form regardless of
+ * what the caller wrote.
+ */
 function readProject(
   db: DatabaseSync,
   source: ProjectSource,
@@ -548,7 +558,7 @@ function readProject(
         `SELECT version, type_hash, spec_json FROM ${ident(name)}.entry_types
           WHERE name = ? ORDER BY version ASC`,
       )
-      .all(type) as unknown as VersionRow[];
+      .all(canonicalName(type)) as unknown as VersionRow[];
 
     return { source, versions };
   });
@@ -681,13 +691,21 @@ export function unionEntries(
     `  ${stateCase(property, null)} AS ${ident(`s.${property}`)}`,
   ]);
 
+  // `type` reaches this WHERE clause through `literal()`, not a bound `?` -- `select` builds one
+  // statement text per project inside the loop below rather than a single prepared statement, so
+  // there is no shared placeholder to bind into. `literal()` is still injection-safe (it doubles
+  // embedded quotes, sql.ts), but being a string literal rather than a parameter does not excuse
+  // it from asc-pw2: `entries.type_name` is the canonical spelling in every project (each one's
+  // own `registerType` guarantees that locally), so the embedded value must be canonicalized here
+  // exactly as `readProject`'s bound parameter above is, or the two queries in this function would
+  // search for two different strings for what is supposed to be one type.
   const select = (name: string, label: string): string =>
     `SELECT ${literal(label)} AS ${ident('project')},\n` +
     [...ENVELOPE_COLUMNS.map((column) => `  e.${column} AS ${ident(column)}`), ...projections].join(
       ',\n',
     ) +
     `\n  FROM ${ident(name)}.entries AS e\n` +
-    ` WHERE e.type_name = ${literal(type)} AND e.type_hash = ${literal(hash)}`;
+    ` WHERE e.type_name = ${literal(canonicalName(type))} AND e.type_hash = ${literal(hash)}`;
 
   const rows: UnionRow[] = [];
   const unionProjects: UnionProject[] = [];
@@ -734,7 +752,11 @@ export function unionEntries(
     left.recordedAt < right.recordedAt ? -1 : left.recordedAt > right.recordedAt ? 1 : 0,
   );
 
-  return { type, typeHash: hash, projects: unionProjects, properties, rows };
+  // The canonical spelling, not the caller's raw argument -- matching `TypeVersionRow.name`
+  // (registry.ts) and `TypeProfile.type` (profile.ts): a successful result reports the identity
+  // that was actually matched, the same way those two do, rather than echoing back whatever the
+  // caller happened to type.
+  return { type: canonicalName(type), typeHash: hash, projects: unionProjects, properties, rows };
 }
 
 /** The envelope columns carried on the row itself rather than into `properties`. */

@@ -457,10 +457,24 @@ export function migrate(
       db.exec(`PRAGMA user_version = ${String(migration.version)}`);
       db.exec('COMMIT');
     } catch (error) {
-      db.exec('ROLLBACK');
       const detail = error instanceof Error ? error.message : String(error);
+
+      // The `isTransaction` guard `registerType` uses (registry.ts) for the same reason: some
+      // failures inside the try block above -- a busy-snapshot error, an interrupt -- end the
+      // transaction themselves before this catch runs. An unconditional ROLLBACK here would
+      // then throw its own 'cannot rollback - no transaction is active', and THAT error is what
+      // would propagate, replacing the migration failure the operator actually needs to read.
+      // The data is not at risk either way: a transaction that ended on its own already
+      // discarded the half-applied DDL, which is what ROLLBACK would have done anyway.
+      if (db.isTransaction) {
+        db.exec('ROLLBACK');
+        throw new Error(
+          `migration ${String(migration.version)} (${migration.name}) failed and was rolled back: ${detail}`,
+        );
+      }
       throw new Error(
-        `migration ${String(migration.version)} (${migration.name}) failed and was rolled back: ${detail}`,
+        `migration ${String(migration.version)} (${migration.name}) failed (transaction already ` +
+          `closed, so there was nothing left to roll back): ${detail}`,
       );
     }
     applied.push(migration.name);

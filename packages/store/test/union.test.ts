@@ -1020,3 +1020,53 @@ describe('projects that do not define the type are part of the answer', () => {
     });
   });
 });
+
+describe('a type named under a non-canonical spelling (asc-pw2)', () => {
+  const CAMEL: TypeSpec = {
+    name: 'reviewKind',
+    properties: [{ name: 'outcome', type: 'string' }],
+  };
+
+  it('unions a project’s rows when asked for the type under the spelling it was authored with', () => {
+    const only = project(
+      [CAMEL],
+      [{ id: 'a1', type: 'reviewKind', properties: { outcome: 'ok' } }],
+    );
+
+    withConnection((db) => {
+      const byRaw = unionEntries(db, 'reviewKind', [only]);
+      const byCanonical = unionEntries(db, 'review_kind', [only]);
+
+      expect(byRaw.rows.map((row) => row.id)).toEqual(['a1']);
+      // Reported identity is the canonical spelling (matches `TypeVersionRow.name` and
+      // `TypeProfile.type` precedent), so the two calls answer with the same value here even
+      // though they were asked under different spellings.
+      expect(byRaw.type).toBe('review_kind');
+      expect(byCanonical).toStrictEqual(byRaw);
+    });
+  });
+
+  it(
+    'agrees between the two queries a single call makes: the bound-parameter project read and ' +
+      'the literal-embedded per-row selection (asc-pw2)',
+    () => {
+      // `unionEntries` runs two different kinds of query against one type name: `readProject`
+      // resolves membership through a bound parameter, and the per-project `select` builds its
+      // WHERE clause by embedding the name with `literal()` rather than binding it. Both must
+      // canonicalize the same way, or a project that defines the type under a non-canonical
+      // spelling would count as "in scope" (the bound-parameter check passes) while contributing
+      // zero rows (the literal-embedded check, searching for a different string, matches nothing)
+      // -- silently reporting less data than the union actually has, rather than throwing.
+      const only = project(
+        [CAMEL],
+        [{ id: 'a1', type: 'reviewKind', properties: { outcome: 'ok' } }],
+      );
+
+      withConnection((db) => {
+        const result = unionEntries(db, 'reviewKind', [only]);
+        expect(result.rows).toHaveLength(1);
+        expect(result.projects[0]?.entryCount).toBe(1);
+      });
+    },
+  );
+});

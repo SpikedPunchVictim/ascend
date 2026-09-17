@@ -852,6 +852,45 @@ describe('reading types back', () => {
   });
 });
 
+describe('the lookup path accepts any spelling that canonicalizes to a registered name (asc-pw2)', () => {
+  // registerType stores the CANONICAL name (canonicalizeTypeSpec, spec.ts): a type authored as
+  // `reviewKind` is on disk as `review_kind`. Before this fix, findType/typeVersions/deprecateType
+  // matched the caller's raw string exactly, so the type was invisible under the very spelling it
+  // was defined with -- reproduced at the CLI level as `asc types show reviewKind` reporting
+  // 'no type named reviewKind' immediately after `types define {name: reviewKind}` created it.
+  const camelSpec: TypeSpec = {
+    name: 'reviewKind',
+    properties: [{ name: 'outcome', type: 'string' }],
+  };
+
+  it('findType answers to the spelling the type was authored with', () => {
+    withStore((store) => {
+      registerType(store.db, camelSpec, { registeredAt: AT });
+
+      expect(findType(store.db, 'review_kind')?.name).toBe('review_kind');
+      expect(findType(store.db, 'reviewKind')?.name).toBe('review_kind');
+      expect(findType(store.db, 'review-kind')?.name).toBe('review_kind');
+    });
+  });
+
+  it('typeVersions answers to the spelling the type was authored with', () => {
+    withStore((store) => {
+      registerType(store.db, camelSpec, { registeredAt: AT });
+
+      expect(typeVersions(store.db, 'reviewKind').map((v) => v.name)).toEqual(['review_kind']);
+    });
+  });
+
+  it('deprecateType answers to the spelling the type was authored with', () => {
+    withStore((store) => {
+      registerType(store.db, camelSpec, { registeredAt: AT });
+
+      expect(deprecateType(store.db, 'reviewKind')).toBe(1);
+      expect(findType(store.db, 'review_kind')?.status).toBe('deprecated');
+    });
+  });
+});
+
 describe('a name the generated view has claimed is refused, not projected', () => {
   // asc-865.1. The defect this closes was measured on this exact path: with a property named
   // `source`, SQLite built the view with columns `source` (the envelope) and `source:1` (the

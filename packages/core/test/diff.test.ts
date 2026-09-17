@@ -319,3 +319,42 @@ describe('no shape difference escapes classification', () => {
     expect(compared).toBeGreaterThan(50);
   });
 });
+
+describe('no version bump for a change type_hash treats as identical (asc-9xq)', () => {
+  /**
+   * The other direction of the invariant above: when two specs hash EQUAL, diffTypeSpec must
+   * report 'none'. Before this fix it did not for these two cases -- `unit` and `enum_values`
+   * are kept unconditionally by `canonicalizeTypeSpec` (only warned about when the property's
+   * type does not use them), but `definitionShape` -- what `type_hash` is computed over --
+   * drops both outside `UNIT_BEARING_TYPES` / off `enum` respectively. `diffTypeSpec` read the
+   * former, so a stray field it does not affect anything still produced a spurious MAJOR bump.
+   */
+  it('agrees with type_hash when a unit is stray on a non-unit-bearing type', () => {
+    const from: TypeSpec = { name: 't', properties: [{ name: 'p', type: 'string', unit: 'ms' }] };
+    const to: TypeSpec = { name: 't', properties: [{ name: 'p', type: 'string', unit: 's' }] };
+
+    // Sanity: this is the 'identical shape' case the bead measured, not an assumption.
+    expect(typeHash(definitionShape(canonicalizeTypeSpec(from).spec))).toBe(
+      typeHash(definitionShape(canonicalizeTypeSpec(to).spec)),
+    );
+
+    expect(diffTypeSpec(from, to)).toEqual({ bump: 'none', changes: [] });
+  });
+
+  it('agrees with type_hash when enum_values is stray on a non-enum type', () => {
+    const from: TypeSpec = {
+      name: 't',
+      properties: [{ name: 'p', type: 'string', enum_values: ['a'] }],
+    };
+    const to: TypeSpec = {
+      name: 't',
+      properties: [{ name: 'p', type: 'string', enum_values: ['a', 'b'] }],
+    };
+
+    expect(typeHash(definitionShape(canonicalizeTypeSpec(from).spec))).toBe(
+      typeHash(definitionShape(canonicalizeTypeSpec(to).spec)),
+    );
+
+    expect(diffTypeSpec(from, to)).toEqual({ bump: 'none', changes: [] });
+  });
+});

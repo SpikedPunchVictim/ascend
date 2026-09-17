@@ -56,6 +56,7 @@
  * *prose*, where ASCII was never a contract -- only an accident of the first draft.
  */
 
+import { canonicalName } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
 
 /** The FTS5 table migration 2 creates. Named here once so the SQL below cannot drift from it. */
@@ -178,8 +179,10 @@ export function searchEntries(
       LIMIT ?`,
   );
 
+  // Canonicalized before it joins the bound parameters (asc-pw2): `entries.type_name` is always
+  // the canonical spelling, and `options.type` is whatever the caller typed.
   const params: unknown[] = [match];
-  if (options.type !== undefined) params.push(options.type);
+  if (options.type !== undefined) params.push(canonicalName(options.type));
   params.push(limit);
 
   // Mapped, not cast. The row's keys are the SQL column names; casting it to SearchHit would
@@ -236,8 +239,9 @@ export function countSearchMatches(
   if (match === null) return 0;
 
   const filter = options.type === undefined ? '' : ' AND e.type_name = ?';
+  // Canonicalized for the reason given on `searchEntries` above (asc-pw2).
   const params: unknown[] = [match];
-  if (options.type !== undefined) params.push(options.type);
+  if (options.type !== undefined) params.push(canonicalName(options.type));
 
   const row = db
     .prepare(
@@ -279,7 +283,9 @@ export interface SearchScope {
   readonly indexed: number;
 }
 
-export function searchScope(db: DatabaseSync, type: string): SearchScope {
+export function searchScope(db: DatabaseSync, rawType: string): SearchScope {
+  // Canonicalized for the reason given on `searchEntries` above (asc-pw2).
+  const type = canonicalName(rawType);
   const entries = db.prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?').get(type) as {
     n: number;
   };
@@ -350,7 +356,8 @@ export function propertyValueMatches(
         LIMIT ?`,
     )
     .all(
-      ...matchParams(options.type, escaped, options.limit),
+      // Canonicalized for the reason given on `searchEntries` above (asc-pw2).
+      ...matchParams(canonicalName(options.type), escaped, options.limit),
     ) as unknown as readonly PropertyValueHit[];
 
   return rows;

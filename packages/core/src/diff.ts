@@ -20,7 +20,7 @@
  * the old definition still be read correctly under the new one?**
  */
 
-import { canonicalizeTypeSpec } from './spec.js';
+import { canonicalizeTypeSpec, UNIT_BEARING_TYPES } from './spec.js';
 import type { PropertySpec, TypeSpec } from './spec.js';
 
 export const BUMPS = ['none', 'minor', 'major'] as const;
@@ -65,8 +65,28 @@ const RANK: Record<Bump, number> = { none: 0, minor: 1, major: 2 };
 const worst = (bumps: readonly Bump[]): Bump =>
   bumps.reduce<Bump>((acc, bump) => (RANK[bump] > RANK[acc] ? bump : acc), 'none');
 
-/** Enum values as a set: two spellings of the same set are the same set. */
-const enumValues = (spec: PropertySpec): readonly string[] => spec.enum_values ?? [];
+/**
+ * Enum values as a set: two spellings of the same set are the same set.
+ *
+ * Read only on an `enum` property, mirroring `definitionShape` (spec.ts): `enum_values` on
+ * any other type constrains nothing (`canonicalizeProperty` only warns), so `type_hash` never
+ * sees it there. Reading it unconditionally here -- the bug this comment fixes, asc-9xq -- let
+ * this function report `enum_value_added` / `enum_value_removed` (bump `minor`/`major`) for a
+ * stray `enum_values` on a non-enum property while `type_hash` stayed the same, so a caller diffing
+ * two identically-hashed specs saw a version bump the store itself would never mint.
+ */
+const enumValues = (spec: PropertySpec): readonly string[] =>
+  spec.type === 'enum' ? (spec.enum_values ?? []) : [];
+
+/**
+ * A property's unit, or `undefined` when its type does not use one.
+ *
+ * Same reasoning as `enumValues` above, for the same field class: `definitionShape` keeps
+ * `unit` only on `UNIT_BEARING_TYPES`, so a unit spelled on e.g. a `string` property is not
+ * part of `type_hash` and must not be part of this diff either.
+ */
+const unit = (spec: PropertySpec): string | undefined =>
+  UNIT_BEARING_TYPES.includes(spec.type) ? spec.unit : undefined;
 
 /**
  * Compare two definitions and classify the change.
@@ -137,14 +157,16 @@ export function diffTypeSpec(from: TypeSpec, to: TypeSpec): SpecDiff {
       });
     }
 
-    if (previous.unit !== next.unit) {
+    const previousUnit = unit(previous);
+    const nextUnit = unit(next);
+    if (previousUnit !== nextUnit) {
       changes.push({
         subject: name,
         kind: 'unit_changed',
         bump: 'major',
         // 250 means 250ms under one definition and 250s under the other. Nothing about
         // the stored number changes, which is exactly what makes this dangerous.
-        detail: `'${name}' changed unit from ${previous.unit ?? '(none)'} to ${next.unit ?? '(none)'}; stored magnitudes now mean something else`,
+        detail: `'${name}' changed unit from ${previousUnit ?? '(none)'} to ${nextUnit ?? '(none)'}; stored magnitudes now mean something else`,
       });
     }
 

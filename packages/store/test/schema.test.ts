@@ -98,6 +98,34 @@ describe('migration', () => {
     db.close();
   });
 
+  it('reports the migration error, not a rollback error, when the failure already closed the transaction (asc-k3b)', () => {
+    // Measured directly against node:sqlite (':memory:', BEGIN IMMEDIATE then
+    // `db.exec('ROLLBACK; SELECT no_such_column;')`): the ROLLBACK statement ends the
+    // transaction, the next statement in the same `exec` then fails, and `db.isTransaction`
+    // is already `false` by the time the catch runs. A migration whose SQL runs ROLLBACK
+    // itself before failing reproduces exactly that sequence, and is the only way to end the
+    // transaction from inside a single `db.exec(migration.sql)` call.
+    //
+    // Before this fix, `migrate`'s catch issued ROLLBACK unconditionally and node:sqlite threw
+    // 'cannot rollback - no transaction is active' -- which propagated INSTEAD of the migration
+    // error below, so the operator saw a transaction-state message with no mention of
+    // `no_such_column` at all.
+    const db = new DatabaseSync(':memory:');
+    const broken: Migration[] = [
+      MIGRATIONS[0] as Migration,
+      {
+        version: 2,
+        name: 'closes its own transaction before failing',
+        sql: 'ROLLBACK; SELECT no_such_column;',
+      },
+    ];
+
+    expect(() => migrate(db, broken)).toThrow(/migration 2 .* no_such_column/);
+    // And not the masking error the unconditional ROLLBACK used to produce.
+    expect(() => migrate(db, broken)).not.toThrow(/no transaction is active/);
+    db.close();
+  });
+
   it('refuses to open a store written by a newer ascend', () => {
     // Opening it would mean operating on a schema this build does not understand --
     // and writing rows under it.

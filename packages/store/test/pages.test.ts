@@ -354,3 +354,34 @@ describe('paging: the cursor as a token', () => {
     });
   });
 });
+
+describe('paging: a type named under a non-canonical spelling (asc-pw2)', () => {
+  const CAMEL: TypeSpec = {
+    name: 'reviewKind',
+    properties: [{ name: 'body', type: 'string' }],
+  };
+
+  it('pages a type by any spelling that canonicalizes to the registered name, and one scope', () => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      registerType(store.db, CAMEL, { registeredAt: '2026-01-01T00:00:00.000Z' });
+      recordEntry(
+        store.db,
+        { type: 'reviewKind', properties: { body: 'a' } },
+        context('e-000', '2026-09-11T10:00:00.000Z'),
+      );
+
+      const byRaw = pageEntries(store.db, { type: 'reviewKind', limit: 5 });
+      const byCanonical = pageEntries(store.db, { type: 'review_kind', limit: 5 });
+
+      expect(byRaw.total).toBe(1);
+      expect(byCanonical.total).toBe(1);
+      // Same identity, so the same scope fingerprint -- a cursor issued under one spelling
+      // resumes under the other instead of being refused as a mismatch (see the `pages.ts`
+      // doc comment on `pageEntries`).
+      expect(byCanonical.scope).toBe(byRaw.scope);
+    } finally {
+      store.close();
+    }
+  });
+});

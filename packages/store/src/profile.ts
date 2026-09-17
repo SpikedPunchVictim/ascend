@@ -39,7 +39,7 @@
  * prose in a caller's context by accident.
  */
 
-import type { PropertyType } from '@ascend/core';
+import { canonicalName, type PropertyType } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
 import { typeVersions, type TypeVersionRow } from './registry.js';
 import { literal, stateCase } from './sql.js';
@@ -304,12 +304,24 @@ function propertiesOf(
  * is a real and useful profile -- every property present, every count zero. Returning an empty
  * profile for both would make "you are in the wrong project" indistinguishable from "you have
  * recorded nothing", and a caller could not tell which without a second lookup.
+ *
+ * `type` is canonicalized once, here, before anything else (asc-pw2). `typeVersions` already
+ * canonicalizes its own argument, so without this the existence check below and the `entries`
+ * queries that follow it would be asking two different questions of a non-canonical spelling:
+ * `typeVersions` would find the type and report versions, while every `entries.type_name = ?`
+ * query in this function still compared against the caller's raw string, which the store never
+ * writes -- a profile that claims a type exists while reporting zero entries and zero for every
+ * property, which is a worse answer than a refusal: the caller cannot tell "the profile is empty"
+ * from "the whole lookup is asking the wrong question". `type` is used, not `versions[0]?.name`,
+ * for the queries below and the returned `TypeProfile.type`, matching `TypeVersionRow.name`
+ * (registry.ts): a caller reads back the identity the store actually matched against.
  */
 export function profileType(
   db: DatabaseSync,
-  type: string,
+  rawType: string,
   options: ProfileOptions = {},
 ): TypeProfile | undefined {
+  const type = canonicalName(rawType);
   const versions = typeVersions(db, type);
   if (versions.length === 0) return undefined;
 

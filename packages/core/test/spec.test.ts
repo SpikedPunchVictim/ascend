@@ -50,6 +50,18 @@ describe('canonicalName', () => {
     expect(canonicalName('__a__b__')).toBe('a_b');
     expect(canonicalName('a/b\\c')).toBe('a_b_c');
   });
+
+  it('folds NFC and NFD spellings of the same visible name identically (asc-lsb)', () => {
+    // 'café_note' as macOS filesystem APIs would return it (NFD: 'e' + combining
+    // acute) versus as most editors would produce it (NFC: one precomposed 'é').
+    // Same visible text, different code units -- without normalize() first, the
+    // combining mark and the precomposed character fold through
+    // `[^A-Za-z0-9]+` -> `_` differently, and the two 'converge' to different names.
+    const nfc = 'café_note';
+    const nfd = 'café_note';
+    expect(nfc).not.toBe(nfd); // sanity: the two inputs really are different code units
+    expect(canonicalName(nfc)).toBe(canonicalName(nfd));
+  });
 });
 
 describe('canonicalizeProperty', () => {
