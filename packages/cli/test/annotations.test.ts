@@ -625,18 +625,6 @@ describe('asc annotate: refusals', () => {
     expect(schemes(dir)).toStrictEqual([]);
   });
 
-  it('refuses --backtest by naming the bead that owns it', () => {
-    const dir = seeded();
-
-    const run = reviewRun(dir, ['--backtest', 'x']);
-
-    // Refused rather than ignored: a flag that parses and does nothing would let a caller read a
-    // precision/recall number out of an output that never computed one.
-    expect(run.status).toBe(1);
-    expect(flatten(run.stderr)).toContain('asc-3o9');
-    expect(schemes(dir)).toStrictEqual([]);
-  });
-
   it('refuses a text rule with no searchable term, in the words of the rule the caller typed', () => {
     const dir = seeded();
 
@@ -784,6 +772,197 @@ describe('asc annotate: --dry-run', () => {
     expect(one(preview.stdout)).toMatchObject({ outcome: 'would-unchanged' });
     // The first run's pass is the only one, so the preview wrote nothing.
     expect(column(dir, 'SELECT count(*) FROM annotations')).toStrictEqual([[6]]);
+  });
+});
+
+/**
+ * Hand-label a small ground truth, deliberately disagreeing with `CRASH_IS_A_BUG` on one entry: e3's
+ * evidence says "crash" (the rule would call it `bug`) but the hand truth calls it `docs`, and e4 is
+ * hand-labelled `chore` -- a label neither `--rule` in `reviewRun` ever assigns. Both are there on
+ * purpose: a fixture where hand and rule always agree could not exercise a false positive, a false
+ * negative, or an omitted (never-predicted) precision, and this test suite's whole point is that
+ * those three are reported rather than glossed over.
+ */
+function handRun(dir: string): Run {
+  return asc(
+    [
+      'annotate',
+      '--scheme',
+      'hand',
+      '--ids',
+      'bug=e1,e2',
+      '--ids',
+      'docs=e3,e5',
+      '--ids',
+      'chore=e4',
+    ],
+    dir,
+  );
+}
+
+/** The `--backtest` row for one label, or a thrown assertion naming which label is missing. */
+function measureRow(stdout: string, label: string): Record<string, unknown> {
+  const match = rows(stdout).find((row) => row['label'] === label);
+  expect(match, `no row for label '${label}'`).toBeDefined();
+  return match as Record<string, unknown>;
+}
+
+describe('asc annotate: --backtest (asc-3o9)', () => {
+  it('grades --rule against the hand scheme, per label, without touching the corpus', () => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+
+    // The universe `backtest` grades over is the hand scheme's latest pass: e1, e2, e3, e4, e5 (every
+    // id `handRun` named). Within it, `CRASH_IS_A_BUG` matches e1-e4 and `INSTALL_IS_DOCS` matches e5
+    // (e6 is outside the universe -- it has no hand label -- so it changes nothing here, exactly as
+    // `backtest.test.ts`'s "ignores a predicted entry outside the ground-truth universe" pins at the
+    // pure-function level). So the rule's verdict is {e1:bug, e2:bug, e3:bug, e4:bug, e5:docs} against
+    // the hand truth {e1:bug, e2:bug, e3:docs, e4:chore, e5:docs}:
+    //
+    //   bug:   hand said bug for e1,e2 (actual=2); rule said bug for e1,e2,e3,e4 (predicted=4);
+    //          agree on e1,e2 (TP=2); e3,e4 are false positives; nothing is a false negative.
+    //   docs:  hand said docs for e3,e5 (actual=2); rule said docs for e5 only (predicted=1);
+    //          agree on e5 (TP=1); e3 is a false negative; nothing is a false positive.
+    //   chore: hand said chore for e4 (actual=1); the rule has no rule for 'chore' at all
+    //          (predicted=0), so precision has no denominator and must be OMITTED, never a
+    //          fabricated 0.00 -- and recall is a real 0% over n=1, not an absence.
+    const run = asc(
+      [
+        'annotate',
+        '--scheme',
+        'review',
+        '--rule',
+        CRASH_IS_A_BUG,
+        '--rule',
+        INSTALL_IS_DOCS,
+        '--backtest',
+        'hand',
+        '--json',
+      ],
+      dir,
+    );
+
+    expect(run.status, run.stderr).toBe(0);
+    expect(
+      rows(run.stdout)
+        .map((row) => row['label'])
+        .sort(),
+    ).toStrictEqual(['bug', 'chore', 'docs']);
+
+    const bug = measureRow(run.stdout, 'bug');
+    expect(bug).toMatchObject({
+      scheme: 'review',
+      backtest: 'hand',
+      compared: 5,
+      support: 2,
+      predicted: 4,
+      true_positives: 2,
+      false_positives: 2,
+      false_negatives: 0,
+      false_positive_ids: ['e3', 'e4'],
+      false_negative_ids: [],
+    });
+    // A real proportion, not a bare ratio: 2/4 precision at n=4 carries its own successes/n, and
+    // `smallGroup` is true because n=4 is far below `MIN_N`=20 -- the whole reason this suite exists.
+    expect(bug['precision_measure']).toMatchObject({
+      successes: 2,
+      n: 4,
+      p: 0.5,
+      smallGroup: true,
+    });
+    expect(bug['recall_measure']).toMatchObject({ successes: 2, n: 2, p: 1, smallGroup: true });
+    // The rendered display carries the qualification a bare number would hide: the interval and the
+    // small-group flag `renderProportion` appends, in the same string a --table caller reads.
+    expect(bug['precision']).toContain('SMALL GROUP');
+    expect(bug['precision']).toContain('n=4');
+
+    const docs = measureRow(run.stdout, 'docs');
+    expect(docs).toMatchObject({
+      support: 2,
+      predicted: 1,
+      true_positives: 1,
+      false_positives: 0,
+      false_negatives: 1,
+      false_positive_ids: [],
+      false_negative_ids: ['e3'],
+    });
+    expect(docs['precision_measure']).toMatchObject({ successes: 1, n: 1, p: 1, smallGroup: true });
+    expect(docs['recall_measure']).toMatchObject({ successes: 1, n: 2, p: 0.5, smallGroup: true });
+
+    const chore = measureRow(run.stdout, 'chore');
+    expect(chore).toMatchObject({
+      support: 1,
+      predicted: 0,
+      true_positives: 0,
+      false_positive_ids: [],
+      false_negative_ids: ['e4'],
+    });
+    // Precision is OMITTED, not `null` and not `0`: the rule never predicted 'chore' at all, so there
+    // is no denominator to build a proportion from (`TASKS.md` #7). The rendered column still says so
+    // in words rather than leaving the cell blank.
+    expect(Object.hasOwn(chore, 'precision_measure')).toBe(false);
+    expect(chore['precision']).toBe('n=0 (no estimate)');
+    // Recall IS defined here: the hand truth used 'chore' once and the rule found none of it, which
+    // is a real 0%, not an absence.
+    expect(chore['recall_measure']).toMatchObject({ successes: 0, n: 1, p: 0 });
+
+    // The whole point of asc-3o9: none of this touched the corpus. `review` was never registered and
+    // no annotation was written under it -- only `hand`'s own pass (from `handRun`, above) exists.
+    expect(schemes(dir).map((row) => row[0])).toStrictEqual(['hand']);
+    expect(annotations(dir).map((row) => row[2])).toStrictEqual([
+      'hand',
+      'hand',
+      'hand',
+      'hand',
+      'hand',
+    ]);
+  });
+
+  it('refuses a --backtest naming a scheme that does not exist', () => {
+    const dir = seeded();
+
+    const run = reviewRun(dir, ['--backtest', 'nope']);
+
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain("no annotation scheme named 'nope'");
+    expect(schemes(dir)).toStrictEqual([]);
+  });
+
+  it('refuses a --backtest naming a scheme with no pass -- no labels, so no ground truth', () => {
+    const dir = seeded();
+    schemeWithoutPass(dir);
+
+    const run = reviewRun(dir, ['--backtest', 'never_run']);
+
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain(
+      "scheme 'never_run' is registered but has recorded no pass",
+    );
+    // Only the pre-seeded `never_run` scheme exists; `review` was never registered by the refused run.
+    expect(schemes(dir).map((row) => row[0])).toStrictEqual(['never_run']);
+  });
+
+  it('refuses --backtest together with --ids, which is itself a hand label with nothing to grade', () => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+
+    const run = asc(
+      ['annotate', '--scheme', 'review', '--ids', 'bug=e1', '--backtest', 'hand'],
+      dir,
+    );
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--backtest and --ids cannot be combined');
+  });
+
+  it('refuses --backtest together with --dry-run, which it already implies', () => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+
+    const run = reviewRun(dir, ['--backtest', 'hand', '--dry-run']);
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--backtest and --dry-run cannot be combined');
   });
 });
 

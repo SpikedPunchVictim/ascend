@@ -28,9 +28,48 @@
  * as a taxonomy that does not fit. `--scope` is the predicate the census is a remainder OF, and it
  * is the same predicate the rules are applied within.
  *
- * **`--backtest` is refused rather than ignored.** The sketch has it, and a flag that parses and
- * does nothing is worse than one that does not exist -- a caller would read a precision/recall
- * number into an output that never computed one. It names `asc-3o9`, the bead that owns it.
+ * **`--backtest <hand-scheme>` grades `--rule` against a hand-labelled ground truth, and touches
+ * nothing.** `asc-3o9`: the model hand-labels a small sample under its own scheme, writes a rule
+ * meant to reproduce that sample's judgement, and this reports whether it does -- precision, recall
+ * and support per label -- BEFORE the rule is ever applied to the corpus for real.
+ *
+ * `<hand-scheme>` is a bare scheme name, resolved to its LATEST pass -- the same name `--scheme`
+ * takes everywhere else in this command and in `asc kappa`, and the same default `asc kappa` uses
+ * when no `--pass` pins one. A specific historical pass is not addressable through this flag; that
+ * asymmetry is deliberate rather than an oversight, because summing every pass a hand scheme has
+ * ever recorded would risk two passes disagreeing about one entry (an ordinary result of relabelling
+ * some of the sample), and there would be no principled way to pick a winner. One pass is
+ * unambiguous, and the latest is the current judgement -- the same reasoning `annotationPasses`
+ * gives for why `asc kappa` defaults there too.
+ *
+ * **This is graded, not compared, and that is why it is not `asc kappa` with an extra flag.** Kappa
+ * is symmetric: two raters, neither one truth. Back-testing is asymmetric on purpose -- the hand
+ * scheme's pass IS the ground truth by the premise of the task, and the rule is a predictor being
+ * scored against it. Precision (of what the rule claimed, how much was right) and recall (of what is
+ * actually true, how much the rule found) are both questions kappa cannot answer, because kappa has
+ * no notion of which side is correct. `@ascend/analysis`'s `backtest()` is the module that computes
+ * this, and its own comment says at length why `cohenKappa` is the wrong tool for it.
+ *
+ * **The hand sample is small by construction -- that is the whole premise of hand-labelling instead
+ * of labelling the corpus -- so every precision and every recall is a `wilson()` proportion, never a
+ * bare ratio.** A precision of 1.00 computed from 3 items is not printed as a bare `1.00`: it carries
+ * its interval and, below `MIN_N`, the small-group flag `renderProportion` appends. A label the rule
+ * never predicted has no precision to report and a label the hand truth never used has no recall to
+ * report -- both are OMITTED, never a fabricated 0.00 (`TASKS.md` #7). This is the same discipline
+ * the refusal this replaced was protecting: a precision/recall number that looks more certain than
+ * it is would be worse than no back-test at all.
+ *
+ * **The disagreement is reported too, per label**: which entries the rule labelled that the hand
+ * truth did not (false positives), and which the hand truth labelled that the rule missed (false
+ * negatives) -- named by id, not only counted, because a rule's author fixes a rule by looking at the
+ * specific entries it got wrong.
+ *
+ * **Nothing is registered and nothing is written.** The rule's matches are computed the same way
+ * `--dry-run`'s preview computes them -- run in memory against the store, read, and discarded -- so
+ * `--backtest` shares that half of `--dry-run`'s reasoning without sharing its flag: combining the
+ * two is refused as redundant, since a run that never writes gains nothing from being told twice not
+ * to. `--ids` has nothing to backtest either and is refused with `--backtest` for the same reason:
+ * an `--ids` pass IS a hand label, not a rule with something to grade.
  *
  * **`--dry-run` runs the rules and writes nothing**, so the preview is produced by the same rule
  * application the real run performs. It is not a second code path: the assignments are computed
@@ -41,7 +80,10 @@
 
 import { randomUUID } from 'node:crypto';
 import { Flags } from '@oclif/core';
+import { backtest } from '@ascend/analysis';
 import {
+  annotationPasses,
+  annotationRows,
   listSchemes,
   matchingEntryIds,
   recordAnnotations,
@@ -57,6 +99,7 @@ import {
 import { parseAssignments, parseRules } from '../annotation-rules.js';
 import { BaseCommand } from '../base.js';
 import { refusal, usageError } from '../errors.js';
+import { renderProportion } from '../output.js';
 
 /**
  * The census that WOULD result, computed from the assignments in hand.
@@ -127,7 +170,10 @@ export default class Annotate extends BaseCommand {
       description: 'Who or what produced this pass. Stored as created_by; omitted by default.',
     }),
     backtest: Flags.string({
-      description: 'Not implemented -- owned by asc-3o9.',
+      description:
+        "Grade --rule against the named scheme's latest pass, taken as ground truth: precision, " +
+        'recall and support per label, and where the rule and the hand truth disagree. Writes ' +
+        'nothing -- the rule never touches the corpus.',
     }),
     'dry-run': Flags.boolean({
       description: 'Run the rules and report the census, then write nothing.',
@@ -139,15 +185,6 @@ export default class Annotate extends BaseCommand {
     const format = this.resolveFormat(flags);
     const dryRun = this.flagValue(flags['dry-run']);
 
-    if (flags.backtest !== undefined) {
-      throw refusal(
-        `--backtest is not implemented yet: measuring a rule against a hand-labelled sample is ` +
-          `asc-3o9, which is deferred. It is refused rather than ignored because a precision/recall ` +
-          `number that was never computed is exactly the kind of output a caller would read ` +
-          `confidence out of. Use --dry-run to see the match counts a rule produces meanwhile.`,
-      );
-    }
-
     // Measured, not assumed: an absent `multiple` flag arrives as `undefined`, not `[]` -- probed
     // against this oclif, which reports `[]` for `--rule a --rule b` and NO `rule` key at all for a
     // command given none. The declared type says `string[]`, so the defaulting is real rather than a
@@ -156,6 +193,7 @@ export default class Annotate extends BaseCommand {
     const rawIds = flags.ids ?? [];
     const declared = flags.label ?? [];
     const scope = this.optionalFlag(flags.scope);
+    const backtestScheme = this.optionalFlag(flags.backtest);
 
     // The sketch's `|`: the two modes write different kinds of pass and cannot be one call. A run
     // that mixed them would have to decide what a rule matched that a hand label contradicts.
@@ -170,6 +208,25 @@ export default class Annotate extends BaseCommand {
       throw usageError(
         'nothing to do: give --rule to apply rules, or --ids "<label>=<id>,<id>" to annotate named ' +
           'entries. An empty run would register a scheme and write no pass.',
+      );
+    }
+    // `--ids` IS a hand label -- there is nothing for --backtest to grade it against, since grading
+    // needs a predictor (a rule) and a separate ground truth (the scheme named by --backtest).
+    if (backtestScheme !== undefined && rawIds.length > 0) {
+      throw usageError(
+        '--backtest and --ids cannot be combined: --backtest grades a proposed --rule against an ' +
+          'existing hand-labelled scheme, and --ids is itself a hand label with nothing to grade. ' +
+          'Drop --ids, or drop --backtest and run this as an ordinary --ids pass.',
+      );
+    }
+    // Redundant rather than contradictory, and refused for the same reason the sketch's `|` is: a
+    // flag that adds nothing to what is already true is a flag whose presence a reader has to
+    // puzzle over. `--backtest` already runs the rule without writing -- that is its entire point --
+    // so pairing it with `--dry-run` says the same thing twice.
+    if (backtestScheme !== undefined && dryRun) {
+      throw usageError(
+        '--backtest and --dry-run cannot be combined: --backtest already runs --rule without ' +
+          "writing to the corpus, which is --dry-run's entire purpose. Drop --dry-run.",
       );
     }
 
@@ -202,6 +259,117 @@ export default class Annotate extends BaseCommand {
           (row) => row.id,
         ),
       );
+
+      // `--backtest` is handled here, before `allIds`/`assigned` are built, because none of that
+      // machinery is for it: a backtest never writes, so it needs only the rule's matches (computed
+      // exactly like `--dry-run`'s preview, in memory, then thrown away) and the hand scheme's
+      // latest pass, read back and graded by `@ascend/analysis`'s `backtest()`.
+      if (backtestScheme !== undefined) {
+        const registeredNow = listSchemes(store.db);
+        if (!registeredNow.some((entry) => entry.name === backtestScheme)) {
+          throw refusal(
+            `there is no annotation scheme named '${backtestScheme}' to back-test against. ` +
+              `Registered schemes: ${
+                registeredNow.map((entry) => `'${entry.name}'`).join(', ') || '(none)'
+              }. Hand-label a sample first with ` +
+              `\`asc annotate --scheme ${backtestScheme} --ids "<label>=<id>,<id>"\`.`,
+          );
+        }
+
+        // Latest pass only, and deliberately -- see the module doc. Summing every pass a hand scheme
+        // has ever recorded risks two passes disagreeing about one entry, with no principled way to
+        // pick a winner; the latest pass is the current hand judgement, unambiguous by construction.
+        const passes = annotationPasses(store.db, backtestScheme);
+        const latestPass = passes[passes.length - 1];
+        if (latestPass === undefined) {
+          throw refusal(
+            `scheme '${backtestScheme}' is registered but has recorded no pass, so there is no ` +
+              `hand-labelled ground truth to grade '--rule' against. Hand-label a sample first ` +
+              `with \`asc annotate --scheme ${backtestScheme} --ids "<label>=<id>,<id>"\`.`,
+          );
+        }
+
+        // Ground truth is the hand scheme's latest pass, narrowed to this run's --scope -- the same
+        // meaning --scope has everywhere else in this command: what the run considers.
+        const truthRows = annotationRows(store.db, {
+          scheme: backtestScheme,
+          pass: latestPass.createdAt,
+        });
+        const truth = truthRows
+          .filter((row) => scopeIds.has(row.entryId))
+          .map((row) => ({ id: row.entryId, label: row.label }));
+
+        if (truth.length === 0) {
+          throw refusal(
+            `scheme '${backtestScheme}''s latest pass (${latestPass.createdAt}) labelled ` +
+              `${String(truthRows.length)} entries, and none of them fall within ` +
+              `${scope === undefined ? "this run's scope" : `--scope '${scope}'`}. There is no ` +
+              `ground truth inside that scope to grade '--rule' against -- widen --scope, or drop ` +
+              `it.`,
+          );
+        }
+
+        // First match wins, exactly as the real (write) path applies rules below -- computed here
+        // rather than shared with it because the real path also has to fold in `scopeIds` for a
+        // WRITE, and this one only ever reads.
+        const predictedIds = new Map<string, string>();
+        for (const rule of parsed.rules) {
+          for (const entryId of matchingEntryIds(store.db, rule)) {
+            if (scopeIds.has(entryId) && !predictedIds.has(entryId)) {
+              predictedIds.set(entryId, rule.label);
+            }
+          }
+        }
+        const predicted = [...predictedIds].map(([entryId, label]) => ({ id: entryId, label }));
+
+        const report = backtest(predicted, truth);
+
+        this.emit(format, {
+          columns: [
+            'scheme',
+            'backtest',
+            'pass',
+            'compared',
+            'label',
+            'support',
+            'predicted',
+            'true_positives',
+            'false_positives',
+            'false_negatives',
+            'precision',
+            'recall',
+          ],
+          rows: report.measures.map((measure) => ({
+            scheme: schemeName,
+            backtest: backtestScheme,
+            pass: latestPass.createdAt,
+            compared: report.compared,
+            label: measure.label,
+            support: measure.actual,
+            predicted: measure.predicted,
+            true_positives: measure.truePositives,
+            false_positives: measure.falsePositives.length,
+            false_negatives: measure.falseNegatives.length,
+            // Rendered strings, so --table and --csv show the honest qualified form
+            // (`renderProportion`'s CI and small-group flag) rather than a bare number or a
+            // JSON-stringified object -- the same `tally`-plus-raw-field split `explore.ts`'s
+            // `propertyRow` uses for its own proportion-shaped value.
+            precision: renderProportion(measure.precision),
+            recall: renderProportion(measure.recall),
+            // The structured proportion, present only when there is one (never a `null` standing in
+            // for "no estimate" -- `TASKS.md` #7) and omitted from `columns` so it reaches `--json`
+            // only: a script that wants `successes`/`n`/`lower`/`upper` reads this rather than
+            // re-parsing the display string.
+            ...(measure.precision === null ? {} : { precision_measure: measure.precision }),
+            ...(measure.recall === null ? {} : { recall_measure: measure.recall }),
+            // Named, not only counted -- a rule's author fixes a rule by looking at the entries it
+            // got wrong, not by knowing how many there were.
+            false_positive_ids: measure.falsePositives,
+            false_negative_ids: measure.falseNegatives,
+          })),
+        });
+        return;
+      }
 
       // Every entry that exists, scope or no scope -- fetched only when `--ids` might need to tell
       // a nonexistent id apart from one this run's `--scope` excludes. Without a `--scope`,

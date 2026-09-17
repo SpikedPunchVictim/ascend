@@ -24,6 +24,10 @@
  *     implemented it (`spike/FINDINGS.md` records it as entirely unexercised), so it arrived with
  *     hand-computed anchors instead of ported ones. It reports kappa and the two numbers behind it
  *     but NO interval -- see that file for why Wilson's is the wrong variance for it.
+ *   - Rule back-testing -- DONE, `backtest.ts` (asc-3o9). Grades a proposed rule against a
+ *     hand-labelled ground truth: precision and recall per label, both `wilson()` proportions rather
+ *     than bare ratios, and neither is kappa -- see that file for why a symmetric agreement statistic
+ *     is the wrong tool for grading an asymmetric predictor.
  *   - the seeded permutation control -- still to port, and it is the same problem
  *     `sample.ts` solves below. `sample.ts` is the answer that landed first: build it
  *     on that generator rather than beside it, so one store has one notion of a seed.
@@ -63,3 +67,10 @@ export {
   type LabelMarginal,
   type Labelled,
 } from './agreement.js';
+
+export {
+  backtest,
+  BacktestError,
+  type BacktestLabelMeasure,
+  type BacktestReport,
+} from './backtest.js';
