@@ -516,6 +516,57 @@ describe('verification_run', () => {
     expect(deriver.counters.unverdictable).toBe(1);
   });
 
+  it('counts a first pass with no sessionId as unkeyable, and does not corrupt the chain', () => {
+    // The mechanism `asc-joo` names: advancing the chain on a run nobody could attribute would
+    // make the NEXT, attributable run compare against a value the store never held -- silently
+    // swallowing the first entry the store COULD have written. Reproduced end to end at the CLI
+    // in `ingest.test.ts`; this pins the deriver's own half of it.
+    const deriver = createDeriver();
+    const dropped = [
+      ...deriver.accept(invoke('t1', 'Bash', 'pnpm test'), FILE),
+      ...deriver.accept(
+        record([{ type: 'tool_result', tool_use_id: 't1', is_error: false }], {
+          sessionId: undefined,
+        }),
+        FILE,
+      ),
+    ];
+    expect(dropped).toEqual([]);
+    expect(deriver.counters.unkeyable).toBe(1);
+    expect(deriver.counters.unverdictable).toBe(0);
+
+    // The NEXT check, in the same file, IS attributable -- and must still be recorded as the
+    // first verified pass, because as far as the store is concerned nothing came before it.
+    const recovered = ofType(
+      [
+        ...deriver.accept(invoke('t2', 'Bash', 'pnpm test'), FILE),
+        ...deriver.accept(result('t2', false), FILE),
+      ],
+      'verification_run',
+    );
+    expect(recovered.length).toBe(1);
+    expect(recovered[0]?.properties).not.toHaveProperty('previous_verdict');
+  });
+
+  it('does NOT count a repeated, non-candidate verdict with no sessionId', () => {
+    // Nothing would have been written even with a session id -- a repeat is filtered
+    // regardless of attribution -- so counting this as a drop would overstate what was
+    // actually lost.
+    const deriver = createDeriver();
+    deriver.accept(invoke('t1', 'Bash', 'pnpm test'), FILE);
+    deriver.accept(result('t1', false), FILE); // establishes an attributable PASS baseline
+
+    deriver.accept(invoke('t2', 'Bash', 'pnpm test'), FILE);
+    const out = deriver.accept(
+      record([{ type: 'tool_result', tool_use_id: 't2', is_error: false }], {
+        sessionId: undefined,
+      }),
+      FILE,
+    );
+    expect(out).toEqual([]);
+    expect(deriver.counters.unkeyable).toBe(0);
+  });
+
   it('does not advance the chain when a verdict could not be read', () => {
     // Conservative by design: the next readable run is compared against the last
     // verdict actually READ, so an unreadable result cannot fabricate a change.

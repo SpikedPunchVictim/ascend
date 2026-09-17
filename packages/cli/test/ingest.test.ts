@@ -450,6 +450,120 @@ describe('asc ingest claude-code', () => {
     expect(outcomes(run.stdout)['context_compaction']).toBe('1 new');
   });
 
+  it('counts a sessionless verdict rather than dropping it uncounted, and still recovers the next attributable one', () => {
+    // `asc-joo`: a verdict with no session used to be dropped silently AND advance the verdict
+    // chain, so the very next (attributable) run compared itself against a value the store
+    // never held and was itself suppressed as "no change". Two losses from one record. This
+    // fixture drives both: the sessionless pass first, then an attributable pass that must
+    // still land as a first verified pass.
+    const dir = project();
+    const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
+    mkdirSync(corpus, { recursive: true });
+    const records = [
+      {
+        uuid: 'inv-1',
+        timestamp: '2026-01-02T03:04:05.000Z',
+        ...RECORD_AT,
+        message: {
+          content: [
+            { type: 'tool_use', id: 'toolu-a', name: 'Bash', input: { command: 'pnpm test' } },
+          ],
+        },
+      },
+      // No `sessionId` at all -- the transcript shape `asc-joo` names.
+      {
+        uuid: 'res-1',
+        timestamp: '2026-01-02T03:04:06.000Z',
+        ...RECORD_AT,
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu-a', is_error: false }] },
+      },
+      {
+        sessionId: 's-2',
+        uuid: 'inv-2',
+        timestamp: '2026-01-02T03:04:07.000Z',
+        ...RECORD_AT,
+        message: {
+          content: [
+            { type: 'tool_use', id: 'toolu-b', name: 'Bash', input: { command: 'pnpm test' } },
+          ],
+        },
+      },
+      {
+        sessionId: 's-2',
+        uuid: 'res-2',
+        timestamp: '2026-01-02T03:04:08.000Z',
+        ...RECORD_AT,
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu-b', is_error: false }] },
+      },
+    ];
+    writeFileSync(
+      join(corpus, 's-1.jsonl'),
+      `${records.map((r) => JSON.stringify(r)).join('\n')}\n`,
+    );
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    expect(run.status).toBe(0);
+    // The drop is now a number, not a silence.
+    expect(run.stderr).toContain('1 event(s) had no stable identity and were not written');
+
+    // And the entry the chain used to swallow is recovered -- a first verified pass, because
+    // as far as the store is concerned nothing came before it.
+    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    try {
+      const rows = db
+        .prepare('SELECT id, properties_json AS p FROM entries WHERE type_name = ?')
+        .all('verification_run') as { id: string; p: string }[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.id).toBe('derived:claude-code:verification_run:s-2:toolu-b');
+      const properties = JSON.parse(rows[0]?.p ?? '{}') as Record<string, unknown>;
+      expect(properties['verdict']).toBe('passed');
+      expect(properties).not.toHaveProperty('previous_verdict');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('counts an unreadable verdict rather than leaving it invisible', () => {
+    // `asc-bzy`: `counters.unverdictable` was computed and never surfaced -- not in the table,
+    // not in `--json`, not asserted anywhere. This fixture is the one shape that produces a
+    // non-zero value: a Bash check result with no boolean `is_error` at all.
+    const dir = project();
+    const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
+    mkdirSync(corpus, { recursive: true });
+    const records = [
+      {
+        sessionId: 's-1',
+        uuid: 'inv-1',
+        timestamp: '2026-01-02T03:04:05.000Z',
+        ...RECORD_AT,
+        message: {
+          content: [
+            { type: 'tool_use', id: 'toolu-a', name: 'Bash', input: { command: 'pnpm test' } },
+          ],
+        },
+      },
+      // No `is_error` at all -- the transcript shape `asc-bzy` names.
+      {
+        sessionId: 's-1',
+        uuid: 'res-1',
+        timestamp: '2026-01-02T03:04:06.000Z',
+        ...RECORD_AT,
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu-a' }] },
+      },
+    ];
+    writeFileSync(
+      join(corpus, 's-1.jsonl'),
+      `${records.map((r) => JSON.stringify(r)).join('\n')}\n`,
+    );
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('1 check run(s) carried no readable pass/fail result');
+    expect(stored(dir).byType['verification_run']).toBeUndefined();
+  });
+
   it('writes nothing at all on --dry-run, and reports what it would have written', () => {
     const dir = project();
     transcripts(dir);

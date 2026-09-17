@@ -120,22 +120,28 @@ export interface DeriveCounters {
   keyCollisions: number;
   /**
    * Events recognised but NOT emitted, because they had no stable identity: a denial or
-   * compaction with no `session_id`, or a skill activation with no record uuid. Should be
-   * zero; a non-zero value means the corpus holds rows nothing can key, which is a real
-   * limitation to state rather than a bug to hide.
+   * compaction with no `session_id`, a skill activation with no record uuid, or a verification
+   * run whose verdict was readable but could not be attributed to a session and would
+   * otherwise have been a first pass or a change. Should be zero; a non-zero value means the
+   * corpus holds rows nothing can key, which is a real limitation to state rather than a bug
+   * to hide.
    */
   unkeyable: number;
   /**
-   * Bash check runs whose result carried no boolean `is_error`, so no verdict could be read.
-   * Should be zero, and measured zero on every drive of the real corpus: `is_error` was a
-   * boolean on every check result seen. A non-zero value means the transcript changed shape
+   * Bash check runs whose result carried no boolean `is_error`, so no verdict could be read at
+   * all. Distinct from `unkeyable`: this is a missing VALUE, not a missing identity -- a
+   * verdict that could not be attributed to a session is counted there instead, because it is
+   * a different failure of the transcript's shape and conflating the two would blur which one
+   * fired. Should be zero, and measured zero on every drive of the real corpus: `is_error` was
+   * a boolean on every check result seen. A non-zero value means the transcript changed shape
    * and `verification_run` is silently going blind -- which is why it is a counter and not an
    * assumption.
    *
    * Such a run is dropped AND does not advance the verdict chain, so the next readable run is
    * compared against the last verdict that was actually read. That is the conservative choice:
    * the alternative, treating an unreadable result as a pass, would fabricate a verdict change
-   * out of a field the transcript failed to carry.
+   * out of a field the transcript failed to carry. A sessionless-but-readable verdict (counted
+   * as `unkeyable`, just above) is held to the same rule for the same reason.
    */
   unverdictable: number;
 }
@@ -702,7 +708,6 @@ export function createDeriver(): Deriver {
             } else {
               const verdict = !failed;
               const previous = lastVerdict;
-              lastVerdict = verdict;
               // The filter, and it is a filter rather than a preference. Measured: the corpus
               // holds 6,826 commands that run a check, which without this filter would make
               // `pnpm test` an entry and put a row in the store for every keystroke of a
@@ -716,25 +721,38 @@ export function createDeriver(): Deriver {
               // conversations fabricates relationships neither one had.
               const firstPass = previous === undefined && verdict;
               const changed = previous !== undefined && previous !== verdict;
-              if ((firstPass || changed) && sessionId !== undefined) {
-                emit(
-                  out,
-                  'verification_run',
-                  `${sessionId}:${resultId}`,
-                  sessionId,
-                  file.project,
-                  occurredAt,
-                  locality,
-                  {
-                    runner,
-                    verdict: verdict ? 'passed' : 'failed',
-                    // OMITTED on a first verified pass. "There was no earlier run" and
-                    // "the earlier run agreed" are different facts.
-                    ...(previous === undefined
-                      ? {}
-                      : { previous_verdict: previous ? 'passed' : 'failed' }),
-                  },
-                );
+              if (sessionId === undefined) {
+                // Attribution failure on a verdict that WAS readable. Handled the same
+                // conservative way as an unreadable one just above: the chain does not
+                // advance. Advancing it here would let a LATER, attributable run silently
+                // inherit this value as `previous_verdict` -- attributing a fact to a run the
+                // store never actually holds, which is the exact fabrication this project's
+                // rule forbids. Counted only when it was actually a candidate for an entry: a
+                // repeat that matches the known chain was never going to be written even with
+                // a session id, so counting it here would overstate what was lost.
+                if (firstPass || changed) counters.unkeyable += 1;
+              } else {
+                lastVerdict = verdict;
+                if (firstPass || changed) {
+                  emit(
+                    out,
+                    'verification_run',
+                    `${sessionId}:${resultId}`,
+                    sessionId,
+                    file.project,
+                    occurredAt,
+                    locality,
+                    {
+                      runner,
+                      verdict: verdict ? 'passed' : 'failed',
+                      // OMITTED on a first verified pass. "There was no earlier run" and
+                      // "the earlier run agreed" are different facts.
+                      ...(previous === undefined
+                        ? {}
+                        : { previous_verdict: previous ? 'passed' : 'failed' }),
+                    },
+                  );
+                }
               }
             }
           }

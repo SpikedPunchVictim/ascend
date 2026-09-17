@@ -336,11 +336,18 @@ export default class IngestClaudeCode extends BaseCommand {
       );
     }
 
-    // Both counters exist so a dropped event cannot be a silence.
+    // All three counters exist so a dropped event cannot be a silence.
     if (counters.unkeyable > 0) {
       this.warn(
         `${String(counters.unkeyable)} event(s) had no stable identity and were not written. ` +
           `They cannot be recovered by re-running: the transcript does not carry what keys them.`,
+      );
+    }
+    if (counters.unverdictable > 0) {
+      this.warn(
+        `${String(counters.unverdictable)} check run(s) carried no readable pass/fail result ` +
+          `and were not written. The transcript's shape changed; re-running will not recover ` +
+          `them unless the source transcript is regenerated.`,
       );
     }
     if (counters.keyCollisions > 0) {
