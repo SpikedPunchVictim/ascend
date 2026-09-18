@@ -52,6 +52,14 @@
  *     `minSimilarity`. Empty documents are held out rather than collapsed together, because most
  *     entries in this store carry no `evidence_text` and Jaccard's empty-set convention would report
  *     that silence as the largest finding in the data.
+ *   - lexical clustering -- DONE, `cluster.ts` (asc-h7d). TF-IDF cosine with agglomerative
+ *     linkage, NO EMBEDDINGS, because `mast` deleted its vector leg and there is no model to call.
+ *     The problem it is built around is that agglomerative clustering ALWAYS returns clusters, so
+ *     every cluster carries a silhouette and `permutationNull` gives the mean one a null to be
+ *     disbelieved against -- a shuffle that preserves the vocabulary, every term's frequency and
+ *     every document's length, and destroys only co-occurrence. Average linkage is the default;
+ *     single and complete ship beside it because they lose differently, and which one lost on this
+ *     corpus is a measurement rather than an opinion.
  *   - the seeded permutation control -- DONE, `association.ts` (asc-0tw), and it was built the way
  *     this note asked: `sample.ts`'s generator moved to `random.ts` and both now draw from it, so
  *     one store has one notion of a seed rather than two identical ones that agree by coincidence.
@@ -144,6 +152,25 @@ export {
   type RuleOptions,
   type RuleReport,
 } from './rules.js';
+
+export {
+  cluster,
+  ClusterError,
+  cosine,
+  permutationNull as clusterPermutationNull,
+  sweepThreshold,
+  tfidf,
+  type Cluster,
+  type ClusterDocument,
+  type ClusterNull,
+  type ClusterOptions,
+  type ClusterReport,
+  type ClusterTerm,
+  type DocumentVector,
+  type Linkage,
+  type ThresholdSweepPoint,
+  type Vectorisation,
+} from './cluster.js';
 
 export {
   collapseNearDuplicates,
