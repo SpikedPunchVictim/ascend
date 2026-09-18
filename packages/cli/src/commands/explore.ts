@@ -45,12 +45,17 @@
  * structure, from one build of the data rather than two that could disagree (`output.ts`:
  * `columns` is a view of the rows, not a definition of them).
  *
- * **A property's state ratios are over the entries that DECLARED it**, not over the type's total.
- * `measured 51 (58.6%)` is a share of the 87 entries whose registered version declared that
- * property; entries recorded before the property existed are excluded, because the question was not
- * askable of them. So `declared_entries` on the row is NOT `count`, and both are reported -- a
- * ratio against the type's total would report a property as 50% measured when every entry that
- * could have measured it did.
+ * **THREE of a property's four state ratios are over the entries that DECLARED it**, not over the
+ * type's total. `measured 51 (58.6%)` is a share of the 87 entries whose registered version declared
+ * that property; entries recorded before the property existed are excluded, because the question was
+ * not askable of them. So `declared_entries` on the row is NOT `count`, and both are reported -- a
+ * ratio against the type's total would report a property as 50% measured when every entry that could
+ * have measured it did. **The fourth, `not_declared`, is the opposite: it is a share of `count`, the
+ * type's total, because those are exactly the entries it is NOT drawn from a subset of** -- an entry
+ * is `not_declared` precisely because its recording version never put it in the `declared` population
+ * at all. Dividing it by `declared` instead was a real defect (`asc-5x7`), fixed by `stateDenominator`
+ * below: a property added in v2 with 500 v1 entries and 10 v2 entries used to render
+ * `not_declared 500 (5000.0%)`.
  *
  * **What is absent is absent, never zero.** `min`/`max` appear only for a property summarised by
  * range, `top` only for a categorical one, and `recorded_at` is omitted entirely for a type with no
@@ -64,17 +69,27 @@
  * would cut after `not_measured ` and hide two of the four states behind the `…`. Rather than widen
  * the cell for this command (a truncation rule that differs per command) or delete the combined
  * line, `propertyStateRows` adds one row per property PER STATE -- `field: property.<name>.measured`,
- * `value: 51 (58.6%)` -- immediately after the property's own summary row. Each is short enough that
- * `renderTable` never truncates it, so the default table cannot collapse "measured" and "nobody
- * looked" into one appearance, which is the failure the three-state model exists to prevent. The
- * summary row and its combined line are unchanged, additive rather than replaced, so a consumer
+ * `value: 51 (58.6%)` originally -- immediately after the property's own summary row. Each is short
+ * enough that `renderTable` never truncates it, so the default table cannot collapse "measured" and
+ * "nobody looked" into one appearance, which is the failure the three-state model exists to prevent.
+ * The summary row and its combined line are unchanged, additive rather than replaced, so a consumer
  * reading `tally` today keeps reading exactly what it read before.
+ *
+ * **`asc-5x7` upgrades that per-state `value` from the bare percentage above to the QUALIFIED form
+ * (`renderProportion` over `wilson`), and adds one more row per `top`-summarised property per top
+ * value (`propertyTopRows`).** The combined `tally` line and `values` cell stay exactly the compact
+ * shape described above (decision D4) -- only the per-state and per-top-value rows carry the
+ * interval, the n and the small-group flag, structured (`proportion`, `denominator`) as well as
+ * rendered (`value`). Before this, `--json` for this command carried no `lower`, `upper`,
+ * `confidence` or small-group key anywhere, while `asc annotate --backtest` already carried all four
+ * for its own proportions -- the inconsistency `asc-5x7` closes.
  */
 
 import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Args, Flags } from '@oclif/core';
 import { CURSOR_ORDER, DEFAULT_PAGE_SIZE } from '@ascend/core';
+import { wilson, type Proportion } from '@ascend/analysis';
 import {
   entryIds,
   findEntry,
@@ -98,7 +113,14 @@ import {
   type SampleMode,
   type SampleRequest,
 } from '../explore-sample.js';
-import { entryRow, render, subset, type Row, type SampleReport } from '../output.js';
+import {
+  entryRow,
+  render,
+  renderProportion,
+  subset,
+  type Row,
+  type SampleReport,
+} from '../output.js';
 import { fitToBudget, BudgetFloorError, type BudgetRequest } from '../budget.js';
 import { dumpFileRow, MANIFEST_NAME, planDump, type DumpChunk } from '../explore-dump.js';
 
@@ -120,23 +142,54 @@ function sampleMode(typed: string | undefined): SampleMode | undefined {
 }
 
 /**
- * The tally as one line: every state named, with its share of the entries that declared the
- * property.
+ * Which n a state's share is a share OF (`asc-5x7`, decision D2) -- the one thing `renderStates`
+ * (the compact tally line) and `propertyStateRows` (the per-state rows) must never disagree about,
+ * so it is computed in exactly one place and both call it.
+ *
+ * `measured`, `not_applicable` and `not_measured` PARTITION the declared count: every entry that
+ * declared the property landed in exactly one of the three, so each is a share of `declared`.
+ * `not_declared` is not a share of that population at all -- it counts entries that were never IN
+ * it, because their recording version never declared the property. Its denominator is the type's
+ * own total (`count`, i.e. `profile.count`), the population `not_declared` is actually drawn from.
+ *
+ * **THIS WAS THE BUG THE WILSON WRAPPING EXPOSED.** Before this fix, both `renderStates` and
+ * `propertyStateRows` divided every state -- `not_declared` included -- by `declared`, which for
+ * the first three states is correct and for the fourth is a ratio of two DISJOINT sets: a property
+ * added in v2, with 500 v1 entries and 10 v2 entries, rendered `not_declared 500 (5000.0%)`. Handing
+ * that same pair to `wilson(500, 10)` throws `ProportionError` ("successes cannot exceed n") --
+ * `wilson` did not create this defect, it made a percentage over 100% impossible to ship silently.
+ */
+function stateDenominator(state: (typeof STATES)[number], declared: number, count: number): number {
+  return state === 'not_declared' ? count : declared;
+}
+
+/**
+ * The tally as one line: every state named, with its share of the population `stateDenominator`
+ * names for it.
  *
  * **Every state is named, including the ones at zero.** `not_applicable 0` is not noise -- for a
  * derived corpus it is the finding, and dropping the empty states from a rendering whose JSON
  * counterpart states them exactly is how a reader comes to believe a corpus uses a state it never
  * uses (`EV-baseline.md`, decision 2).
  *
- * The denominator is the declared count rather than the type's total, for the reason in the file
- * comment. A declared count of zero is a type with no entries at all, where a share would be a
- * division by it, so the bare count is rendered instead.
+ * **Deliberately still the bare count-and-percentage form, not the qualified Wilson string
+ * (`asc-5x7`, decision D4).** Four `renderProportion` strings joined into one `tally` cell would run
+ * to roughly 350 characters in a table that already elides at 60 -- the exact failure `asc-cbk`
+ * created `propertyStateRows` to solve for the un-qualified form. The qualified form lives on the
+ * per-state rows below instead; this line stays a map, not a page.
+ *
+ * A denominator of zero is a type (or, for the first three states, a property) with no entries in
+ * that population at all, where a share would be a division by it, so the bare count is rendered
+ * instead.
  */
-function renderStates(counts: StateCounts, declared: number): string {
-  const share = (n: number): string =>
-    declared === 0 ? String(n) : `${String(n)} (${((n / declared) * 100).toFixed(1)}%)`;
+function renderStates(counts: StateCounts, declared: number, count: number): string {
+  const share = (state: (typeof STATES)[number]): string => {
+    const n = stateDenominator(state, declared, count);
+    const value = counts[state];
+    return n === 0 ? String(value) : `${String(value)} (${((value / n) * 100).toFixed(1)}%)`;
+  };
 
-  return STATES.map((state) => `${state} ${share(counts[state])}`).join(', ');
+  return STATES.map((state) => `${state} ${share(state)}`).join(', ');
 }
 
 /**
@@ -208,8 +261,13 @@ function declaredCount(property: PropertyProfile): number {
  * function rather than an object literal: a `min: null` on a categorical property would be
  * indistinguishable from "nothing was measured", which is a different and wrong claim. `summary`
  * is always present, so the reader can tell which keys to expect.
+ *
+ * `count` -- the type's total (`profile.count`) -- is threaded in explicitly rather than read off a
+ * module-level variable, so `renderStates`'s `not_declared` denominator (`asc-5x7`, D2) is a
+ * parameter of this function the same way `declared` already is, and not an ambient value a caller
+ * could forget to pass or a future caller could pass inconsistently.
  */
-function propertyRow(property: PropertyProfile): Row {
+function propertyRow(property: PropertyProfile, count: number): Row {
   const declared = declaredCount(property);
 
   return {
@@ -217,7 +275,7 @@ function propertyRow(property: PropertyProfile): Row {
     // The rendered type is a display: two versions may declare one name with different types, and
     // both are named rather than one being chosen.
     type: property.declaredTypes.join(' | '),
-    tally: renderStates(property.states, declared),
+    tally: renderStates(property.states, declared, count),
     distinct: property.distinct,
     values: renderSummary(property),
     name: property.name,
@@ -232,37 +290,93 @@ function propertyRow(property: PropertyProfile): Row {
   };
 }
 
+/** Which n a rendered proportion used -- named rather than left for a reader to infer from `count`. */
+type Denominator = 'declared_entries' | 'entries' | 'measured';
+
 /**
  * One row per property PER STATE, immediately after the property's own summary row (`asc-cbk`).
  *
- * **Additive, not a replacement.** `propertyRow`'s `tally` line is unchanged, and everything this
- * function reports is already in that row's `states` field -- `--json` never hid a count, only the
- * default TABLE did, by cutting the combined line at 60 characters. So this exists to make the same
- * numbers visible in the table specifically, at the cost of four more rows per property, rather than
- * to carry information that was not already on the output.
+ * **Additive, not a replacement.** `propertyRow`'s `tally` line is unchanged. Before `asc-5x7` this
+ * row's `value` was already in that row's `states` field -- `--json` never hid a count, only the
+ * default TABLE did, by cutting the combined line at 60 characters. `asc-5x7` adds something that
+ * genuinely was not on the output before: `value` is now the QUALIFIED form (`renderProportion`
+ * over `wilson`), and `proportion`/`denominator` carry that same measurement structured, so a
+ * `--json` consumer gets `lower`/`upper`/`confidence`/`smallGroup` where before it had only a bare
+ * count -- the gap `asc-5x7` exists to close. `renderStates`'s compact `tally` cell deliberately does
+ * NOT gain this qualification (decision D4): it stays a map, not a page.
  *
  * `field` is namespaced under the property's own (`property.<name>.<state>`) rather than flattened
  * to the state name alone, because a type can declare a property called `measured`, and a field name
  * that collided with a state name would be ambiguous about which one a reader was looking at.
  *
- * Only `field` and `value` are populated -- `type`, `distinct` and `values` describe the PROPERTY,
- * not one of its states, and repeating them on all four rows would be four copies of one fact next
- * to the row that already states it once. Left absent rather than duplicated, per the rule the rest
- * of this command's rows already follow (`min`/`max`/`top` above).
+ * `denominator` names WHICH population `n` was, per `stateDenominator` (D2): three states are shares
+ * of `declared`, and `not_declared` is a share of the type's total instead. Naming it rather than
+ * leaving a reader to divide `count` by `declared_entries` themselves is what makes the two forms
+ * (this row's `count`/`declared_entries` and its own `proportion.n`) impossible to reconcile wrongly.
+ *
+ * Only `field`, `value` and the fields above are populated -- `type`, `distinct` and `values`
+ * describe the PROPERTY, not one of its states, and repeating them on all four rows would be four
+ * copies of one fact next to the row that already states it once. Left absent rather than
+ * duplicated, per the rule the rest of this command's rows already follow (`min`/`max`/`top` above).
  */
-function propertyStateRows(property: PropertyProfile): readonly Row[] {
+function propertyStateRows(property: PropertyProfile, count: number): readonly Row[] {
   const declared = declaredCount(property);
-  const share = (n: number): string =>
-    declared === 0 ? String(n) : `${String(n)} (${((n / declared) * 100).toFixed(1)}%)`;
 
-  return STATES.map((state) => ({
-    field: `property.${property.name}.${state}`,
-    value: share(property.states[state]),
-    name: property.name,
-    state,
-    count: property.states[state],
-    declared_entries: declared,
-  }));
+  return STATES.map((state) => {
+    const n = stateDenominator(state, declared, count);
+    const successes = property.states[state];
+    // `wilson` insists successes <= n; that invariant is exactly what `stateDenominator` restores
+    // for `not_declared` (see its own comment) and what already held for the other three states.
+    const proportion: Proportion | null = wilson(successes, n);
+    const denominator: Denominator = state === 'not_declared' ? 'entries' : 'declared_entries';
+
+    return {
+      field: `property.${property.name}.${state}`,
+      value: renderProportion(proportion),
+      name: property.name,
+      state,
+      count: successes,
+      declared_entries: declared,
+      proportion,
+      denominator,
+    };
+  });
+}
+
+/**
+ * One row per top-K value, immediately after a `top`-summarised property's state rows (`asc-5x7`,
+ * decision D5). This is the row that answers the bead's own measurement: a `values` cell that
+ * printed `automode-blocked 36` with nothing saying whether 36 of 564 is an estimate or an anecdote.
+ *
+ * **The denominator is `property.states.measured`, not `declared` and not the type's `count`.** A
+ * top value is one of the MEASURED values -- `topValues` (`profile.ts`) only ever counts entries
+ * that actually got a value -- so the population a top count is a share OF is the measured entries,
+ * which is smaller than (or equal to) both `declared` and `count`.
+ *
+ * Emitted only for `summary === 'top'`; the other two summaries (`range`, `cardinality`) have no
+ * `top` list to walk, and an empty `property.top` (nothing measured) naturally produces zero rows
+ * here without a separate guard, the same way an empty list has always mapped to nothing.
+ *
+ * Follows `propertyStateRows`' own discipline: `type`, `distinct` and `values` describe the
+ * property as a whole and are not repeated here.
+ */
+function propertyTopRows(property: PropertyProfile): readonly Row[] {
+  if (property.summary !== 'top') return [];
+  const measured = property.states.measured;
+
+  return property.top.map((entry) => {
+    const proportion: Proportion | null = wilson(entry.count, measured);
+
+    return {
+      field: `property.${property.name}.top.${entry.value}`,
+      value: renderProportion(proportion),
+      name: property.name,
+      top_value: entry.value,
+      count: entry.count,
+      denominator: 'measured' satisfies Denominator,
+      proportion,
+    };
+  });
 }
 
 export default class Explore extends BaseCommand {
@@ -767,8 +881,9 @@ export default class Explore extends BaseCommand {
       rows.push(
         ...profile.versions.map(versionRow),
         ...profile.properties.flatMap((property) => [
-          propertyRow(property),
-          ...propertyStateRows(property),
+          propertyRow(property, profile.count),
+          ...propertyStateRows(property, profile.count),
+          ...propertyTopRows(property),
         ]),
       );
 

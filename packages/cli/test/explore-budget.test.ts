@@ -351,9 +351,13 @@ describe('asc explore --max-tokens: what it drops, it says it dropped', () => {
       'version_count',
     ]);
     expect(parsed.trim?.dropped).toBeGreaterThan(0);
-    // `asc-cbk` gave every property four state rows alongside its own summary row, so this
-    // fixture's two properties, plus its recorded-range pair and its one version, now drop 13 rows
-    // at the floor (measured: `coverage.total` 17 minus the 4-row floor) -- past `MAX_NAMED_DROPS`
+    // `asc-cbk` gave every property four state rows alongside its own summary row, and `asc-5x7`
+    // then gave every `top`-summarised property one row per top value. This fixture's `outcome` is
+    // an enum (`summary` = `top`) holding two distinct values across its three records, so it
+    // contributes two such rows; `note` is `text` (`cardinality`) and contributes none. So the
+    // fixture's two properties, plus its recorded-range pair and its one version, now drop 15 rows
+    // at the floor: 4 header + 2 recorded_at + 1 version + 2*(1 summary + 4 state) + 2 top = 19
+    // rows, minus the 4-row floor. That is past `MAX_NAMED_DROPS`
     // (8, `budget.ts`), where the cap stops naming individual rows because the names would cost more
     // of the budget than the drop just saved. Below the cap, `dropped_keys` is undefined rather than
     // an empty array (`budget.ts`'s `dropped_keys.length < dropped` signal), and that is itself the
@@ -362,7 +366,7 @@ describe('asc explore --max-tokens: what it drops, it says it dropped', () => {
     // already pinned independently of any fixture in `budget.test.ts`, so this test's job is only
     // the floor's identity, asserted above -- not which side of the naming cap a particular type
     // profile happens to land on.
-    expect(parsed.trim?.dropped).toBe(13);
+    expect(parsed.trim?.dropped).toBe(15);
     expect(parsed.trim?.dropped_keys).toBeUndefined();
   });
 

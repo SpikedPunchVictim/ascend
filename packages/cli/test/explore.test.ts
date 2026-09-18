@@ -62,6 +62,17 @@ function flatten(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+/** A `Proportion` (`@ascend/analysis`) as it comes back through `--json`, field names unchanged. */
+interface JsonProportion {
+  readonly successes: number;
+  readonly n: number;
+  readonly p: number;
+  readonly lower: number;
+  readonly upper: number;
+  readonly confidence: number;
+  readonly smallGroup: boolean;
+}
+
 interface ProfileRow {
   readonly field: string;
   readonly value?: unknown;
@@ -80,6 +91,12 @@ interface ProfileRow {
   readonly top?: readonly { readonly value: string; readonly count: number }[];
   readonly min?: unknown;
   readonly max?: unknown;
+  // `asc-5x7`: the per-state and per-top-value rows' qualified proportion, and which n it used.
+  readonly state?: string;
+  readonly top_value?: string;
+  readonly count?: number;
+  readonly proportion?: JsonProportion | null;
+  readonly denominator?: 'declared_entries' | 'entries' | 'measured';
 }
 
 function rows(stdout: string): readonly ProfileRow[] {
@@ -211,6 +228,23 @@ describe('asc explore: the map', () => {
 
     // The property both versions declare is declared by both entries.
     expect(property(list, 'outcome').declared_entries).toBe(2);
+
+    // `asc-5x7`, D2: `not_declared`'s share is of the TYPE'S TOTAL (`count`, here 2), not of
+    // `declared` (here 1) -- disjoint sets. The old (buggy) code divided by `declared` and would
+    // have rendered `not_declared 1 (100.0%)`, on a row whose own `declared_entries` is 1 out of a
+    // `count` of 2 -- an impossible-to-reconcile 100% share of the smaller set. The corrected value
+    // is 1 of the type's 2 entries: 1 / 2 = 0.5 = 50.0% (plain arithmetic on numbers already
+    // asserted above, not `wilson`'s own output). The exact CI bounds are not asserted here -- only
+    // that the percentage is the type-total share and that it, like any proportion, cannot exceed
+    // 100% or go negative, which `not_declared 500 (5000.0%)` (500 v1 / 10 v2 entries) violated.
+    const notDeclared = find(list, 'property.added_later.not_declared');
+    expect(notDeclared?.value).toContain('50.0%');
+    expect(notDeclared?.denominator).toBe('entries');
+    expect(notDeclared?.proportion?.n).toBe(2);
+    expect(notDeclared?.proportion?.successes).toBe(1);
+    expect(notDeclared?.proportion?.p).toBe(0.5);
+    expect(notDeclared?.proportion?.lower).toBeGreaterThanOrEqual(0);
+    expect(notDeclared?.proportion?.upper).toBeLessThanOrEqual(1);
   });
 
   it('summarises each property by its declared type', () => {
@@ -291,6 +325,205 @@ describe('asc explore: the map', () => {
     expect(property(list, 'outcome').values).toBe('no value measured');
     // Nor is a version row invented for a version that has recorded nothing.
     expect(fields(list, 'version.')).toStrictEqual(['version.1']);
+
+    // `asc-5x7`: `wilson` returns `null` for n=0, never a fabricated zero-valued interval
+    // (`proportion.ts`, departure 2), and `renderProportion(null)` renders that as `n=0 (no
+    // estimate)`. Checked on both a `declared`-denominator state (`measured`) and the
+    // `entries`-denominator state (`not_declared`, `asc-5x7` D2) -- both are n=0 here since the type
+    // itself has no entries, but they would draw from different populations were it non-empty, and
+    // this is the one fixture where that distinction collapses to the same (empty) answer.
+    const measuredRow = find(list, 'property.outcome.measured');
+    expect(measuredRow?.value).toBe('n=0 (no estimate)');
+    expect(measuredRow?.proportion).toBeNull();
+    expect(measuredRow?.denominator).toBe('declared_entries');
+
+    const notDeclaredRow = find(list, 'property.outcome.not_declared');
+    expect(notDeclaredRow?.value).toBe('n=0 (no estimate)');
+    expect(notDeclaredRow?.proportion).toBeNull();
+    expect(notDeclaredRow?.denominator).toBe('entries');
+  });
+});
+
+/**
+ * `asc-5x7` -- the qualified proportion (Wilson interval, n, MIN_N marker) that `asc explore` was
+ * missing while `asc annotate --backtest` already had it.
+ *
+ * **WHERE THESE ANCHORS COME FROM, exactly.** They were derived independently, by implementing the
+ * published Wilson formula separately and evaluating it at the published two-sided normal quantile
+ * z(0.95) = 1.959963984540054 (`proportion.ts:64` -- that constant is in the module's own table and
+ * nowhere else in the repository; `ARCHITECTURE.md` does not carry it). They are NOT produced by
+ * calling `wilson()`, which is the house rule this suite follows throughout: an expectation taken
+ * from the module under test asserts only that the module agrees with itself.
+ *
+ *   centre = (p + z^2/2n) / (1 + z^2/n)
+ *   margin = z*sqrt( p(1-p)/n + z^2/4n^2 ) / (1 + z^2/n)
+ *
+ * **The corroboration is the 0/5 case, and it is worth stating precisely because it is the only
+ * external check available.** Evaluating that same independent implementation at 0/5 yields
+ * `0.0% (95% CI 0.0-43.4%, n=5)` -- byte-identical to EV-19's real, previously-observed
+ * `asc annotate --backtest` output, quoted in `asc-5x7`. That is the bead's ONLY worked example;
+ * `3/5` and `10/20` below appear in neither the bead nor EV-19 and are not claimed to. What the
+ * 0/5 agreement establishes is that the derivation reproducing them is the same arithmetic the
+ * shipped tool already prints -- it does not independently confirm any other pair's bounds.
+ */
+describe('asc explore: proportions are Wilson-qualified, not bare percentages (asc-5x7)', () => {
+  /** One entry whose `outcome` was actually measured. */
+  function measured(dir: string, value: string): void {
+    expect(asc(['record', SPEC.name, '--prop', `outcome=${value}`, '--json'], dir).status).toBe(0);
+  }
+
+  /** One entry for which `outcome` does not apply. */
+  function notApplicable(dir: string): void {
+    expect(asc(['record', SPEC.name, '--na', 'outcome', '--json'], dir).status).toBe(0);
+  }
+
+  /** One entry for which `outcome` was never looked at. */
+  function notMeasured(dir: string): void {
+    expect(
+      asc(['record', SPEC.name, '-', '--json'], dir, JSON.stringify({ properties: {} })).status,
+    ).toBe(0);
+  }
+
+  /**
+   * `3/5` -> `"60.0% (95% CI 23.1-88.2%, n=5)"`, marked SMALL GROUP (`n=5 < MIN_N=20`).
+   *
+   * Hand arithmetic, from the independent derivation described on the `describe` above (NOT from
+   * the bead, which carries only the 0/5 example, and NOT from `wilson()`):
+   * `centre = (p + z^2/2n) / (1 + z^2/n)`, `margin = z*sqrt(p(1-p)/n + z^2/4n^2) / (1 + z^2/n)`,
+   * with `p = 0.6`, `n = 5`, `z = 1.959963984540054` gives raw `lower = 0.2307242812760128` and
+   * raw `upper = 0.882379225767352`, which round to `23.1` and `88.2`.
+   */
+  it('carries the qualified string AND the structured interval on a state row', () => {
+    const dir = emptyProject();
+    measured(dir, 'ok');
+    measured(dir, 'ok');
+    measured(dir, 'ok');
+    notApplicable(dir);
+    notMeasured(dir);
+
+    const list = rows(asc(['explore', SPEC.name, '--json'], dir).stdout);
+    const outcome = property(list, 'outcome');
+    // The 5 entries all declared `outcome` (no second version), so `declared_entries` is the type's
+    // whole count -- confirms the fixture partitions the way the arithmetic above assumes.
+    expect(outcome.declared_entries).toBe(5);
+
+    const measuredRow = find(list, 'property.outcome.measured');
+    expect(measuredRow?.value).toBe(
+      '60.0% (95% CI 23.1-88.2%, n=5)  [SMALL GROUP n=5 < 20 -- treat as anecdote, not estimate]',
+    );
+    expect(measuredRow?.denominator).toBe('declared_entries');
+    const proportion = measuredRow?.proportion;
+    expect(proportion?.successes).toBe(3);
+    expect(proportion?.n).toBe(5);
+    expect(proportion?.p).toBe(0.6);
+    expect(proportion?.confidence).toBe(0.95);
+    expect(proportion?.smallGroup).toBe(true);
+    expect(proportion?.lower).toBeCloseTo(0.2307242812760128, 12);
+    expect(proportion?.upper).toBeCloseTo(0.882379225767352, 12);
+  });
+
+  /**
+   * The MIN_N boundary, both sides. `isSmallGroup(n)` is `n < MIN_N` (`MIN_N = 20`,
+   * `proportion.ts:50`), so `n = 20` is the first value that does NOT get the marker -- an
+   * off-by-one here (`<=` instead of `<`) would mark exactly the boundary case wrongly and every
+   * assertion elsewhere in this file that merely checks the marker's PRESENCE would stay green.
+   *
+   * `10/20` -> `"50.0% (95% CI 29.9-70.1%, n=20)"`, no marker. Hand arithmetic, independent of the
+   * module: same formula as above with `p = 0.5`, `n = 20` gives raw `lower = 0.2992980081982123`,
+   * raw `upper = 0.7007019918017877`, rounding to `29.9` and `70.1`.
+   */
+  it('marks n < MIN_N and does not mark n = MIN_N (the boundary is exclusive)', () => {
+    const dir = emptyProject();
+    for (let i = 0; i < 10; i += 1) measured(dir, 'ok');
+    for (let i = 0; i < 5; i += 1) notApplicable(dir);
+    for (let i = 0; i < 5; i += 1) notMeasured(dir);
+
+    const list = rows(asc(['explore', SPEC.name, '--json'], dir).stdout);
+    expect(property(list, 'outcome').declared_entries).toBe(20);
+
+    const measuredRow = find(list, 'property.outcome.measured');
+    expect(measuredRow?.value).toBe('50.0% (95% CI 29.9-70.1%, n=20)');
+    expect(measuredRow?.value).not.toContain('SMALL GROUP');
+    expect(measuredRow?.proportion?.n).toBe(20);
+    expect(measuredRow?.proportion?.smallGroup).toBe(false);
+
+    // The other side of the boundary, n=19, needs its own fixture: `declared_entries` is fixed by
+    // however many entries are recorded, so reaching n=19 means recording 19 (not 20) entries, not
+    // relabelling one of the states above.
+    const smallDir = emptyProject();
+    for (let i = 0; i < 9; i += 1) measured(smallDir, 'ok');
+    for (let i = 0; i < 5; i += 1) notApplicable(smallDir);
+    for (let i = 0; i < 5; i += 1) notMeasured(smallDir);
+    const smallList = rows(asc(['explore', SPEC.name, '--json'], smallDir).stdout);
+    expect(property(smallList, 'outcome').declared_entries).toBe(19);
+    const smallMeasuredRow = find(smallList, 'property.outcome.measured');
+    expect(smallMeasuredRow?.proportion?.n).toBe(19);
+    expect(smallMeasuredRow?.proportion?.smallGroup).toBe(true);
+    expect(smallMeasuredRow?.value).toContain('SMALL GROUP');
+  });
+
+  /**
+   * `propertyTopRows` (D5): one row per top value, denominator `property.states.measured` -- NOT
+   * `declared` and not the type's `count`. All 5 entries here measure a value (no na/not-measured),
+   * so `measured` happens to equal `declared_entries` (5), and this fixture reuses the `3/5` anchor
+   * above for the `ok` value (3 of the 5 measured entries hold it) to prove the top row's `n` really
+   * is `measured` and not some other count that happens to coincide elsewhere in the file.
+   */
+  it('emits one row per top value, over the measured count', () => {
+    const dir = emptyProject();
+    measured(dir, 'ok');
+    measured(dir, 'ok');
+    measured(dir, 'ok');
+    measured(dir, 'bad');
+    measured(dir, 'bad');
+
+    const list = rows(asc(['explore', SPEC.name, '--json'], dir).stdout);
+    const outcome = property(list, 'outcome');
+    expect(outcome.states?.measured).toBe(5);
+    expect(outcome.top).toStrictEqual([
+      { value: 'ok', count: 3 },
+      { value: 'bad', count: 2 },
+    ]);
+
+    const okRow = find(list, 'property.outcome.top.ok');
+    expect(okRow?.top_value).toBe('ok');
+    expect(okRow?.count).toBe(3);
+    expect(okRow?.denominator).toBe('measured');
+    // Same numerator/denominator pair as the state-row anchor above (3/5), so the same derived
+    // string applies -- derived, not published: see the `describe` comment on where it comes from.
+    expect(okRow?.value).toBe(
+      '60.0% (95% CI 23.1-88.2%, n=5)  [SMALL GROUP n=5 < 20 -- treat as anecdote, not estimate]',
+    );
+    expect(okRow?.proportion?.successes).toBe(3);
+    expect(okRow?.proportion?.n).toBe(5);
+
+    // The second value gets its own row too -- existence and correct numerator/denominator, without
+    // re-deriving its interval by hand (MIN_N=20 is a published constant, not `wilson`'s output, so
+    // asserting `smallGroup` from it is independent of the module under test).
+    const badRow = find(list, 'property.outcome.top.bad');
+    expect(badRow?.top_value).toBe('bad');
+    expect(badRow?.count).toBe(2);
+    expect(badRow?.denominator).toBe('measured');
+    expect(badRow?.proportion?.successes).toBe(2);
+    expect(badRow?.proportion?.n).toBe(5);
+    expect(badRow?.proportion?.smallGroup).toBe(true);
+  });
+
+  /**
+   * D8: the profile's `--csv`/`--table` column list (`['field','value','type','tally','distinct',
+   * 'values']`, `explore.ts`) is unaffected by this change -- `proportion` and `denominator` are
+   * `--json`-only. Checked through `--csv` because CSV has no padding to hide an extra column in.
+   */
+  it('keeps the structured proportion and denominator out of --csv', () => {
+    const dir = emptyProject();
+    measured(dir, 'ok');
+
+    const csv = asc(['explore', SPEC.name, '--csv'], dir).stdout;
+    const header = csv.trimEnd().split('\n')[0];
+
+    expect(header).toBe('field,value,type,tally,distinct,values');
+    expect(csv).not.toContain('proportion');
+    expect(csv).not.toContain('denominator');
   });
 });
 
