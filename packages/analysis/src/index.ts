@@ -19,7 +19,9 @@
  *   - `wilson` + the minimum-N rule -- DONE, `proportion.ts` (asc-bmf). It departed
  *     from the spike twice on purpose; both departures and their reasons are in that
  *     file's comment, and the anchors are carried into `test/proportion.test.ts`.
- *   - `crosstab` / `chiSquare` / `cramerV` -- still to port (asc-0tw).
+ *   - `crosstab` / `chiSquare` / `cramerV` -- DONE, `association.ts` (asc-0tw). Ported, then extended
+ *     into the RANKING the bead actually asked for: forty-five pairs need effect-size ordering,
+ *     Bergsma bias correction and Benjamini-Hochberg FDR control before a top-5 means anything.
  *   - Cohen's kappa -- DONE, `agreement.ts` (asc-8ju), written rather than ported: the spike never
  *     implemented it (`spike/FINDINGS.md` records it as entirely unexercised), so it arrived with
  *     hand-computed anchors instead of ported ones. It reports kappa and the two numbers behind it
@@ -28,19 +30,19 @@
  *     hand-labelled ground truth: precision and recall per label, both `wilson()` proportions rather
  *     than bare ratios, and neither is kappa -- see that file for why a symmetric agreement statistic
  *     is the wrong tool for grading an asymmetric predictor.
- *   - the seeded permutation control -- still to port, and it is the same problem
- *     `sample.ts` solves below. `sample.ts` is the answer that landed first: build it
- *     on that generator rather than beside it, so one store has one notion of a seed.
+ *   - the seeded permutation control -- DONE, `association.ts` (asc-0tw), and it was built the way
+ *     this note asked: `sample.ts`'s generator moved to `random.ts` and both now draw from it, so
+ *     one store has one notion of a seed rather than two identical ones that agree by coincidence.
  */
+
+export { DEFAULT_SEED, mulberry32, seedOf } from './random.js';
 
 export {
   allocate,
-  DEFAULT_SEED,
   diverseSample,
   outlierSample,
   randomSample,
   SampleSizeError,
-  seedOf,
   stratifiedSample,
   type SampleOptions,
   type Samplable,
@@ -67,6 +69,25 @@ export {
   type LabelMarginal,
   type Labelled,
 } from './agreement.js';
+
+export {
+  AssociationError,
+  benjaminiHochberg,
+  chiSquare,
+  chiSquarePValue,
+  crosstab,
+  mutualInformation,
+  permutationNull,
+  rankAssociations,
+  type AssociationColumn,
+  type AssociationOptions,
+  type AssociationReport,
+  type ChiSquareResult,
+  type Crosstab,
+  type MutualInformationResult,
+  type PairAssociation,
+  type PermutationNull,
+} from './association.js';
 
 export {
   backtest,

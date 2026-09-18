@@ -32,6 +32,10 @@
  * plain arrays and nothing here should need to know what an ascend property is. So the state
  * vocabulary stays in one place, and the only thing crossing the boundary is a string.
  *
+ * THE GENERATOR LIVES IN `random.ts`, not here. It was private to this file until the permutation
+ * control in `association.ts` needed the same seed vocabulary; see that file for why one generator
+ * beats two identical ones.
+ *
  * DETERMINISM IS THE DEFAULT AND THE SEED IS THE EXCEPTION, matching the rule the rest of this
  * store follows: two runs over one store must agree. `random` and `stratified` derive every choice
  * from a seeded generator whose default is fixed, so a sample is reproducible from its parameters
@@ -47,6 +51,8 @@
  * builtin at all (enforced by `align check` and the `purity-enforcement` test). The population is
  * materialised by the caller -- the store's `signatures` -- and this file only chooses from it.
  */
+
+import { DEFAULT_SEED, mulberry32, seedOf } from './random.js';
 
 /** An item a sampler can order reproducibly. Every other interface here extends it. */
 export interface Samplable {
@@ -77,9 +83,6 @@ export interface SampleOptions {
   readonly seed?: string;
 }
 
-/** The seed a caller who names none gets, so an unparameterised run is still reproducible. */
-export const DEFAULT_SEED = 'ascend';
-
 /** A caller asked for a sample size the sampler will not serve. */
 export class SampleSizeError extends Error {
   constructor(readonly requested: number) {
@@ -100,43 +103,6 @@ export interface StratifiedSample<T extends Samplable> {
   readonly items: readonly T[];
   /** Every key that occurs in the population, ascending. */
   readonly strata: readonly StratumReport[];
-}
-
-/**
- * A 32-bit seed derived from the caller's seed string.
- *
- * FNV-1a, because `analysis` may import no Node builtin -- so it has no hash available to it -- and
- * because a seed needs to be REPRODUCIBLE rather than collision resistant. Stated as a limitation
- * rather than left implicit: 32 bits can be collided deliberately, and the consequence is two seed
- * strings agreeing on a sample. That is a surprising result, not a wrong one.
- */
-export function seedOf(text: string): number {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-/**
- * mulberry32 -- a small, fast, well-known 32-bit generator.
- *
- * Chosen over `Math.random` for the one property that matters here and that `Math.random` does not
- * have: it can be seeded, so a sample is reproducible from its parameters. This store's contract is
- * that a reader can re-run whatever produced a number it is being asked to trust, and an
- * unseedable source makes that impossible for the whole output rather than for one cell.
- *
- * NOT for cryptography. Nothing here needs to be unguessable, and this would not be.
- */
-function mulberry32(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 /** Items in id order, which is where every sampler starts. */
