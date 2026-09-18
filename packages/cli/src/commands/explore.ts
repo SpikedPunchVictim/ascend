@@ -40,7 +40,9 @@
  * `--json` and `--csv` still carry ids verbatim and are never truncated at all.
  *
  * **Rows, and one column set for all of them.** Header facts (`count`, the `recorded_at` range,
- * one row per registered version), then one row per declared property. The property rows carry the
+ * and -- only for a type that declares a `timestamp` property -- the `recorded_at_clock` row
+ * naming which clock that range is on (`asc-bn0`, `recordedAtClockRow` below), then one row per
+ * registered version, then one row per declared property. The property rows carry the
  * tally and the summary in columns of their own; the table renders a line and `--json` carries the
  * structure, from one build of the data rather than two that could disagree (`output.ts`:
  * `columns` is a view of the rows, not a definition of them).
