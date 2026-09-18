@@ -30,6 +30,11 @@
  *     hand-labelled ground truth: precision and recall per label, both `wilson()` proportions rather
  *     than bare ratios, and neither is kappa -- see that file for why a symmetric agreement statistic
  *     is the wrong tool for grading an asymmetric predictor.
+ *   - distinctive terms per group -- DONE, `distinctive.ts` (asc-iyd), written rather than ported:
+ *     the spike never attempted it. Monroe/Colaresi/Quinn's log-odds with an informative Dirichlet
+ *     prior, reported as a z-score, with the vocabulary treated as the multiple-comparison family
+ *     it is. It reuses `chiSquarePValue` for the two-sided normal tail rather than introducing a
+ *     second approximation: P(|Z| > z) is P(X^2 > z^2) at one degree of freedom.
  *   - the seeded permutation control -- DONE, `association.ts` (asc-0tw), and it was built the way
  *     this note asked: `sample.ts`'s generator moved to `random.ts` and both now draw from it, so
  *     one store has one notion of a seed rather than two identical ones that agree by coincidence.
@@ -88,6 +93,16 @@ export {
   type PairAssociation,
   type PermutationNull,
 } from './association.js';
+
+export {
+  distinctiveTerms,
+  DistinctiveError,
+  type DistinctiveGroup,
+  type DistinctiveGroupReport,
+  type DistinctiveOptions,
+  type DistinctiveReport,
+  type DistinctiveTerm,
+} from './distinctive.js';
 
 export {
   backtest,
