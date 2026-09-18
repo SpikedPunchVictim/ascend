@@ -45,6 +45,13 @@
  *     prior, reported as a z-score, with the vocabulary treated as the multiple-comparison family
  *     it is. It reuses `chiSquarePValue` for the two-sided normal tail rather than introducing a
  *     second approximation: P(|Z| > z) is P(X^2 > z^2) at one degree of freedom.
+ *   - near-duplicate collapse -- DONE, `neardup.ts` (asc-yce). MinHash with banding, but the index
+ *     only PROPOSES pairs: every proposed pair is scored by exact Jaccard before anything merges, so
+ *     a signature collision can never cause a false merge and the only sources left are the
+ *     threshold and chaining -- both of which the report prices, the second through each group's
+ *     `minSimilarity`. Empty documents are held out rather than collapsed together, because most
+ *     entries in this store carry no `evidence_text` and Jaccard's empty-set convention would report
+ *     that silence as the largest finding in the data.
  *   - the seeded permutation control -- DONE, `association.ts` (asc-0tw), and it was built the way
  *     this note asked: `sample.ts`'s generator moved to `random.ts` and both now draw from it, so
  *     one store has one notion of a seed rather than two identical ones that agree by coincidence.
@@ -137,6 +144,18 @@ export {
   type RuleOptions,
   type RuleReport,
 } from './rules.js';
+
+export {
+  collapseNearDuplicates,
+  jaccard,
+  minHashSignature,
+  NearDuplicateError,
+  shingle,
+  type DuplicateCandidate,
+  type NearDuplicateGroup,
+  type NearDuplicateOptions,
+  type NearDuplicateReport,
+} from './neardup.js';
 
 export {
   backtest,
