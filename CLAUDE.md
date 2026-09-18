@@ -74,7 +74,34 @@ _Add a brief overview of your project architecture_
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+### Dogfooding findings get written to disk, under `dogfood/`
+
+When using ascend on ascend surfaces a defect, a gap, or a friction — anything that becomes a
+bead — write a record for it. **Filing the bead is not enough.** The bead says what to do; the
+record says how we found out, and that is the part that teaches the next search. The mechanism
+repeats even when the finding does not.
+
+- **One record per finding**, at `dogfood/NNNN-YYYY-MM-DD-short-name.md`, copied from
+  `dogfood/0000-template.md`. `NNNN` is the next free sequence number and gives beads a short
+  stable citation (`dogfood/0002`); the date is when the finding **surfaced**, not when the bead
+  was filed or fixed.
+- **"The metric" is required.** A finding without a measurement is an impression, and impressions
+  belong in a bead comment. Every measurable claim carries the measured value AND how it was
+  obtained; paste exact tool output rather than paraphrasing a number. Where a value does not
+  exist, omit it — never write `0` for unknown. A group under `MIN_N` (20,
+  `packages/analysis/src/proportion.ts:50`) is named as an anecdote, including when the anecdote
+  is about us.
+- **Say whether anyone was looking.** "Nobody was looking for it" is the most valuable sentence in
+  the series — it is the evidence that dogfooding pays for itself.
+- **Remember entries are immutable.** A finding about bad data is never a cleanup task; the
+  options are prevention at write time or an invalidation annotation.
+
+**`dogfood/` or `docs/evidence/`?** The test is whether anyone asked the question first. A question
+named in advance, with predictions pre-registered before measuring, is an `EV-N` record under
+`docs/evidence/`. Something the tool handed you unasked is a dogfood record. A finding may cite
+both.
+
+Index and full convention: `dogfood/README.md`.
 
 <!-- align:start -->
 ## align — architecture conformance
