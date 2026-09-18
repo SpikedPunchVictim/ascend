@@ -1,5 +1,13 @@
 # EV-3: at realistic single-user volume, does an actionable pattern actually emerge?
 
+> **Project identifiers were redacted after publication.** This repository is public. Private
+> project, user and MCP-server names in this record were replaced with the stable pseudonyms used
+> throughout `docs/evidence/` (`<user>`, `<org-B>`, `<project-A>` ..). The same pseudonym always
+> means the same thing in every record, so every count and comparison below stays checkable. Only
+> identifiers changed; no measured value was altered. The store behind these numbers was scrubbed
+> to match — see `dogfood/0004-2026-09-18-the-corpus-records-identity.md`.
+
+
 **Question**    **This is the project's central premise.** At the N a single user actually accumulates,
                 does grouping the corpus reveal a concentration a human would act on — or is it noise?
                 If no actionable pattern emerges at realistic volume, ascend has no reason to exist.

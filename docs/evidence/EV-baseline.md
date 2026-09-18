@@ -1,5 +1,13 @@
 # EV-11: what does the real corpus contain once ingested — the day-one dataset
 
+> **Project identifiers were redacted after publication.** This repository is public. Private
+> project, user and MCP-server names in this record were replaced with the stable pseudonyms used
+> throughout `docs/evidence/` (`<user>`, `<org-B>`, `<project-A>` ..). The same pseudonym always
+> means the same thing in every record, so every count and comparison below stays checkable. Only
+> identifiers changed; no measured value was altered. The store behind these numbers was scrubbed
+> to match — see `dogfood/0004-2026-09-18-the-corpus-records-identity.md`.
+
+
 **Question**  `asc-sx7`'s accept is to run the ingest against the real corpus and report **N per
               type, date range, and per-field population rate** — "the day-one dataset for E6/E7".
               The three numbers are the deliverable; the question behind them is what in this

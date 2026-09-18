@@ -44,8 +44,9 @@ context; the depth lives in the numbered files.
 | [0001](0001-2026-09-17-explore-omits-wilson-intervals.md) | `asc explore` reports proportions as bare counts | `asc-5x7` (P1) | a pre-registered prediction, tested against real output |
 | [0002](0002-2026-09-17-benchmark-temp-dirs-ingested.md) | ascend's own benchmark wrote into ascend's own corpus | `asc-80m` (P2) | the unclassified remainder — nobody was looking |
 | [0003](0003-2026-09-17-recording-is-never-one-step.md) | recording an entry is never one step | `asc-ttg` (P2) | the discipline task auditing itself |
+| [0004](0004-2026-09-18-the-corpus-records-identity.md) | the corpus records who and where you are | `asc-37x` (P1) | a direct question, widened into a scan of every column |
 
-Three findings, three different mechanisms. The mechanism is the part that repeats even when
+Four findings, four different mechanisms. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 ## The convention

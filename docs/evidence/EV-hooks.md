@@ -1,5 +1,13 @@
 # EV-7: does the git-hook integration actually run?
 
+> **Project identifiers were redacted after publication.** This repository is public. Private
+> project, user and MCP-server names in this record were replaced with the stable pseudonyms used
+> throughout `docs/evidence/` (`<user>`, `<org-B>`, `<project-A>` ..). The same pseudonym always
+> means the same thing in every record, so every count and comparison below stays checkable. Only
+> identifiers changed; no measured value was altered. The store behind these numbers was scrubbed
+> to match — see `dogfood/0004-2026-09-18-the-corpus-records-identity.md`.
+
+
 **Question**    Two questions, named before running:
 
                 **Q1.** `asc-rename`'s acceptance criterion was *"config was checked to contain no

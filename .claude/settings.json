@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ ! -f '/Users/<user>/projects/ascend/packages/cli/dist/bin.js' ] || [ ! -d '/Users/<user>/projects/ascend/.ascend' ] || '/opt/homebrew/Cellar/node@24/24.18.0/bin/node' '/Users/<user>/projects/ascend/packages/cli/dist/bin.js' types brief"
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/packages/cli/dist/bin.js\" ] || [ ! -d \"$CLAUDE_PROJECT_DIR/.ascend\" ] || node \"$CLAUDE_PROJECT_DIR/packages/cli/dist/bin.js\" types brief"
           }
         ]
       }
