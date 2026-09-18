@@ -30,6 +30,11 @@
  *     hand-labelled ground truth: precision and recall per label, both `wilson()` proportions rather
  *     than bare ratios, and neither is kappa -- see that file for why a symmetric agreement statistic
  *     is the wrong tool for grading an asymmetric predictor.
+ *   - association rules -- DONE, `rules.ts` (asc-p4g). FP-growth, with the three filters that
+ *     decide whether the output is readable: confidence is a `Proportion` and never a bare ratio,
+ *     `informative` tests the interval's LOWER bound against the consequent's base rate, and only
+ *     productive rules survive -- one that merely matches a shorter rule is that rule with a
+ *     decoration attached.
  *   - changepoint detection -- DONE, `changepoint.ts` (asc-08y). Pettitt (rank-based, closed-form
  *     approximation) and CUSUM (magnitude-based, seeded bootstrap) side by side rather than one
  *     chosen for the caller: they fail differently, and two tests agreeing is a much stronger claim
@@ -123,6 +128,15 @@ export {
   type DistinctiveReport,
   type DistinctiveTerm,
 } from './distinctive.js';
+
+export {
+  associationRules,
+  RuleError,
+  type AssociationRule,
+  type FrequentItemset,
+  type RuleOptions,
+  type RuleReport,
+} from './rules.js';
 
 export {
   backtest,
