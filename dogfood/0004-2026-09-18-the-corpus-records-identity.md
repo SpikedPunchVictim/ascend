@@ -19,7 +19,7 @@ surfaces**, three of which nobody had noticed:
 |---|---|---:|
 | `entries.cwd` | `/Users/<name>/projects/<project>/...` | 1,788 |
 | `entries.properties_json` → `project` | the same path, slugified | 1,702 |
-| `properties_json` → `discovered_tools`, `tool_name` | **private MCP server names** | 1,365 |
+| `properties_json` → `discovered_tools`, `tool_name` | **private MCP server names** | 141 |
 | `properties_json` → `skill` | a **private skill name** | 15 |
 | `annotation_schemes.spec_json` | rule SQL with project names **in the clear** | 1 of 6 |
 
@@ -44,10 +44,10 @@ already known: EV-19 had redacted them in the docs a day earlier.
 What was not known is everything the scan turned up once it stopped looking for project names
 specifically and started looking for **any** private token in **any** column of **any** table:
 
-- MCP **server** names carry project identity (`mcp__<project-I>__<project-I>_search`,
-  `mcp__<org>-local-dev__<org>_db_query`) and sit in an inventory array on every
-  `context_compaction` entry. `<service-A>` appeared this way — a name that matches no directory
-  in the corpus and would never have been found by grepping for project names.
+- MCP **server** names carry project identity (`mcp__<org-B>-local-dev__<org-B>_db_query`) and
+  sit in an inventory array on every `context_compaction` entry. `<service-A>` appeared this way
+  — a name that matches no directory in the corpus and would never have been found by grepping
+  for project names.
 - One **skill** name is a project name.
 - The scheme table holds rule SQL, and rule SQL holds whatever the rule matches on.
 
@@ -68,17 +68,19 @@ tokens; one hit on the SQLite system table `sqlite_master` excluded as a substri
 
 ```
 entries.cwd  ->  <project-A>=230, <project-E>=376, <org-B>=657, <project-F>=51, <project-D>=23,
-                 <project-G>=8, <project-I>=34, <project-J>=1, <user>=1788, var/folders=2
-entries.properties_json  ->  ... <project-I>=150, <user>=1700, var-folders=2
+                 <project-G>=8, mast=34, <project-J>=1, <user>=1788, var/folders=2
+entries.properties_json  ->  ... mast=150, <user>=1700, var-folders=2
 entries.evidence_text  ->  <project-G>=2, <user>=1
 annotation_schemes.spec_json  ->  <project-A>=1, <org-B>=1, <user>=1
 entries_fts.evidence_text  ->  <project-G>=2, <user>=1
 ```
 
-**MCP server names**, distinct, by occurrence — the first three are private:
+**MCP server names**, distinct, by occurrence. Only two are private: `mast` is
+`@spikedpunch/mast`, a published npm package this repo already depends on in the clear, and the
+rest are third-party:
 
 ```
-  981 <project-I>
+  981 mast
   238 <service-A>
   146 <org-B>-local-dev
    68 claude-in-chrome
@@ -193,6 +195,31 @@ Four records carried identifiers and now carry a redaction note saying so.
 **The pseudonyms are now load-bearing.** `<project-A>` .. `<project-J>`, `<org-B>`,
 `<service-A>`, `<user>` mean the same thing in the store and in every `docs/evidence/` record.
 A future ingest will write real names again until `asc-37x`'s prevention half lands.
+
+## What this scrub itself got wrong
+
+Recorded because the series is worthless if it only reports other people's defects.
+
+**The first pass over-redacted.** `mast` was pseudonymised as a private project across 166
+entries. It is `@spikedpunch/mast@0.3.0`, a package published to the public npm registry that
+this repo already depends on in the clear in `package.json`. Reverted by the same procedure, and
+the fingerprint held (`distinct_cwd` 85, `distinct_projects` 14, unchanged).
+
+**The verification that said "clean" was unsound.** The tracked-file check used
+`git grep -E '\bmast\b'`. `git grep -E` is POSIX ERE and does not implement `\b`, so the
+pattern matched nothing and the scan reported CLEAN while `@spikedpunch/mast` sat in
+`package.json`. The same flaw silently hid a second real hit: `projects/<project-G>` in prose at
+`EV-hooks.md:40`, which the first redaction pass missed because it targeted only the exact
+`core.hooksPath=` line. Both were caught by a later check that used `git grep -P`.
+
+The generalisable form, and the reason this is in the metric-bearing series rather than a commit
+message: **a negative result from an unverified tool is not evidence.** The scan was trusted
+because it was run, not because it was ever shown to detect a string known to be present. One
+positive control — grep for something you know is there — would have caught it immediately.
+
+**What caught it in the end** was rewriting history: the rewrite changed 20 files at `HEAD` when
+a correct rule set should have changed none, because `HEAD` was already redacted. The diff was
+the positive control the scan never had.
 
 ## Links
 
