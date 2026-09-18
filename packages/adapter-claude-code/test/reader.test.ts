@@ -449,6 +449,75 @@ describe('the reader distinguishes a broken consumer from a broken transcript', 
   });
 });
 
+describe('scanTranscripts / streamCorpus: ephemeral OS temp projects (asc-80m)', () => {
+  const EPHEMERAL_PROJECT = '-private-var-folders-41-fixt-T-ev18-arm-b-Zz11';
+  const REAL_TEMP_PROJECT = '-Users-me-temp-realproject';
+
+  /**
+   * A fresh root holding one ephemeral-looking project, and one sibling that merely lives under a
+   * path containing "temp" -- the counter-example the DECISION on `asc-80m` names, reproduced
+   * here rather than only in `ephemeral.test.ts`, because this is the layer where it would
+   * actually cost someone their data if the two were confused.
+   */
+  const buildRoot = (): string => {
+    const dir = temp();
+    scratch.push(dir);
+    const ephemeralDir = join(dir, EPHEMERAL_PROJECT);
+    const realDir = join(dir, REAL_TEMP_PROJECT);
+    mkdirSync(ephemeralDir, { recursive: true });
+    mkdirSync(realDir, { recursive: true });
+    writeFileSync(
+      join(ephemeralDir, '44444444-4444-4444-8444-444444444444.jsonl'),
+      `${JSON.stringify({ type: 'user', text: 'from a benchmark tmpdir' })}\n`,
+    );
+    writeFileSync(
+      join(realDir, '55555555-5555-4555-8555-555555555555.jsonl'),
+      `${JSON.stringify({ type: 'user', text: 'a real project under a temp-ish path' })}\n`,
+    );
+    return dir;
+  };
+
+  it('skips the ephemeral project by default, reporting it rather than dropping it silently', async () => {
+    const root = buildRoot();
+    const scan = await scanTranscripts(root);
+
+    expect(scan.files.some((f) => f.project === EPHEMERAL_PROJECT)).toBe(false);
+    const skippedEphemeral = scan.skipped.filter((entry) => entry.reason === 'ephemeral');
+    expect(skippedEphemeral).toHaveLength(1);
+    expect(skippedEphemeral[0]?.project).toBe(EPHEMERAL_PROJECT);
+
+    // The real project is never skipped: this is the counter-example the rule must not catch.
+    expect(scan.files.some((f) => f.project === REAL_TEMP_PROJECT)).toBe(true);
+    expect(scan.skipped.some((entry) => entry.project === REAL_TEMP_PROJECT)).toBe(false);
+  });
+
+  it('reads the ephemeral project when includeEphemeral is true, and it is no longer skipped', async () => {
+    const root = buildRoot();
+    const scan = await scanTranscripts(root, { includeEphemeral: true });
+
+    expect(scan.files.some((f) => f.project === EPHEMERAL_PROJECT)).toBe(true);
+    expect(scan.skipped.some((entry) => entry.reason === 'ephemeral')).toBe(false);
+
+    // Still never skipped, in either mode.
+    expect(scan.files.some((f) => f.project === REAL_TEMP_PROJECT)).toBe(true);
+    expect(scan.skipped.some((entry) => entry.project === REAL_TEMP_PROJECT)).toBe(false);
+  });
+
+  it('streamCorpus propagates the option: the ephemeral file’s records are absent by default', async () => {
+    const root = buildRoot();
+    const records = await collect(root);
+    expect(records.some((r) => r['text'] === 'from a benchmark tmpdir')).toBe(false);
+    expect(records.some((r) => r['text'] === 'a real project under a temp-ish path')).toBe(true);
+  });
+
+  it('streamCorpus propagates the option: present with includeEphemeral: true', async () => {
+    const root = buildRoot();
+    const records: TranscriptRecord[] = [];
+    await streamCorpus((record) => records.push(record), { root, includeEphemeral: true });
+    expect(records.some((r) => r['text'] === 'from a benchmark tmpdir')).toBe(true);
+  });
+});
+
 describe('the reader releases what it opens', () => {
   it('returns the descriptor count to baseline across many files', async () => {
     // Measured, not assumed: on an early exit a readline interface does not

@@ -86,6 +86,47 @@ Worth deciding rather than assuming: a temp-dir project may be legitimately inge
 purposes. The open question is whether the ingest should know the difference, and whether analysis
 should be able to exclude them without every caller hand-writing a path predicate.
 
+## Resolution (2026-09-18)
+
+The open question above -- "whether the ingest should know the difference" -- is answered YES, and
+`asc ingest claude-code` now skips ephemeral roots by default. The decision and its reasoning are
+recorded on `asc-80m`; what belongs here is the measurement this record never had, because the
+record counted the wrong noun.
+
+**The "2" above is an ENTRY count, and prevention acts on FILES.** Re-measured 2026-09-18 against
+`~/.claude/projects`:
+
+| | count | how obtained |
+|---|---|---|
+| project directories | 22 | `ls ~/.claude/projects \| wc -l` |
+| `.jsonl` files | 879 | `find . -name '*.jsonl' \| wc -l` |
+| **ephemeral directories** | **5** | `ls \| grep -c '^-private-var-folders-'` |
+| **ephemeral `.jsonl` files** | **5** | one transcript each, no `subagents/` directories |
+
+So the filter stops reading **5 files of 879 -- 0.57% of the corpus** -- to prevent the 2 entries
+this record found. The two counts differ because **3 of those 5 transcripts never derived an entry
+at all**: the full project-label census on `asc-80m` shows exactly 2 entries under
+`-private-var-folders-` labels out of 1,799. Stating only the entry count, as this record
+originally did, understates what a prevention rule has to touch by a factor of 2.5.
+
+**The rule is ephemerality, not the word "temp".** This record's own metric section is what made
+that necessary: the census beside it holds a real project labelled `-Users-<user>-temp-<project>`,
+one entry, a genuine working directory that merely lives under a temp-ish path. A substring match
+on "temp" would have discarded it. The rule is therefore an ANCHORED prefix match against the
+encoded label -- the label is a dash-encoded absolute path, so an OS temp root is a prefix of it by
+construction and never merely contained in it -- and it is a pure function of the label,
+deliberately not of the ingesting machine's `os.tmpdir()`. Reading the environment would make two
+machines ingesting the same corpus disagree about what is in it.
+
+**Windows is out of scope, and said rather than guessed.** No corpus measured for this finding
+contains a Windows transcript, so there is no observed label shape to anchor against. Inventing one
+would be fabricating a pattern (`TASKS.md` rule 7).
+
+**What this does NOT do.** The 2 entries remain. `entries_are_immutable` and
+`entries_cannot_be_deleted` are unchanged, and this is prevention only -- it stops the population
+growing with every future benchmark run, which was this record's actual argument for fixing it.
+Marking the 2 that exist still needs `asc-88m`.
+
 ## Links
 
 - Bead: `asc-80m`

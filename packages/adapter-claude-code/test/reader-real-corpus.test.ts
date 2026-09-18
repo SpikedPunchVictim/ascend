@@ -325,7 +325,12 @@ describe('the quiet-window bracket', () => {
 
 describe.skipIf(!available)('the reader against the real corpus', () => {
   it('delivers exactly the lines the bytes contain, for every quiet file', async () => {
-    const scan = await scanTranscripts(ROOT);
+    // `includeEphemeral: true` (`asc-80m`): this assertion's meaning is "no symlinks, no
+    // unreadable directories" -- a byte/line conservation law over the WHOLE corpus, which has
+    // nothing to do with ephemerality. The live corpus holds 5 OS-temp-rooted project
+    // directories that `scanTranscripts` now skips by default; reading them anyway here is what
+    // keeps `expect(scan.skipped).toEqual([])` meaning exactly what it always meant.
+    const scan = await scanTranscripts(ROOT, { includeEphemeral: true });
     const cutoff = Date.now() - QUIET_MS;
 
     const quiet: TranscriptFile[] = [];

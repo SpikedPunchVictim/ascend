@@ -205,6 +205,29 @@ function transcripts(dir: string, records: readonly Record<string, unknown>[] = 
   return corpus;
 }
 
+/**
+ * The encoded label of a benchmark's own throwaway OS temp directory -- the realpath'd shape of
+ * macOS's `os.tmpdir()`, matching `EPHEMERAL_ROOTS`'s `-private-var-folders` entry.
+ */
+const EPHEMERAL_PROJECT_DIR = '-private-var-folders-41-ingtest-T-ev18-arm-b-Aa11';
+
+/** One derivable record, filed under `EPHEMERAL_PROJECT_DIR` -- `asc-80m`. */
+const EPHEMERAL_RECORD: Record<string, unknown> = {
+  sessionId: 'eph-sess',
+  uuid: 'eph-uuid',
+  timestamp: '2026-01-02T03:04:12.000Z',
+  ...RECORD_AT,
+  userFeedback: 'this came from a benchmark tmpdir',
+};
+
+/** Write a second, ephemeral-labelled project directory alongside the main fixture corpus. */
+function ephemeralTranscripts(dir: string): string {
+  const corpus = join(dir, '.claude', 'projects', EPHEMERAL_PROJECT_DIR);
+  mkdirSync(corpus, { recursive: true });
+  writeFileSync(join(corpus, 'eph-sess.jsonl'), `${JSON.stringify(EPHEMERAL_RECORD)}\n`);
+  return corpus;
+}
+
 /** What the store actually holds. Read directly, never taken from the command's report. */
 function stored(dir: string): {
   readonly entries: number;
@@ -785,6 +808,52 @@ describe('asc ingest claude-code', () => {
     // silent drop `asc-90h` names.
     expect(outcomes(run.stdout)['user_correction']).toBe('1 new, 1 collided');
     expect(run.stderr).toContain('1 derived entry collided with a DIFFERENT entry');
+  });
+});
+
+/**
+ * `asc-80m`: `~/.claude/projects` holds project directories that are OS temp directories a
+ * benchmark run created, never a project a person chose to work in. They can never recur, so a
+ * default ingest must not turn them into permanent singleton strata in project-keyed analysis --
+ * but the entries are still real if a caller explicitly asks for them.
+ */
+describe('asc ingest claude-code: ephemeral OS temp projects', () => {
+  it('does not write an ephemeral project’s entries by default, and names it in the report', () => {
+    const dir = project();
+    transcripts(dir);
+    ephemeralTranscripts(dir);
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    expect(run.status).toBe(0);
+
+    // The five ordinary entries landed; the ephemeral project's own entry did not.
+    const db = stored(dir);
+    expect(db.entries).toBe(5);
+    expect(db.ids.some((id) => id.includes('eph-uuid'))).toBe(false);
+
+    // The count and the distinct label are named, not folded into a bare number -- `derive.ts`'s
+    // own rule against a silently dropped record applies to a deliberate exclusion too.
+    expect(run.stderr).toContain('1 transcript file(s) under known OS temp project(s)');
+    expect(run.stderr).toContain(EPHEMERAL_PROJECT_DIR);
+    expect(run.stderr).toContain('--include-ephemeral');
+  });
+
+  it('reads the ephemeral project when --include-ephemeral is passed', () => {
+    const dir = project();
+    transcripts(dir);
+    ephemeralTranscripts(dir);
+
+    const run = asc(['ingest', 'claude-code', '--include-ephemeral'], dir);
+
+    expect(run.status).toBe(0);
+
+    const db = stored(dir);
+    expect(db.entries).toBe(6);
+    expect(db.ids).toContain('derived:claude-code:user_correction:eph-sess:eph-uuid');
+
+    // And the ephemeral warning is gone: nothing was skipped for that reason on this run.
+    expect(run.stderr).not.toContain('under known OS temp project(s)');
   });
 });
 

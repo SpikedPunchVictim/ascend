@@ -50,6 +50,7 @@ import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { decodeLine, type TranscriptRecord } from './decode.js';
+import { isEphemeralProject } from './ephemeral.js';
 import { defaultTranscriptRoot } from './transcript-root.js';
 import {
   JSONL_SUFFIX,
@@ -72,12 +73,20 @@ import {
  */
 export type Visit = (record: TranscriptRecord, file: TranscriptFile, line: number) => void;
 
-export type SkipReason = 'unreadable' | 'symlink';
+export type SkipReason = 'unreadable' | 'symlink' | 'ephemeral';
 
-/** A path the sweep deliberately did not read. Never silent -- always reported. */
+/**
+ * A path the sweep deliberately did not read. Never silent -- always reported.
+ *
+ * `project` is present ONLY for `reason: 'ephemeral'`, and omitted -- never `undefined` --
+ * otherwise: `exactOptionalPropertyTypes` makes that the compiler's rule rather than a
+ * convention, and it is the label a caller needs to name what was skipped (`asc ingest
+ * claude-code`'s report groups on it).
+ */
 export interface SkippedEntry {
   readonly path: string;
   readonly reason: SkipReason;
+  readonly project?: string;
 }
 
 export interface ScanResult {
@@ -132,7 +141,13 @@ export interface CorpusTotals {
   readonly bytes: number;
   /** Files that could not be read to the end. Never fatal. */
   readonly failures: readonly TranscriptFailure[];
-  /** Directories not descended into, and symlinks not followed. */
+  /**
+   * Everything the sweep deliberately did not read: directories not descended into, symlinks
+   * not followed, and -- unless `includeEphemeral` asked otherwise -- transcripts under a known
+   * OS temp root (`asc-80m`). Three different facts sharing one array, which is why
+   * `SkippedEntry` carries the `reason` that tells them apart: a caller that reports the length
+   * alone would describe a deliberate exclusion as damage to the walk.
+   */
   readonly skipped: readonly SkippedEntry[];
   /** True when a signal stopped the sweep early: the totals are then PARTIAL. */
   readonly aborted: boolean;
@@ -142,12 +157,26 @@ export interface CorpusOptions {
   /** Defaults to `~/.claude/projects`. */
   readonly root?: string;
   readonly signal?: AbortSignal;
+  /** See `ScanOptions`. Defaults to `false`, and is passed straight through to `scanTranscripts`. */
+  readonly includeEphemeral?: boolean;
+}
+
+export interface ScanOptions {
+  /**
+   * Read transcripts under a known OS temp root (`ephemeral.ts`) instead of skipping them.
+   *
+   * Defaults to `false`. These projects can never recur -- the directory was a benchmark run's
+   * throwaway `os.tmpdir()`, gone the moment the process that made it exited -- so by default
+   * they are counted and reported (`reason: 'ephemeral'`) rather than silently read, the same
+   * "never silent" treatment this module already gives a symlink or an unreadable directory.
+   */
+  readonly includeEphemeral?: boolean;
 }
 
 /**
  * Every `.jsonl` under `root`, recursively.
  *
- * Two deliberate non-behaviours, both REPORTED rather than silent:
+ * Three deliberate non-behaviours, all REPORTED rather than silent:
  *
  * - Symlinks are not followed, of either kind. Following one could walk out of
  *   the root or loop forever, and the root is a boundary ascend should respect.
@@ -156,12 +185,21 @@ export interface CorpusOptions {
  *   silently doubling or dropping a session.
  * - An unreadable directory is recorded and the walk continues. One directory
  *   the user cannot read must not abort a sweep of 843 files.
+ * - A project under a known OS temp root (`ephemeral.ts`) is skipped by default,
+ *   `asc-80m`: a directory that can never recur is a permanent singleton stratum
+ *   in project-keyed analysis, so it is excluded unless `includeEphemeral` asks
+ *   for it -- and even then it is a decision this function reports, not one it
+ *   makes invisibly. Measured on the live corpus 2026-09-18: 5 of 879 files.
  *
  * No depth limit: recursion is async, so depth costs no stack, and a limit
  * would be an invented constant guarding against a cycle that symlink-skipping
  * already makes unreachable.
  */
-export async function scanTranscripts(root: string): Promise<ScanResult> {
+export async function scanTranscripts(
+  root: string,
+  options: ScanOptions = {},
+): Promise<ScanResult> {
+  const includeEphemeral = options.includeEphemeral ?? false;
   const files: TranscriptFile[] = [];
   const skipped: SkippedEntry[] = [];
 
@@ -181,7 +219,18 @@ export async function scanTranscripts(root: string): Promise<ScanResult> {
       } else if (entry.isDirectory()) {
         await walk(path);
       } else if (entry.isFile() && entry.name.endsWith(JSONL_SUFFIX)) {
-        files.push(classifyTranscript(root, path));
+        // Classified BEFORE the ephemeral check, deliberately: the check needs the project
+        // label, and `classifyTranscript` is what reads it off the path. Note that the
+        // `unclassified` fallback labels a file with `basename(root)` -- which carries no
+        // leading `-` and so can never match `isEphemeralProject` -- and that is correct: a
+        // path not under the root is a different, already-reported problem
+        // (`kind: 'unclassified'`), not an ephemeral one.
+        const file = classifyTranscript(root, path);
+        if (!includeEphemeral && isEphemeralProject(file.project)) {
+          skipped.push({ path, reason: 'ephemeral', project: file.project });
+        } else {
+          files.push(file);
+        }
       }
     }
   };
@@ -343,7 +392,7 @@ export async function streamCorpus(
   options: CorpusOptions = {},
 ): Promise<CorpusTotals> {
   const root = options.root ?? defaultTranscriptRoot();
-  const scan = await scanTranscripts(root);
+  const scan = await scanTranscripts(root, { includeEphemeral: options.includeEphemeral ?? false });
 
   let lines = 0;
   let parsed = 0;

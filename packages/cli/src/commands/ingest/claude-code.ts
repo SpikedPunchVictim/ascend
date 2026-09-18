@@ -50,6 +50,15 @@
  * proves no file in that package can even import a write-capable `fs` binding.
  * `~/.claude/projects` is not ascend's data, and a stray write there destroys something the user
  * cannot regenerate.
+ *
+ * **THE SWEEP DOES NOT READ EPHEMERAL OS TEMP DIRECTORIES BY DEFAULT** (`asc-80m`). Some project
+ * directories under the corpus root are OS temp directories a benchmark run created --
+ * `ephemeral.ts`'s anchored prefix match against Claude Code's encoded label -- and a project
+ * that can never recur is a permanent singleton stratum in exactly the project-keyed analysis
+ * this tool exists to do. 5 of 879 files on the corpus measured 2026-09-18. They are still
+ * COUNTED, never silently dropped, and `--include-ephemeral` reads them anyway: entries are
+ * immutable and this ingest is idempotent by key, so a default that refused them outright would
+ * leave a caller who wants them no route at all.
  */
 
 import { resolve } from 'node:path';
@@ -64,6 +73,7 @@ import {
   type CorpusTotals,
   type DeriveCounters,
   type DerivedEntry,
+  type SkippedEntry,
 } from '@ascend/adapter-claude-code';
 import { canonicalJson, validateEntry } from '@ascend/core';
 import {
@@ -97,6 +107,40 @@ const OUTCOME = 'outcome';
  */
 function idFor(entry: DerivedEntry): string {
   return `${DERIVED_SOURCE}:${entry.type}:${entry.key}`;
+}
+
+/**
+ * The skipped entries that were excluded as ephemeral, separated from the ones that are damage.
+ *
+ * A symlink or an unreadable directory is something that HAPPENED to the walk; an ephemeral
+ * project is a decision this command made (`asc-80m`). They share one array because both are
+ * "a path the sweep deliberately did not read", and they must never share one count, because a
+ * reader acts on them differently: one is worth investigating, the other is worth reversing with
+ * a flag.
+ */
+function ephemeralSkips(skipped: readonly SkippedEntry[]): readonly SkippedEntry[] {
+  return skipped.filter((entry) => entry.reason === 'ephemeral');
+}
+
+/**
+ * The distinct project labels behind those skips, sorted.
+ *
+ * Deduplicated because the skip is counted per FILE and the fact a reader needs is per PROJECT:
+ * a benchmark that left twenty transcripts in one temp directory is one thing to know about, not
+ * twenty lines of the same thing. Sorted so two runs over an unchanged corpus print the same
+ * sentence, which is the same reason `scanTranscripts` sorts its files.
+ *
+ * `project` is optional on `SkippedEntry` -- it is present only for `reason: 'ephemeral'` -- so
+ * an entry without one contributes nothing rather than an empty string. That cannot happen for
+ * the entries this is called with, and writing it as a filter rather than an assertion is the
+ * cheaper way to be right if it ever does.
+ */
+function skippedLabels(entries: readonly SkippedEntry[]): readonly string[] {
+  const labels = new Set<string>();
+  for (const entry of entries) {
+    if (entry.project !== undefined) labels.add(entry.project);
+  }
+  return [...labels].sort();
 }
 
 /** What one derived type's entries did on this run. */
@@ -182,12 +226,20 @@ export default class IngestClaudeCode extends BaseCommand {
       description:
         'Read the transcripts and report what would be written, then write nothing at all.',
     }),
+    'include-ephemeral': Flags.boolean({
+      description:
+        'Also read project directories under a known OS temp root (e.g. a benchmark run’s own ' +
+        'os.tmpdir()). Skipped by default: those projects can never recur, so they can never ' +
+        'reach MIN_N, and they would otherwise sit in the store as permanent singleton strata ' +
+        'in project-keyed analysis.',
+    }),
   };
 
   public async run(): Promise<void> {
     const { flags } = await this.parse(IngestClaudeCode);
     const format = this.resolveFormat(flags);
     const dryRun = this.flagValue(flags['dry-run']);
+    const includeEphemeral = this.flagValue(flags['include-ephemeral']);
     // CANONICALIZED, not refused (`asc-c8g`). `--root ./corpus` or `--root a/../corpus` is an
     // entirely ordinary thing to type, and `resolve` (pure, lexical, no filesystem access) turns
     // either into the exact absolute path `scanTranscripts` will walk and `classifyTranscript`
@@ -217,7 +269,7 @@ export default class IngestClaudeCode extends BaseCommand {
         rows.push({ [ACTION]: 'type', [TARGET]: spec.name, [OUTCOME]: registration.outcome });
       }
 
-      const sweep = await this.sweep(root);
+      const sweep = await this.sweep(root, includeEphemeral);
       const writes = this.write(project.store, sweep.entries, dryRun);
 
       for (const spec of DERIVED_TYPES) {
@@ -239,7 +291,7 @@ export default class IngestClaudeCode extends BaseCommand {
    * The totals and counters travel back with the entries because "read nothing" and "read
    * everything and derived nothing" are different facts, and only the caller can tell them apart.
    */
-  private async sweep(root: string): Promise<Sweep> {
+  private async sweep(root: string, includeEphemeral: boolean): Promise<Sweep> {
     const deriver = createDeriver();
     const entries: DerivedEntry[] = [];
 
@@ -247,7 +299,7 @@ export default class IngestClaudeCode extends BaseCommand {
       (record, file) => {
         for (const entry of deriver.accept(record, file)) entries.push(entry);
       },
-      { root },
+      { root, includeEphemeral },
     );
 
     // Flushed after the walk, never during: the deriver holds one run open until a different
@@ -255,6 +307,19 @@ export default class IngestClaudeCode extends BaseCommand {
     for (const entry of deriver.drain()) entries.push(entry);
 
     if (totals.files === 0) {
+      const ephemeral = ephemeralSkips(totals.skipped);
+      if (ephemeral.length > 0) {
+        // The plain "no transcripts found" message would be FALSE here: transcripts were found,
+        // every one of them was a known OS temp root (`asc-80m`), and `--include-ephemeral` is
+        // the caller's way to read them. Naming the distinct labels (sorted, deduplicated) rather
+        // than the message above is what makes this refusal actionable instead of merely correct.
+        const labels = skippedLabels(ephemeral);
+        throw refusal(
+          `No transcripts found under ${root} other than ${String(ephemeral.length)} skipped ` +
+            `as ephemeral OS temp project(s): ${labels.join(', ')}. These can never recur, so ` +
+            `they are excluded by default. Pass --include-ephemeral to read them anyway.`,
+        );
+      }
       // Refused rather than reported as a successful no-op. Zero files means the root is wrong,
       // or empty, or holds no transcripts -- and a command that exits 0 having ingested nothing
       // is the false success this project treats as worse than a failure. `--dry-run` included:
@@ -470,10 +535,28 @@ export default class IngestClaudeCode extends BaseCommand {
       );
     }
 
-    if (totals.skipped.length > 0) {
+    // Split by reason: a directory or symlink not descended into is a different fact from a
+    // project excluded on purpose, and folding them into one count would make the ephemeral
+    // exclusion (`asc-80m`) look like damage to the walk rather than a decision this command made.
+    const nonEphemeralSkipped = totals.skipped.filter((entry) => entry.reason !== 'ephemeral');
+    if (nonEphemeralSkipped.length > 0) {
       this.warn(
-        `${String(totals.skipped.length)} directory or symlink was not descended into, so it is ` +
-          `not in these totals.`,
+        `${String(nonEphemeralSkipped.length)} directory or symlink was not descended into, so ` +
+          `it is not in these totals.`,
+      );
+    }
+
+    // `derive.ts`'s own rule (`derive.ts:30-31`): "A silently dropped record is the failure this
+    // module is most able to cause." An ephemeral project is excluded on purpose, but "on
+    // purpose" is not the same as "invisible" -- the count and the distinct labels are what make
+    // this a decision a reader can see and reverse, rather than a filter nobody can see.
+    const ephemeralSkipped = ephemeralSkips(totals.skipped);
+    if (ephemeralSkipped.length > 0) {
+      const labels = skippedLabels(ephemeralSkipped);
+      this.warn(
+        `${String(ephemeralSkipped.length)} transcript file(s) under known OS temp project(s) ` +
+          `(${labels.join(', ')}) were skipped: these projects can never recur, so they are ` +
+          `excluded by default. Pass --include-ephemeral to read them anyway.`,
       );
     }
 

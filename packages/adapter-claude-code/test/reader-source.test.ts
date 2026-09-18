@@ -197,13 +197,14 @@ describe('the check is not vacuous', () => {
   it('reads every source file in the package', () => {
     // Enumerated rather than globbed ON PURPOSE: this assertion is what forces a
     // new file to be acknowledged as scanned. It fired when `derive.ts` and
-    // `derived-types.ts` landed, which is the behaviour wanted -- a file added
-    // without being added here would otherwise go unjudged while the suite
-    // reported green.
+    // `derived-types.ts` landed, and again when `ephemeral.ts` (`asc-80m`)
+    // landed, which is the behaviour wanted -- a file added without being added
+    // here would otherwise go unjudged while the suite reported green.
     expect(sourceFiles()).toEqual([
       'decode.ts',
       'derive.ts',
       'derived-types.ts',
+      'ephemeral.ts',
       'index.ts',
       'reader.ts',
       'transcript-file.ts',

@@ -21,11 +21,12 @@
  *   - Omit absent values. Never write a sentinel -- see ARCHITECTURE.md on the
  *     three states, and why a corpus that loses the distinction never gets it back.
  *
- * Three layers, and the split is the design:
+ * Five layers, and the split is the design:
  *
  *   decode.ts            pure  -- one line in, one record or one reason out
  *   transcript-file.ts   pure  -- one path in, its project/session/kind out
  *   transcript-root.ts   pure  -- where the corpus is, from an injected home
+ *   ephemeral.ts         pure  -- one project label in, ephemeral or not out
  *   reader.ts             I/O  -- the walk, the stream, the counters
  *
  * Everything except `reader.ts` is a pure function of its arguments, so the
@@ -41,6 +42,8 @@ export {
 } from './decode.js';
 
 export { DERIVED_SOURCE, DERIVED_TYPES, derivedType } from './derived-types.js';
+
+export { EPHEMERAL_ROOTS, isEphemeralProject } from './ephemeral.js';
 
 export {
   checkRunner,
@@ -70,6 +73,7 @@ export {
   streamTranscript,
   type CorpusOptions,
   type CorpusTotals,
+  type ScanOptions,
   type ScanResult,
   type SkipReason,
   type SkippedEntry,
