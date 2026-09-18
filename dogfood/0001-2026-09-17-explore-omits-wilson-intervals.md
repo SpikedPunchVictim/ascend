@@ -23,7 +23,7 @@ for a null. **`explore` simply never calls it.**
 
 ## How it surfaced
 
-EV-19 was pre-registered — question and five numbered predictions committed (`8ed2300`) before any
+EV-19 was pre-registered — question and five numbered predictions committed (`b4f4049`) before any
 measurement ran, so that each could be marked hit or missed rather than reinterpreted. P5, written
 before looking:
 

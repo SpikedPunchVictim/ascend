@@ -72,7 +72,7 @@ dogfood record. A finding can cite both — 0001 does.
 **The one file here that is not a record.** [`types.json`](types.json) predates this convention
 and stays: it is the replayable definition of the two types this project defined for itself,
 `evidence_record` and `note`, exported by name so a fresh `asc init` reproduces them at
-byte-identical `type_hash` values (`f2f796ca`, `96880b60`, verified in commit `a4445de` against a
+byte-identical `type_hash` values (`f2f796ca`, `96880b60`, verified in commit `8fbabef` against a
 throwaway store). Schema only — a fresh clone gets the types and none of the corpus. It belongs in
 this directory for the same reason everything else here does: the types exist because dogfooding
 needed them.
