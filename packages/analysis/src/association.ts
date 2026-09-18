@@ -314,6 +314,24 @@ function cellKey(row: string, col: string): string {
 }
 
 /**
+ * One cell's observed count.
+ *
+ * `counts` is keyed by `cellKey`, and `CELL_SEPARATOR` is private to this module -- so a `Crosstab`
+ * handed to any other package carries a field nothing outside here can read. That is the defect
+ * this accessor closes, and `asc stats --correlate` is what surfaced it: printing the table a
+ * chi-square was computed from is the ordinary thing a caller wants next, and doing it required
+ * either re-exporting the separator (making the encoding part of the contract) or counting the
+ * pairs a second time in the CLI (two counters that can disagree about one table).
+ *
+ * An absent key is an observed zero rather than an unknown, which is the one case where `0` is the
+ * honest answer and not `TASKS.md` #7's forbidden fill-in: `crosstab` saw every row, so a
+ * combination it did not record is a combination that did not occur.
+ */
+export function cell(table: Crosstab, row: string, col: string): number {
+  return table.counts.get(cellKey(row, col)) ?? 0;
+}
+
+/**
  * Contingency table from two aligned label vectors.
  *
  * Refuses vectors of different lengths rather than tabulating the overlap: a length mismatch means

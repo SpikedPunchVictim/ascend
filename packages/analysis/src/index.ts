@@ -103,6 +103,7 @@ export {
 export {
   AssociationError,
   benjaminiHochberg,
+  cell,
   chiSquare,
   chiSquarePValue,
   crosstab,
