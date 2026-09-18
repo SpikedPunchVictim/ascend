@@ -732,6 +732,66 @@ describe('user_correction', () => {
     expect(withText.length).toBe(1);
     expect(withText[0]?.type).toBe('user_correction');
   });
+
+  // asc-m4u: `userFeedback` on the AskUserQuestion clarification form is not what the user
+  // said -- it is the harness's own preamble followed by CLAUDE'S questions, with every
+  // answer line reading `(No answer provided)`. Verbatim, 510 chars, from the bead's
+  // 2026-09-18 comment; cleared for use because it names a public Windows file-handle bug
+  // and no person, project or path.
+  const CLARIFICATION_FEEDBACK = `The user wants to clarify these questions.
+    This means they may have additional information, context or questions for you.
+    Take their response into account and then reformulate the questions if appropriate.
+    Start by asking them what they would like to clarify.
+
+    Questions asked:
+- "How should I fix the Windows handle-pinning bug in FileIdentity?"
+  (No answer provided)
+- "Fold the identity-reuse hardening (adding size + mtime/ctime to FileIdentity) into this same fix?"
+  (No answer provided)`;
+
+  it('OMITS evidence_text for the AskUserQuestion clarification form, and counts it unquotable', () => {
+    const deriver = createDeriver();
+    const out = deriver.accept(
+      record([], { uuid: 'fuuid', userFeedback: CLARIFICATION_FEEDBACK }),
+      FILE,
+    );
+    deriver.drain();
+    const [correction] = ofType(out, 'user_correction');
+    expect(correction).toBeDefined();
+    expect(correction?.evidenceText).toBeUndefined();
+    expect(deriver.counters.unquotable).toBe(1);
+  });
+
+  it('REGRESSION GUARD (asc-m4u M1): ordinary user prose is left untouched and not counted', () => {
+    // The false-positive risk this whole fix runs on: the marker is matched on the FIRST
+    // LINE only, so prose that merely resembles the harness form -- or does not resemble it
+    // at all -- must still pass through unchanged.
+    const deriver = createDeriver();
+    const out = deriver.accept(
+      record([], { uuid: 'fuuid', userFeedback: 'no, do not delete the build directory' }),
+      FILE,
+    );
+    deriver.drain();
+    const [correction] = ofType(out, 'user_correction');
+    expect(correction?.evidenceText).toBe('no, do not delete the build directory');
+    expect(deriver.counters.unquotable).toBe(0);
+  });
+
+  it('still attaches tool_name on the clarification-form branch', () => {
+    const entries = derive([
+      invoke('t1', 'Bash', 'rm -rf build'),
+      record([{ type: 'tool_result', tool_use_id: 't1' }], {
+        uuid: 'fuuid',
+        userFeedback: CLARIFICATION_FEEDBACK,
+      }),
+    ]);
+    expect(ofType(entries, 'user_correction')[0]?.properties['tool_name']).toBe('Bash');
+  });
+
+  it('still emits exactly one user_correction for an affected record', () => {
+    const entries = derive([record([], { uuid: 'fuuid', userFeedback: CLARIFICATION_FEEDBACK })]);
+    expect(ofType(entries, 'user_correction').length).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

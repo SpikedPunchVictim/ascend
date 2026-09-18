@@ -102,3 +102,29 @@ manufacture a group under the default.
 - Bead: `asc-m4u`
 - Evidence record this came out of: `docs/evidence/EV-20.md`
 - Source: `packages/adapter-claude-code/src/derive.ts:767-783`, `derived-types.ts:146-159`
+
+## Correction (2026-09-18)
+
+**What this record originally claimed.** The body above, and its pull quote, describe the
+affected entries as 43 words of preamble *followed by what the user wrote* — "before a word the
+user wrote", as if the preamble were a prefix on top of real user content. That shape is wrong.
+
+**The measurement that overturns it.** A read-only scan of every `*.jsonl` under
+`~/.claude/projects/` on 2026-09-18 (script run in this session's scratchpad, not committed)
+found 19 `userFeedback` values in total. **10** begin with the literal `The user wants to clarify
+these questions.`; the other **9** are the user's own prose, so a `startsWith` test on that
+literal alone has **0** false positives on this corpus. In the 10 affected values, what follows
+the preamble is not the user's answer — it is **the questions Claude itself asked**, each
+followed by a parenthetical answer line. Across those 10 values there are **17** such answer
+lines, and **all 17 of 17** read exactly `(No answer provided)`. So the affected entries contain
+**zero** words from the user, not "some preamble plus their words".
+
+**How this changes the fix.** The body above frames the open question as "how much of a third
+party's format the adapter should be allowed to know" and suggests stripping the preamble as the
+likely answer. Stripping is now known to be the wrong move: with no user words present at all,
+stripping the preamble would leave Claude's own questions standing as the `evidence_text` of a
+`user_correction` — which reads as plausible user content to a later reader, or to a
+`distinctive`/`cluster` run, and is worse than leaving recognizable boilerplate in place. The fix
+implemented under `asc-m4u` instead detects the form by its first line only and emits the entry
+with `evidence_text` omitted entirely — never stripped-and-kept, never dropped. See
+`DeriveCounters.unquotable` in `packages/adapter-claude-code/src/derive.ts`.

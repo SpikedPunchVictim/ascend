@@ -147,6 +147,20 @@ export interface DeriveCounters {
    * as `unkeyable`, just above) is held to the same rule for the same reason.
    */
   unverdictable: number;
+  /**
+   * `user_correction` records whose `userFeedback` was the AskUserQuestion clarification form
+   * (`CLARIFICATION_PREAMBLE`, above) rather than the user's own prose. THE ENTRY IS STILL
+   * EMITTED for these -- that is what makes this counter different from `unkeyable`, just
+   * above: the event's identity is fine (the user really did ask to clarify), only its prose
+   * is absent. `evidenceText` is omitted rather than set to the harness's own questions,
+   * because those questions read as plausible user content while the boilerplate at least read
+   * as boilerplate -- see the comment at `CLARIFICATION_PREAMBLE`'s only caller. A withheld
+   * `evidence_text` is a withheld measurement, so it is counted for the same reason a dropped
+   * record is: a caller can assert against a number, not against a silence.
+   *
+   * MEASURED 2026-09-18: 10 of 19 `user_correction`-triggering records on the local corpus.
+   */
+  unquotable: number;
 }
 
 export interface Deriver {
@@ -424,6 +438,21 @@ export function checkRunner(command: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// The AskUserQuestion clarification form. `userFeedback` on this form is not what the user
+// said -- see `unquotable` on `DeriveCounters` for the measurement and the reasoning.
+//
+// Matched on the FIRST LINE only, never the full harness prose that follows it. The indented
+// body ("This means they may have additional information...") is boilerplate a Claude Code
+// release can reword at any time; a match on the full prefix would silently stop firing after
+// such a copy-edit and quietly resume writing boilerplate into `evidence_text` with nobody the
+// wiser. The opening sentence is what identifies the form, so it is the only thing tested.
+//
+// MEASURED 2026-09-18, every `*.jsonl` under `~/.claude/projects/` (read-only scan): 19
+// `userFeedback` values total, 10 begin with this literal, the other 9 are the user's own
+// prose -- a `startsWith` test on this literal alone has 0 false positives on that corpus.
+const CLARIFICATION_PREAMBLE = 'The user wants to clarify these questions.';
+
+// ---------------------------------------------------------------------------
 
 /** A skill that has been active without interruption, from its first record to now. */
 interface SkillRun {
@@ -476,6 +505,7 @@ export function createDeriver(): Deriver {
     keyCollisions: 0,
     unkeyable: 0,
     unverdictable: 0,
+    unquotable: 0,
   };
 
   const key = (raw: string): string => {
@@ -770,6 +800,12 @@ export function createDeriver(): Deriver {
         counters.unkeyable += 1;
       } else {
         const name = useId === undefined ? undefined : invocations.get(useId)?.name;
+        // The AskUserQuestion clarification form carries none of the user's own words -- see
+        // `unquotable` on `DeriveCounters`. The entry still stands (the user did act), it is
+        // only the prose that is withheld, so `evidenceText` is passed as `undefined` rather
+        // than the harness's own questions.
+        const quotable = !feedback.startsWith(CLARIFICATION_PREAMBLE);
+        if (!quotable) counters.unquotable += 1;
         emit(
           out,
           'user_correction',
@@ -779,7 +815,7 @@ export function createDeriver(): Deriver {
           occurredAt,
           locality,
           { ...(name === undefined ? {} : { tool_name: name }) },
-          feedback,
+          quotable ? feedback : undefined,
         );
       }
     }

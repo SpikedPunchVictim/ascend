@@ -477,7 +477,8 @@ export default class IngestClaudeCode extends BaseCommand {
       );
     }
 
-    // All three counters exist so a dropped event cannot be a silence.
+    // All four counters exist so a dropped event -- or a withheld part of one -- cannot be a
+    // silence. `unquotable` is the odd one out and is worded to say so: its entries WERE written.
     if (counters.unkeyable > 0) {
       this.warn(
         `${String(counters.unkeyable)} event(s) had no stable identity and were not written. ` +
@@ -489,6 +490,15 @@ export default class IngestClaudeCode extends BaseCommand {
         `${String(counters.unverdictable)} check run(s) carried no readable pass/fail result ` +
           `and were not written. The transcript's shape changed; re-running will not recover ` +
           `them unless the source transcript is regenerated.`,
+      );
+    }
+    if (counters.unquotable > 0) {
+      this.warn(
+        `${String(counters.unquotable)} user correction(s) were written WITHOUT evidence text: ` +
+          `the transcript recorded the question-clarification form, which carries the harness's ` +
+          `preamble and the questions Claude asked, and none of the user's own words. The ` +
+          `entries are real and are counted in these totals; only their prose is absent, and ` +
+          `re-running cannot recover it because the transcript never held it.`,
       );
     }
     if (counters.keyCollisions > 0) {
