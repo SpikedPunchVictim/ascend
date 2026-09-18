@@ -30,6 +30,11 @@
  *     hand-labelled ground truth: precision and recall per label, both `wilson()` proportions rather
  *     than bare ratios, and neither is kappa -- see that file for why a symmetric agreement statistic
  *     is the wrong tool for grading an asymmetric predictor.
+ *   - changepoint detection -- DONE, `changepoint.ts` (asc-08y). Pettitt (rank-based, closed-form
+ *     approximation) and CUSUM (magnitude-based, seeded bootstrap) side by side rather than one
+ *     chosen for the caller: they fail differently, and two tests agreeing is a much stronger claim
+ *     than either alone. Both find a break in pure noise every time, so the p is the finding and the
+ *     index never is.
  *   - distinctive terms per group -- DONE, `distinctive.ts` (asc-iyd), written rather than ported:
  *     the spike never attempted it. Monroe/Colaresi/Quinn's log-odds with an informative Dirichlet
  *     prior, reported as a z-score, with the vocabulary treated as the multiple-comparison family
@@ -93,6 +98,21 @@ export {
   type PairAssociation,
   type PermutationNull,
 } from './association.js';
+
+export {
+  ChangepointError,
+  cusum,
+  pettitt,
+  rankChangepoints,
+  type ChangepointOptions,
+  type ChangepointReport,
+  type ChangepointResult,
+  type CusumOptions,
+  type NamedSeries,
+  type RankedChangepoint,
+  type Segment,
+  type SeriesPoint,
+} from './changepoint.js';
 
 export {
   distinctiveTerms,
