@@ -233,6 +233,43 @@ function contentsOf(dir: string): readonly string[] | undefined {
   }
 }
 
+/**
+ * The one row naming which clock `recorded_at` is, placed immediately after the range it
+ * describes (`asc-bn0`).
+ *
+ * **`recorded_at_min`/`recorded_at_max` are accurate and, for an ingested type, read as a
+ * corpus with no history.** Verified against the live store (`asc explore tool_denial --json`,
+ * 2026-09-18): `recorded_at_min` and `recorded_at_max` were both `2026-09-17T22:37:40.736Z`,
+ * while `property.occurred_at`'s own `range` summary -- three rows below, on the same output --
+ * carried the true span, `2026-08-13T17:01:28.248Z` to `2026-09-17T20:30:58.884Z`. A `timestamp`
+ * property always summarises as `range` (`renderSummary` above), so that true span was already
+ * on the output; this row is the pointer to it, not a new query. `profile.ts`'s
+ * `MIN`/`MAX(recorded_at)` is unchanged -- the fix is presentational, per the bead's second
+ * comment.
+ *
+ * **Omitted for a type that declares no `timestamp` property**, because there the advice would
+ * name no property to read instead, and a pointer at nothing is worse than no pointer
+ * (`TASKS.md` #7: omitted, never fabricated).
+ *
+ * `eventClocks` is every property this type has ever declared `timestamp` (across all
+ * registered versions, the same population `declaredTypes` already accumulates for
+ * `propertyRow`), sorted -- so two callers reading the same type's map read the properties in
+ * the same order regardless of the order they were registered in.
+ */
+function recordedAtClockRow(typeName: string, eventClocks: readonly string[]): Row | undefined {
+  const first = eventClocks[0];
+  if (first === undefined) return undefined;
+
+  return {
+    field: 'recorded_at_clock',
+    value:
+      `'recorded_at' is the write clock -- when \`asc\` wrote the row, not when the event ` +
+      `happened. '${typeName}' declares ${eventClocks.map((name) => `\`${name}\``).join(', ')} as ` +
+      `its event clock${eventClocks.length === 1 ? '' : 's'}: see \`asc stats --at ${first}\`.`,
+    event_clocks: eventClocks,
+  };
+}
+
 /** One registered version, as a person reads it, with the numbers structured beside it. */
 function versionRow(row: VersionProfile): Row {
   return {
@@ -876,6 +913,13 @@ export default class Explore extends BaseCommand {
           { field: 'recorded_at_min', value: profile.recordedAtMin },
           { field: 'recorded_at_max', value: profile.recordedAtMax },
         );
+
+        const eventClocks = profile.properties
+          .filter((property) => property.declaredTypes.includes('timestamp'))
+          .map((property) => property.name)
+          .sort();
+        const clockRow = recordedAtClockRow(profile.type, eventClocks);
+        if (clockRow !== undefined) rows.push(clockRow);
       }
 
       rows.push(

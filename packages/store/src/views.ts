@@ -232,6 +232,49 @@ interface TypeVersion {
   readonly spec: TypeSpec;
 }
 
+/**
+ * The `-- ` warning naming `recorded_at` as the write clock, injected into a generated view's
+ * SQL when the family declares at least one `timestamp` property (`asc-bn0`).
+ *
+ * **Why the view, and not only a comment in this source file.** SQLite stores a view's
+ * definition verbatim in `sqlite_master.sql`, `--` comments included, and hands it back exactly
+ * as written -- verified on this machine with the same `node:sqlite` the store uses: a
+ * `CREATE VIEW v AS\n-- WARNING: ...\nSELECT a FROM t` round-trips through `SELECT sql FROM
+ * sqlite_master WHERE name = 'v'` byte for byte. So the warning reaches precisely the reader who
+ * would otherwise hit this defect blind: the SQL caller running `.schema v_tool_denial_v1`
+ * before writing `WHERE recorded_at > ...` against it.
+ *
+ * **What `recorded_at` gets wrong, measured on this project's own store, 2026-09-18**
+ * (`dogfood/0006`): 1,702 of 1,797 entries (94.7%) -- every `context_compaction`,
+ * `skill_activation`, `tool_denial`, `user_correction` and `verification_run` row -- share the
+ * single `recorded_at` `2026-09-17T22:37:40.736Z`, because `asc ingest claude-code` writes every
+ * entry of one run at the instant the ingest ran. `tool_denial`'s own `occurred_at` spans
+ * `2026-08-13T17:01:28.248Z` to `2026-09-17T20:30:58.884Z` across 451 distinct values -- the same
+ * corpus, on its real clock. **None of those numbers appear below.** This function's whole
+ * contract is that its output is a PURE FUNCTION of `eventClocks` alone: the module comment above
+ * (`"two stores with the same types get byte-identical views"`) is the invariant this warning has
+ * to hold too, and a count or a date baked into the generated SQL would make two stores with the
+ * same types produce different view text. The measured numbers stay here, in the source; the view
+ * gets only the deterministic sentence.
+ *
+ * `undefined` for a family that declares no `timestamp` property at all -- there the warning
+ * would have no event clock to point a caller at, and naming none would read as an omission
+ * rather than as "this type has none" (`TASKS.md` #7).
+ */
+function recordedAtClockWarning(eventClocks: readonly string[]): string | undefined {
+  if (eventClocks.length === 0) return undefined;
+
+  const clocks = eventClocks.map((name) => `'${name}'`).join(', ');
+  const noun = eventClocks.length === 1 ? 'clock' : 'clocks';
+
+  return [
+    '-- WARNING: recorded_at is the write clock -- when asc wrote this row, not when the event',
+    '-- happened. For a type written by a bulk ingest, every row of one run can share a single',
+    '-- recorded_at, so ORDER BY or WHERE on it measures the ingest rather than the events.',
+    `-- This view's own event ${noun}, carrying the real time: ${clocks}.`,
+  ].join('\n');
+}
+
 /** Every registered version of a type, oldest first. */
 function versionsOf(db: DatabaseSync, typeName: string): readonly TypeVersion[] {
   const rows = db
@@ -342,6 +385,24 @@ export function refreshTypeViews(db: DatabaseSync, typeName: string): RefreshRep
     // Sorted, so the view's column order is a function of the property set rather than of
     // registration history -- two stores with the same types get byte-identical views.
     const names = [...properties.keys()].sort();
+
+    // A subset of `names`, so already sorted: the family's own declared `timestamp` properties,
+    // the ones `recordedAtClockWarning` names as this view's real event clocks (`asc-bn0`). A
+    // property that is `timestamp` in one version of the family and something else in another
+    // cannot arise without a major bump: `property_retyped` carries `bump: 'major'`
+    // (`packages/core/src/diff.ts:134`, whose own note is that the worst case is "not a failed
+    // read but a successful wrong one"), and this loop is already scoped to one major family. So
+    // checking "any version in the family" rather than "the newest one" answers the same question
+    // either way and does not need to pick a version to trust.
+    const eventClocks = names.filter((property) =>
+      family.some(({ spec }) =>
+        spec.properties.some(
+          (candidate) => candidate.name === property && candidate.type === 'timestamp',
+        ),
+      ),
+    );
+    const warning = recordedAtClockWarning(eventClocks);
+
     const projections = names.map(
       (property) =>
         `  json_extract(e.properties_json, ${literal(`$.${property}`)}) AS ${ident(property)},\n` +
@@ -360,7 +421,9 @@ export function refreshTypeViews(db: DatabaseSync, typeName: string): RefreshRep
     // this runs inside the registration transaction, so no reader observes the gap.
     db.exec(`DROP VIEW IF EXISTS ${ident(name)}`);
     db.exec(
-      `CREATE VIEW ${ident(name)} AS\nSELECT\n${selected}\n` +
+      `CREATE VIEW ${ident(name)} AS\n` +
+        (warning === undefined ? '' : `${warning}\n`) +
+        `SELECT\n${selected}\n` +
         `  FROM entries AS e\n` +
         ` WHERE e.type_name = ${literal(typeName)} AND e.type_version IN (${versionsInFamily})`,
     );

@@ -14,6 +14,22 @@
  * will show; if that row comes back, there is more, and it is dropped. Asking whether a
  * further row exists is then a fact about a query already run, rather than a count that
  * could disagree with it.
+ *
+ * **`ORDER BY recorded_at, id` is stable, and within a derived type it is not chronological
+ * (`asc-bn0`).** `recorded_at` is when `asc` wrote the row, and for a type derived by `asc
+ * ingest claude-code` every entry of one run shares that single instant -- measured
+ * 2026-09-18 on this project's own store, 1,702 of 1,797 entries (94.7%) share one
+ * `recorded_at`. Every row of a derived type therefore ties on the first key, and the
+ * comparison falls through to `id` -- which is unique, so the pair stays a total order and two
+ * walks of it cannot disagree. The order they agree on is by `id`, not by when anything
+ * happened.
+ * **This is a documented consequence, not a defect, and the clause does not change for it.**
+ * `(recorded_at, id)` is total and stable, which is exactly what a keyset cursor needs --
+ * `id` alone is caller-supplied and cannot be trusted as an ordering, and `recorded_at` alone
+ * is not total on data this ingest produces. A chronological paging mode, ordering a derived
+ * type by a property inside `properties_json` instead, is a real question with a real cost
+ * (an index, or a full sort plus a second cursor encoding over that column) and it is
+ * out of scope here: it is bead `asc-pcu`.
  */
 
 import {

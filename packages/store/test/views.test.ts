@@ -1284,3 +1284,46 @@ describe('a json property is a list-shaped fact the view can group by', () => {
     });
   });
 });
+
+/**
+ * `asc-bn0`: `recorded_at` is when `asc` wrote the row, not when an ingested type's event
+ * happened, and the 12 generated views expose it under its own name with nothing warning a SQL
+ * caller who writes `WHERE recorded_at > ...` against one. `views.ts`'s `recordedAtClockWarning`
+ * puts that warning into the view's own `CREATE VIEW` text -- SQLite stores a view's definition
+ * verbatim in `sqlite_master.sql`, so it reaches a caller running `.schema` before writing a
+ * query, with no second lookup.
+ *
+ * `V1` (this file's own fixture) declares no `timestamp` property, so it plays "a type with
+ * none" without inventing a new fixture; `WITH_CLOCK` below is the smallest addition that gives
+ * a family a `timestamp` property to name.
+ */
+describe('the view names recorded_at as the write clock, for a type with a real one (asc-bn0)', () => {
+  const WITH_CLOCK: TypeSpec = {
+    name: 'tool_denial_like',
+    properties: [...V1.properties, { name: 'occurred_at', type: 'timestamp' }],
+  };
+
+  it('carries the warning in sqlite_master.sql when the family declares a timestamp property', () => {
+    withStore((store) => {
+      registerType(store.db, WITH_CLOCK, { registeredAt: AT });
+      const sql = sqlOf(store, viewName(WITH_CLOCK.name, 1));
+
+      expect(sql).toContain('recorded_at is the write clock');
+      // The event clock is named, so a reader does not have to go looking for it.
+      expect(sql).toContain("'occurred_at'");
+    });
+  });
+
+  it('does NOT carry the warning when the family declares no timestamp property', () => {
+    // The pinning half: a warning that showed up unconditionally would pass the test above for
+    // the wrong reason. `V1` (outcome, count, summary -- no `timestamp`) is this suite's fixture
+    // for exactly that shape, reused rather than invented.
+    withStore((store) => {
+      registerType(store.db, V1, { registeredAt: AT });
+      const sql = sqlOf(store, viewName(V1.name, 1));
+
+      expect(sql).not.toContain('recorded_at is the write clock');
+      expect(sql).not.toContain('WARNING');
+    });
+  });
+});

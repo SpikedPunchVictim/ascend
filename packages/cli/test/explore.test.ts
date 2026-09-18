@@ -97,6 +97,9 @@ interface ProfileRow {
   readonly count?: number;
   readonly proportion?: JsonProportion | null;
   readonly denominator?: 'declared_entries' | 'entries' | 'measured';
+  // `asc-bn0`: the `recorded_at_clock` row's structured payload -- the type's own declared
+  // `timestamp` properties, sorted.
+  readonly event_clocks?: readonly string[];
 }
 
 function rows(stdout: string): readonly ProfileRow[] {
@@ -161,6 +164,63 @@ describe('asc explore: the map', () => {
     // computed from the profile rather than from the rows, so without this an extra or duplicated
     // version row reaches the reader while the header still reports the correct total.
     expect(fields(list, 'version.')).toStrictEqual(['version.1']);
+  });
+
+  /**
+   * `asc-bn0`: `recorded_at_min`/`recorded_at_max` are accurate and, for a type ingested in one
+   * run, read as a corpus with no history -- the true span is already three rows away, on the
+   * declaring property's own `range` summary. `recorded_at_clock` is the pointer from the one to
+   * the other, so this test pins both its placement (right after the range it explains) and its
+   * content (which properties it names), reusing `SPEC`'s own `at` timestamp property rather than
+   * inventing a fixture.
+   */
+  it('names recorded_at as the write clock, pointing at the declared event clock (asc-bn0)', () => {
+    const dir = emptyProject();
+    expect(asc(['record', SPEC.name, '--prop', 'outcome=ok', '--json'], dir).status).toBe(0);
+
+    const run = asc(['explore', SPEC.name, '--json'], dir);
+    expect(run.status).toBe(0);
+    const list = rows(run.stdout);
+
+    const maxIndex = list.findIndex((row) => row.field === 'recorded_at_max');
+    const clockIndex = list.findIndex((row) => row.field === 'recorded_at_clock');
+    expect(maxIndex).toBeGreaterThanOrEqual(0);
+    // Immediately after `recorded_at_max`, per the bead's placement instruction -- not merely
+    // present somewhere on the map.
+    expect(clockIndex).toBe(maxIndex + 1);
+
+    const clock = list[clockIndex] as ProfileRow;
+    expect(String(clock.value)).toContain('recorded_at');
+    expect(String(clock.value)).toContain('`at`');
+    // `SPEC` declares exactly one `timestamp` property.
+    expect(clock.event_clocks).toStrictEqual(['at']);
+  });
+
+  /**
+   * The pinning half of the assertion above: a `recorded_at_clock` row that appeared
+   * unconditionally would pass the previous test for the wrong reason. Built from `SPEC`'s own
+   * properties with the one `timestamp` property dropped, rather than a fresh fixture, per the
+   * instruction to reuse what this file already declares.
+   */
+  it('omits recorded_at_clock for a type that declares no timestamp property (asc-bn0)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'asc-explore-'));
+    dirs.push(dir);
+    const noClock = {
+      name: 'attempt_no_clock',
+      properties: SPEC.properties.filter((property) => property.type !== 'timestamp'),
+    };
+    expect(asc(['init'], dir).status).toBe(0);
+    writeFileSync(join(dir, 'spec.json'), JSON.stringify(noClock));
+    expect(asc(['types', 'define', join(dir, 'spec.json')], dir).status).toBe(0);
+    expect(asc(['record', noClock.name, '--prop', 'outcome=ok', '--json'], dir).status).toBe(0);
+
+    const run = asc(['explore', noClock.name, '--json'], dir);
+    expect(run.status).toBe(0);
+    const list = rows(run.stdout);
+
+    // The range itself is unaffected -- this type still has entries.
+    expect(find(list, 'recorded_at_max')).toBeDefined();
+    expect(find(list, 'recorded_at_clock')).toBeUndefined();
   });
 
   it('tallies the three states, with the measured zero counted as measured', () => {
