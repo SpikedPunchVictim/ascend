@@ -275,6 +275,25 @@ describe('collapseNearDuplicates', () => {
     expect(reversed).toEqual(forward);
   });
 
+  it('defaults the threshold to 0.9', () => {
+    // a = {t01..t05}, c = {t01..t06} at k=1: shared 5, union 6 -> 5/6 = 0.8333333333333334. That
+    // clears an explicit 0.8 and does not clear the default, which is how this test reads the
+    // default off behaviour rather than off a constant.
+    //
+    // The default is 0.9 because of `docs/evidence/EV-20.md`, and it is pinned here so that a
+    // later edit has to argue with a measurement rather than with a number in an options bag: on
+    // the only arm of that record with merges to adjudicate, 0.8 measured a false-merge rate of
+    // 0.000930 and 0.9 measured 0.000000.
+    const documents: DuplicateCandidate[] = [
+      { id: 'a', tokens: tokens(1, 5) },
+      { id: 'c', tokens: tokens(1, 6) },
+    ];
+    expect(collapseNearDuplicates(documents, { shingleSize: 1 }).groups).toHaveLength(0);
+    expect(
+      collapseNearDuplicates(documents, { shingleSize: 1, threshold: 0.8 }).groups,
+    ).toHaveLength(1);
+  });
+
   it('handles an empty corpus', () => {
     const report = collapseNearDuplicates([], {});
     expect(report.groups).toEqual([]);

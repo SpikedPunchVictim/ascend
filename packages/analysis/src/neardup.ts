@@ -103,7 +103,15 @@ export interface NearDuplicateGroup {
 
 /** How the collapse is asked for. */
 export interface NearDuplicateOptions {
-  /** Exact Jaccard at or above which two documents are the same thing. Default 0.8. */
+  /**
+   * Exact Jaccard at or above which two documents are the same thing. Default 0.9.
+   *
+   * 0.9 rather than the 0.8 this shipped with first, on the measurement in `docs/evidence/EV-20.md`:
+   * on the one arm of that record that produced merges to adjudicate, 0.8 measured a false-merge
+   * rate of 0.000930 (28 wrong pairs of 30,112) and 0.9 measured 0.000000. The raise was free --
+   * the same corpus's prose surface merges nothing at all between 0.5 and 0.9, so no real outcome
+   * moved -- and a false merge is the failure that leaves no evidence behind that it happened.
+   */
   readonly threshold?: number;
   /** Tokens per shingle. Default 3. */
   readonly shingleSize?: number;
@@ -255,7 +263,7 @@ export function collapseNearDuplicates(
   documents: readonly DuplicateCandidate[],
   options: NearDuplicateOptions = {},
 ): NearDuplicateReport {
-  const threshold = options.threshold ?? 0.8;
+  const threshold = options.threshold ?? 0.9;
   const shingleSize = options.shingleSize ?? 3;
   const permutations = options.permutations ?? 128;
   const bands = options.bands ?? 32;
