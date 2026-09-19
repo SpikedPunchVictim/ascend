@@ -43,6 +43,25 @@ export const STORE_FILE = 'ascend.db';
 export const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 
 /**
+ * The `meta` key recording that `entries.cwd` is project-relative rather than absolute
+ * (asc-tlc). Written once, only on the open that creates the store -- see the write site below
+ * for why `INSERT OR IGNORE`-on-every-open, the pattern `created_by_ascend_version` uses, is
+ * wrong for this key.
+ *
+ * **ABSENCE MEANS UNKNOWN OR MIXED, NEVER "ABSOLUTE".** A store created before asc-tlc shipped
+ * simply does not have this row, and a store created after it MAY still hold rows recorded
+ * before the row was written, or rows a mismatched `projectRelativeCwd` check omitted `cwd`
+ * from entirely -- entries are immutable, so nothing here can be rewritten after the fact. A
+ * reader that treats a missing key as "therefore absolute" would be adding a claim this project
+ * never measured; the honest reading of absence is "not stated", the same three-state
+ * discipline `entries.cwd` itself already uses.
+ */
+export const CWD_CONVENTION_KEY = 'cwd_convention';
+
+/** The only value `CWD_CONVENTION_KEY` is ever written with, today. */
+export const CWD_CONVENTION_PROJECT_RELATIVE = 'project-relative';
+
+/**
  * SQLite's PRIMARY result codes for "another connection holds the lock".
  *
  * `SQLITE_BUSY` (5) is a lock held by another CONNECTION. `SQLITE_LOCKED` (6) is a lock held by
@@ -753,6 +772,31 @@ export function openStore(options: OpenOptions): Store {
       db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run(
         'created_by_ascend_version',
         options.ascendVersion,
+      );
+    }
+
+    // `cwd_convention` (asc-tlc), and unlike the key just above this one is NOT `INSERT OR
+    // IGNORE`ed on every open. That pattern is right for `created_by_ascend_version` -- which is
+    // true on every open, so idempotently re-asserting it is harmless -- and wrong here, because
+    // this store may already hold entries recorded before `entries.cwd` became project-relative.
+    // Stamping the key unconditionally would claim those rows are relative when they are not.
+    //
+    // Written ONLY on the open that performs the store's first-ever migration, i.e. genuinely
+    // CREATES it, never on an open of a store that already existed. `migrations.from` is the
+    // right signal for that and `before` (read above, without the migration lock held) is not:
+    // `migrate`'s own comment on its `BEGIN IMMEDIATE` describes two processes racing to create
+    // the same store, and the loser also reads `before === 0` on its unlocked pre-migration
+    // read. But `migrate` re-reads the version INSIDE the lock before touching each migration
+    // (`schema.ts`, "The version is read INSIDE the lock"), and reports that re-read as `from` --
+    // so the loser's `migrations.from` comes back already-migrated (>0) and its `applied` list
+    // empty, even though its own `before` was 0. `migrations.applied.length > 0` on top of
+    // `from === 0` guards the other direction: the `migrate: false` / `readOnly` branch above
+    // never calls `migrate` at all and always returns `applied: []`, so a dry-run open of an
+    // existing (if oddly still-unmigrated) store cannot trip this either.
+    if (migrations.from === 0 && migrations.applied.length > 0 && !readOnly) {
+      db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run(
+        CWD_CONVENTION_KEY,
+        CWD_CONVENTION_PROJECT_RELATIVE,
       );
     }
 

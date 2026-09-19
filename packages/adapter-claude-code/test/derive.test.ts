@@ -884,6 +884,12 @@ describe('keys and counters', () => {
  * any such figure a date: 20 encoded project directories hold 301 distinct real working
  * directories (15.1:1), the largest collapsing 123:1. The bead's 15 / 282 / 115:1 of 2026-09-15
  * says the same thing about a smaller corpus.
+ *
+ * `asc-tlc`: the fixture's `AT.cwd` was ALREADY the encoded label's root (`-Users-me-app`, 13
+ * characters -- see `FILE` above) plus `/packages/core`, which is exactly what
+ * `projectRelativeCwd` needs to recover a relative path -- no change to the fixture was
+ * needed, only to what these tests assert `entry.cwd` equals: the RELATIVE remainder
+ * (`packages/core`), never the absolute value the transcript carried.
  */
 describe('the real cwd and branch, which the project label cannot express', () => {
   const AT = { cwd: '/Users/me/app/packages/core', gitBranch: 'feat/locality' };
@@ -922,12 +928,15 @@ describe('the real cwd and branch, which the project label cannot express', () =
     // empty set and assert nothing.
     expect(new Set(entries.map((entry) => entry.type)).size).toBe(5);
     for (const entry of entries) {
-      expect(entry.cwd, `${entry.type} lost its cwd`).toBe(AT.cwd);
+      // `AT.cwd` is '/Users/me/app/packages/core'; FILE.project ('-Users-me-app', 13 chars) is
+      // the encoded root '/Users/me/app', so the relative remainder is 'packages/core' --
+      // hand-derived, not read back from `projectRelativeCwd` itself.
+      expect(entry.cwd, `${entry.type} lost its cwd`).toBe('packages/core');
       expect(entry.branch, `${entry.type} lost its branch`).toBe(AT.gitBranch);
-      // Asserted separately from the equality above, so a deriver reading the DIRECTORY cannot
-      // pass by coincidence. The label is `-Users-me-app`; even a correct DECODER could only
-      // reach `/Users/me/app`, and the fixture's cwd is a subdirectory of that.
+      // Asserted separately from the equality above, so a deriver that forgot to relativize, or
+      // that read the label instead of the record, cannot pass by coincidence.
       expect(entry.cwd).not.toBe(FILE.project);
+      expect(entry.cwd).not.toBe(AT.cwd);
       expect(entry.cwd).not.toBe('/Users/me/app');
     }
   });
@@ -941,8 +950,10 @@ describe('the real cwd and branch, which the project label cannot express', () =
     ]);
     const [first, second] = ofType(entries, 'user_correction');
 
-    expect(first?.cwd).toBe('/Users/me/app/packages/core');
-    expect(second?.cwd).toBe('/Users/me/app/.worktrees/x');
+    // '/Users/me/app/packages/core' relative to the root '/Users/me/app' is 'packages/core';
+    // '/Users/me/app/.worktrees/x' relative to the same root is '.worktrees/x'.
+    expect(first?.cwd).toBe('packages/core');
+    expect(second?.cwd).toBe('.worktrees/x');
     // Absent on the second record, so OMITTED on the second entry -- never carried forward.
     expect(second?.branch).toBeUndefined();
   });
@@ -958,6 +969,22 @@ describe('the real cwd and branch, which the project label cannot express', () =
     expect(correction).not.toHaveProperty('branch');
   });
 
+  it('OMITS cwd when the record carries one but it does not encode-match the file label', () => {
+    // A NEW reason for the same absence (asc-tlc): the transcript said something, but
+    // `projectRelativeCwd` cannot place it under FILE.project ('-Users-me-app'), so the value
+    // is omitted rather than written absolute or guessed. '/somewhere/else' is 15 characters;
+    // its first 13, '/somewhere/el', encodes to '-somewhere-el', not '-Users-me-app'.
+    const entries = derive([
+      record([], { uuid: 'f', userFeedback: 'x', cwd: '/somewhere/else', gitBranch: 'main' }),
+    ]);
+    const [correction] = ofType(entries, 'user_correction');
+
+    expect(correction).not.toHaveProperty('cwd');
+    // The branch is a separate field, read independently of cwd's match -- it must still come
+    // through even though cwd was withheld.
+    expect(correction?.branch).toBe('main');
+  });
+
   it('takes a skill activation’s locality from the FIRST record of the run', () => {
     // Same rule as `session_id`, `project` and `occurred_at`, and for the same reason: one
     // activation is one event, so the facts that belong to it are the ones in force when it
@@ -969,7 +996,7 @@ describe('the real cwd and branch, which the project label cannot express', () =
     ]);
     const [activation] = ofType(entries, 'skill_activation');
 
-    expect(activation?.cwd).toBe('/Users/me/app/packages/core');
+    expect(activation?.cwd).toBe('packages/core');
     expect(activation?.branch).toBe('feat/locality');
   });
 });

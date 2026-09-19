@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -87,11 +87,6 @@ function project(): string {
  */
 function flatten(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
-}
-
-/** The directory as the PROCESS resolves it. macOS `tmpdir()` is a symlink under `/var`. */
-function real(dir: string): string {
-  return realpathSync(dir);
 }
 
 function envelope(stdout: string): readonly Record<string, unknown>[] {
@@ -979,11 +974,43 @@ describe('asc record', () => {
     expect(run.status).toBe(0);
     const [entry] = stored(dir);
     // `cwd` is read from the process rather than asked for -- `asc-krw`'s principle: never make a
-    // caller self-report what can be read off disk.
-    expect(entry?.cwd).toBe(real(dir));
+    // caller self-report what can be read off disk. `asc-tlc`: it is also made RELATIVE to the
+    // project root before it is written, never the absolute path `process.cwd()` returns -- and
+    // recording FROM the root itself is the case that empty-string `relative()` collapses to, so
+    // the written value is `'.'`, not `''` (`schema.ts`'s `CHECK (cwd IS NULL OR cwd <> '')`
+    // refuses the latter).
+    expect(entry?.cwd).toBe('.');
     expect(entry?.source).toBe('self');
     expect(entry?.run_id).toBe('run-7');
     expect(entry?.evidence_text).toBe('the store refused a nested transaction');
+  });
+
+  it('writes the subdirectory path when recorded away from the project root', () => {
+    // `asc-tlc`: the companion case to the root ('.') above -- a subdirectory writes its own
+    // relative path, never the absolute one `process.cwd()` would report there.
+    const dir = project();
+    const sub = join(dir, 'packages', 'core');
+    mkdirSync(sub, { recursive: true });
+
+    expect(
+      asc(['record', 'decision', '--prop=chosen=a', '--prop=rationale=because'], dir).status,
+    ).toBe(0);
+    expect(
+      asc(['record', 'decision', '--prop=chosen=b', '--prop=rationale=because'], sub).status,
+    ).toBe(0);
+
+    // Keyed on each entry's own `chosen` rather than on its position in the result: `stored`
+    // orders by `recorded_at, id`, and `id` is a random uuid -- so two entries that happened to
+    // share a timestamp would order arbitrarily, and a positional read would fail at random
+    // rather than when the behaviour under test broke.
+    const byChosen = new Map(
+      stored(dir).map((entry) => [
+        (JSON.parse(entry.properties_json) as { chosen?: string }).chosen,
+        entry.cwd,
+      ]),
+    );
+    expect(byChosen.get('a')).toBe('.');
+    expect(byChosen.get('b')).toBe('packages/core');
   });
 
   it('refuses source, recorded_at, cwd and type, each with its reason', () => {

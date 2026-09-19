@@ -32,6 +32,8 @@ export {
   withTransaction,
   STORE_DIR,
   STORE_FILE,
+  CWD_CONVENTION_KEY,
+  CWD_CONVENTION_PROJECT_RELATIVE,
   verifyPragmas,
   type OpenOptions,
   type Store,

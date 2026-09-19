@@ -153,3 +153,50 @@ function endsWithJsonl(segment: string | undefined): boolean {
 function stripSuffix(segment: string): string {
   return segment.endsWith(JSONL_SUFFIX) ? segment.slice(0, -JSONL_SUFFIX.length) : segment;
 }
+
+/**
+ * The part of `cwd` below the transcript's OWN project root, recovered from the encoded
+ * `project` label -- `'.'` when `cwd` IS that root, `undefined` when the label is not the
+ * encoded prefix of `cwd` (asc-tlc).
+ *
+ * THE MECHANISM. `project`'s own doc, above, already says the encoding "replaces both `/` and
+ * `-` with `-`". That substitution is one character for one character, so it is
+ * LENGTH-PRESERVING: `project.length` is exactly the character length of the decoded root, and
+ * `cwd.slice(0, project.length)` is that root, still in its original (unencoded) spelling. The
+ * remainder, `cwd.slice(project.length)`, is the path below it. So the check is
+ * `encode(head) === project` -- not a string split on `-`, which would misparse a root that
+ * itself contains a real hyphen (`/Users/me/my-app` encodes to `-Users-me-my-app`, and a naive
+ * split would see four segments instead of three).
+ *
+ * FAILS CLOSED, and the boundary check is half of that. If the encode-match does not hold --
+ * `project` longer than `cwd` (`head` then falls short and cannot re-encode to it), or `head`
+ * simply encodes to something else -- this returns `undefined` rather than a guess. But the
+ * encode-match ALONE is not enough, because it can land mid-segment: under the label
+ * `-Users-me-app`, a cwd of `/Users/me/apple/x` has `head === '/Users/me/app'`, which encodes to
+ * exactly that label -- while the directory is a SIBLING of the root, not under it. Without the
+ * `/` boundary below this returned `le/x`: a path that names no directory, in a column whose
+ * whole purpose is to say where something happened. So the remainder must be empty (cwd IS the
+ * root) or begin at a separator; anything else is a near-miss, not a match. Omitted, never
+ * fabricated (TASKS.md #7).
+ *
+ * The same boundary is what makes a Windows-spelled `cwd` fail closed rather than mangle: a
+ * remainder of `\\sub` does not start with `/`, so it is refused instead of being written with a
+ * separator this function never agreed to interpret.
+ *
+ * VERIFIED 2026-09-18 against every distinct `(project, cwd)` pair in the live store (asc-37x's
+ * DESIGN comment): 85 of 85 pairs recovered the root through this exact check, 0 were an
+ * encoded prefix with a length mismatch, and 0 had a label that was not even an encoded prefix
+ * of `cwd`. That measurement could not have found the mid-segment case above -- all 85 pairs
+ * were genuine, so every remainder began at a separator. A measurement over correct inputs says
+ * nothing about what a rule does with an incorrect one; the boundary is there on the argument,
+ * not on the evidence.
+ */
+export function projectRelativeCwd(project: string, cwd: string): string | undefined {
+  const head = cwd.slice(0, project.length);
+  if (head.replace(/[/-]/g, '-') !== project) return undefined;
+
+  const rest = cwd.slice(project.length);
+  if (rest === '') return '.';
+  if (!rest.startsWith('/')) return undefined;
+  return rest.slice(1);
+}

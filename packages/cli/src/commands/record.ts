@@ -52,6 +52,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { isAbsolute, relative } from 'node:path';
 import { Args, Flags } from '@oclif/core';
 import {
   recordEntry,
@@ -508,9 +509,32 @@ export default class RecordEntry extends BaseCommand {
       ...(flags.actor === undefined ? {} : { actor: flags.actor }),
     };
 
-    await this.withProject(({ store }) => {
+    await this.withProject(({ store, root }) => {
       const ascendVersion = this.ascendVersion();
-      const cwd = process.cwd();
+      // Project-relative, never absolute (asc-tlc). `project.ts` finds `root` by walking UP
+      // from `process.cwd()` -- its own doc says so ("The root is found by walking up") -- and
+      // there is no `--store` flag, so `process.cwd()` is always at or under `root` and this
+      // can never escape it in practice. `relative` returns `''` when the two paths are equal,
+      // and `schema.ts`'s `CHECK (cwd IS NULL OR cwd <> '')` REFUSES that empty string, so the
+      // project root itself is written as `'.'` rather than `''` -- a different fact from an
+      // absent cwd: `'.'` says "the root", `undefined` still says "not known".
+      const relativeCwd = relative(root, process.cwd());
+      const cwd =
+        relativeCwd === ''
+          ? '.'
+          : relativeCwd.startsWith('..') || isAbsolute(relativeCwd)
+            ? undefined
+            : relativeCwd;
+      if (cwd === undefined) {
+        // Unreachable by construction, per the paragraph above -- but handled rather than
+        // assumed, because the alternative failure modes are both worse than a warning: writing
+        // the absolute `process.cwd()` here would silently reintroduce the exact leak asc-tlc
+        // closes, and writing the (wrong) relative string would be a fabricated value in a
+        // column TASKS.md #7 says must omit rather than guess.
+        this.warn(
+          `cwd (${process.cwd()}) is not under the project root (${root}); omitting cwd from this entry.`,
+        );
+      }
       // One clock reading for the whole batch, so entries written by a single call share a
       // timestamp that differs only by what the caller said -- rather than by how long validation
       // took, which is not a fact about the observation.
@@ -546,7 +570,7 @@ export default class RecordEntry extends BaseCommand {
             id: merged.id ?? randomUUID(),
             recordedAt,
             ascendVersion,
-            cwd,
+            ...(cwd === undefined ? {} : { cwd }),
             ...(merged.run_id === undefined ? {} : { runId: merged.run_id }),
             ...(merged.workflow === undefined ? {} : { workflow: merged.workflow }),
             ...(merged.actor === undefined ? {} : { actor: merged.actor }),

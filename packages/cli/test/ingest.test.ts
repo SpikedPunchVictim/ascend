@@ -371,7 +371,12 @@ describe('asc ingest claude-code', () => {
       // A guard on the guard: an ingest that wrote nothing would satisfy the loop below.
       expect(rows.length).toBe(5);
       for (const row of rows) {
-        expect(row.cwd, `${row.t} lost its cwd`).toBe(RECORD_AT.cwd);
+        // `asc-tlc`: the envelope no longer carries `RECORD_AT.cwd` itself -- it carries that
+        // value made relative to the transcript's OWN project root, recovered from `PROJECT_DIR`.
+        // Hand-derived, not read back from the ingest: `PROJECT_DIR` is `-Users-me-scratch` (17
+        // characters), which is exactly the encoded form of `RECORD_AT.cwd`'s first 17 characters
+        // (`/Users/me/scratch`), so the relative remainder is `packages/core`.
+        expect(row.cwd, `${row.t} lost its cwd`).toBe('packages/core');
         expect(row.branch, `${row.t} lost its branch`).toBe(RECORD_AT.gitBranch);
         // The whole point, asserted separately so a value read off the DIRECTORY cannot pass by
         // coincidence -- and the label is what the `project` property still carries, so this is
@@ -384,7 +389,7 @@ describe('asc ingest claude-code', () => {
       const grouped = db
         .prepare('SELECT cwd, count(*) AS n FROM v_tool_denial_v1 GROUP BY 1')
         .all() as { cwd: string | null; n: number }[];
-      expect(grouped).toEqual([{ cwd: RECORD_AT.cwd, n: 1 }]);
+      expect(grouped).toEqual([{ cwd: 'packages/core', n: 1 }]);
     } finally {
       db.close();
     }

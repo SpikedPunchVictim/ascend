@@ -35,6 +35,7 @@
 
 import type { TranscriptRecord } from './decode.js';
 import { DERIVED_SOURCE } from './derived-types.js';
+import { projectRelativeCwd } from './transcript-file.js';
 import type { TranscriptFile } from './transcript-file.js';
 
 /**
@@ -231,18 +232,37 @@ function blocks(record: TranscriptRecord): readonly Record<string, unknown>[] {
  * the omission below is not a gap in practice. It would become one the day a derived type keys
  * off a control record, which is why the omission is a value rather than a default.
  *
+ * `cwd` HERE IS PROJECT-RELATIVE, not the transcript's raw absolute path (asc-tlc). The record's
+ * own `cwd` belongs to a DIFFERENT project than this store's -- see `DerivedEntry.cwd`'s doc for
+ * why the raw value is even wanted -- so it cannot be made relative to this store's root the way
+ * `record.ts` does for a self-recorded entry; it is made relative to ITS OWN project's root
+ * instead, via `projectRelativeCwd`. The absolute prefix that root recovers is the same on every
+ * row of that project, so deleting it costs nothing the corpus needs (asc-37x DESIGN).
+ *
  * Both are `undefined` rather than `''` on absence, and that is not tidiness: `entries` has
  * `CHECK (cwd IS NULL OR cwd <> '')`, so an empty string is a REFUSED write, while a `null` is
- * the honest "the transcript did not say". `str` already folds both absences into `undefined`.
+ * the honest "the transcript did not say". `str` already folds both absences into `undefined` --
+ * and a `cwd` that IS present but whose label does not encode-match it (`projectRelativeCwd`
+ * returning `undefined`) is folded into that same absence below. That is a NEW reason for the
+ * same `undefined`: not "the transcript did not say", but "the transcript said something this
+ * rule does not recognise how to place under its own root" -- fail closed, per that function's
+ * own doc, rather than write a guess.
  */
 interface Locality {
   readonly cwd: string | undefined;
   readonly branch: string | undefined;
 }
 
-/** The two transcript fields, under their own names, with absence preserved. */
-function localityOf(record: TranscriptRecord): Locality {
-  return { cwd: str(record['cwd']), branch: str(record['gitBranch']) };
+/**
+ * The two transcript fields, under their own names, with absence preserved -- `cwd` made
+ * relative to `project`, the transcript's own root, rather than left as the raw absolute path.
+ */
+function localityOf(record: TranscriptRecord, project: string): Locality {
+  const rawCwd = str(record['cwd']);
+  return {
+    cwd: rawCwd === undefined ? undefined : projectRelativeCwd(project, rawCwd),
+    branch: str(record['gitBranch']),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -607,7 +627,7 @@ export function createDeriver(): Deriver {
     const sessionId = str(record['sessionId']);
     const occurredAt = str(record['timestamp']);
     const uuid = str(record['uuid']);
-    const locality = localityOf(record);
+    const locality = localityOf(record, file.project);
     const blocksIn = blocks(record);
 
     // Index this record's tool invocations before reading its results: a denial and the

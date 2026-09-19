@@ -57,6 +57,7 @@ export {
 export {
   JSONL_SUFFIX,
   classifyTranscript,
+  projectRelativeCwd,
   type TranscriptFile,
   type TranscriptKind,
 } from './transcript-file.js';

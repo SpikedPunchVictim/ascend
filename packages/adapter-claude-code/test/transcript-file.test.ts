@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyTranscript } from '../src/index.js';
+import { classifyTranscript, projectRelativeCwd } from '../src/index.js';
 
 /**
  * This module makes the adapter's only claim about the corpus's STRUCTURE, and
@@ -163,5 +163,69 @@ describe('classifyTranscript: separators do not change the answer', () => {
     expect(windows.kind).toBe(posix.kind);
     expect(windows.project).toBe(posix.project);
     expect(windows.session).toBe(posix.session);
+  });
+});
+
+/**
+ * `projectRelativeCwd` (asc-tlc): the part of `cwd` below the transcript's OWN project root,
+ * recovered from the encoded `project` label. Every expected value below is hand-derived from
+ * the label, not read back from the function under test.
+ */
+describe('projectRelativeCwd', () => {
+  const PROJECT = '-Users-me-app'; // 13 characters: the encoded form of '/Users/me/app'.
+
+  it('returns "." when cwd IS the project root', () => {
+    expect(projectRelativeCwd(PROJECT, '/Users/me/app')).toBe('.');
+  });
+
+  it('returns the path below the root for a nested directory', () => {
+    expect(projectRelativeCwd(PROJECT, '/Users/me/app/packages/core')).toBe('packages/core');
+  });
+
+  it('returns undefined when the label is not the encoded prefix of cwd', () => {
+    // '/opt/other/pl' -- the first 13 characters of '/opt/other/place' -- encodes to
+    // '-opt-other-pl', which is not PROJECT. No read of a root this reasoning cannot support.
+    expect(projectRelativeCwd(PROJECT, '/opt/other/place')).toBeUndefined();
+  });
+
+  it('returns undefined when the label is LONGER than cwd', () => {
+    // `head = cwd.slice(0, project.length)` is clamped to cwd's own length by `String.slice`,
+    // so `head` here is the whole 13-character cwd -- 6 characters short of PROJECT's own
+    // 19, and re-encoding it can never equal a 19-character string. No separate length guard
+    // is needed for this to fail closed; the length mismatch alone is enough.
+    const longerProject = '-Users-me-app-extra'; // 19 characters.
+    expect(projectRelativeCwd(longerProject, '/Users/me/app')).toBeUndefined();
+  });
+
+  it('returns undefined for a SIBLING whose name merely extends the root', () => {
+    // The case the encode-match alone cannot separate, and the reason for the `/` boundary.
+    // '/Users/me/apple/x' has the same first 13 characters as '/Users/me/app' -- so `head`
+    // re-encodes to PROJECT exactly -- yet the directory is beside the root, not under it. The
+    // remainder is 'le/x', which begins mid-segment rather than at a separator; writing it would
+    // put a path naming no directory into a column that exists to say where something happened.
+    expect(projectRelativeCwd(PROJECT, '/Users/me/apple/x')).toBeUndefined();
+    // And the boundary is not satisfied by a mere prefix either: even with nothing after it, a
+    // longer last segment is still a different directory.
+    expect(projectRelativeCwd(PROJECT, '/Users/me/apple')).toBeUndefined();
+  });
+
+  it('returns undefined for a Windows-spelled remainder rather than mangling it', () => {
+    // Windows is out of this function's scope, so the honest answer is refusal: the remainder
+    // '\\sub' does not begin with '/', so there is no separator this function agreed to
+    // interpret, and it omits rather than writing a path in a spelling it never parsed.
+    expect(projectRelativeCwd(PROJECT, '/Users/me/app\\sub')).toBeUndefined();
+  });
+
+  it('still recovers the root when it contains a real "-", not just an encoded "/"', () => {
+    // This is the whole reason the check is `encode(head) === project` rather than a string
+    // split on '-': the root '/Users/me/my-app' has a REAL hyphen in its last segment, and a
+    // split would see four segments ('Users', 'me', 'my', 'app') where there are really three.
+    // Encoding is length-preserving (one character in, one character out) either way, so
+    // '/Users/me/my-app' (16 characters) and its encoded label '-Users-me-my-app' (also 16)
+    // still line up exactly, and the prefix comparison recovers the root regardless of what
+    // produced each '-'.
+    const project = '-Users-me-my-app';
+    expect(projectRelativeCwd(project, '/Users/me/my-app')).toBe('.');
+    expect(projectRelativeCwd(project, '/Users/me/my-app/packages/core')).toBe('packages/core');
   });
 });

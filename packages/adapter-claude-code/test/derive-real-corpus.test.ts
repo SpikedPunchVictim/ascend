@@ -297,6 +297,13 @@ describe.skipIf(!available)('the deriver against the real corpus', () => {
     // feature branches (`fix/search-scope`, `align/fixes-2026-08-20`), so "before or after the
     // branch moved" is answerable from here and was not before.
     expect(result.distinctBranches).toBeGreaterThan(1);
+
+    // `asc-tlc`, folded into this sweep rather than a second one: every `cwd` this deriver
+    // produces is now made relative to ITS OWN project's root by `projectRelativeCwd`, so none
+    // of them may still start with `/` -- the check that the whole change actually works against
+    // real transcripts, not only against the fixtures in `derive.test.ts`.
+    const absolute = result.entries.filter((entry) => entry.cwd?.startsWith('/') === true);
+    expect(absolute.length, 'entries whose cwd is still an absolute path').toBe(0);
   }, 120_000);
 
   it('keeps transcript prose out of the entries, except where the type IS the text', async () => {

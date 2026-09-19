@@ -400,6 +400,15 @@ describe('asc export | asc import', () => {
     expect(entries(target)).toEqual(entries(source));
     expect(entries(target)).toHaveLength(3);
 
+    // `asc-tlc`: `cwd` is one of those eighteen columns, and the equality above already proves it
+    // round-trips -- but it proves it BLINDLY, the same way it would if both sides carried the old
+    // absolute path. This names what the value actually is: `corpus()` records every entry from
+    // `dir` itself, the project root, so `record.ts` writes `'.'`, never `''` and never an absolute
+    // path -- and the round trip through `export | import` must carry that literal `'.'` across
+    // unchanged, the same as every other column.
+    for (const entry of entries(source)) expect(entry.cwd).toBe('.');
+    for (const entry of entries(target)) expect(entry.cwd).toBe('.');
+
     // And the strongest statement available: the restored project exports the same bytes. If any
     // column had been dropped, re-derived or re-ordered, this is where it shows.
     expect(asc(['export'], target).stdout).toBe(asc(['export'], source).stdout);
