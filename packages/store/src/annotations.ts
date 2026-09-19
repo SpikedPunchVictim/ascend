@@ -683,6 +683,41 @@ export function recordAnnotations(
   }
 }
 
+/**
+ * Every version of a scheme, oldest first.
+ *
+ * Mirrors `typeVersions` (`registry.ts:676`), and for the reason `export.ts` already states for
+ * types: `registerScheme` MINTS the next version number from what is already registered, so a
+ * stream replaying only the latest version would mint it as v1 on the way back in, and every
+ * annotation claiming v2 would then disagree with the store it was restored into.
+ *
+ * **Not exercised in the live store today.** Every scheme measured there is at v1 (`asc annotate`
+ * has only ever been run once per scheme, as of 2026-09-19), so this function has no case in
+ * production to point at. It exists anyway because the minting behaviour above makes it
+ * structurally required for `asc export` to be correct the day a scheme's shape changes -- not
+ * because a multi-version scheme has been observed.
+ */
+export function schemeVersions(db: DatabaseSync, name: string): readonly SchemeSummary[] {
+  const rows = db
+    .prepare(
+      'SELECT name, version, created_at, spec_json FROM annotation_schemes WHERE name = ? ' +
+        'ORDER BY version ASC',
+    )
+    .all(name) as unknown as {
+    name: string;
+    version: number;
+    created_at: string;
+    spec_json: string;
+  }[];
+
+  return rows.map((row) => ({
+    name: row.name,
+    version: row.version,
+    createdAt: row.created_at,
+    spec: JSON.parse(row.spec_json) as SchemeSpec,
+  }));
+}
+
 /** Every registered scheme's latest version, oldest name first. */
 export function listSchemes(db: DatabaseSync): readonly SchemeSummary[] {
   const rows = db

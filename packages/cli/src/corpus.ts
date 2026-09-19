@@ -1,13 +1,17 @@
 /**
- * The corpus stream: one JSON object per line, every type version then every entry.
+ * The corpus stream: one JSON object per line, in the order `type`, `entry`, `scheme`,
+ * `annotation`.
  *
  * `asc-brt`. The store is per-project and gitignored, so `asc export` is the only thing that
  * carries a corpus out of a working copy. `asc types export` moves DEFINITIONS between projects
- * and says nothing about entries; this is the corpus itself.
+ * and says nothing about entries; this is the corpus itself -- and, since `asc-6u5`, the whole
+ * corpus, hand labels and kappa passes included, not only what a trigger cannot protect.
  *
  * ```jsonl
  * {"kind":"type","name":"decision","properties":[…],"type_hash":"…"}
  * {"kind":"entry","id":"…","type_name":"decision","type_version":1,"type_hash":"…", …}
+ * {"kind":"scheme","name":"risk","version":1,"created_at":"…","spec":{"labels":[…],"rules":[…]},"scheme_hash":"…"}
+ * {"kind":"annotation","id":"…","entry_id":"…","scheme":"risk","scheme_version":1,"label":"high", …}
  * ```
  *
  * **JSONL rather than one big array, and the reason is the failure mode.** A corpus is the thing
@@ -16,19 +20,32 @@
  * It also streams in both directions -- `asc export | asc import -` never holds the corpus in
  * memory twice -- and appends, so a caller can concatenate two exports.
  *
- * **The definitions are required, not optional.** An entry's `type_hash` points at a type version,
- * so a corpus restored without its definitions cannot render its own views: every generated view
- * and every `asc query` needs the spec the entries were validated against. `export` therefore
- * always writes the definitions first, and `import` refuses to restore entries whose definitions
- * are not in the file.
+ * **The order is a contract, not a preference.** `annotations` carries `FOREIGN KEY (entry_id)
+ * REFERENCES entries (id)` and `FOREIGN KEY (scheme, scheme_version) REFERENCES
+ * annotation_schemes (name, version)` (`schema.ts`), so an annotation line has to reach `import`
+ * after both the entry it labels and the scheme it was labelled under, or the write fails on a
+ * foreign key it never gets a chance to explain. `type`, `entry`, `scheme`, `annotation` is the
+ * one order that satisfies both constraints at once.
  *
- * **`type_hash` and `type_version` are carried and CHECKED, never trusted.** `type_hash` is a pure
- * function of the canonical shape (`specHash`), so a matching hash is evidence the definition
- * survived the trip rather than something that makes two corpora comparable -- which is exactly
- * the argument `document.ts` makes for the same field, and the check is `registerDocument`'s. An
- * entry's `type_version` is corroborating evidence of the same kind: `import` resolves the version
- * by HASH and refuses if the file claims a different number, because the two disagreeing means the
- * file is describing an entry that was not recorded against the definition it names.
+ * **The definitions are required, not optional -- and that now covers schemes too.** An entry's
+ * `type_hash` points at a type version, so a corpus restored without its definitions cannot
+ * render its own views: every generated view and every `asc query` needs the spec the entries
+ * were validated against. An annotation's `(scheme, scheme_version)` is the same kind of pointer
+ * into `annotation_schemes`, for the same reason: `asc kappa` and `schemeCensus` both need the
+ * rule an annotation was produced under, not only the label it left behind. `export` therefore
+ * always writes definitions before the rows that depend on them, and `import` refuses to restore
+ * either kind of row whose definition is not in the file.
+ *
+ * **`type_hash`, `type_version`, and now `scheme_hash` are carried and CHECKED, never trusted.**
+ * `type_hash` is a pure function of the canonical shape (`specHash`), so a matching hash is
+ * evidence the definition survived the trip rather than something that makes two corpora
+ * comparable -- which is exactly the argument `document.ts` makes for the same field, and the
+ * check is `registerDocument`'s. An entry's `type_version` is corroborating evidence of the same
+ * kind: `import` resolves the version by HASH and refuses if the file claims a different number,
+ * because the two disagreeing means the file is describing an entry that was not recorded against
+ * the definition it names. `scheme_hash` is `schemeHash` (`@ascend/store`) applied to the exact
+ * same argument: a scheme line's `spec` is what `import` recomputes the hash from, and a claimed
+ * `scheme_hash` that disagrees is refused rather than trusted, by `verifySchemeLine`.
  *
  * **`recorded_at` and `id` are restored verbatim, and so is everything else in the row.** That is
  * the whole point: a restored corpus is the same corpus, not a re-recording of it. The one column
@@ -36,13 +53,40 @@
  * caller -- a type's registration timestamp becomes the moment of the import. An entry's
  * `ascend_version` and `schema_version` ARE restored, so the file's record of which build wrote
  * each row survives even though the definitions' does not.
+ *
+ * **An annotation line restores as part of a PASS, not as an independent row.**
+ * `recordAnnotations` stamps `created_at` and `created_by` onto every row of one call
+ * (`annotations.ts:655-669`), and `RecordedAnnotations`'s own doc calls `(scheme, schemeVersion,
+ * createdAt)` the pass identity that `asc kappa` compares. So `import` groups the stream's
+ * annotation lines by that identity (`created_by` travels with it, since two passes can share a
+ * timestamp only in theory and never in the same group) and issues one `recordAnnotations` call
+ * per group, passing the group's own `created_at`/`created_by` back in as the context that call
+ * takes. Restoring row by row instead would stamp every annotation with the import's own clock
+ * and collapse every pass a scheme ever ran into one -- the corpus would still contain every
+ * label, and `asc kappa` would still run without error, but it would be comparing a scheme against
+ * itself. A row count cannot see that defect; only the count of DISTINCT pass identities can.
+ *
+ * **Backward and forward compatibility.** Neither `scheme` nor `annotation` lines are required:
+ * an export written before `asc-6u5` has neither, and it restores exactly as it always did --
+ * `refuseUnrestorable` only requires a scheme for an annotation that is actually present, the same
+ * way it only requires a type for an entry that is. A newer stream fed to an OLDER binary is not
+ * handled by any code here: that binary's `parseCorpus` does not know the two new kinds and
+ * refuses the first `scheme` or `annotation` line it meets, which is the correct outcome and does
+ * not need a compatibility shim -- an old binary restoring a new corpus silently and dropping the
+ * annotations would be this exact bead recurring one release later.
  */
 
 import {
   ENTRY_SOURCES,
+  schemeHash,
   specHash,
+  type AnnotationRow,
   type EntrySource,
   type RecordedEntry,
+  type SchemeRule,
+  type SchemeRuleKind,
+  type SchemeSpec,
+  type SchemeSummary,
   type TypeVersionRow,
 } from '@ascend/store';
 import { documentFromRow, orderedDocument, parseDocument, type TypeDocument } from './document.js';
@@ -83,7 +127,72 @@ export interface EntryLine {
   readonly schema_version: number;
 }
 
-export type CorpusLine = TypeLine | EntryLine;
+/**
+ * A scheme version, as a line. Mirrors `TypeLine`: `kind` first, and the identity-bearing hash
+ * carried alongside the shape rather than trusted to be recomputable without it.
+ *
+ * `annotation_schemes` has no hash column of its own -- `schemeHash` is computed on demand, both
+ * at registration and here at export -- so `scheme_hash` is not a stored value being forwarded,
+ * it is this line's own claim about the `spec` sitting next to it, exactly as `verifySchemeLine`
+ * checks it.
+ */
+export interface SchemeLine {
+  readonly kind: 'scheme';
+  readonly name: string;
+  readonly version: number;
+  readonly created_at: string;
+  readonly spec: SchemeSpec;
+  readonly scheme_hash: string;
+}
+
+/**
+ * One stored annotation, as a line: every column of the row, snake_case, for the reason
+ * `EntryLine`'s doc gives -- these are column names and the file is a dump of columns.
+ *
+ * `scheme` and `scheme_version` travel on every row rather than being left to the group the row
+ * sits in, because a line is the unit `parseCorpus` reports a coordinate for and the unit
+ * `ENTRY_KEYS`-style validation checks in isolation -- a row that depended on lines around it to
+ * mean something would not be a self-describing line. `import` still restores a whole PASS at
+ * once (see the module doc); these two fields are what it groups the stream's annotation lines
+ * BY, not a value it derives after grouping.
+ *
+ * `value`, `confidence`, `note` and `created_by` are all nullable columns and none of them is
+ * optional at the type level, the same choice `EntryLine` makes for `run_id`, `workflow` and the
+ * rest: an absent key and an explicit `null` are treated as the same "not recorded" on the way in
+ * (`optionalText`), and the line always carries the key on the way out (`orderedLine`).
+ */
+export interface AnnotationLine {
+  readonly kind: 'annotation';
+  readonly id: string;
+  readonly entry_id: string;
+  readonly scheme: string;
+  readonly scheme_version: number;
+  readonly label: string;
+  /**
+   * Any JSON value the annotation carried. **ABSENT when it carried none, never `null`.**
+   *
+   * `value_json` is a nullable JSON column, so `null` is a value an annotation can legitimately
+   * hold -- `recordAnnotations` writes the four bytes `null` for it and reads it back as `null`,
+   * while an annotation with no value at all reads back as `undefined` (`annotations.ts`, where
+   * the row maps `value_json === null` to `undefined`). Spelling absence as `null` HERE would
+   * merge those two into one line and the restore could not tell them apart again: this module's
+   * own header states the rule -- omit absent values, never write a sentinel -- and ARCHITECTURE.md
+   * says why a corpus that loses the distinction never gets it back.
+   *
+   * Measured 2026-09-19 on this project's store: 747 of 747 annotations have `value_json IS NULL`
+   * and none holds a JSON `null`, and `asc annotate` has no surface that writes a value at all. So
+   * this is a distinction nothing exercises today -- which is the reason to get it right now, while
+   * the only cost is choosing the spelling, rather than after a corpus has been written that needs
+   * it.
+   */
+  readonly value?: unknown;
+  readonly confidence: number | null;
+  readonly note: string | null;
+  readonly created_by: string | null;
+  readonly created_at: string;
+}
+
+export type CorpusLine = TypeLine | EntryLine | SchemeLine | AnnotationLine;
 
 /**
  * A line and where it came from.
@@ -131,6 +240,56 @@ export function entryLine(entry: RecordedEntry): EntryLine {
 }
 
 /**
+ * One registered scheme version as a line.
+ *
+ * `scheme_hash` is computed here, from the spec this same call is about to carry, rather than
+ * read from a stored column -- `annotation_schemes` has none. That makes the hash trivially
+ * correct at export time; the check it exists for (`verifySchemeLine`) matters on the way back
+ * in, against a file that may have been hand-edited since.
+ */
+export function schemeLine(summary: SchemeSummary): SchemeLine {
+  return {
+    kind: 'scheme',
+    name: summary.name,
+    version: summary.version,
+    created_at: summary.createdAt,
+    spec: summary.spec,
+    scheme_hash: schemeHash(summary.spec),
+  };
+}
+
+/**
+ * One stored annotation as a line.
+ *
+ * `scheme` and `schemeVersion` are the caller's, not the row's -- `AnnotationRow` (`@ascend/store`)
+ * is read through `annotationRows`, which is always called for one `(scheme, version)` pair and so
+ * never returns either as a column. Passing them in here is what keeps that one row self-describing
+ * once it is a line of its own (see `AnnotationLine`'s doc).
+ */
+export function annotationLine(
+  row: AnnotationRow,
+  scheme: string,
+  schemeVersion: number,
+): AnnotationLine {
+  return {
+    kind: 'annotation',
+    id: row.id,
+    entry_id: row.entryId,
+    scheme,
+    scheme_version: schemeVersion,
+    label: row.label,
+    // Omitted, not nulled -- see `AnnotationLine.value`. `JSON.stringify` drops an absent key, so
+    // this is also what keeps the serialized line free of a `"value":null` that would read back as
+    // a value the annotation never had.
+    ...(row.value === undefined ? {} : { value: row.value }),
+    confidence: row.confidence,
+    note: row.note,
+    created_by: row.createdBy,
+    created_at: row.createdAt,
+  };
+}
+
+/**
  * A line as a plain object, with a fixed key order.
  *
  * Fixed so that exporting the same corpus twice produces identical bytes, which is what makes a
@@ -140,26 +299,53 @@ export function entryLine(entry: RecordedEntry): EntryLine {
 export function orderedLine(line: CorpusLine): Record<string, unknown> {
   if (line.kind === 'type') return { kind: 'type', ...orderedDocument(line.document) };
 
+  if (line.kind === 'entry') {
+    return {
+      kind: 'entry',
+      id: line.id,
+      type_name: line.type_name,
+      type_version: line.type_version,
+      type_hash: line.type_hash,
+      recorded_at: line.recorded_at,
+      source: line.source,
+      run_id: line.run_id,
+      workflow: line.workflow,
+      actor: line.actor,
+      cwd: line.cwd,
+      repo: line.repo,
+      git_sha: line.git_sha,
+      branch: line.branch,
+      properties: line.properties,
+      na: line.na,
+      evidence_text: line.evidence_text,
+      ascend_version: line.ascend_version,
+      schema_version: line.schema_version,
+    };
+  }
+
+  if (line.kind === 'scheme') {
+    return {
+      kind: 'scheme',
+      name: line.name,
+      version: line.version,
+      created_at: line.created_at,
+      spec: line.spec,
+      scheme_hash: line.scheme_hash,
+    };
+  }
+
   return {
-    kind: 'entry',
+    kind: 'annotation',
     id: line.id,
-    type_name: line.type_name,
-    type_version: line.type_version,
-    type_hash: line.type_hash,
-    recorded_at: line.recorded_at,
-    source: line.source,
-    run_id: line.run_id,
-    workflow: line.workflow,
-    actor: line.actor,
-    cwd: line.cwd,
-    repo: line.repo,
-    git_sha: line.git_sha,
-    branch: line.branch,
-    properties: line.properties,
-    na: line.na,
-    evidence_text: line.evidence_text,
-    ascend_version: line.ascend_version,
-    schema_version: line.schema_version,
+    entry_id: line.entry_id,
+    scheme: line.scheme,
+    scheme_version: line.scheme_version,
+    label: line.label,
+    ...(line.value === undefined ? {} : { value: line.value }),
+    confidence: line.confidence,
+    note: line.note,
+    created_by: line.created_by,
+    created_at: line.created_at,
   };
 }
 
@@ -231,6 +417,14 @@ function requiredWholeNumber(where: string, raw: Record<string, unknown>, key: s
   return value;
 }
 
+/** A nullable number column, the same "absent and `null` mean the same thing" rule as `optionalText`. */
+function optionalNumber(where: string, raw: Record<string, unknown>, key: string): number | null {
+  const value = raw[key];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number') fieldError(where, key, 'a number or null', value);
+  return value;
+}
+
 /**
  * A corpus line without its `kind`, for the parser that has never heard of one.
  *
@@ -299,6 +493,143 @@ function parseEntryLine(where: string, raw: Record<string, unknown>): EntryLine 
   };
 }
 
+const SCHEME_KEYS = ['kind', 'name', 'version', 'created_at', 'spec', 'scheme_hash'] as const;
+const SCHEME_SPEC_KEYS = ['labels', 'rules'] as const;
+const SCHEME_RULE_KEYS = ['label', 'kind', 'query'] as const;
+const SCHEME_RULE_KINDS: readonly SchemeRuleKind[] = ['sql', 'fts'];
+
+/**
+ * One rule of a scheme's spec, checked only down to the shape `SchemeRule` requires.
+ *
+ * The deeper checks -- an empty query, a label outside the scheme's own vocabulary, an `fts` query
+ * with no indexable term -- are `normalizeSpec`'s (`annotations.ts`), run again by `registerScheme`
+ * on the way in. Duplicating them here would be a second place those rules could drift from the
+ * store's; this function's job is only to make sure `registerScheme` receives the shape it expects
+ * rather than `undefined`s from a field that was missing.
+ */
+function parseSchemeRule(where: string, index: number, raw: unknown): SchemeRule {
+  const field = `spec.rules[${String(index)}]`;
+  if (!isJsonObject(raw)) fieldError(where, field, 'an object', raw);
+
+  for (const key of Object.keys(raw)) {
+    if (!(SCHEME_RULE_KEYS as readonly string[]).includes(key)) {
+      throw refusal(
+        `${where}.${field} has no such field '${key}'. The fields are: ${SCHEME_RULE_KEYS.join(', ')}.`,
+      );
+    }
+  }
+
+  const label = raw['label'];
+  if (typeof label !== 'string') fieldError(where, `${field}.label`, 'a string', label);
+
+  const kind = raw['kind'];
+  if (typeof kind !== 'string' || !(SCHEME_RULE_KINDS as readonly string[]).includes(kind)) {
+    throw refusal(
+      `${where}.${field}.kind must be one of ${SCHEME_RULE_KINDS.join(', ')}, but it is ` +
+        `${describeValue(kind)}.`,
+    );
+  }
+
+  const query = raw['query'];
+  if (typeof query !== 'string') fieldError(where, `${field}.query`, 'a string', query);
+
+  return { label, kind: kind as SchemeRuleKind, query };
+}
+
+/** A scheme's `spec` field: `labels` and `rules`, checked down to the shape `SchemeSpec` requires. */
+function parseSchemeSpec(where: string, raw: unknown): SchemeSpec {
+  if (!isJsonObject(raw)) fieldError(where, 'spec', 'an object', raw);
+
+  for (const key of Object.keys(raw)) {
+    if (!(SCHEME_SPEC_KEYS as readonly string[]).includes(key)) {
+      throw refusal(
+        `${where}.spec has no such field '${key}'. The fields are: ${SCHEME_SPEC_KEYS.join(', ')}.`,
+      );
+    }
+  }
+
+  const labels = raw['labels'];
+  if (!Array.isArray(labels) || labels.some((label) => typeof label !== 'string')) {
+    fieldError(where, 'spec.labels', 'an array of strings', labels);
+  }
+
+  const rules = raw['rules'];
+  if (!Array.isArray(rules)) fieldError(where, 'spec.rules', 'an array', rules);
+
+  return {
+    labels: labels as string[],
+    rules: rules.map((rule, index) => parseSchemeRule(where, index, rule)),
+  };
+}
+
+/** One scheme version, with every field checked. `where` is the line's coordinate in its source. */
+function parseSchemeLine(where: string, raw: Record<string, unknown>): SchemeLine {
+  for (const key of Object.keys(raw)) {
+    if (!(SCHEME_KEYS as readonly string[]).includes(key)) {
+      throw refusal(
+        `${where} has no such field '${key}'. The fields are: ${SCHEME_KEYS.join(', ')}. ` +
+          `Fields are not ignored when unrecognised, so that a misspelt one cannot be dropped in silence.`,
+      );
+    }
+  }
+
+  return {
+    kind: 'scheme',
+    name: requiredText(where, raw, 'name'),
+    version: requiredWholeNumber(where, raw, 'version'),
+    created_at: requiredText(where, raw, 'created_at'),
+    spec: parseSchemeSpec(where, raw['spec']),
+    scheme_hash: requiredText(where, raw, 'scheme_hash'),
+  };
+}
+
+const ANNOTATION_KEYS = [
+  'kind',
+  'id',
+  'entry_id',
+  'scheme',
+  'scheme_version',
+  'label',
+  'value',
+  'confidence',
+  'note',
+  'created_by',
+  'created_at',
+] as const;
+
+/** One annotation, with every field checked. `where` is the line's coordinate in its source. */
+function parseAnnotationLine(where: string, raw: Record<string, unknown>): AnnotationLine {
+  for (const key of Object.keys(raw)) {
+    if (!(ANNOTATION_KEYS as readonly string[]).includes(key)) {
+      throw refusal(
+        `${where} has no such field '${key}'. The fields are: ${ANNOTATION_KEYS.join(', ')}. ` +
+          `Fields are not ignored when unrecognised, so that a misspelt one cannot be dropped in silence.`,
+      );
+    }
+  }
+
+  // Any JSON value is legal here -- `AnnotationInput.value` in the store is untyped for the same
+  // reason -- and a value that arrived through `JSON.parse` cannot hold anything `canonicalJson`
+  // would refuse (`undefined`, a function, a symbol), so there is nothing further to check.
+  const value = raw['value'];
+
+  return {
+    kind: 'annotation',
+    id: requiredText(where, raw, 'id'),
+    entry_id: requiredText(where, raw, 'entry_id'),
+    scheme: requiredText(where, raw, 'scheme'),
+    scheme_version: requiredWholeNumber(where, raw, 'scheme_version'),
+    label: requiredText(where, raw, 'label'),
+    // `in` rather than `!== undefined`: JSON cannot express `undefined`, so a present key is a
+    // present value even when that value is `null`, and that is exactly the pair being kept apart.
+    ...('value' in raw ? { value } : {}),
+    confidence: optionalNumber(where, raw, 'confidence'),
+    note: optionalText(where, raw, 'note'),
+    created_by: optionalText(where, raw, 'created_by'),
+    created_at: requiredText(where, raw, 'created_at'),
+  };
+}
+
 /**
  * Parse a corpus stream.
  *
@@ -348,9 +679,23 @@ export function parseCorpus(text: string, source: string): readonly ParsedLine[]
       lines.push({ where, line: parseEntryLine(where, parsed) });
       continue;
     }
+    if (kind === 'scheme') {
+      lines.push({ where, line: parseSchemeLine(where, parsed) });
+      continue;
+    }
+    if (kind === 'annotation') {
+      lines.push({ where, line: parseAnnotationLine(where, parsed) });
+      continue;
+    }
 
+    // An OLDER binary reaches this branch on a stream this bead's export now writes, for a
+    // `scheme` or `annotation` line it has never heard of -- and refusing here, naming a kind it
+    // does not recognise, is the correct outcome rather than a gap: silently restoring only the
+    // kinds it knows would be this exact defect (asc-6u5) recurring one release later, on the
+    // binary that cannot yet be fixed.
     throw refusal(
-      `${where}.kind is ${describeValue(kind)}, but a corpus line is either "type" or "entry".`,
+      `${where}.kind is ${describeValue(kind)}, but a corpus line is one of "type", "entry", ` +
+        `"scheme", or "annotation".`,
     );
   }
 
@@ -381,6 +726,29 @@ export function verifyTypeLine(line: TypeLine, where: string): void {
       `${where} claims type_hash ${claimed} but its contents hash to ${computed}. The definition ` +
         `is not the one the corpus says it is, so importing it would register the entries' ` +
         `definition under the wrong identity.`,
+    );
+  }
+}
+
+/**
+ * The hash a scheme line claims, recomputed from its contents.
+ *
+ * Unlike `verifyTypeLine`, `scheme_hash` is not optional on `SchemeLine` -- `annotation_schemes`
+ * has no hash column to have gone missing from in the first place, so there is no "hand-written,
+ * nothing to check against" case here the way there is for a type document. Every scheme line
+ * this module produces carries one, so a line with none has already failed `parseSchemeLine`'s
+ * own required-field check before this is ever called.
+ *
+ * Throws with both hashes, for the same reason `verifyTypeLine` does: the useful question is
+ * *which* two schemes are being confused, not merely that they disagree.
+ */
+export function verifySchemeLine(line: SchemeLine, where: string): void {
+  const computed = schemeHash(line.spec);
+  if (computed !== line.scheme_hash) {
+    throw refusal(
+      `${where} claims scheme_hash ${line.scheme_hash} but its contents hash to ${computed}. The ` +
+        `scheme is not the one the corpus says it is, so importing it would register the ` +
+        `annotations' scheme under the wrong identity.`,
     );
   }
 }

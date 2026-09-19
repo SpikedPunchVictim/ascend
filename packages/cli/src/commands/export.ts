@@ -1,13 +1,18 @@
 /**
- * `asc export` -- the whole corpus as a JSONL stream, definitions first.
+ * `asc export` -- the whole corpus as a JSONL stream, definitions before what depends on them.
  *
  * `asc-brt`, and the counterpart of `asc import`. The store is per-project and gitignored, so this
  * is the only thing that carries a corpus out of a working copy: the file this writes is what
- * survives a deleted checkout.
+ * survives a deleted checkout. As of `asc-6u5`, that includes annotation schemes and the
+ * annotations recorded under them -- a hand label, a kappa pass, a rule's whole classification --
+ * not only the entries a trigger already protects.
  *
  * **Types first, every version, oldest-first**, for the reason `types export` states: registration
  * mints the next version number, so replaying v1 then v2 reproduces the versions the exporting
- * project holds. Then every entry, in `(recorded_at, id)` order.
+ * project holds. Schemes are the same argument applied to `registerScheme`, which mints its own
+ * version numbers the identical way. Then every entry, in `(recorded_at, id)` order, then every
+ * annotation, in `(scheme, scheme_version, created_at, id)` order. The full order -- `type`,
+ * `entry`, `scheme`, `annotation` -- is a foreign-key contract, not a preference: see `corpus.ts`.
  *
  * **The default output is the stream, and `--json` is the versioned envelope.** The same split
  * `types export` makes, for the same reason: the round trip is this command's purpose, so
@@ -22,25 +27,40 @@
  * discovered, because "the escape hatch refused to run" is a surprising thing to meet.
  *
  * `--csv` is refused and no longer advertised, exactly as `asc types export` refuses it: a corpus
- * is a heterogeneous stream of two shapes and a CSV cell holding one is a cell a reader has to
+ * is a heterogeneous stream of four shapes and a CSV cell holding one is a cell a reader has to
  * parse back anyway. `asc-3u2` item (d) is why the flag is hidden as well as refused.
  */
 
 import { Flags } from '@oclif/core';
 import {
+  annotationRows,
   entryIds,
   findEntry,
+  listSchemes,
   listTypes,
+  schemeVersions,
   typeVersions,
+  type AnnotationRow,
   type RecordedEntry,
+  type SchemeSummary,
   type Store,
 } from '@ascend/store';
 import { BaseCommand, OUTPUT_FLAGS } from '../base.js';
-import { entryLine, orderedLine, serializeCorpus, typeLine, type CorpusLine } from '../corpus.js';
+import {
+  annotationLine,
+  entryLine,
+  orderedLine,
+  schemeLine,
+  serializeCorpus,
+  typeLine,
+  type AnnotationLine,
+  type CorpusLine,
+} from '../corpus.js';
 import { refusal, usageError } from '../errors.js';
 
 export default class ExportCorpus extends BaseCommand {
-  static override description = 'Write every type definition and every entry as a JSONL stream.';
+  static override description =
+    'Write every type definition, entry, annotation scheme, and annotation as a JSONL stream.';
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> > corpus.jsonl',
@@ -65,9 +85,10 @@ export default class ExportCorpus extends BaseCommand {
 
     if (format === 'csv') {
       throw usageError(
-        '`asc export --csv` is not a format: a corpus line is a type definition or an entry, and ' +
-          'the two have different fields, so no one header row describes them. The export is ' +
-          'JSONL; use `asc query --csv` if what you want is one type as columns.',
+        '`asc export --csv` is not a format: a corpus line is a type definition, an entry, an ' +
+          'annotation scheme, or an annotation, and the four have different fields, so no one ' +
+          'header row describes them. The export is JSONL; use `asc query --csv` if what you want ' +
+          'is one type as columns.',
       );
     }
 
@@ -99,13 +120,16 @@ export default class ExportCorpus extends BaseCommand {
 }
 
 /**
- * Every type version, then every entry.
+ * Every type version, then every entry, then every scheme version, then every annotation.
  *
  * The order is the contract: `import` registers definitions in the order it reads them, so a
- * stream whose types were sorted differently would mint different version numbers. Types go in
- * name order -- so two exports of one registry differ only where the registry does, which is what
- * makes a diff of them mean something -- with each type's versions oldest-first, and entries go in
- * `(recorded_at, id)`, the same order `pages.ts` pages in.
+ * stream whose types (or schemes) were sorted differently would mint different version numbers --
+ * and `annotations` carries foreign keys to both `entries` and `annotation_schemes` (`schema.ts`),
+ * so it has to reach `import` after both. Types and schemes each go in name order -- so two
+ * exports of one registry differ only where the registry does, which is what makes a diff of them
+ * mean something -- with each name's versions oldest-first. Entries go in `(recorded_at, id)`, the
+ * same order `pages.ts` pages in, and annotations go in `(scheme, scheme_version, created_at, id)`
+ * -- see `annotationLines` for why the timestamp alone is not enough.
  */
 function corpusLines(store: Store): readonly CorpusLine[] {
   const types = listTypes(store.db)
@@ -114,7 +138,17 @@ function corpusLines(store: Store): readonly CorpusLine[] {
     .flatMap((name) => typeVersions(store.db, name))
     .map(typeLine);
 
-  return [...types, ...entries(store).map(entryLine)];
+  const schemes = listSchemes(store.db)
+    .map((summary) => summary.name)
+    .sort()
+    .flatMap((name) => schemeVersions(store.db, name));
+
+  return [
+    ...types,
+    ...entries(store).map(entryLine),
+    ...schemes.map(schemeLine),
+    ...annotationLines(store, schemes),
+  ];
 }
 
 /**
@@ -147,4 +181,43 @@ function entries(store: Store): readonly RecordedEntry[] {
     (left, right) =>
       left.recordedAt.localeCompare(right.recordedAt) || left.id.localeCompare(right.id),
   );
+}
+
+/**
+ * Every annotation of every scheme version, in `(scheme, scheme_version, created_at, id)` order.
+ *
+ * `annotationRows` already orders one scheme-version's rows by `(created_at, entry_id)` -- the
+ * order a rater's label list reads well in -- but that is not enough to make a *stream*
+ * byte-stable, because two annotations of one pass can share a `created_at` (the pass IS its
+ * timestamp; see `annotations.ts`) with nothing but `entry_id` breaking the tie, and this stream's
+ * own determinism promise is keyed on `id`, not on which entry happened to be labelled. So the
+ * rows are read scheme-version by scheme-version and then re-sorted here, by the id `orderedLine`
+ * asserts stability over -- the same reason `export.ts`'s own `entries` function sorts across
+ * queries rather than trusting any one of them.
+ */
+function annotationLines(
+  store: Store,
+  schemes: readonly SchemeSummary[],
+): readonly AnnotationLine[] {
+  const rows: { readonly scheme: string; readonly version: number; readonly row: AnnotationRow }[] =
+    [];
+
+  for (const summary of schemes) {
+    for (const row of annotationRows(store.db, {
+      scheme: summary.name,
+      version: summary.version,
+    })) {
+      rows.push({ scheme: summary.name, version: summary.version, row });
+    }
+  }
+
+  rows.sort(
+    (left, right) =>
+      left.scheme.localeCompare(right.scheme) ||
+      left.version - right.version ||
+      left.row.createdAt.localeCompare(right.row.createdAt) ||
+      left.row.id.localeCompare(right.row.id),
+  );
+
+  return rows.map(({ scheme, version, row }) => annotationLine(row, scheme, version));
 }

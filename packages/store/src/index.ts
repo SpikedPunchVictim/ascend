@@ -114,6 +114,7 @@ export {
   schemeCensus,
   schemeHash,
   SchemeError,
+  schemeVersions,
   type AnnotationContext,
   type AnnotationInput,
   type AnnotationPass,

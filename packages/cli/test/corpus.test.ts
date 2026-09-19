@@ -143,6 +143,37 @@ interface RegistryRow {
   readonly status: string;
 }
 
+/** A row of `annotation_schemes`, as this suite reads it back. */
+interface SchemeRow {
+  readonly name: string;
+  readonly version: number;
+  readonly created_at: string;
+  readonly spec_json: string;
+}
+
+/** A row of `annotations`, as this suite reads it back -- every column `recordAnnotations` writes. */
+interface StoredAnnotation {
+  readonly id: string;
+  readonly entry_id: string;
+  readonly scheme: string;
+  readonly scheme_version: number;
+  readonly label: string;
+  readonly value_json: string | null;
+  readonly confidence: number | null;
+  readonly note: string | null;
+  readonly created_by: string | null;
+  readonly created_at: string;
+}
+
+/** One `(scheme, scheme_version, created_at, created_by)` pass, with its row count. */
+interface PassGroup {
+  readonly scheme: string;
+  readonly scheme_version: number;
+  readonly created_at: string;
+  readonly created_by: string | null;
+  readonly n: number;
+}
+
 interface StoredEntry {
   readonly id: string;
   readonly type_name: string;
@@ -211,13 +242,118 @@ function entries(dir: string): readonly StoredEntry[] {
   }
 }
 
+/** Every registered scheme version, read straight out of the store. */
+function schemeRows(dir: string): readonly SchemeRow[] {
+  const db = open(dir);
+  if (db === undefined) return [];
+  try {
+    return db
+      .prepare(
+        'SELECT name, version, created_at, spec_json FROM annotation_schemes ORDER BY name, version',
+      )
+      .all() as unknown as SchemeRow[];
+  } finally {
+    db.close();
+  }
+}
+
+/** Every annotation, every column, read straight out of the store. */
+function annotationsOf(dir: string): readonly StoredAnnotation[] {
+  const db = open(dir);
+  if (db === undefined) return [];
+  try {
+    return db
+      .prepare(
+        `SELECT id, entry_id, scheme, scheme_version, label, value_json, confidence, note,
+                created_by, created_at
+           FROM annotations ORDER BY scheme, scheme_version, created_at, id`,
+      )
+      .all() as unknown as StoredAnnotation[];
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The distinct `(scheme, scheme_version, created_at, created_by)` passes, with each one's row
+ * count -- the shape a restore that collapsed every pass into one would get visibly wrong, and the
+ * shape a row count alone cannot see wrong. See the round-trip test below.
+ */
+function passGroups(dir: string): readonly PassGroup[] {
+  const db = open(dir);
+  if (db === undefined) return [];
+  try {
+    return db
+      .prepare(
+        `SELECT scheme, scheme_version, created_at, created_by, count(*) AS n
+           FROM annotations
+          GROUP BY scheme, scheme_version, created_at, created_by
+          ORDER BY scheme, scheme_version, created_at, created_by`,
+      )
+      .all() as unknown as PassGroup[];
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Two passes of one scheme, over two of the entries `corpus()` just recorded.
+ *
+ * This is the shape `asc-6u5` needs a fixture to have: the same scheme at the same version, but a
+ * different `created_at` AND a different `created_by`, so the pass-identity assertion in the
+ * round-trip test below is not vacuous -- a restore that stamped every annotation with the
+ * import's own clock and collapsed both passes into one would still pass a single-pass fixture.
+ *
+ * Both calls assign the SAME label (`looks_good`) to a DIFFERENT entry, so the scheme's vocabulary
+ * never changes between them: the second registration reports `unchanged` and both passes land
+ * under version 1, which is what makes this two passes of ONE scheme version rather than two
+ * different schemes.
+ */
+function annotateTwice(dir: string): void {
+  const recorded = entries(dir);
+  const first = recorded[0];
+  const second = recorded[1];
+  expect(first).toBeDefined();
+  expect(second).toBeDefined();
+
+  expect(
+    asc(
+      [
+        'annotate',
+        '--scheme',
+        'reviewed',
+        '--ids',
+        `looks_good=${String(first?.id)}`,
+        '--actor',
+        'rater-a',
+      ],
+      dir,
+    ).status,
+  ).toBe(0);
+  expect(
+    asc(
+      [
+        'annotate',
+        '--scheme',
+        'reviewed',
+        '--ids',
+        `looks_good=${String(second?.id)}`,
+        '--actor',
+        'rater-b',
+      ],
+      dir,
+    ).status,
+  ).toBe(0);
+}
+
 /**
  * A corpus small enough to read, varied enough that a lost column shows up as a diff.
  *
  * Three entries chosen for the columns they force into play: a `--evidence` text, a `false` (which
  * is a measurement and not a hole), and an `--na` list (which lives in its own column because the
  * store keeps four states and not three). A corpus of three identical `measured` rows would let a
- * restore drop the whole not-applicable column and still compare equal.
+ * restore drop the whole not-applicable column and still compare equal. `annotateTwice` adds one
+ * scheme and two passes of it, for the same reason applied to `asc-6u5`'s half of the corpus.
  */
 function corpus(dir: string): void {
   expect(
@@ -259,6 +395,7 @@ function corpus(dir: string): void {
       dir,
     ).status,
   ).toBe(0);
+  annotateTwice(dir);
 }
 
 /** Write a stream into `dir` and return its path. */
@@ -285,7 +422,7 @@ function recordDecision(dir: string, chosen: string): void {
 }
 
 describe('asc export', () => {
-  it('writes every definition before every entry, in one JSONL stream', () => {
+  it('writes every kind in the order the foreign keys require: type, entry, scheme, annotation', () => {
     const dir = project();
     corpus(dir);
 
@@ -294,14 +431,26 @@ describe('asc export', () => {
 
     const rows = lines(run.stdout);
     const kinds = rows.map((row) => row['kind']);
-    // Definitions first is the contract, not a preference: `import` registers them in the order it
-    // reads them, so entries before definitions would be entries with nothing to attach to.
+    // The order is a foreign-key contract, not a preference (`corpus.ts`): `annotations` carries
+    // `FOREIGN KEY (entry_id) REFERENCES entries` and `FOREIGN KEY (scheme, scheme_version)
+    // REFERENCES annotation_schemes`, so `import` has to meet both before an annotation line, and
+    // an entry before it has to meet its type. `type`, `entry`, `scheme`, `annotation` is the one
+    // order that satisfies all of that at once.
     const typeCount = kinds.filter((kind) => kind === 'type').length;
     const entryCount = kinds.filter((kind) => kind === 'entry').length;
+    const schemeCount = kinds.filter((kind) => kind === 'scheme').length;
+    const annotationCount = kinds.filter((kind) => kind === 'annotation').length;
     expect(typeCount).toBeGreaterThan(0);
     expect(entryCount).toBe(3);
-    expect(kinds.slice(0, typeCount)).toEqual(Array<string>(typeCount).fill('type'));
-    expect(kinds.slice(typeCount)).toEqual(Array<string>(entryCount).fill('entry'));
+    // One scheme (`reviewed`), and `annotateTwice` writes one annotation per pass.
+    expect(schemeCount).toBe(1);
+    expect(annotationCount).toBe(2);
+    expect(kinds).toEqual([
+      ...Array<string>(typeCount).fill('type'),
+      ...Array<string>(entryCount).fill('entry'),
+      ...Array<string>(schemeCount).fill('scheme'),
+      ...Array<string>(annotationCount).fill('annotation'),
+    ]);
 
     // A POSIX text file: `wc -l` counts the lines rather than reporting one short.
     expect(run.stdout.endsWith('\n')).toBe(true);
@@ -408,6 +557,28 @@ describe('asc export | asc import', () => {
     // unchanged, the same as every other column.
     for (const entry of entries(source)) expect(entry.cwd).toBe('.');
     for (const entry of entries(target)) expect(entry.cwd).toBe('.');
+
+    // Every scheme version, compared as whole rows -- the same argument as the entry columns
+    // above, applied to the definition side of an annotation.
+    expect(schemeRows(target)).toEqual(schemeRows(source));
+    expect(schemeRows(source)).toHaveLength(1);
+
+    // Every annotation column, compared as whole rows -- `id`, `entry_id`, `scheme`,
+    // `scheme_version`, `label`, `value`, `confidence`, `note`, `created_by`, `created_at`, all of
+    // them, because a count match is exactly what the defect this bead fixes could still pass.
+    expect(annotationsOf(target)).toEqual(annotationsOf(source));
+    expect(annotationsOf(source)).toHaveLength(2);
+
+    // The assertion the collapsed-pass defect cannot pass: `annotateTwice` records the SAME scheme
+    // at the SAME version twice, under two different `(created_at, created_by)` pairs, so a
+    // restore that grouped by anything less than all four keys -- or restored row by row under the
+    // import clock -- would merge the two passes into one. Two distinct groups of one row each,
+    // both surviving the round trip unchanged, is the only outcome that proves each pass came back
+    // as its own pass rather than as loose rows that happened to add up.
+    const sourcePasses = passGroups(source);
+    expect(sourcePasses).toHaveLength(2);
+    for (const group of sourcePasses) expect(group.n).toBe(1);
+    expect(passGroups(target)).toEqual(sourcePasses);
 
     // And the strongest statement available: the restored project exports the same bytes. If any
     // column had been dropped, re-derived or re-ordered, this is where it shows.
@@ -606,6 +777,114 @@ describe('asc import', () => {
     expect(registry(target)).toEqual([]);
   });
 
+  it('refuses a scheme line whose scheme_hash is not its own hash', () => {
+    const source = project();
+    corpus(source);
+
+    const exported = lines(asc(['export'], source).stdout);
+    const tampered = exported.map((row) =>
+      row['kind'] === 'scheme' ? { ...row, scheme_hash: 'f'.repeat(64) } : row,
+    );
+
+    const target = bare();
+    const file = stream(
+      target,
+      'tampered.jsonl',
+      `${tampered.map((r) => JSON.stringify(r)).join('\n')}\n`,
+    );
+
+    const run = asc(['import', file], target);
+    expect(run.status).toBe(1);
+    const message = flatten(run.stderr);
+    // Mirrors `type_hash`'s own refusal (`verifyTypeLine`, above): `verifySchemeLine` checks the
+    // carried hash rather than trusting it, for the identical reason.
+    expect(message).toContain('claims scheme_hash');
+    expect(message).toContain('ffffffff');
+    expect(registry(target)).toEqual([]);
+    expect(schemeRows(target)).toEqual([]);
+  });
+
+  it('refuses an annotation naming an entry that is in neither the stream nor the project', () => {
+    const source = project();
+    corpus(source);
+
+    const exported = lines(asc(['export'], source).stdout);
+    let tamperedId: string | undefined;
+    const tampered = exported.map((row) => {
+      if (row['kind'] !== 'annotation' || tamperedId !== undefined) return row;
+      tamperedId = 'entry-does-not-exist';
+      return { ...row, entry_id: tamperedId };
+    });
+    expect(tamperedId).toBeDefined();
+
+    const target = bare();
+    const file = stream(
+      target,
+      'tampered.jsonl',
+      `${tampered.map((r) => JSON.stringify(r)).join('\n')}\n`,
+    );
+
+    const run = asc(['import', file], target);
+    expect(run.status).toBe(1);
+    const message = flatten(run.stderr);
+    expect(message).toContain('neither in this stream nor in this project');
+    expect(message).toContain(tamperedId);
+    // Checked before the transaction opens (`refuseUnknownAnnotationEntries`), so not one row of
+    // the file -- types, entries, schemes, or the other annotation -- made it in either.
+    expect(registry(target)).toEqual([]);
+    expect(entries(target)).toEqual([]);
+    expect(schemeRows(target)).toEqual([]);
+    expect(annotationsOf(target)).toEqual([]);
+  });
+
+  it('refuses an annotation id the target already holds, leaving everything else untouched', () => {
+    const first = project();
+    corpus(first);
+    const target = project();
+    expect(
+      asc(['import', stream(first, 'first.jsonl', asc(['export'], first).stdout)], target).status,
+    ).toBe(0);
+    const before = {
+      registry: registry(target),
+      entries: entries(target),
+      schemes: schemeRows(target),
+      annotations: annotationsOf(target),
+    };
+    const takenId = before.annotations[0]?.id;
+    expect(takenId).toBeDefined();
+
+    // A second, independent project -- its own entries, so their ids cannot collide with the
+    // first's -- whose only shared feature is the same scheme name and shape (`annotateTwice`
+    // always writes the identical `reviewed` spec), so `registerScheme` reports it `unchanged`
+    // rather than colliding. That isolates this refusal to the annotation id path: nothing about
+    // entries or schemes is in conflict here, only the id spliced onto one annotation line below.
+    const second = project();
+    corpus(second);
+    const exported = lines(asc(['export'], second).stdout);
+    let collided = false;
+    const tampered = exported.map((row) => {
+      if (row['kind'] !== 'annotation' || collided) return row;
+      collided = true;
+      return { ...row, id: takenId };
+    });
+    expect(collided).toBe(true);
+
+    const file = stream(
+      target,
+      'second.jsonl',
+      `${tampered.map((r) => JSON.stringify(r)).join('\n')}\n`,
+    );
+    const run = asc(['import', file], target);
+    expect(run.status).toBe(1);
+    const message = flatten(run.stderr);
+    expect(message).toContain('1 of 2 annotation id(s) this project already has');
+
+    expect(registry(target)).toEqual(before.registry);
+    expect(entries(target)).toEqual(before.entries);
+    expect(schemeRows(target)).toEqual(before.schemes);
+    expect(annotationsOf(target)).toEqual(before.annotations);
+  });
+
   it('refuses entries with no definitions, before the store is even opened', () => {
     const source = project();
     recordDecision(source, 'half a corpus');
@@ -740,14 +1019,20 @@ describe('asc import', () => {
     // exist.
     const reported = envelope(run.stdout);
     expect(reported).toHaveLength(exported.length);
-    expect(reported.filter((row) => row['outcome'] === 'restored')).toHaveLength(3);
+    // Three entries restored, plus one row per annotation PASS rather than per annotation line --
+    // `annotateTwice` writes two passes of one row each, so the count happens to match the raw
+    // line count here, but the grain is passes: a pass of many rows would still be one row.
+    expect(reported.filter((row) => row['outcome'] === 'restored')).toHaveLength(5);
 
-    // Read back, both halves: the registry and the entries. A rollback that left a row behind is a
-    // rollback that only looks like one, and a preview that registered the definitions anyway would
-    // still print this exact report. `before` is this project's own registry, captured before the
-    // preview -- so this also catches a rollback that undid the restore and left the definitions.
+    // Read back, all four halves: the registry, the entries, the schemes and the annotations. A
+    // rollback that left a row behind is a rollback that only looks like one, and a preview that
+    // registered the definitions anyway would still print this exact report. `before` is this
+    // project's own registry, captured before the preview -- so this also catches a rollback that
+    // undid the restore and left the definitions.
     expect(registry(target)).toEqual(before);
     expect(entries(target)).toEqual([]);
+    expect(schemeRows(target)).toEqual([]);
+    expect(annotationsOf(target)).toEqual([]);
   });
 
   it('refuses --csv too, for the reason the pair shares', () => {
