@@ -67,8 +67,11 @@ ascend records its own construction, starting the moment `asc record` works (E4)
 - This makes ascend's own build the first corpus, and `asc-dogfood-analysis` (E11) the first real
   test of the analysis layer against data nobody manufactured for it.
 
-If recording during the build feels expensive, that is a finding -- record it as a `stuck-event` and
-raise it. Recording friction is a first-class risk in ARCHITECTURE.md.
+If recording during the build feels expensive, that is a finding -- write it up under `dogfood/`,
+file a bead, and record it as a `note`. Recording friction is a first-class risk in
+ARCHITECTURE.md. It is deliberately **not** a `stuck-event`: that type's `record_when` binds it to
+the moment the 3-attempt rule fires, and stretching it to cover friction would make `stuck-event`
+mean two things and stop it being queryable by shape -- the one property the corpus is built on.
 
 ---
 

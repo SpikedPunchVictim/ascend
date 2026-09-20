@@ -87,6 +87,21 @@ export interface TranscriptFile {
  * `project`, unrepairable by a corrected re-run (a later `--root corpus` reports the mislabelled
  * rows `already present` and leaves them as they are).
  *
+ * THE LIMITATION THAT REMAINS, and the decision not to close it -- `asc-sn6`, wontfix
+ * 2026-09-20. Entries written under a pre-`asc-c8g` non-canonical root keep whatever `project`
+ * they were given, and nothing stored says which ones those are: entry ids are keyed on
+ * `session_id`, not on `project`, so no predicate selects them. The obvious prerequisite --
+ * recording the ingest-time root on the entry -- was considered and rejected, because it only
+ * labels rows written AFTER it ships and so does not reach a single affected row. It would add a
+ * column to answer a question about the past that the column cannot see. The cause is fixed
+ * above; the residue is documented here instead of being carried as open work.
+ *
+ * Repair is no longer structurally blocked, only unaimed. `asc export --redact | asc import -`
+ * (`asc-hqr`) rewrites project labels across a whole corpus and rebuilds it into a fresh store,
+ * without dropping a trigger or touching a written row -- so an operator who can IDENTIFY the
+ * affected rows by any means, including a heuristic over distinct project labels, now has a
+ * route to correct them. What is missing is the predicate, not the mechanism.
+ *
  * This normalizes ONLY the two strings being compared here, and never the `path` a
  * `TranscriptFile` reports -- see that field's own doc for why its spelling is left alone.
  */
