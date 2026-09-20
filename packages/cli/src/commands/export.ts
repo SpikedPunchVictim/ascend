@@ -29,6 +29,17 @@
  * `--csv` is refused and no longer advertised, exactly as `asc types export` refuses it: a corpus
  * is a heterogeneous stream of four shapes and a CSV cell holding one is a cell a reader has to
  * parse back anyway. `asc-3u2` item (d) is why the flag is hidden as well as refused.
+ *
+ * **Redaction lives here, not at the write path, and not as a hash.** `redact.ts` states the
+ * reasoning in full; the summary that matters for this file is where the boundary falls.
+ * Locally the store sits next to the very directories it names -- an absolute `cwd`, a
+ * dash-encoded project label -- so it discloses nothing the filesystem around it does not already
+ * show. The leak materialises the moment the corpus LEAVES the machine, and this command is the
+ * one place that happens. `--redact` rewrites `corpusLines(store)`'s own result before either
+ * output path below reads it, so the default JSONL and `--json` can never disagree about which
+ * lines they carry. `--redact-name` and `--redact-map` are refused outright without `--redact`,
+ * rather than silently doing nothing: a caller who typed `--redact-name` alone and got an
+ * unredacted stream back would have shipped the exact disclosure this feature exists to prevent.
  */
 
 import { Flags } from '@oclif/core';
@@ -57,15 +68,27 @@ import {
   type CorpusLine,
 } from '../corpus.js';
 import { refusal, usageError } from '../errors.js';
+import {
+  buildRedactionMap,
+  identityVocabulary,
+  redactLines,
+  type IdentityVocabulary,
+  type RedactionMap,
+  type RedactionResult,
+} from '../redact.js';
 
 export default class ExportCorpus extends BaseCommand {
   static override description =
-    'Write every type definition, entry, annotation scheme, and annotation as a JSONL stream.';
+    'Write every type definition, entry, annotation scheme, and annotation as a JSONL stream. ' +
+    '--redact scrubs project labels -- and any MCP server or skill named with --redact-name -- ' +
+    'before the stream leaves this machine.';
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> > corpus.jsonl',
     '<%= config.bin %> <%= command.id %> | <%= config.bin %> import -',
     '<%= config.bin %> <%= command.id %> --json',
+    '<%= config.bin %> <%= command.id %> --redact | <%= config.bin %> import -',
+    '<%= config.bin %> <%= command.id %> --redact --redact-name my-internal-server --redact-map',
   ];
 
   /**
@@ -77,6 +100,34 @@ export default class ExportCorpus extends BaseCommand {
     ...OUTPUT_FLAGS,
     csv: Flags.boolean({ description: 'Print RFC 4180 CSV.', hidden: true }),
     'csv-raw': Flags.boolean({ ...OUTPUT_FLAGS['csv-raw'], hidden: true }),
+  };
+
+  /**
+   * `--redact` is the only one of the three that does anything on its own. `--redact-name` and
+   * `--redact-map` each refine or reveal a redaction that is already happening, so each is refused
+   * without `--redact` (`run`, below) rather than accepted as a no-op -- see this file's module
+   * doc for why a silent no-op is the wrong default here specifically.
+   */
+  static override flags = {
+    redact: Flags.boolean({
+      description:
+        'Rewrite the stream before printing it: every dash-encoded project label is tokenised, ' +
+        'a working directory that cannot be made relative is dropped, and a report of what was ' +
+        'found and changed is printed to stderr. Applies to both the default JSONL and --json.',
+    }),
+    'redact-name': Flags.string({
+      description:
+        'An MCP server or skill name to tokenise, on top of the project labels --redact always ' +
+        'tokenises. Repeat for each name. Run --redact once first (the report names every server ' +
+        'and skill the stream discloses) to see what there is to choose from. Requires --redact.',
+      multiple: true,
+    }),
+    'redact-map': Flags.boolean({
+      description:
+        'Print the allocated label -> token map to stderr. This mapping is what re-identifies ' +
+        'the redacted stream, which is why it is off by default and never written to a file: ' +
+        'capture it yourself by redirecting stderr if you need to keep it. Requires --redact.',
+    }),
   };
 
   public async run(): Promise<void> {
@@ -92,8 +143,29 @@ export default class ExportCorpus extends BaseCommand {
       );
     }
 
-    await this.withProject(({ store }) => {
-      const lines = corpusLines(store);
+    const redact = this.flagValue(flags.redact);
+    const redactNames = flags['redact-name'] ?? [];
+    const printMap = this.flagValue(flags['redact-map']);
+
+    // Refusals, not warnings (module doc, above): each of these two flags is worthless without
+    // `--redact`, and a caller who forgot it deserves a loud stop rather than a quiet stream that
+    // does not do what they asked for.
+    if (!redact && redactNames.length > 0) {
+      throw usageError(
+        '--redact-name names a server or skill to tokenise, but nothing is tokenised unless ' +
+          '--redact is also passed -- add --redact, or drop --redact-name.',
+      );
+    }
+    if (!redact && printMap) {
+      throw usageError(
+        '--redact-map prints the token map --redact builds, but --redact was not passed, so ' +
+          'there is no map -- add --redact, or drop --redact-map.',
+      );
+    }
+
+    await this.withProject(({ store, root }) => {
+      const rawLines = corpusLines(store);
+      const lines = redact ? this.redacted(rawLines, redactNames, root, printMap) : rawLines;
 
       if (format === 'json') {
         // `row_count` is what distinguishes a corpus with no entries from a truncated answer, in
@@ -116,6 +188,104 @@ export default class ExportCorpus extends BaseCommand {
       // its comment states this exact rule.
       this.emitText(serializeCorpus(lines));
     });
+  }
+
+  /**
+   * `lines`, rewritten under a redaction map built for THIS export, having already printed the
+   * report of what the map found and did (`report`, below) and, if asked, the map itself
+   * (`printTokenMap`). Pulled out of `run` so the one call site there reads as what it is -- "the
+   * lines, or the redacted lines" -- rather than the whole computation inline.
+   */
+  private redacted(
+    lines: readonly CorpusLine[],
+    names: readonly string[],
+    projectRoot: string,
+    printMap: boolean,
+  ): readonly CorpusLine[] {
+    const vocabulary = identityVocabulary(lines);
+    const map = buildRedactionMap(lines, { names });
+    const result = redactLines(lines, map, { projectRoot });
+
+    this.report(vocabulary, map, result);
+    if (printMap) this.printTokenMap(map);
+
+    return result.lines;
+  }
+
+  /**
+   * What this export discloses, what got tokenised, and the two counts that must never be spun
+   * as "clean" -- `cwdOmitted` (a working directory dropped rather than guessed) and
+   * `residueLines` (free text still matching a home-path pattern after every rule above has run).
+   *
+   * All of it on stderr (`cli-best-practices` rule 1, and `ingest/claude-code.ts`'s `report`
+   * follows the identical shape): stdout carries the stream, so `asc export --redact >
+   * corpus.jsonl` cannot end up with report text spliced into the JSONL it is supposed to be.
+   */
+  private report(vocabulary: IdentityVocabulary, map: RedactionMap, result: RedactionResult): void {
+    this.logToStderr(
+      `this export discloses ${String(vocabulary.projects.length)} project label(s), ` +
+        `${String(vocabulary.servers.length)} MCP server name(s), ` +
+        `${String(vocabulary.skills.length)} skill name(s), and ` +
+        `${String(vocabulary.homePathLines)} line(s) carrying an absolute home-shaped path.`,
+    );
+
+    // Project labels are never listed by name: `identityVocabulary` counts every one, but a
+    // project label is always tokenised below with no choice involved, so printing it to a
+    // terminal here would be the exact disclosure `--redact` exists to stop. Servers and skills
+    // ARE listed, with their line counts, because the operator cannot choose what to pass to
+    // --redact-name without first seeing what there is to choose from.
+    for (const [label, values] of [
+      ['MCP server', vocabulary.servers],
+      ['skill', vocabulary.skills],
+    ] as const) {
+      if (values.length === 0) continue;
+      this.logToStderr(`${label} name(s) this export discloses:`);
+      for (const value of values) {
+        this.logToStderr(`  ${value.value}: ${String(value.lines)} line(s)`);
+      }
+    }
+
+    this.logToStderr(
+      `tokenised: ${String(map.projects.size)} project label(s), ` +
+        `${String(map.servers.size)} server name(s), ${String(map.skills.size)} skill name(s).`,
+    );
+
+    this.logToStderr(
+      `${String(result.cwdOmitted)} working director${result.cwdOmitted === 1 ? 'y' : 'ies'} ` +
+        `could not be expressed relative to any known root, so ` +
+        `${result.cwdOmitted === 1 ? 'it was' : 'they were'} dropped rather than guessed.`,
+    );
+
+    // Never an unqualified "clean". Zero is "no line matched the pattern", not "this export is
+    // safe to share" -- free text is not scanned for identity with any guarantee, and the wording
+    // below says so in both branches rather than only the one where the count is positive.
+    this.logToStderr(
+      result.residueLines === 0
+        ? '0 line(s) still match a home-path pattern after rewriting. That is not a claim that ' +
+            'this export is safe to share: free text cannot be scanned for identity with any ' +
+            'guarantee.'
+        : `${String(result.residueLines)} line(s) still match a home-path pattern after ` +
+            'rewriting. Free text cannot be scanned for identity with any guarantee, so read ' +
+            'them by hand before sharing this export.',
+    );
+  }
+
+  /**
+   * The allocated map, one `label -> token` line per entry, under a header that says plainly what
+   * it is for: this mapping is what would let someone reverse the redaction, so it must never
+   * travel with the redacted stream. That is also why this writes nothing to a file -- a caller
+   * who wants to keep it captures this stderr output themselves.
+   */
+  private printTokenMap(map: RedactionMap): void {
+    this.logToStderr(
+      'redaction map -- do NOT let this travel with the redacted stream above; it is what would ' +
+        'let someone reverse it:',
+    );
+    for (const entries of [map.projects, map.servers, map.skills]) {
+      for (const [label, token] of entries) {
+        this.logToStderr(`${label} -> ${token}`);
+      }
+    }
   }
 }
 

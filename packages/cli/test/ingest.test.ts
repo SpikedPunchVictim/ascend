@@ -876,6 +876,138 @@ describe('asc ingest claude-code: ephemeral OS temp projects', () => {
  * that references a name nothing defines evaluates as vacuous truth. The check below is what
  * makes the pair a pair.
  */
+/**
+ * The identity-vocabulary DISCLOSURE `asc ingest claude-code` gains instead of a redaction flag
+ * (`claude-code.ts`'s `reportIdentityVocabulary`). This fixture is built so a server name is
+ * disclosed from TWO different derived entries, and a second server and a skill are each
+ * disclosed from exactly one -- distinguishable counts that could not pass if the report counted
+ * lines, records, or the wrong class.
+ */
+const IDENTITY_RECORDS: readonly Record<string, unknown>[] = [
+  // A private MCP server's tool, invoked...
+  {
+    sessionId: 's-id',
+    uuid: 'u-1',
+    timestamp: '2026-01-02T04:00:00.000Z',
+    ...RECORD_AT,
+    message: {
+      content: [
+        { type: 'tool_use', id: 'toolu-mcp-1', name: 'mcp__acme-internal__lookup', input: {} },
+      ],
+    },
+  },
+  // ...and denied, which is what puts `mcp__acme-internal__lookup` into `tool_denial`'s own
+  // `tool_name` property -- and hence `acme-internal` into the servers this run discloses.
+  {
+    sessionId: 's-id',
+    uuid: 'u-2',
+    timestamp: '2026-01-02T04:00:01.000Z',
+    ...RECORD_AT,
+    toolDenialKind: 'user-rejected',
+    message: { content: [{ type: 'tool_result', tool_use_id: 'toolu-mcp-1' }] },
+  },
+  // A compaction whose discovered tools name TWO servers: the one already denied above (so
+  // `acme-internal` is disclosed by two DIFFERENT entries), and one this run has not otherwise
+  // used at all (so `public-tool` is disclosed by only this one).
+  {
+    sessionId: 's-id',
+    uuid: 'u-3',
+    timestamp: '2026-01-02T04:00:02.000Z',
+    ...RECORD_AT,
+    compactMetadata: {
+      trigger: 'auto',
+      preTokens: 500,
+      postTokens: 100,
+      cumulativeDroppedTokens: 400,
+      durationMs: 42,
+      preCompactDiscoveredTools: ['mcp__acme-internal__lookup', 'mcp__public-tool__search'],
+    },
+  },
+  // A skill activation, which is what puts a skill NAME into the report.
+  {
+    sessionId: 's-id',
+    uuid: 'u-4',
+    timestamp: '2026-01-02T04:00:03.000Z',
+    ...RECORD_AT,
+    attributionSkill: 'internal-playbook',
+  },
+];
+
+describe('asc ingest claude-code: identity vocabulary disclosure', () => {
+  it('names the server and skill NAMES the run would derive, with hand-counted totals, on a dry run', () => {
+    const dir = project();
+    transcripts(dir, IDENTITY_RECORDS);
+
+    const run = asc(['ingest', 'claude-code', '--dry-run'], dir);
+
+    expect(run.status).toBe(0);
+
+    // Hand-counted from IDENTITY_RECORDS above, never from the command's own output:
+    // `acme-internal` is named by the denial AND by the compaction's discovered_tools (2
+    // entries); `public-tool` and `internal-playbook` are each named once.
+    expect(run.stderr).toContain('server: acme-internal (2 entries)');
+    expect(run.stderr).toContain('server: public-tool (1 entry)');
+    expect(run.stderr).toContain('skill: internal-playbook (1 entry)');
+
+    // The distinct-count summary: one project label (every entry shares PROJECT_DIR), two
+    // servers, one skill.
+    expect(run.stderr).toContain(
+      'this run carries 1 distinct project label(s), 2 MCP server name(s) and 1 skill name(s)',
+    );
+
+    // `--dry-run` says what WOULD be written, not what was -- the wording this test exists to
+    // pin, since nothing else here would fail if the two verbs were swapped.
+    expect(run.stderr).toContain('Every value above would be written verbatim');
+    expect(run.stderr).not.toContain('Every value above is written verbatim');
+
+    // Nothing was actually written -- this is still a dry run.
+    expect(stored(dir)).toMatchObject({ entries: 0 });
+  });
+
+  it('says what WAS written on a real run, not what would have been', () => {
+    const dir = project();
+    transcripts(dir, IDENTITY_RECORDS);
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('Every value above is written verbatim');
+    expect(run.stderr).not.toContain('would be written');
+  });
+
+  it('names no project label -- only its count -- even though the label is what the transcript carries', () => {
+    const dir = project();
+    transcripts(dir, IDENTITY_RECORDS);
+
+    const run = asc(['ingest', 'claude-code', '--dry-run'], dir);
+
+    expect(run.status).toBe(0);
+    // `PROJECT_DIR` is the literal value every derived entry's `properties.project` holds
+    // (`transcripts`'s own doc, above) -- so its absence here is a real assertion about what
+    // the report withholds, not a vacuous one about a string nothing produces anyway.
+    expect(run.stderr).not.toContain(PROJECT_DIR);
+    expect(run.stdout).not.toContain(PROJECT_DIR);
+  });
+
+  it('keeps the disclosure on stderr: stdout stays the parseable outcome table, even under --json', () => {
+    const dir = project();
+    transcripts(dir, IDENTITY_RECORDS);
+
+    const run = asc(['ingest', 'claude-code', '--dry-run', '--json'], dir);
+
+    expect(run.status).toBe(0);
+    // Parsing stdout as JSON is the strictest form of "stdout is still exactly the data
+    // contract": a stray disclosure line mixed into it would make this throw.
+    const envelope = JSON.parse(run.stdout) as { rows: unknown[] };
+    expect(envelope.rows.length).toBeGreaterThan(0);
+    expect(run.stdout).not.toContain('acme-internal');
+    expect(run.stdout).not.toContain('identity vocabulary');
+
+    // It is not that the run said nothing about it -- the same server name is on stderr.
+    expect(run.stderr).toContain('acme-internal');
+  });
+});
+
 describe('derived source', () => {
   it('is one the store will accept', () => {
     expect(ENTRY_SOURCES).toContain(DERIVED_SOURCE);

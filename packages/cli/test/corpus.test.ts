@@ -421,6 +421,71 @@ function recordDecision(dir: string, chosen: string): void {
   expect(run.status).toBe(0);
 }
 
+/**
+ * A type carrying the four fields `redact.ts` reads identity out of: `project`, `tool_name`,
+ * `discovered_tools`, `skill`. No starter type declares any of them -- they belong to the derived
+ * types `asc ingest claude-code` writes -- and `asc record` does not enforce a type's
+ * `record_when` (it is prose `asc types brief` shows a recorder, not a gate this command checks),
+ * so a plain `types define` plus `record` puts every field this suite needs under its own
+ * control, with no dependency on a real or fabricated transcript.
+ *
+ * Every label below is invented (`-Users-alice-...`, `acme-internal`) rather than anything real:
+ * this repository is public, and a fixture is exactly where a real path or username would end up
+ * committed by accident.
+ */
+function defineIdentityProbe(dir: string): void {
+  const spec = stream(
+    dir,
+    'identity-probe.json',
+    JSON.stringify({
+      name: 'identity_probe',
+      properties: [
+        { name: 'project', type: 'string', required: true },
+        { name: 'tool_name', type: 'string' },
+        { name: 'discovered_tools', type: 'json' },
+        { name: 'skill', type: 'string' },
+      ],
+    }),
+  );
+  expect(asc(['types', 'define', spec], dir).status).toBe(0);
+}
+
+/**
+ * Two entries disclosing two different (invented) project labels, two different MCP servers, and
+ * one skill. Two servers rather than one is what gives "a server NOT named is left alone" (the
+ * `--redact-name` tests below) something to be false against; `discovered_tools` on the first
+ * entry repeats the same server `tool_name` already names, which is what `identityVocabulary`'s
+ * own de-duplication (`redact.ts`'s `disclosedValuesOf`, "not the number of times it was
+ * reported") has to get right for this fixture to mean anything.
+ */
+function identityCorpus(dir: string): void {
+  defineIdentityProbe(dir);
+  expect(
+    asc(
+      [
+        'record',
+        'identity_probe',
+        '--prop=project=-Users-alice-projects-widget',
+        '--prop=tool_name=mcp__acme-internal__lookup_customer',
+        '--prop=discovered_tools=["mcp__acme-internal__lookup_customer","mcp__public-docs__search"]',
+        '--prop=skill=proprietary-playbook',
+      ],
+      dir,
+    ).status,
+  ).toBe(0);
+  expect(
+    asc(
+      [
+        'record',
+        'identity_probe',
+        '--prop=project=-Users-alice-projects-other',
+        '--prop=tool_name=mcp__public-docs__search',
+      ],
+      dir,
+    ).status,
+  ).toBe(0);
+}
+
 describe('asc export', () => {
   it('writes every kind in the order the foreign keys require: type, entry, scheme, annotation', () => {
     const dir = project();
@@ -519,6 +584,163 @@ describe('asc export', () => {
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('USAGE');
     expect(run.stdout).toContain('import -');
+  });
+});
+
+describe('asc export --redact', () => {
+  it('replaces every project label, and the stream carries none of the labels that were there before', () => {
+    const dir = project();
+    identityCorpus(dir);
+
+    const before = asc(['export'], dir).stdout;
+    expect(before).toContain('-Users-alice-projects-widget');
+    expect(before).toContain('-Users-alice-projects-other');
+
+    const after = asc(['export', '--redact'], dir);
+    expect(after.status).toBe(0);
+    expect(after.stdout).not.toContain('-Users-');
+    // Something took the labels' place: the token vocabulary `redact.ts` allocates, one per
+    // distinct label, in first-seen order. `allocateTokens` pads to the digit width of the
+    // COUNT of values (`redact.ts`'s own doc: "14 entries pad to 2 digits"), and two labels pad
+    // to one digit, so `identityCorpus`'s two labels become `project-1` and `project-2`.
+    expect(after.stdout).toContain('project-1');
+    expect(after.stdout).toContain('project-2');
+  });
+
+  it('tokenises a named server in tool_name and discovered_tools, and leaves an unnamed one alone', () => {
+    const dir = project();
+    identityCorpus(dir);
+
+    const run = asc(['export', '--redact', '--redact-name', 'acme-internal'], dir);
+    expect(run.status).toBe(0);
+
+    const rows = lines(run.stdout).filter((row) => row['kind'] === 'entry');
+    const properties = rows.map((row) => row['properties'] as Record<string, unknown>);
+
+    // Named: rewritten in both fields it can appear in, and to the SAME token in both, because
+    // `redactLines` shares one `ToolTokens` allocator across the whole run.
+    const named = properties.find((props) => props['skill'] !== undefined);
+    expect(named).toBeDefined();
+    expect(named?.['tool_name']).toBe('mcp__server-1__tool-1');
+    expect(named?.['discovered_tools']).toEqual([
+      'mcp__server-1__tool-1',
+      'mcp__public-docs__search',
+    ]);
+
+    // Not named: `public-docs` was never passed to --redact-name, so both of its own appearances
+    // -- inside the named entry's `discovered_tools` above, and this second entry's `tool_name`
+    // -- are left exactly as `identityCorpus` wrote them.
+    const unnamed = properties.find((props) => props['skill'] === undefined);
+    expect(unnamed).toBeDefined();
+    expect(unnamed?.['tool_name']).toBe('mcp__public-docs__search');
+
+    // The skill was never named either, so it is disclosed but not tokenised.
+    expect(named?.['skill']).toBe('proprietary-playbook');
+  });
+
+  it('tokenises a named skill', () => {
+    const dir = project();
+    identityCorpus(dir);
+
+    const run = asc(['export', '--redact', '--redact-name', 'proprietary-playbook'], dir);
+    expect(run.status).toBe(0);
+
+    const rows = lines(run.stdout).filter((row) => row['kind'] === 'entry');
+    const properties = rows.map((row) => row['properties'] as Record<string, unknown>);
+    const named = properties.find((props) => props['skill'] !== undefined);
+    expect(named?.['skill']).toBe('skill-1');
+  });
+
+  it('refuses --redact-name without --redact, naming the missing flag', () => {
+    const dir = project();
+    identityCorpus(dir);
+
+    const run = asc(['export', '--redact-name', 'acme-internal'], dir);
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--redact-name');
+    expect(flatten(run.stderr)).toContain('--redact');
+    // Refused, not a silent no-op: the whole point is that a caller who forgot --redact must not
+    // get an unredacted stream back believing --redact-name already scrubbed it.
+    expect(run.stdout).toBe('');
+  });
+
+  it('refuses --redact-map without --redact, naming the missing flag', () => {
+    const dir = project();
+    identityCorpus(dir);
+
+    const run = asc(['export', '--redact-map'], dir);
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--redact-map');
+    expect(flatten(run.stderr)).toContain('--redact');
+    expect(run.stdout).toBe('');
+  });
+
+  it('is byte-stable: two --redact exports of the same store are identical', () => {
+    const dir = project();
+    identityCorpus(dir);
+
+    const first = asc(['export', '--redact'], dir);
+    const second = asc(['export', '--redact'], dir);
+    expect(first.status).toBe(0);
+    expect(first.stdout).toBe(second.stdout);
+  });
+
+  it('writes the report to stderr and only the stream to stdout, so stdout is pure JSONL', () => {
+    const dir = project();
+    identityCorpus(dir);
+
+    const run = asc(['export', '--redact', '--redact-name', 'acme-internal', '--redact-map'], dir);
+    expect(run.status).toBe(0);
+
+    // Every stdout line parses as JSON on its own -- report text spliced into the stream would
+    // break exactly this, on the line it landed on.
+    for (const raw of run.stdout.split('\n').filter((line) => line.trim() !== '')) {
+      // A block body, discarding `JSON.parse`'s `any`: `@typescript-eslint/no-unsafe-return`
+      // objects to an arrow that returns it, and this assertion only cares whether parsing throws.
+      expect(() => {
+        JSON.parse(raw);
+      }).not.toThrow();
+    }
+    expect(run.stdout).not.toContain('discloses');
+    expect(run.stdout).not.toContain('redaction map');
+
+    // The report itself, on stderr: what was disclosed, what was tokenised, and the two counts
+    // that must never be spun as "clean" -- residueLines and cwdOmitted, both required to be
+    // stated whatever their value.
+    const report = flatten(run.stderr);
+    expect(report).toContain('this export discloses');
+    expect(report).toContain('acme-internal');
+    expect(report).toContain('tokenised: 2 project label(s), 1 server name(s), 0 skill name(s)');
+    expect(report).toContain('working director');
+    expect(report).toContain('match a home-path pattern after rewriting');
+    // Never an unqualified "clean" claim, whatever the count is: the wording states the limit
+    // ("not a claim that this export is safe to share") alongside the number rather than only
+    // printing the number on its own.
+    expect(report).toContain('not a claim that');
+    expect(report).toContain('cannot be scanned for identity with any guarantee');
+
+    // The map, also on stderr, under a header saying plainly it must not travel with the stream.
+    expect(report).toContain('redaction map');
+    expect(report).toContain('do NOT let this travel');
+    expect(report).toContain('-> project-1');
+    expect(report).toContain('acme-internal -> server-1');
+  });
+
+  it('--redact --json emits the redacted lines in the envelope, not the raw ones', () => {
+    const dir = project();
+    identityCorpus(dir);
+
+    const run = asc(['export', '--redact', '--json'], dir);
+    expect(run.status).toBe(0);
+
+    const rows = envelope(run.stdout).filter((row) => row['kind'] === 'entry');
+    const properties = rows.map((row) => row['properties'] as Record<string, unknown>);
+    for (const props of properties) {
+      const project = props['project'];
+      expect(typeof project).toBe('string');
+      expect(project as string).not.toContain('-Users-');
+    }
+    expect(properties.map((props) => props['project'])).toEqual(['project-1', 'project-2']);
   });
 });
 
@@ -623,6 +845,79 @@ describe('asc export | asc import', () => {
     const restored = entries(target)[0];
     expect(restored?.id).toBe(original?.id);
     expect(restored?.recorded_at).toBe(original?.recorded_at);
+  });
+
+  it('round-trips redaction: a scheme rule naming a project label now names its token, and annotation passes keep their own created_at/created_by (asc-6u5, under redaction)', () => {
+    const source = project();
+    identityCorpus(source);
+
+    // A rule whose own SQL text names one of `identityCorpus`'s project labels -- the one other
+    // place (besides `properties.project` itself) `redact.ts`'s module doc says a label turns up
+    // literally: "a scheme rule's query". `annotate --rule` without --dry-run both registers the
+    // scheme and writes the pass in one call (`annotate.ts`), so this also gives the round trip a
+    // scheme AND a pass to carry across, the same shape `annotateTwice` gives the plain corpus.
+    expect(
+      asc(
+        [
+          'annotate',
+          '--scheme',
+          'by-project',
+          '--rule',
+          "widget=sql: json_extract(properties_json,'$.project') = '-Users-alice-projects-widget'",
+        ],
+        source,
+      ).status,
+    ).toBe(0);
+
+    const sourceSchemesBefore = schemeRows(source);
+    expect(sourceSchemesBefore).toHaveLength(1);
+    expect(sourceSchemesBefore[0]?.spec_json).toContain('-Users-alice-projects-widget');
+    const sourceAnnotationsBefore = annotationsOf(source);
+    expect(sourceAnnotationsBefore).toHaveLength(1);
+
+    const target = project();
+    const run = shell(
+      `( cd "$SRC" && HOME="$SRC" "$NODE" "$BIN" export --redact ) | ` +
+        `( cd "$DST" && HOME="$DST" "$NODE" "$BIN" import - )`,
+      { src: source, dst: target },
+    );
+    expect(run.status).toBe(0);
+
+    // The restored scheme's own rule query names the TOKEN, never the label -- and this is read
+    // back from SQLite after a real `import`, which recomputes `scheme_hash` from whatever `spec`
+    // it is handed (`verifySchemeLine`), so a spec that still carried the label would either fail
+    // that check or prove the rewrite never happened. Neither happened: the import succeeded, so
+    // this is the spec that was actually stored.
+    const restoredSchemes = schemeRows(target);
+    expect(restoredSchemes).toHaveLength(1);
+    const restoredSpec = restoredSchemes[0]?.spec_json ?? '';
+    expect(restoredSpec).toContain('project-1');
+    expect(restoredSpec).not.toContain('-Users-alice-projects-widget');
+    expect(restoredSpec).not.toContain('-Users-');
+
+    // `properties.project` on the restored entries: both labels became tokens, and neither
+    // original label survives anywhere in the restored store's entries.
+    const restoredEntries = entries(target);
+    expect(restoredEntries).toHaveLength(2);
+    const restoredProjects = restoredEntries
+      .map((row) => (JSON.parse(row.properties_json) as Record<string, unknown>)['project'])
+      .sort();
+    expect(restoredProjects).toEqual(['project-1', 'project-2']);
+
+    // `asc-6u5`'s own property, now under redaction: the pass this run wrote is not merged into
+    // anything and not restamped with the import's own clock -- its `created_at`/`created_by`
+    // (and every other column) survive the round trip unchanged, the identical comparison
+    // `passGroups` makes for the plain corpus above.
+    expect(annotationsOf(target)).toEqual(sourceAnnotationsBefore);
+    expect(passGroups(target)).toEqual(passGroups(source));
+
+    // And the strongest statement available for a redacted export specifically: re-exporting the
+    // restored project under --redact again reproduces the same bytes the first --redact export
+    // produced. If the restore had re-derived, dropped or reordered anything, this is where it
+    // would show.
+    expect(asc(['export', '--redact'], target).stdout).toBe(
+      asc(['export', '--redact'], source).stdout,
+    );
   });
 });
 

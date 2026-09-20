@@ -87,6 +87,7 @@ import {
 import { BaseCommand } from '../../base.js';
 import { refusal } from '../../errors.js';
 import { registerDocument } from '../../register-document.js';
+import { identityVocabularyOf, type Disclosing } from '../../redact.js';
 
 const ACTION = 'action';
 const TARGET = 'target';
@@ -173,6 +174,22 @@ interface Writes {
   readonly rejections: readonly string[];
   /** One line per cross-file id collision. See `asc-90h`. */
   readonly collisions: readonly string[];
+}
+
+/**
+ * `entries`, as the `Disclosing` shape `identityVocabularyOf` (`redact.ts`) reads.
+ *
+ * `cwd` and `evidenceText` are optional on `DerivedEntry` and `exactOptionalPropertyTypes` refuses
+ * an explicit `undefined` for `Disclosing`'s own optional fields, so each is spread in only when
+ * the entry actually carries it -- the same pattern `write`'s `recordEntry` call uses below for
+ * the identical reason.
+ */
+function disclosingOf(entries: readonly DerivedEntry[]): readonly Disclosing[] {
+  return entries.map((entry) => ({
+    properties: entry.properties,
+    ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
+    ...(entry.evidenceText === undefined ? {} : { text: entry.evidenceText }),
+  }));
 }
 
 /**
@@ -627,6 +644,73 @@ export default class IngestClaudeCode extends BaseCommand {
     for (const collision of writes.collisions) this.warn(collision);
 
     for (const warning of writes.warnings) this.warn(warning);
+
+    this.reportIdentityVocabulary(sweep.entries, dryRun);
+  }
+
+  /**
+   * Tell the operator exactly what identity-bearing vocabulary this run is about to write, or
+   * just wrote -- the DISCLOSURE this command gains instead of a redaction flag.
+   *
+   * **Why disclosure and not a filter, here.** This command derives from a transcript that already
+   * carries a dash-encoded project label, MCP server names, and skill names -- vocabulary the
+   * parent requirement says must not enter the corpus "without the operator having a say". Two
+   * reasons rule out a `--exclude`/`--redact` flag on ingest itself, rather than a preference:
+   *
+   *   1. Ingest is idempotent BY KEY (this file's own module doc) and, on a duplicate id, compares
+   *      CONTENT (`fingerprint`, above) to tell ordinary idempotency from a real collision. A flag
+   *      that changed what gets WRITTEN would make a re-run under a different flag value report
+   *      every affected entry as a COLLISION rather than "already present" -- and entries are
+   *      immutable, so there is no repair once that has happened.
+   *   2. Dropping a value at write time destroys information permanently. The reversible place for
+   *      that decision already exists at the EXPORT boundary (`asc export --redact`,
+   *      `buildRedactionMap`/`redactLines` in `redact.ts`): reversible because a later export can
+   *      choose differently, and consistent because one map is applied across every entry AND the
+   *      SQL stored in annotation schemes -- neither of which an ingest-time filter could do, since
+   *      the schemes it would need to rewrite do not exist yet at ingest time.
+   *
+   * So ingest keeps writing values verbatim, and this is the operator's "say": look before writing
+   * (`--dry-run`, which is what makes this a real control rather than a courtesy), or after, either
+   * way seeing precisely which server and skill NAMES are about to leave the transcript for the
+   * corpus, since a name is the one thing the operator can act on and this tool cannot classify for
+   * itself -- it cannot tell a published package from a private internal service.
+   *
+   * **Project label names are counted, never printed.** A project label is an absolute path
+   * (`-Users-<name>-...`, the encoded form of `/Users/<name>/...`), so printing it to a terminal --
+   * a place `asc ingest claude-code` writes to on every run, dry or not -- would BE the disclosure
+   * this section exists to prevent, not a report about it. The count still appears, because "how
+   * many" is not identifying on its own and a reader needs it to judge the shape of the run.
+   *
+   * `sweep.entries` -- what the run DERIVED -- not `writes`, deliberately: a rejected or collided
+   * entry never reaches the store, but the transcript still SAID the name, and an operator deciding
+   * whether to redact needs to know what the transcript disclosed, not only what landed.
+   */
+  private reportIdentityVocabulary(entries: readonly DerivedEntry[], dryRun: boolean): void {
+    const vocabulary = identityVocabularyOf(disclosingOf(entries));
+    const tense = dryRun ? 'would be written' : 'is written';
+
+    this.logToStderr(
+      `identity vocabulary: this run carries ${String(vocabulary.projects.length)} distinct ` +
+        `project label(s), ${String(vocabulary.servers.length)} MCP server name(s) and ` +
+        `${String(vocabulary.skills.length)} skill name(s). Project label names are not shown ` +
+        `here -- they are absolute paths, and printing one would be the disclosure itself.`,
+    );
+
+    for (const server of vocabulary.servers) {
+      this.logToStderr(
+        `  server: ${server.value} (${String(server.lines)} entr${server.lines === 1 ? 'y' : 'ies'})`,
+      );
+    }
+    for (const skill of vocabulary.skills) {
+      this.logToStderr(
+        `  skill: ${skill.value} (${String(skill.lines)} entr${skill.lines === 1 ? 'y' : 'ies'})`,
+      );
+    }
+
+    this.logToStderr(
+      `Every value above ${tense} verbatim. 'asc export --redact' is the control that removes ` +
+        `it when the corpus leaves this machine.`,
+    );
   }
 }
 
