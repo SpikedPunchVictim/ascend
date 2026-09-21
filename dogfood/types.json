@@ -69,5 +69,85 @@
       "text": "The correction or finding, in prose. State plainly what it corrects if it corrects something -- naming the entry or claim being corrected is what makes this findable later instead of just another unattached sentence."
     },
     "type_hash": "96880b60e9c795766c5b6eb02da5a42611683b14bbe9a7e5e77a558b8a2e4b77"
+  },
+  {
+    "name": "search_miss",
+    "description": "A search that returned an answer we acted on, or nearly acted on, that was not the answer to the question we asked.",
+    "record_when": "a search misleads you -- a grep, rg, glob, FTS query or `asc query` whose result you read as an answer and which was not one. Record it at the moment you find out, and record it EVEN IF you caught it before acting, because the near-misses are the ones that measure how often the instrument lies rather than how often you were lucky. The countable question this type exists to answer is 'how often does our searching mislead us, and in which way', so `failure_mode` and `caught` are the two fields that must be right. NOT for a search that simply found nothing when nothing was there -- that is a correct answer, and recording it drowns the ones that matter. The test is whether the RESULT supported a conclusion the evidence did not: a zero read as 'does not exist' qualifies, a zero read as 'zero' does not.",
+    "properties": [
+      {
+        "name": "pattern",
+        "type": "text",
+        "required": true,
+        "description": "The pattern as it was actually written, verbatim and unescaped-as-typed. Not a description of it. The whole value of this entry to a later reader is being able to see the literal string that misled someone, and a paraphrase of a pattern is a different pattern."
+      },
+      {
+        "name": "command",
+        "type": "text",
+        "description": "The full invocation, including flags and redirections. `grep -c` and `grep -o` fail in different ways and the flags are usually where the failure lives -- `-c` counts LINES not matches, `-o` changes what a count means, and a compound `-e a -e b` reports that something matched without saying what."
+      },
+      {
+        "name": "search_tool",
+        "type": "enum",
+        "required": true,
+        "enum_values": ["grep", "rg", "ugrep", "glob", "fts", "asc_query", "other"],
+        "description": "Which instrument. Named `search_tool` rather than `tool` because the corpus already holds `tool_name` on derived entries, where it means a Claude Code tool such as Bash or Read -- a different kind of thing, and the drift guard was right to flag the collision. Kept as a field rather than baked into the type name so that 'how often does grep mislead us' is a WHERE clause and not a separate type: the failure modes are shared across instruments, and splitting by tool would split the counts that make them visible."
+      },
+      {
+        "name": "scope",
+        "type": "text",
+        "required": true,
+        "description": "What was searched -- paths, globs, or the region of a file. Scope is a failure mode in its own right: a pattern can be correct and still answer the wrong question because the haystack contained a region where a match means something else."
+      },
+      {
+        "name": "expected",
+        "type": "text",
+        "required": true,
+        "description": "What the searcher expected the result to mean, written as the claim they were about to make. Not 'I expected matches' -- 'I expected a match to prove the hook fired'. Without this the entry cannot show why the result was misleading, only what it was."
+      },
+      {
+        "name": "returned",
+        "type": "text",
+        "required": true,
+        "description": "What came back, exact text as printed, including a count or an error message. A paraphrase of a number is a new number."
+      },
+      {
+        "name": "failure_mode",
+        "type": "enum",
+        "required": true,
+        "enum_values": [
+          "compound_pattern",
+          "wrong_vocabulary",
+          "wrong_scope",
+          "absence_wrongly_trusted",
+          "overmatch",
+          "tool_error",
+          "flag_semantics"
+        ],
+        "description": "How it misled. `compound_pattern`: several alternates in one search, so a hit does not say which matched. `wrong_vocabulary`: the pattern was guessed from the wrong output format or schema, so it could never have matched. `wrong_scope`: the pattern matched in a region where a match does not support the claim. `absence_wrongly_trusted`: zero results read as 'does not exist'. `overmatch`: matched far more than intended and the excess was not noticed. `tool_error`: the search itself errored and the error was stepped over rather than read. `flag_semantics`: the flags meant something other than what the searcher assumed."
+      },
+      {
+        "name": "caught",
+        "type": "enum",
+        "required": true,
+        "enum_values": [
+          "before_acting",
+          "after_wrong_claim",
+          "by_someone_else",
+          "never_caught_in_session"
+        ],
+        "description": "When it was noticed. This is the field that turns the type into a measurement rather than a diary: `before_acting` counts near-misses, `after_wrong_claim` counts times a false statement was actually made and then retracted. A corpus of only `before_acting` entries is a corpus that is not recording its real failures."
+      },
+      {
+        "name": "wrong_conclusion",
+        "type": "text",
+        "description": "The claim that was actually made or nearly made on this evidence, in the words it was stated in. Omit when nothing was concluded -- never write 'none' or an empty string, which are indistinguishable from an unfilled field."
+      },
+      {
+        "name": "corrected_by",
+        "type": "text",
+        "description": "The search or check that produced the real answer, verbatim, so the entry carries the remedy and not only the fault. Where the fix was a different KIND of evidence rather than a better pattern -- reading a file, a token count, an experiment -- say that instead."
+      }
+    ]
   }
 ]
