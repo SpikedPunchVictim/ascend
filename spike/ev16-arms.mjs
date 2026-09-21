@@ -239,6 +239,22 @@ const ARMS = {
   B: { hook: false, mentionsBrief: true, oversized: false, isolates: 'availability without injection' },
   C: { hook: true, mentionsBrief: false, oversized: false, isolates: 'the product claim' },
   D: { hook: true, mentionsBrief: false, oversized: true, isolates: "Q2's size axis" },
+  /**
+   * NOT PRE-REGISTERED. A post-hoc extension, marked as one so it can never be read as part of the
+   * sealed design: arms A-D and predictions P1-P5 were hashed before any measurement and arm E was
+   * proposed afterwards, by the repository owner, as a fix for `asc-3q7`.
+   *
+   * It keeps the hook's output tiny and spends it on an INSTRUCTION naming a file that holds the
+   * full brief, so nothing large passes through the channel that truncates near 10 KB. The canary
+   * measured that a session follows that pointer unprompted -- given only "fix the bug in
+   * median()", it read `.ascend/brief.txt` FIRST, before the file the task named.
+   *
+   * What it cannot inherit is P3's answer. Arm C delivered 1,353 bytes of brief into context, below
+   * any ceiling, and recorded in 0 of 3. Arm E does not make the brief more available than that; it
+   * makes the session READ it rather than merely have it, and whether that distinction moves the
+   * rate is the only thing this arm measures.
+   */
+  E: { hook: true, mentionsBrief: false, oversized: false, pointer: true, isolates: 'reading the brief vs having it' },
 };
 
 function promptFor(arm) {
@@ -306,6 +322,33 @@ async function runSession(arm, rep, spent) {
     const res = asc(['install-hook', '--yes', '--json'], dir);
     hookInstall = { status: res.status, stdout: res.stdout.slice(0, 2000), stderr: res.stderr };
     if (res.status !== 0) throw new Error(`install-hook failed in ${dir}: ${res.stderr}`);
+  }
+
+  // Arm E rewrites the installed hook to emit a pointer instead of the brief. The hook STRUCTURE
+  // stays exactly what `asc install-hook` wrote -- only the command changes -- so the arm differs
+  // from C in what the hook says and in nothing else.
+  if (spec.pointer === true) {
+    writeFileSync(join(dir, '.ascend', 'brief.txt'), asc(['types', 'brief'], dir).stdout);
+    const wrapper = join(dir, '.brief-hook.mjs');
+    // The pointer text is built as data and embedded with JSON.stringify rather than written as
+    // source inside a template literal. The first attempt nested backticks three deep to quote
+    // `asc` in the message and produced a SyntaxError; the quoting is not worth a second try.
+    const POINTER =
+      'This project records evidence with the `asc` tool. The entry types it knows about, and ' +
+      'when each should be recorded, are listed in ./.ascend/brief.txt -- read that file before ' +
+      'deciding whether anything in this session is worth recording.';
+    writeFileSync(wrapper, `process.stdout.write(${JSON.stringify(POINTER)});\n`);
+    const settingsPath = join(dir, '.claude', 'settings.json');
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    let patched = 0;
+    for (const matcher of settings.hooks?.SessionStart ?? []) {
+      for (const h of matcher.hooks ?? []) {
+        h.command = `${JSON.stringify(process.execPath)} ${JSON.stringify(wrapper)}`;
+        patched += 1;
+      }
+    }
+    if (patched !== 1) throw new Error(`expected one SessionStart hook, patched ${String(patched)}`);
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   }
 
   const prompt = promptFor(arm);

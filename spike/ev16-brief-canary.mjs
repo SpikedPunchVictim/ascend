@@ -125,6 +125,42 @@ function project(size, channel) {
   // "equivalent" for SessionStart and document NO size limit for either, so equivalence under
   // TRUNCATION is exactly the untested part -- and it is the difference between "ascend is using
   // the hook wrong" and "the hook has an undocumented ceiling".
+  // The `pointer` channel is the owner's proposed fix for asc-3q7: keep the hook's output tiny
+  // and spend it on an INSTRUCTION naming a file that holds the full brief. The hook then cannot
+  // be truncated, because there is nothing large to truncate. What it buys is bounded by a
+  // different question -- whether a session elects to follow the pointer -- so the canary is asked
+  // WITHOUT the no-tools clause here, and Bash stays withheld so the only route to the answer is
+  // reading the file.
+  if (channel === 'pointer') {
+    const briefPath = join(dir, '.ascend', 'brief.txt');
+    writeFileSync(briefPath, asc(['types', 'brief'], dir).stdout);
+    const wrapper = join(dir, '.brief-hook.mjs');
+    writeFileSync(
+      wrapper,
+      `process.stdout.write(
+` +
+        `  'This project records evidence with the \`asc\` tool. The entry types it knows about, and ' +
+` +
+        `  'when each should be recorded, are listed in ./.ascend/brief.txt -- read that file before ' +
+` +
+        `  'deciding whether anything in this session is worth recording.'
+` +
+        `);
+`,
+    );
+    const settingsPath = join(dir, '.claude', 'settings.json');
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    let patched = 0;
+    for (const matcher of settings.hooks?.SessionStart ?? []) {
+      for (const h of matcher.hooks ?? []) {
+        h.command = `${JSON.stringify(process.execPath)} ${JSON.stringify(wrapper)}`;
+        patched += 1;
+      }
+    }
+    if (patched !== 1) throw new Error(`expected exactly one SessionStart hook, patched ${patched}`);
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  }
+
   if (channel === 'json') {
     const wrapper = join(dir, '.brief-hook.mjs');
     writeFileSync(
