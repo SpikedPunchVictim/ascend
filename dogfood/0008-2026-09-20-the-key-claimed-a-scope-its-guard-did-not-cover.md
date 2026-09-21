@@ -80,11 +80,10 @@ Subagent transcripts are 861 of 913 files — the majority of the corpus by file
 exposed surface is not a corner of it. (A sweep run a few hours later the same day read 910
 files, having skipped 5 ephemeral temp-root projects. The corpus grows while it is being used —
 `asc-9ac` measures that growth — so two counts from one day differing by a few files is the
-expected behaviour, not a contradiction.) **Observed collisions: 1.** Not measured: how many
-collisions exist corpus-wide — the test reports only the first ten and stops, and no full census
-was run. The 20 sessions that *can* collide sit exactly at `MIN_N` (20,
-`packages/analysis/src/proportion.ts:50`), and a single observed collision is an anecdote at any
-n, so no rate is stated here.
+expected behaviour, not a contradiction.) **Observed collisions: 1** — and the census below
+establishes that 1 is the total, not a lower bound. The 20 sessions that *can* collide sit
+exactly at `MIN_N` (20, `packages/analysis/src/proportion.ts:50`), and a single collision is an
+anecdote at any n, so no rate is stated here.
 
 After the fix, same file, same machine:
 
@@ -95,9 +94,42 @@ After the fix, same file, same machine:
       Tests  8 passed | 1 skipped (9)
 ```
 
+### The census, and the before/after comparison
+
+The figures above are what the test reports, and the test stops after the first ten duplicates.
+A full census was run afterwards, against a **frozen snapshot** of the corpus — an APFS clone,
+so both arms read identical bytes and the corpus's own growth cannot confound the comparison.
+The two arms differ only in `derive.ts`: one built from `HEAD~1`, one from the fix.
+
+```
+                     files  records  entries  distinct keys  duplicate keys  collisions
+before (HEAD~1)        913  527,122    1,816          1,815               1           8
+after  (asc-iq6)       913  527,122    1,816          1,816               0           9
+```
+
+The single duplicate before the fix was
+`verification_run|f5717795-f5a9-4ad5-998d-4ec3422511d0:toolu_01PHpbHyJGmc1fybTuTo9391` — the one
+the test named. So the corpus-wide answer is **1 collision, not merely "at least 1"**.
+
+Diffing the two key dumps line by line gives the strongest form of the "nothing else moved"
+claim:
+
+```
+$ diff keys-before.txt keys-after.txt
+391c391
+< verification_run|f5717795-f5a9-4ad5-998d-4ec3422511d0:toolu_01PHpbHyJGmc1fybTuTo9391
+---
+> verification_run|f5717795-f5a9-4ad5-998d-4ec3422511d0:toolu_01PHpbHyJGmc1fybTuTo9391#2
+```
+
+One line of 1,816, in the same position, gaining a suffix. Every other key is byte-identical, so
+re-ingesting a store that already holds this corpus mints exactly one new id and re-recognises
+all 1,815 others. That is the property the append-only argument depended on, measured rather
+than reasoned.
+
 The `keyCollisions` counter previously read **6 across 1,488 entries** on the 2026-09-15 corpus.
-That figure was taken while the set was per file, so it counted same-file repeats only: it is a
-floor, not a total, and the counter is documented as such now.
+That figure was taken while the set was per file, so it counted same-file repeats only, and the
+census above supersedes it.
 
 ## The pattern
 
@@ -192,10 +224,9 @@ larger than the disease.
 **Known risk of the fix, stated so it is not rediscovered:** with a sweep-wide suffix, *which* of
 two colliding entries gets `#2` depends on file traversal order, so a new transcript sorting
 earlier could flip the assignment between two entries. The cross-sweep stability test already
-carries a 1 % tolerance for a related reason and passes. The sweep derives 1,812 entries
-(`asc ingest claude-code --dry-run --json`, same day: 1,812 entries from 525,672 records across
-910 transcripts) and one of them was observed to collide, so this touches a handful of keys —
-but it is a real property of the fix, not a detail.
+carries a 1 % tolerance for a related reason and passes. The census puts a number on the
+exposure: 9 suffixed keys out of 1,816, so this is the set of keys that could ever move — but it
+is a real property of the fix, not a detail.
 
 ## Links
 

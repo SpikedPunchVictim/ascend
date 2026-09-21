@@ -110,10 +110,21 @@ export interface DeriveCounters {
   entries: number;
   /**
    * Entries whose per-event key was already issued in this SWEEP, so it was suffixed `#2`.
-   * Measured: 6 across the whole 2026-09-15 corpus, out of 1,488 entries -- taken while the
-   * set was still per FILE, so that 6 counted only same-file repeats and is a floor, not a
-   * total. `asc-iq6` widened the set to the sweep, so this counter now also sees a repeat
-   * across two files of one session, which is a class it was previously blind to.
+   *
+   * CENSUS, not a sample. Both arms swept ONE frozen snapshot of the corpus -- 913 files,
+   * 527,122 records, 1,816 entries -- so the only variable is this file:
+   *
+   *   before `asc-iq6`   8 collisions   1,815 distinct keys   1 DUPLICATE key
+   *   after  `asc-iq6`   9 collisions   1,816 distinct keys   0 duplicate keys
+   *
+   * The whole difference is one line of 1,816: the second occurrence of
+   * `verification_run|<session>:toolu_...` gained a `#2`, and every other key is byte-identical
+   * across the two sweeps. That is what "a key that does not collide is unchanged" means as a
+   * measurement rather than an argument. The 9th collision is the class the per-file set was
+   * blind to by construction -- a repeat across two files of one session.
+   *
+   * An earlier reading of 6 on the 2026-09-15 corpus is superseded: it was taken while the set
+   * was per file, so it counted same-file repeats only.
    *
    * Small, and reported rather than absorbed, because the alternative is a rule that silently
    * overwrites -- and a dropped event leaves no trace at all. The count is not broken down by
@@ -530,9 +541,9 @@ export function createDeriver(): Deriver {
    * rather than a corner of it.
    *
    * A set that spans the sweep costs one string per DERIVED entry, not per record read. Measured
-   * the same day with `asc ingest claude-code --dry-run --json`: 1,812 entries derived from
-   * 525,672 records across 910 transcripts. Three orders of magnitude below the input it is
-   * already holding in memory, and not a reason to reintroduce a correctness gap.
+   * on a frozen snapshot of that corpus: 1,816 entries from 527,122 records across 913 files.
+   * Three orders of magnitude below the input it is already reading, and not a reason to
+   * reintroduce a correctness gap.
    *
    * `const` is load-bearing rather than tidiness: the defect was one assignment, in `begin()`,
    * and `const` is what makes reintroducing it a compile error instead of a review question.
