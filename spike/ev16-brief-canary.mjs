@@ -36,7 +36,7 @@
  *   large   400 filler types + the canary           ~122 KB
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -87,13 +87,17 @@ function define(dir, name, description, recordWhen) {
   if (res.status !== 0) throw new Error(`types define ${name} failed: ${res.stderr}`);
 }
 
-function project(size) {
+function project(size, channel) {
   const dir = mkdtempSync(join(tmpdir(), `ev16-canary-${size}-`));
   mkdirSync(join(dir, '.ascend'), { recursive: true });
   const init = asc(['init'], dir);
   if (init.status !== 0) throw new Error(`asc init failed: ${init.stderr}`);
-  if (size === 'large') {
-    for (let i = 0; i < 400; i += 1) {
+  // `size` may be a NUMBER of filler types, to bisect the delivery ceiling: the ceiling is
+  // bracketed by measurement, never quoted from a guess.
+  const fillers = size === 'large' ? 400 : size === 'small' ? 0 : Number(size);
+  if (!Number.isFinite(fillers)) throw new Error(`unknown size ${size}`);
+  if (fillers > 0) {
+    for (let i = 0; i < fillers; i += 1) {
       define(
         dir,
         `filler_type_${String(i).padStart(3, '0')}`,
@@ -115,12 +119,43 @@ function project(size) {
   );
   const hook = asc(['install-hook', '--yes', '--json'], dir);
   if (hook.status !== 0) throw new Error(`install-hook failed: ${hook.stderr}`);
+
+  // The `json` channel rewrites the installed hook to emit the brief through
+  // `hookSpecificOutput.additionalContext` instead of plain stdout. The docs call the two
+  // "equivalent" for SessionStart and document NO size limit for either, so equivalence under
+  // TRUNCATION is exactly the untested part -- and it is the difference between "ascend is using
+  // the hook wrong" and "the hook has an undocumented ceiling".
+  if (channel === 'json') {
+    const wrapper = join(dir, '.brief-hook.mjs');
+    writeFileSync(
+      wrapper,
+      `import { spawnSync } from 'node:child_process';
+` +
+        `const r = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(bin)}, 'types', 'brief'], { encoding: 'utf8' });
+` +
+        `process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: r.stdout } }));
+`,
+    );
+    const settingsPath = join(dir, '.claude', 'settings.json');
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    // Patch the command in place rather than authoring the structure, so the shape stays exactly
+    // what `asc install-hook` produces and only the channel differs.
+    let patched = 0;
+    for (const matcher of settings.hooks?.SessionStart ?? []) {
+      for (const h of matcher.hooks ?? []) {
+        h.command = `${JSON.stringify(process.execPath)} ${JSON.stringify(wrapper)}`;
+        patched += 1;
+      }
+    }
+    if (patched !== 1) throw new Error(`expected exactly one SessionStart hook, patched ${patched}`);
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  }
   const brief = asc(['types', 'brief'], dir);
   return { dir, briefBytes: brief.stdout.length, canaryInBrief: brief.stdout.includes(CANARY) };
 }
 
-async function run(size) {
-  const { dir, briefBytes, canaryInBrief } = project(size);
+async function run(size, channel) {
+  const { dir, briefBytes, canaryInBrief } = project(size, channel);
   if (!canaryInBrief) throw new Error(`canary missing from the ${size} brief -- instrument broken`);
 
   const argv = [
@@ -171,6 +206,7 @@ async function run(size) {
 
   return {
     size,
+    channel,
     briefBytes,
     exitCode,
     spentUsd: result?.total_cost_usd ?? 0,
@@ -183,6 +219,7 @@ async function run(size) {
 }
 
 const sizes = (process.env['EV16_SIZES'] ?? 'small,large').split(',').map((s) => s.trim());
+const channel = process.env['EV16_CHANNEL'] ?? 'stdout';
 const rows = [];
 let spent = 0;
 for (const size of sizes) {
@@ -190,8 +227,8 @@ for (const size of sizes) {
     console.error(`CEILING REACHED at ${spent.toFixed(4)} USD, stopping before ${size}.`);
     break;
   }
-  const row = await run(size);
+  const row = await run(size, channel);
   spent += row.spentUsd;
   rows.push(row);
 }
-console.log(JSON.stringify({ model, canary: CANARY, spentUsd: spent, rows }, null, 2));
+console.log(JSON.stringify({ model, canary: CANARY, channel, spentUsd: spent, rows }, null, 2));
