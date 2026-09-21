@@ -6,15 +6,23 @@
  * not a count. Arm B is a real headless session doing real recordings, so its numbers are realized
  * and its friction is observed rather than reasoned about.
  *
- * THE GRANT IS THE SMALLEST ONE THAT WORKS, and it is bounded rather than bypassed:
+ * THE GRANT IS THE SMALLEST ONE THAT WORKS, and what it bounds is now measured rather than
+ * asserted:
  *
- *   --allowedTools "Bash(asc record:*)"   the only tool, and only the one command prefix
- *   --permission-mode dontAsk             anything else is refused, not prompted for
+ *   --allowedTools "Bash(asc record:*)"   the only Bash command approved for anything that WRITES
+ *   --permission-mode dontAsk             an ungranted write becomes a denial, not a prompt
  *
- * The permission gate is left ON and narrowed -- never disabled. There is no flag here that turns
- * the gate off, and no wildcard tool grant. If the session reaches for a tool outside the grant it
- * is denied, and the denial lands in the transcript as evidence rather than being suppressed --
- * which is the whole point of asking question 4 this way.
+ * This header previously claimed "anything else is refused, not prompted for", which overstated it:
+ * `spike/ev16-grant-probe.mjs` measured on 2026-09-20 that READ-ONLY shell commands are approved
+ * whether or not the allowlist covers them, across five sessions holding the grant fixed and
+ * varying the command. So a session under this grant can read freely; it cannot write.
+ *
+ * THIS ARM'S QUESTION 4 IS UNAFFECTED, and the probes strengthen it rather than undermining it.
+ * The negative control this file ran -- grant `Bash(echo:*)`, ask for `asc record note ...` -- got
+ * a real denial, and `asc record` is a WRITE, which is exactly the class the gate does stop. The
+ * detector was shown to fire on the class of command being measured. What the probes add is the
+ * limit of the claim: a quiet run establishes that granted WRITES pass without friction, not that
+ * every ungranted tool would have been stopped.
  *
  * THE CONTENT IS THE SAME 20 ENTRIES AS ARM A, read by the same query in the same order, so the two
  * arms are measuring the same work. They are the real property sets already in this repo's own
