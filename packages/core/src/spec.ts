@@ -177,6 +177,24 @@ export const ENVELOPE_PROPERTY_NAMES = [
  */
 export const STATE_COLUMN_SUFFIX = '_state';
 
+/**
+ * The column every generated view adds beyond the entries envelope (`asc-88m`): the LABEL of
+ * the entry's latest invalidation annotation, or NULL when it has never been invalidated.
+ * Entries are immutable by trigger (`schema.ts`'s `entries_are_immutable` -- invalidation is an
+ * annotation under `RESERVED_SCHEME`, `packages/store/src/annotations.ts` -- not an edit), so
+ * this is how a view lets a reader ask "is this row still good" without ever touching the row.
+ *
+ * Reserved by name for the reason `ENVELOPE_PROPERTY_NAMES` is: a property declared with this
+ * name would collide with the column the view already projects under it, and SQLite resolves
+ * the collision by renaming the LOSER rather than refusing -- the `source:1` defect this whole
+ * vocabulary exists to prevent (asc-865.1). It is reserved on its own, separately from
+ * `ENVELOPE_PROPERTY_NAMES`, because that list is projected straight off `entries` columns
+ * (`e.<column>`, `packages/store/src/sql.ts`'s `ENVELOPE_COLUMNS`) and `invalidated` is not one
+ * of those -- it is a correlated subquery over `annotations`, so folding it into that list would
+ * make the view try to select a column `entries` does not have.
+ */
+export const INVALIDATED_COLUMN_NAME = 'invalidated';
+
 /** Why a name is not available as a property name, and a name that is. */
 export interface ReservedName {
   /** The reserved name, in canonical form. */
@@ -209,6 +227,18 @@ export function reservedPropertyName(raw: string): ReservedName | undefined {
       reason:
         `the entry envelope already carries a column called '${name}', so a query selecting ` +
         `'${name}' would read the envelope value instead of the property`,
+      suggestion: `${name}_value`,
+    };
+  }
+
+  if (name === INVALIDATED_COLUMN_NAME) {
+    return {
+      name,
+      reason:
+        `every generated view already adds an '${INVALIDATED_COLUMN_NAME}' column of its own -- ` +
+        `the label of the entry's latest invalidation annotation, or NULL when it has never been ` +
+        `invalidated (asc-88m) -- so a query selecting '${INVALIDATED_COLUMN_NAME}' would read ` +
+        `that instead of the property`,
       suggestion: `${name}_value`,
     };
   }

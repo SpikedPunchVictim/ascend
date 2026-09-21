@@ -15,8 +15,10 @@ import {
   indexName,
   openStore,
   recordEntry,
+  recordInvalidation,
   refreshTypeViews,
   registerType,
+  UnusableDefinitionError,
   viewName,
   type RecordContext,
   type Store,
@@ -88,6 +90,7 @@ const withStore = (body: (store: Store) => void): void => {
 interface Row {
   readonly id: string;
   readonly type_version: number;
+  readonly invalidated: string | null;
   readonly count: number | null;
   readonly count_state: string;
   readonly outcome: string | null;
@@ -156,6 +159,13 @@ const ENVELOPE = [
   'properties_json',
   'na_json',
 ];
+
+/**
+ * Every column a view carries that is NOT projected from a type's own properties: the envelope,
+ * plus `invalidated` (asc-88m), which sits right after it in the projection. Also duplicated
+ * deliberately, for the same reason `ENVELOPE` is.
+ */
+const NON_PROPERTY_COLUMNS = [...ENVELOPE, 'invalidated'];
 
 /** A view's columns, in the order the view declares them. */
 const columnNames = (store: Store, view: string): readonly string[] =>
@@ -691,7 +701,7 @@ describe('refresh is derived and idempotent', () => {
       );
 
       const columns = columnNames(store, viewName('review_completed', 1));
-      const projected = columns.filter((name) => !ENVELOPE.includes(name));
+      const projected = columns.filter((name) => !NON_PROPERTY_COLUMNS.includes(name));
 
       expect(projected).toEqual([
         'alpha',
@@ -818,6 +828,11 @@ describe('a property can never want a column the view has already claimed', () =
     // back out of a real view catches a column added to the projection without being reserved
     // (which would reopen the hole silently), and a name reserved that no view projects (which
     // would refuse a harmless property). Order included: the projection is built from the list.
+    //
+    // `invalidated` (asc-88m) is listed separately from the spread rather than folded into
+    // `ENVELOPE_PROPERTY_NAMES`: that constant is the columns projected straight off `entries`
+    // (`e.<column>`), and `invalidated` is a correlated subquery instead -- `core`'s
+    // `reservedPropertyName` reserves it through its own branch for exactly that reason.
     withStore((store) => {
       registerType(store.db, V1, { registeredAt: AT });
 
@@ -828,7 +843,7 @@ describe('a property can never want a column the view has already claimed', () =
         (name) => !fromProperties.has(name),
       );
 
-      expect(claimed).toEqual([...ENVELOPE_PROPERTY_NAMES]);
+      expect(claimed).toEqual([...ENVELOPE_PROPERTY_NAMES, 'invalidated']);
     });
   });
 
@@ -882,6 +897,162 @@ describe('a property can never want a column the view has already claimed', () =
         .all() as unknown as { name: string }[];
       // Nothing was built -- not the view, and not the indexes either: the refusal precedes all DDL.
       expect(objects.filter((object) => object.name.includes('note'))).toEqual([]);
+    });
+  });
+
+  it('refuses a property named `invalidated`, the column the view now claims for itself', () => {
+    // asc-88m. Every generated view gains its own `invalidated` column (below), so a property
+    // by that name is claimed exactly like `source` or `workflow` above -- `registerType` refuses
+    // it at define time, through the same `reservedPropertyName` path, before any view is built.
+    withStore((store) => {
+      expect(() =>
+        registerType(
+          store.db,
+          { name: 'note', properties: [{ name: 'invalidated', type: 'string' }] },
+          { registeredAt: AT },
+        ),
+      ).toThrow(UnusableDefinitionError);
+
+      expect(() =>
+        registerType(
+          store.db,
+          { name: 'note', properties: [{ name: 'invalidated', type: 'string' }] },
+          { registeredAt: AT },
+        ),
+      ).toThrow(/'invalidated'/);
+
+      // Refused before any DDL: no view or index for a type that never registered.
+      const objects = store.db
+        .prepare("SELECT name FROM sqlite_master WHERE type IN ('view', 'index')")
+        .all() as unknown as { name: string }[];
+      expect(objects.filter((object) => object.name.includes('note'))).toEqual([]);
+    });
+  });
+});
+
+/**
+ * `asc-88m`: entries are immutable by trigger, so invalidation is an annotation under
+ * `RESERVED_SCHEME` rather than an edit, and every generated view exposes the LATEST one as its
+ * own `invalidated` column -- the label, or NULL. Invalidated rows stay in the view (they are
+ * NOT filtered out): dropping them would make the view's row count silently disagree with
+ * `entries`', so the fact is a column a caller can filter on instead
+ * (`WHERE invalidated IS NULL`).
+ */
+describe('the invalidated column (asc-88m)', () => {
+  it('projects NULL for an entry that has never been invalidated', () => {
+    withStore((store) => {
+      registerType(store.db, V1, { registeredAt: AT });
+      recordEntry(store.db, { type: 'review_completed', properties: { count: 1 } }, context('e1'));
+
+      const row = one(store, viewName('review_completed', 1), 'e1');
+      expect(row.invalidated).toBeNull();
+    });
+  });
+
+  it('projects the label of a single invalidation', () => {
+    withStore((store) => {
+      registerType(store.db, V1, { registeredAt: AT });
+      recordEntry(store.db, { type: 'review_completed', properties: { count: 1 } }, context('e1'));
+      recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'wrong_value',
+        reason: 'count was miscounted',
+        createdAt: AT,
+      });
+
+      const row = one(store, viewName('review_completed', 1), 'e1');
+      expect(row.invalidated).toBe('wrong_value');
+    });
+  });
+
+  it('projects the LATEST label when an entry is invalidated twice', () => {
+    const LATER = '2026-09-11T11:00:00.000Z';
+    withStore((store) => {
+      registerType(store.db, V1, { registeredAt: AT });
+      recordEntry(store.db, { type: 'review_completed', properties: { count: 1 } }, context('e1'));
+      recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'wrong_value',
+        reason: 'first pass: count was miscounted',
+        createdAt: AT,
+      });
+      recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'wrong_subject',
+        reason: 'second pass: this was never about e1 at all',
+        createdAt: LATER,
+      });
+
+      const row = one(store, viewName('review_completed', 1), 'e1');
+      expect(row.invalidated).toBe('wrong_subject');
+    });
+  });
+
+  it('breaks a created_at tie on INSERTION ORDER (rowid), not on the annotation id', () => {
+    // `annotations.ts`'s own module comment: "THE PASS IS THE TIMESTAMP" -- one pass stamps
+    // every row it writes with a single `created_at`, so two invalidations of the SAME entry can
+    // share one. The tiebreak is `rowid`, deliberately NOT `id`: `recordInvalidation`'s id is a
+    // SHA-256 of the invalidation's own content, so breaking the tie on `id` would be a hash
+    // ordering with no relationship to which row was written later -- exactly the "latest" claim
+    // this column makes. `annotations` is an ordinary ROWID table (`id` is a `TEXT PRIMARY KEY`,
+    // not an `INTEGER PRIMARY KEY`, so it is not a rowid alias), so a row written SECOND gets the
+    // HIGHER rowid regardless of what its own id sorts as.
+    withStore((store) => {
+      registerType(store.db, V1, { registeredAt: AT });
+      recordEntry(store.db, { type: 'review_completed', properties: { count: 1 } }, context('e1'));
+
+      // Written FIRST (lower rowid), through the public path -- which also registers the
+      // `invalidation` scheme's version 1 that the raw insert below depends on. Its id is
+      // `inv-<hex>` (`'i'`), which sorts AFTER the hand-picked id below.
+      const written = recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'wrong_value',
+        reason: 'written first, but its id sorts after the second row',
+        createdAt: AT,
+      });
+      expect(written.id.startsWith('inv-')).toBe(true);
+
+      // Written SECOND (higher rowid) -- direct insert, under an id that sorts ALPHABETICALLY
+      // BEFORE the first row's (`'a'` < `'i'`). If the view's tiebreak were `id DESC` instead of
+      // `rowid DESC`, the FIRST row would win here, not this one.
+      store.db
+        .prepare(
+          `INSERT INTO annotations (id, entry_id, scheme, scheme_version, label, note, created_at)
+           VALUES ('aaa-sorts-before-inv', 'e1', 'invalidation', 1, 'wrong_subject',
+                   'written second, but its id sorts before the first row', ?)`,
+        )
+        .run(AT);
+
+      const row = one(store, viewName('review_completed', 1), 'e1');
+      expect(row.invalidated).toBe('wrong_subject');
+    });
+  });
+
+  it('keeps invalidated rows IN the view rather than filtering them out', () => {
+    // The design point, stated as a query: totals must still reconcile, and exclusion is
+    // something a caller opts into with a WHERE clause, not something the view does for them.
+    withStore((store) => {
+      registerType(store.db, V1, { registeredAt: AT });
+      recordEntry(store.db, { type: 'review_completed', properties: { count: 1 } }, context('e1'));
+      recordEntry(store.db, { type: 'review_completed', properties: { count: 2 } }, context('e2'));
+      recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'wrong_value',
+        reason: 'struck, but still on record',
+        createdAt: AT,
+      });
+
+      const view = viewName('review_completed', 1);
+      const total = store.db.prepare(`SELECT COUNT(*) AS n FROM ${view}`).get() as { n: number };
+      const entries = store.db.prepare('SELECT COUNT(*) AS n FROM entries').get() as {
+        n: number;
+      };
+      expect(total.n).toBe(entries.n);
+
+      const live = store.db
+        .prepare(`SELECT id FROM ${view} WHERE invalidated IS NULL ORDER BY id`)
+        .all() as unknown as { id: string }[];
+      expect(live.map((r) => r.id)).toEqual(['e2']);
     });
   });
 });

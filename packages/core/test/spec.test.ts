@@ -6,6 +6,7 @@ import {
   definitionShape,
   emptyPropertyName,
   ENVELOPE_PROPERTY_NAMES,
+  INVALIDATED_COLUMN_NAME,
   reservedPropertyName,
   STATE_COLUMN_SUFFIX,
   unaddressablePropertyName,
@@ -239,7 +240,13 @@ describe('the reserved property vocabulary', () => {
 
   it('offers a suggestion that is itself free, for every refusal it can produce', () => {
     // A suggestion that is also refused is worse than none: it sends the caller round a loop.
-    const refused = [...ENVELOPE_PROPERTY_NAMES, 'error_state', 'count_state', 'state_state'];
+    const refused = [
+      ...ENVELOPE_PROPERTY_NAMES,
+      'error_state',
+      'count_state',
+      'state_state',
+      INVALIDATED_COLUMN_NAME,
+    ];
     for (const name of refused) {
       const reserved = reservedPropertyName(name);
       expect(reserved, `${name} should be reserved`).toBeDefined();
@@ -257,6 +264,22 @@ describe('the reserved property vocabulary', () => {
     expect(reserved?.name).toBe('error_state');
     expect(reserved?.reason).toContain("state of property 'error'");
     expect(STATE_COLUMN_SUFFIX).toBe('_state');
+  });
+
+  it('reserves `invalidated`, the column every generated view adds for asc-88m', () => {
+    // Its own branch, not a fourth entry in `ENVELOPE_PROPERTY_NAMES`: that list is the columns
+    // a view reads straight off `entries` (`e.<column>`), and `invalidated` is a correlated
+    // subquery over `annotations` instead (`packages/store/src/sql.ts`'s `invalidatedColumnSql`)
+    // -- folding it into that list would make the view try to select a column `entries` does not
+    // have.
+    const reserved = reservedPropertyName(INVALIDATED_COLUMN_NAME);
+    expect(reserved?.name).toBe(INVALIDATED_COLUMN_NAME);
+    expect(reserved?.reason).toContain(INVALIDATED_COLUMN_NAME);
+    expect(reserved?.suggestion).toBe('invalidated_value');
+    expect(reservedPropertyName(reserved?.suggestion ?? '')).toBeUndefined();
+
+    // Decided on the canonical name too, like every other reservation.
+    expect(reservedPropertyName('Invalidated')?.name).toBe(INVALIDATED_COLUMN_NAME);
   });
 
   it('decides on the CANONICAL name, so no spelling gets around it', () => {

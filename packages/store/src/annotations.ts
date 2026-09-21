@@ -74,6 +74,35 @@ import { wrapPredicate } from './statements.js';
  */
 export const RESERVED_SCHEME = 'invalidation';
 
+/**
+ * The invalidation vocabulary. Closed, and deliberately short: the rule for admitting a label was
+ * "no category without a real instance already in the corpus", and only these three had one when
+ * asc-88m was written. `superseded` covers a later entry measuring the same thing better,
+ * `wrong_subject` covers an entry that should never have been recorded about this subject at all,
+ * and `wrong_value` covers a right subject with a wrong or contaminated recorded value. A fourth
+ * label some future finding actually needs is a cheap, well-supported addition -- schemes are
+ * versioned for exactly this -- so nothing here is pre-guessed against a case that has not
+ * happened yet.
+ */
+export const INVALIDATION_LABELS = ['wrong_subject', 'wrong_value', 'superseded'] as const;
+
+/** One label from the closed invalidation vocabulary. See `INVALIDATION_LABELS`. */
+export type InvalidationLabel = (typeof INVALIDATION_LABELS)[number];
+
+/**
+ * The invalidation scheme's shape: the closed vocabulary above, and NO rules.
+ *
+ * No rules, and that absence is the point rather than an oversight: every other scheme in this
+ * module exists to let a rule classify the corpus deterministically, but an invalidation is a
+ * human or an agent striking one specific entry for one specific reason. A rule that auto-assigned
+ * `wrong_value` to everything a predicate matched would be an ordinary annotation scheme wearing
+ * the reserved name, and would defeat the reason the name is reserved at all.
+ */
+const INVALIDATION_SCHEME_SPEC: SchemeSpec = {
+  labels: [...INVALIDATION_LABELS],
+  rules: [],
+};
+
 /** How a rule selects entries. `sql` is a predicate over `entries`; `fts` is a text query. */
 export type SchemeRuleKind = 'sql' | 'fts';
 
@@ -420,6 +449,28 @@ export function registerScheme(
   context: SchemeContext,
 ): RegisteredScheme {
   requireName(db, name);
+  return registerSchemeUnchecked(db, name, spec, context);
+}
+
+/**
+ * The body of `registerScheme`, minus the reserved-name refusal.
+ *
+ * `requireName` is what makes `'invalidation'` unregisterable by a caller's own rules, and that
+ * refusal has to keep meaning "no user-defined scheme may take this name" even after asc-88m gives
+ * the name a real occupant. So the store's OWN write path for invalidation -- `recordInvalidation`
+ * -- calls this directly rather than going through `registerScheme`, and `requireName` is never
+ * taught an exception for it. The public function and the reserved scheme's own registration are
+ * two callers of one implementation for the same reason `matchingEntryIds`' comment gives for
+ * `requireFtsMatch`: a refusal or a behaviour that could be reached two ways must be reachable in
+ * only one place, so the two callers cannot drift into disagreeing about what "the same shape" or
+ * "idempotent" means.
+ */
+function registerSchemeUnchecked(
+  db: DatabaseSync,
+  name: string,
+  spec: SchemeSpec,
+  context: SchemeContext,
+): RegisteredScheme {
   requireUtc(context.createdAt, 'createdAt');
 
   const shape = normalizeSpec(spec);
@@ -681,6 +732,350 @@ export function recordAnnotations(
     if (hasOpenTransaction()) db.exec('ROLLBACK');
     throw error;
   }
+}
+
+/** One invalidation to write. `id` is not here -- see `recordInvalidation` for why. */
+export interface RecordInvalidationInput {
+  readonly entryId: string;
+  readonly label: InvalidationLabel;
+  readonly reason: string;
+  /** Required when, and only when, `label` is `'superseded'`. Names the replacing entry. */
+  readonly supersededBy?: string;
+  /** Who or what struck the entry. Omitted rather than stored as `''`. */
+  readonly createdBy?: string;
+  readonly createdAt: string;
+}
+
+/** What one invalidation write produced. */
+export interface RecordedInvalidation {
+  readonly id: string;
+  readonly scheme: string;
+  readonly schemeVersion: number;
+  readonly label: InvalidationLabel;
+  /**
+   * `false` when a row asserting this exact claim already existed and nothing was written.
+   *
+   * The id is content-derived from the CLAIM -- `entryId`, `label`, `reason`, `supersededBy`,
+   * `createdBy`, deliberately NOT `createdAt` (see `recordInvalidation`) -- so recording the same
+   * claim again, at a different moment, is a no-op rather than an error, the same precedent `asc
+   * ingest claude-code` sets for a second run producing no duplicates. This is what makes the flag
+   * meaningful for a real caller: a CLI reads the wall clock per invocation, so an id keyed on
+   * `createdAt` would make `created` always `true` and every accidental re-run a silent second row.
+   * A caller (the CLI in particular) needs to tell "I just invalidated this" from "this was already
+   * invalidated, with exactly this claim" rather than have both look identical.
+   */
+  readonly created: boolean;
+}
+
+/** One invalidation, as read back by `listInvalidations`. */
+export interface InvalidationRow {
+  readonly entryId: string;
+  readonly label: InvalidationLabel;
+  readonly reason: string;
+  readonly supersededBy: string | null;
+  readonly createdBy: string | null;
+  /**
+   * When this claim was FIRST made. `createdAt` is not part of the claim's identity (see
+   * `recordInvalidation`), so a later call asserting the identical claim is a no-op and does not
+   * refresh this -- the timestamp always names the original assertion, never the most recent
+   * no-op repeat of it.
+   */
+  readonly createdAt: string;
+}
+
+/**
+ * Strike one entry with one of the closed invalidation labels, and say why.
+ *
+ * This is the ONLY write path onto `RESERVED_SCHEME`: `requireName` refuses the name to every
+ * caller of `registerScheme`, including this module's own `recordAnnotations`, which is why this
+ * function registers the scheme itself, through `registerSchemeUnchecked`, rather than asking a
+ * caller to register it first. Idempotent the same way any scheme is (the module comment on
+ * `registerScheme`): the first invalidation of a store mints version 1, and every one after it
+ * reuses that version because the shape -- the three labels, no rules -- never changes.
+ *
+ * There is no `id` in `RecordInvalidationInput`, unlike `AnnotationInput.id`, and that is a
+ * departure from the module comment's "time and ids are injected, never read" rather than a
+ * mistake: this function still touches no clock and draws no randomness. The id is DERIVED,
+ * deterministically, from `entryId`, `label`, `reason`, `supersededBy` and `createdBy` -- NOT
+ * `createdAt`. An invalidation's identity is the CLAIM (this entry stopped counting, for this
+ * reason), not the moment the claim was made, so two calls asserting the identical claim minutes
+ * or days apart are the same row, not two -- see `RecordedInvalidation.created` for what that
+ * means for a caller, and the note on `created_at` below for what it means for the stored
+ * timestamp. `createdBy` stays part of the identity deliberately: two different actors recording
+ * the same claim are two independent assertions, and one must not silently swallow the other.
+ *
+ * Invalidating an entry that is already invalidated is ALLOWED, deliberately: annotations are
+ * append-only, so a later pass with a better reason does not overwrite the first -- it just
+ * outranks it for a reader who takes the latest by insertion order. That reader is
+ * `listInvalidations` here, and the other half -- taking the latest label as an entry's live
+ * invalidation state -- belongs to the views this scheme feeds, not to this write path.
+ *
+ * That is "allowed", not "idempotent": a DIFFERENT invalidation of the same entry (a different
+ * label, or the same label with a different reason) always writes a second row. Recording the
+ * BYTE-IDENTICAL invalidation twice is the other case, and it is idempotent rather than an error --
+ * see `RecordedInvalidation.created`.
+ */
+export function recordInvalidation(
+  db: DatabaseSync,
+  input: RecordInvalidationInput,
+): RecordedInvalidation {
+  requireUtc(input.createdAt, 'createdAt');
+
+  if (!INVALIDATION_LABELS.includes(input.label)) {
+    throw new AnnotationError(
+      `invalidation label ${JSON.stringify(input.label)} is not one of ` +
+        `${INVALIDATION_LABELS.map((label) => `'${label}'`).join(', ')}. The vocabulary is closed: ` +
+        `asc-88m admitted only the labels that already had a real instance in the corpus, so a ` +
+        `reader auditing why entries stop counting has a fixed, small set of reasons to check ` +
+        `rather than free text that drifts with every caller's phrasing.`,
+    );
+  }
+
+  const reason = input.reason.trim();
+  if (reason === '') {
+    throw new AnnotationError(
+      `invalidation of entry '${input.entryId}' has no reason (after trimming whitespace). A label ` +
+        `with no reason is exactly the thing this type exists to prevent: invalidation is the ` +
+        `store's only durable claim about why an entry stopped counting, and a bare label would ` +
+        `just be the silent, unexplained demotion this scheme was built to replace. Say why.`,
+    );
+  }
+
+  if (input.label === 'superseded') {
+    if (input.supersededBy === undefined) {
+      throw new AnnotationError(
+        `invalidation of entry '${input.entryId}' has label 'superseded' but no 'supersededBy'. ` +
+          `'superseded' claims a LATER entry measures the same thing better, and neither a reader ` +
+          `nor 'asc kappa' comparing the two entries can act on that claim without being told which ` +
+          `entry did the replacing. Name it.`,
+      );
+    }
+  } else if (input.supersededBy !== undefined) {
+    throw new AnnotationError(
+      `invalidation of entry '${input.entryId}' names 'supersededBy' ('${input.supersededBy}') but ` +
+        `its label is '${input.label}', not 'superseded'. 'supersededBy' asserts that a specific ` +
+        `later entry replaced this one, which only the 'superseded' label means -- attaching it to ` +
+        `'${input.label}' would carry a replacement claim that label does not make.`,
+    );
+  }
+
+  if (input.supersededBy !== undefined && input.supersededBy === input.entryId) {
+    throw new AnnotationError(
+      `entry '${input.entryId}' cannot supersede itself. 'superseded' means a LATER entry measures ` +
+        `the same thing better than this one; naming the same id as both the invalidated entry and ` +
+        `its replacement is not a later measurement, it is a contradiction.`,
+    );
+  }
+
+  if (input.createdBy !== undefined && input.createdBy === '') {
+    throw new AnnotationError(
+      'createdBy is empty. An empty string is a real value in SQLite, not "unknown" -- omit the ' +
+        'field instead so it is stored as NULL.',
+    );
+  }
+
+  const requireEntryExists = (id: string, forSupersededBy: boolean): void => {
+    const row = db.prepare('SELECT 1 AS present FROM entries WHERE id = ?').get(id);
+    if (row !== undefined) return;
+
+    throw new AnnotationError(
+      forSupersededBy
+        ? `supersededBy names entry '${id}', which does not exist. 'superseded' claims a specific ` +
+            `later entry replaced this one, and an id the store has never recorded cannot be that ` +
+            `replacement -- there is nothing there to have measured anything.`
+        : `entry '${id}' does not exist, so there is nothing to invalidate. Invalidation annotates ` +
+            `an EXISTING entry -- the immutability trigger's own message says "invalidation is an ` +
+            `annotation scheme, not an edit" -- it is not a tombstone for an id that was never ` +
+            `recorded, and accepting one here would let a caller invalidate an entry it can never ` +
+            `point back to.`,
+    );
+  };
+
+  // These two reads happen BEFORE the transaction opens, which is deliberate and safe only because
+  // of what they read. A lock taken at BEGIN IMMEDIATE covers what happens after the BEGIN, never a
+  // pre-read -- `registerType` learned that the expensive way -- so a pre-read is sound here purely
+  // because `entries_are_immutable` and `entries_cannot_be_deleted` mean an entry that exists now
+  // cannot stop existing under a concurrent writer. The duplicate-id check below is a different
+  // matter and sits INSIDE the transaction, where it has to be. Anything added here that reads a
+  // mutable table belongs down there too.
+  requireEntryExists(input.entryId, false);
+  if (input.supersededBy !== undefined) requireEntryExists(input.supersededBy, true);
+
+  // Own-or-join, the same template `registerScheme` and `recordAnnotations` use and for the same
+  // reason: registering the scheme's first version and writing the annotation under it must commit
+  // or roll back together, or a failure in the write could leave a version 1 with zero passes
+  // sitting under a name that reads as though something had already used it.
+  const ownsTransaction = !db.isTransaction;
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
+
+  let ended = false;
+  const finish = (statement: 'COMMIT' | 'ROLLBACK'): void => {
+    if (ownsTransaction) db.exec(statement);
+    ended = true;
+  };
+  const hasOpenTransaction = (): boolean => ownsTransaction && !ended;
+
+  try {
+    const scheme = registerSchemeUnchecked(db, RESERVED_SCHEME, INVALIDATION_SCHEME_SPEC, {
+      createdAt: input.createdAt,
+    });
+
+    // Deterministic, not random or clock-read: a pure hash of the CLAIM -- entryId, label, reason,
+    // supersededBy, createdBy. `createdAt` is deliberately EXCLUDED: an invalidation's identity is
+    // what it asserts, not when it was asserted, so the same claim made twice at two different
+    // times is one row, not two. `canonicalJson` drops `undefined` members (see `hash.ts`), so an
+    // omitted `supersededBy` or `createdBy` does not perturb the id of a claim that has neither.
+    const id = `inv-${sha256Hex(
+      canonicalJson({
+        entryId: input.entryId,
+        label: input.label,
+        reason,
+        supersededBy: input.supersededBy,
+        createdBy: input.createdBy,
+      }),
+    )}`;
+
+    // A direct insert, not `recordAnnotations`, and deliberately so. `recordAnnotations` refuses a
+    // second PASS sharing `(scheme, scheme_version, created_at)` -- the guard `asc kappa` needs so
+    // two classification runs are never mistaken for one. Invalidation has no pass concept: each
+    // call strikes one entry for its own reason, independent of every other call, and two different
+    // entries invalidated in a batch that shares one injected timestamp are not the same event
+    // twice -- they are two events that happen to share a clock reading. Routing through
+    // `recordAnnotations` anyway would refuse the second one, which is what `listInvalidations`'s
+    // own tiebreak exists to make readable in the first place: a tie it could never see would make
+    // that tiebreak dead code.
+
+    // Checked BEFORE the insert, inside this same transaction, so the identical CLAIM -- made again,
+    // possibly at a different `createdAt` -- is read back as a no-op rather than reaching the
+    // INSERT and failing on the id's own PRIMARY KEY. Without this, the caller sees a raw SQLite
+    // "UNIQUE constraint failed: annotations.id" -- `AnnotationError`-less, unexplained, and naming
+    // the id-derivation strategy as if it were the defect, when the actual situation is the ordinary
+    // one this store treats as a no-op elsewhere (`asc ingest claude-code`'s second run "creates no
+    // duplicates ... and does not treat that as a failure"). Because `createdAt` is excluded from
+    // the id, this is also what makes a real second `asc invalidate` run of the same claim --
+    // minutes or days later, wall clock read fresh each time -- collapse into the first row instead
+    // of silently adding a second one for `--list` to show the user.
+    const already = db.prepare('SELECT 1 AS present FROM annotations WHERE id = ?').get(id);
+    if (already !== undefined) {
+      finish('COMMIT');
+      return {
+        id,
+        scheme: RESERVED_SCHEME,
+        schemeVersion: scheme.version,
+        label: input.label,
+        created: false,
+      };
+    }
+
+    const valueJson =
+      input.supersededBy === undefined
+        ? null
+        : canonicalJson({ superseded_by: input.supersededBy });
+
+    db.prepare(
+      `INSERT INTO annotations
+         (id, entry_id, scheme, scheme_version, label, value_json, confidence, note, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      input.entryId,
+      RESERVED_SCHEME,
+      scheme.version,
+      input.label,
+      valueJson,
+      null,
+      reason,
+      input.createdBy ?? null,
+      input.createdAt,
+    );
+
+    finish('COMMIT');
+
+    return {
+      id,
+      scheme: RESERVED_SCHEME,
+      schemeVersion: scheme.version,
+      label: input.label,
+      created: true,
+    };
+  } catch (error) {
+    if (hasOpenTransaction()) db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+/**
+ * Every invalidation on record, newest first -- optionally narrowed to one entry.
+ *
+ * `ORDER BY created_at DESC, rowid DESC`: `created_at` is second-or-finer granularity (`requireUtc`
+ * accepts sub-second precision but does not require it), so two invalidations of different entries
+ * in one batch can share a timestamp. The tiebreak is `rowid`, not `id` -- `annotations` carries no
+ * `WITHOUT ROWID` (`schema.ts`) and `id` is `TEXT`, so SQLite's implicit rowid is a distinct,
+ * monotonically-assigned column here, not an alias for it. `rowid DESC` on a tie is true insertion
+ * order: whichever of two same-timestamp invalidations was WRITTEN SECOND sorts first, which is
+ * what "latest" has to mean for a reader deciding which of two invalidations of one entry to trust.
+ * `id` was tried first and rejected: it is a content hash (`recordInvalidation`), so ordering by it
+ * would rank a same-timestamp tie by which hash happens to sort higher -- deterministic, but with no
+ * relationship to which invalidation actually happened later.
+ *
+ * **`rowid` does not survive an `asc export` / `import` round-trip** (a fresh table reassigns
+ * rowids on insert), so a same-timestamp tie can resolve differently after one. That is an argument
+ * for a caller to give same-batch invalidations distinct timestamps, not a reason to prefer a hash
+ * here: a hash-ordered tie would be *consistently* wrong forever, where a rowid-ordered one is only
+ * ambiguous in the one case -- a genuine timestamp collision -- that made it a tie to begin with.
+ *
+ * "Latest first" is a reading convenience here, not the append-only reader promised by the module
+ * comment on `recordInvalidation`: a caller wanting an entry's LIVE invalidation state still has to
+ * decide what "latest" means when two invalidations of the one entry tie on `created_at` -- this
+ * function does not resolve that, it only orders for a human or a report to read down from the top.
+ */
+export function listInvalidations(db: DatabaseSync, entryId?: string): readonly InvalidationRow[] {
+  const clauses = ['scheme = ?'];
+  const parameters: string[] = [RESERVED_SCHEME];
+  if (entryId !== undefined) {
+    clauses.push('entry_id = ?');
+    parameters.push(entryId);
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT id, entry_id, label, value_json, note, created_by, created_at
+         FROM annotations
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY created_at DESC, rowid DESC`,
+    )
+    .all(...parameters) as unknown as {
+    id: string;
+    entry_id: string;
+    label: string;
+    value_json: string | null;
+    note: string | null;
+    created_by: string | null;
+    created_at: string;
+  }[];
+
+  return rows.map((row) => {
+    let supersededBy: string | null = null;
+    if (row.value_json !== null) {
+      const value = JSON.parse(row.value_json) as Record<string, unknown>;
+      const raw = value['superseded_by'];
+      if (typeof raw === 'string') supersededBy = raw;
+    }
+
+    return {
+      entryId: row.entry_id,
+      // Only `recordInvalidation` writes this scheme, and it refuses every label outside
+      // `INVALIDATION_LABELS` before the insert -- so the cast asserts an invariant this module
+      // itself enforces, not one a caller's data could violate.
+      label: row.label as InvalidationLabel,
+      // Same reasoning: `recordInvalidation` refuses an empty (or all-whitespace) reason before it
+      // ever prepares the insert, so `note` is never NULL for a row this scheme wrote.
+      reason: row.note as string,
+      supersededBy,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+    };
+  });
 }
 
 /**

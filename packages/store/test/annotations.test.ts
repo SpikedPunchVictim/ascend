@@ -7,11 +7,14 @@ import {
   AnnotationError,
   annotationPasses,
   annotationRows,
+  INVALIDATION_LABELS,
+  listInvalidations,
   listSchemes,
   matchingEntryIds,
   openStore,
   recordAnnotations,
   recordEntry,
+  recordInvalidation,
   registerScheme,
   registerType,
   RESERVED_SCHEME,
@@ -19,6 +22,7 @@ import {
   schemeHash,
   SchemeError,
   withTransaction,
+  type InvalidationLabel,
   type SchemeRuleKind,
   type SchemeSpec,
   type Store,
@@ -780,6 +784,391 @@ describe('the census, and the remainder that is the signal', () => {
       expect(() =>
         schemeCensus(store.db, { scheme: 'review', scope: '1=1); DELETE FROM annotations; --' }),
       ).toThrow(/must be a single condition/);
+    });
+  });
+});
+
+describe('invalidation', () => {
+  it('registers the reserved scheme on first use, with the closed vocabulary and no rules', () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+
+      const written = recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_value',
+        reason: 'the measured value was contaminated by a retry',
+        createdAt: AT,
+      });
+
+      expect(written.scheme).toBe(RESERVED_SCHEME);
+      expect(written.schemeVersion).toBe(1);
+      expect(written.label).toBe('wrong_value');
+      expect(listSchemes(store.db)).toEqual([
+        {
+          name: RESERVED_SCHEME,
+          version: 1,
+          createdAt: AT,
+          spec: { labels: [...INVALIDATION_LABELS].sort(), rules: [] },
+        },
+      ]);
+    });
+  });
+
+  it('reuses the existing scheme version on a second invalidation, rather than minting a new one', () => {
+    withStore((store) => {
+      const ids = seed(store, 2);
+
+      recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_subject',
+        reason: 'this entry was never about the claimed subject',
+        createdAt: AT,
+      });
+      const second = recordInvalidation(store.db, {
+        entryId: ids[1] as string,
+        label: 'wrong_subject',
+        reason: 'same mistake, a different entry',
+        createdAt: LATER,
+      });
+
+      expect(second.schemeVersion).toBe(1);
+      expect(listSchemes(store.db).map((scheme) => scheme.version)).toEqual([1]);
+    });
+  });
+
+  it('still refuses the reserved name through the public registerScheme, unchanged', () => {
+    // Rule 1's other half: the store's own internal registration path must not have taught
+    // `requireName` an exception for `recordInvalidation`.
+    withStore((store) => {
+      const ids = seed(store, 1);
+      recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_value',
+        reason: 'contaminated',
+        createdAt: AT,
+      });
+
+      expect(() =>
+        registerScheme(
+          store.db,
+          RESERVED_SCHEME,
+          { labels: ['x'], rules: [] },
+          { createdAt: LATER },
+        ),
+      ).toThrow(SchemeError);
+    });
+  });
+
+  it('refuses a label outside the closed vocabulary at runtime, for a caller with no compiler watching', () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: ids[0] as string,
+          label: 'duplicate' as InvalidationLabel,
+          reason: 'not part of the vocabulary',
+          createdAt: AT,
+        }),
+      ).toThrow(/is not one of/);
+    });
+  });
+
+  it('refuses an entryId that does not exist, rather than creating a tombstone', () => {
+    withStore((store) => {
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: 'nope',
+          label: 'wrong_value',
+          reason: 'does not matter',
+          createdAt: AT,
+        }),
+      ).toThrow(/does not exist/);
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: 'nope',
+          label: 'wrong_value',
+          reason: 'does not matter',
+          createdAt: AT,
+        }),
+      ).toThrow(/tombstone/);
+    });
+  });
+
+  it('refuses a reason that is empty, or only whitespace', () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: ids[0] as string,
+          label: 'wrong_value',
+          reason: '',
+          createdAt: AT,
+        }),
+      ).toThrow(/no reason/);
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: ids[0] as string,
+          label: 'wrong_value',
+          reason: '   ',
+          createdAt: AT,
+        }),
+      ).toThrow(/no reason/);
+    });
+  });
+
+  it('requires supersededBy when the label is superseded', () => {
+    withStore((store) => {
+      const ids = seed(store, 2);
+
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: ids[0] as string,
+          label: 'superseded',
+          reason: 'a later entry measured this better',
+          createdAt: AT,
+        }),
+      ).toThrow(/no 'supersededBy'/);
+    });
+  });
+
+  it('refuses supersededBy on a label other than superseded', () => {
+    withStore((store) => {
+      const ids = seed(store, 2);
+
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: ids[0] as string,
+          label: 'wrong_value',
+          reason: 'contaminated',
+          supersededBy: ids[1] as string,
+          createdAt: AT,
+        }),
+      ).toThrow(/not 'superseded'/);
+    });
+  });
+
+  it('refuses supersededBy naming an entry that does not exist', () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: ids[0] as string,
+          label: 'superseded',
+          reason: 'a later entry measured this better',
+          supersededBy: 'nope',
+          createdAt: AT,
+        }),
+      ).toThrow(/supersededBy names entry 'nope', which does not exist/);
+    });
+  });
+
+  it('refuses an entry superseding itself', () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: ids[0] as string,
+          label: 'superseded',
+          reason: 'a later entry measured this better',
+          supersededBy: ids[0] as string,
+          createdAt: AT,
+        }),
+      ).toThrow(/cannot supersede itself/);
+    });
+  });
+
+  it('stores supersededBy as value_json, and reads it back through listInvalidations', () => {
+    withStore((store) => {
+      const ids = seed(store, 2);
+
+      recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'superseded',
+        reason: 'a later entry measured this better',
+        supersededBy: ids[1] as string,
+        createdAt: AT,
+      });
+
+      const rows = listInvalidations(store.db, ids[0]);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.supersededBy).toBe(ids[1]);
+      expect(rows[0]?.reason).toBe('a later entry measured this better');
+
+      const raw = annotationRows(store.db, { scheme: RESERVED_SCHEME });
+      expect(raw[0]?.value).toEqual({ superseded_by: ids[1] });
+    });
+  });
+
+  it('allows invalidating an already-invalidated entry, without deduping', () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+
+      recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_value',
+        reason: 'first pass: value looked off',
+        createdAt: AT,
+      });
+      recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_subject',
+        reason: 'second pass: actually the wrong subject entirely',
+        createdAt: LATER,
+      });
+
+      const rows = listInvalidations(store.db, ids[0]);
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.label)).toEqual(['wrong_subject', 'wrong_value']);
+    });
+  });
+
+  it('omits createdBy rather than storing it as an empty string', () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+
+      recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_value',
+        reason: 'contaminated',
+        createdAt: AT,
+      });
+
+      expect(listInvalidations(store.db, ids[0] as string)[0]?.createdBy).toBeNull();
+
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: ids[0] as string,
+          label: 'wrong_value',
+          reason: 'contaminated again',
+          createdBy: '',
+          createdAt: LATER,
+        }),
+      ).toThrow(/createdBy is empty/);
+    });
+  });
+
+  it('stores createdBy when given', () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+
+      recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_value',
+        reason: 'contaminated',
+        createdBy: 'claude-code',
+        createdAt: AT,
+      });
+
+      expect(listInvalidations(store.db, ids[0] as string)[0]?.createdBy).toBe('claude-code');
+    });
+  });
+
+  it('lists invalidations newest-first, with same-timestamp ties broken by insertion order', () => {
+    withStore((store) => {
+      const ids = seed(store, 2);
+
+      // Two different entries invalidated at the exact same millisecond, so `created_at` alone
+      // cannot order them -- exactly the tie `listInvalidations`'s `rowid DESC` exists to break.
+      // `first` was written before `second`, so "latest" must place `second` ahead of `first`.
+      recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_value',
+        reason: 'first entry, same millisecond',
+        createdAt: AT,
+      });
+      recordInvalidation(store.db, {
+        entryId: ids[1] as string,
+        label: 'wrong_subject',
+        reason: 'second entry, same millisecond',
+        createdAt: AT,
+      });
+      recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_subject',
+        reason: 'a later pass on the first entry',
+        createdAt: LATER,
+      });
+
+      const rows = listInvalidations(store.db);
+      expect(rows.map((row) => row.createdAt)).toEqual([LATER, AT, AT]);
+      // Within the tied pair (both at AT), the one written SECOND (`ids[1]`) sorts first --
+      // insertion order, not a property of the ids themselves.
+      expect(rows.slice(1).map((row) => row.entryId)).toEqual([ids[1], ids[0]]);
+    });
+  });
+
+  it('records the identical claim again at a LATER createdAt as a no-op: the real retry case', () => {
+    // This is the case that mattered: a real `asc invalidate` re-run reads the wall clock fresh
+    // each time, so `createdAt` differs between the two calls even though the claim is identical.
+    // An id keyed on `createdAt` would make `created` always `true` and this a silent second row.
+    withStore((store) => {
+      const ids = seed(store, 1);
+      const claim = {
+        entryId: ids[0] as string,
+        label: 'wrong_value' as const,
+        reason: 'the measured value was contaminated by a retry',
+      };
+
+      const first = recordInvalidation(store.db, { ...claim, createdAt: AT });
+      expect(first.created).toBe(true);
+
+      const second = recordInvalidation(store.db, { ...claim, createdAt: LATER });
+      expect(second.created).toBe(false);
+      expect(second.id).toBe(first.id);
+      expect(second.schemeVersion).toBe(first.schemeVersion);
+
+      // Exactly one row, not two -- the whole point of treating the repeat as a no-op rather than
+      // a duplicate write.
+      expect(listInvalidations(store.db, ids[0] as string)).toHaveLength(1);
+    });
+  });
+
+  it('writes a second row when the invalidation differs, even for the same entry and label', () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+
+      const first = recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_value',
+        reason: 'first reason',
+        createdAt: AT,
+      });
+      const second = recordInvalidation(store.db, {
+        entryId: ids[0] as string,
+        label: 'wrong_value',
+        reason: 'a different reason, so this is not the same invalidation',
+        createdAt: LATER,
+      });
+
+      expect(first.created).toBe(true);
+      expect(second.created).toBe(true);
+      expect(second.id).not.toBe(first.id);
+      expect(listInvalidations(store.db, ids[0] as string)).toHaveLength(2);
+    });
+  });
+
+  it("keeps the FIRST call's createdAt on the stored row when a later call repeats the claim", () => {
+    withStore((store) => {
+      const ids = seed(store, 1);
+      const claim = {
+        entryId: ids[0] as string,
+        label: 'wrong_value' as const,
+        reason: 'the measured value was contaminated by a retry',
+      };
+
+      recordInvalidation(store.db, { ...claim, createdAt: AT });
+      const second = recordInvalidation(store.db, { ...claim, createdAt: LATER });
+
+      expect(second.created).toBe(false);
+      const rows = listInvalidations(store.db, ids[0]);
+      expect(rows).toHaveLength(1);
+      // The stored timestamp names when the claim was FIRST made -- the no-op repeat at `LATER`
+      // does not refresh it.
+      expect(rows[0]?.createdAt).toBe(AT);
     });
   });
 });

@@ -66,7 +66,14 @@ import {
 } from '@ascend/core';
 import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
-import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
+import {
+  ENVELOPE_COLUMNS,
+  ident,
+  INVALIDATED_COLUMN,
+  invalidatedColumnSql,
+  literal,
+  stateCase,
+} from './sql.js';
 
 /** One project to read. `label` is what the caller calls it; `file` is the store's `.db`. */
 export interface ProjectSource {
@@ -116,6 +123,14 @@ export interface UnionRow {
   readonly gitSha: string | null;
   readonly branch: string | null;
   readonly evidenceText: string | null;
+  /**
+   * The label of this entry's latest invalidation annotation, or `null` when it has never been
+   * invalidated (`asc-88m`). Read from the SAME correlated subquery a per-project view uses
+   * (`sql.ts`'s `invalidatedColumnSql`), qualified to the project's own ATTACHed `annotations`
+   * table rather than `main`'s. An invalidated row is still returned -- this union does not drop
+   * it -- so a caller wanting live rows only filters on this field.
+   */
+  readonly invalidated: string | null;
   /** Exactly the selected definition's properties -- the same key set as `states`. */
   readonly properties: Readonly<Record<string, unknown>>;
   /**
@@ -713,11 +728,19 @@ export function unionEntries(
   // own `registerType` guarantees that locally), so the embedded value must be canonicalized here
   // exactly as `readProject`'s bound parameter above is, or the two queries in this function would
   // search for two different strings for what is supposed to be one type.
+  //
+  // `invalidatedColumnSql(name)` qualifies the correlated subquery to THIS project's own
+  // `annotations` table -- attached under `name`, never `main`'s -- because unlike `entries` and
+  // `entry_types`, `annotations` is not read through `readProject` above, so nothing else in this
+  // function already qualifies it. Sharing the function with `views.ts` (`sql.ts`'s own comment)
+  // is what keeps "latest invalidation" meaning the same thing whichever way a caller queries.
   const select = (name: string, label: string): string =>
     `SELECT ${literal(label)} AS ${ident('project')},\n` +
-    [...ENVELOPE_COLUMNS.map((column) => `  e.${column} AS ${ident(column)}`), ...projections].join(
-      ',\n',
-    ) +
+    [
+      ...ENVELOPE_COLUMNS.map((column) => `  e.${column} AS ${ident(column)}`),
+      `  ${invalidatedColumnSql(name)}`,
+      ...projections,
+    ].join(',\n') +
     `\n  FROM ${ident(name)}.entries AS e\n` +
     ` WHERE e.type_name = ${literal(canonicalName(type))} AND e.type_hash = ${literal(hash)}`;
 
@@ -774,7 +797,7 @@ export function unionEntries(
 }
 
 /** The envelope columns carried on the row itself rather than into `properties`. */
-const ENVELOPE_KEYS: readonly string[] = [...ENVELOPE_COLUMNS, 'project'];
+const ENVELOPE_KEYS: readonly string[] = [...ENVELOPE_COLUMNS, INVALIDATED_COLUMN, 'project'];
 
 /**
  * A column the projection knows is text, or a loud failure.
@@ -836,6 +859,7 @@ function shapeRow(row: Record<string, unknown>): UnionRow {
     gitSha: text('git_sha'),
     branch: text('branch'),
     evidenceText: text('evidence_text'),
+    invalidated: text(INVALIDATED_COLUMN),
     properties,
     states,
   };

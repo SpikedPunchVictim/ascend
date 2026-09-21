@@ -26,9 +26,9 @@
  * and never appears in the entries table or in core's model.
  *
  * **A property may not be named after a column the view already projects** (`id`, `source`,
- * `workflow`, `properties_json`, ...) **or end in `_state`**, because those names are taken and
- * SQLite resolves a duplicate by renaming the loser to `source:1` -- silently, so the query above
- * would read the ENVELOPE value under the property's name. `@ascend/core`'s
+ * `workflow`, `properties_json`, `invalidated`, ...) **or end in `_state`**, because those names
+ * are taken and SQLite resolves a duplicate by renaming the loser to `source:1` -- silently, so
+ * the query above would read the ENVELOPE value under the property's name. `@ascend/core`'s
  * `reservedPropertyName` owns the vocabulary and `registerType` refuses on it, which is where the
  * author can still cheaply rename; `assertProjectable` below is the second line, for a spec that
  * reached the store without passing the registry. Measured and reproduced in views.test.ts
@@ -78,7 +78,7 @@ import {
   type TypeSpec,
 } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
-import { ENVELOPE_COLUMNS, ident, literal, stateCase } from './sql.js';
+import { ENVELOPE_COLUMNS, ident, invalidatedColumnSql, literal, stateCase } from './sql.js';
 
 /**
  * Refuse to build a view for a version that names a property the view has already claimed.
@@ -412,6 +412,12 @@ export function refreshTypeViews(db: DatabaseSync, typeName: string): RefreshRep
     const name = viewName(typeName, major);
     const selected = [
       ...ENVELOPE_COLUMNS.map((column) => `  e.${column} AS ${ident(column)}`),
+      // The invalidation column (asc-88m): NOT a filter. An invalidated row stays in the view --
+      // dropping it would make this view's row count silently disagree with `entries`' with
+      // nothing on screen explaining the gap -- so the fact is exposed as a column instead, and
+      // a reader who wants live rows only writes `WHERE invalidated IS NULL`. `sql.ts` shares the
+      // exact subquery with `union.ts` so the two views cannot project it differently.
+      `  ${invalidatedColumnSql()}`,
       ...projections,
     ].join(',\n');
 

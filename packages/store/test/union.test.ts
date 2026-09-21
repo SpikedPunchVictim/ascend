@@ -13,12 +13,14 @@ import {
   NotAnAscendStoreError,
   openStore,
   recordEntry,
+  recordInvalidation,
   registerType,
   STORE_DIR,
   STORE_FILE,
   TypeNotInAnyProjectError,
   unionEntries,
   UnknownTypeHashError,
+  type InvalidationLabel,
   type ProjectSource,
   type RecordContext,
   type Store,
@@ -991,6 +993,125 @@ describe('the three value states survive the crossing', () => {
         source: 'measured',
         id_state: 'measured',
       });
+    });
+  });
+});
+
+/**
+ * `asc-88m`: the union projects `invalidated` through the SAME correlated subquery a per-project
+ * view uses (`sql.ts`'s `invalidatedColumnSql`), qualified to the ATTACHed project's own
+ * `annotations` table rather than `main`'s -- so the two must agree exactly on one entry, which
+ * is what the last test below pins directly.
+ */
+describe('the invalidated column agrees with the per-project view (asc-88m)', () => {
+  const DENIABLE: TypeSpec = {
+    name: 'tool_denial',
+    properties: [
+      { name: 'count', type: 'integer' },
+      { name: 'tool_name', type: 'string' },
+    ],
+  };
+
+  /**
+   * Build one project, optionally invalidate one of its entries, and report what that project's
+   * OWN per-project view (`v_tool_denial_v1`) says about it -- read before the store is closed,
+   * so a test can compare it against what the union says about the very same row.
+   */
+  function projectWithLocalView(
+    entries: readonly FixtureEntry[],
+    invalidation?: {
+      readonly entryId: string;
+      readonly label: InvalidationLabel;
+      readonly reason: string;
+    },
+  ): { readonly source: ProjectSource; readonly localInvalidated: string | null } {
+    projectCount += 1;
+    const label = `p${String(projectCount)}`;
+    const dir = join(tempDir(), label, STORE_DIR);
+    const store = openStore({ dir });
+    let localInvalidated: string | null = null;
+    try {
+      registerType(store.db, DENIABLE, { registeredAt: AT });
+      for (const entry of entries) {
+        recordEntry(
+          store.db,
+          { type: 'tool_denial', properties: entry.properties ?? {} },
+          context(entry.id, entry.at ?? AT),
+        );
+      }
+      if (invalidation !== undefined) {
+        recordInvalidation(store.db, {
+          entryId: invalidation.entryId,
+          label: invalidation.label,
+          reason: invalidation.reason,
+          createdAt: AT,
+        });
+        const row = store.db
+          .prepare(`SELECT invalidated FROM v_tool_denial_v1 WHERE id = ?`)
+          .get(invalidation.entryId) as { invalidated: string | null };
+        localInvalidated = row.invalidated;
+      }
+    } finally {
+      store.close();
+    }
+    return { source: { label, file: join(dir, STORE_FILE) }, localInvalidated };
+  }
+
+  it('projects NULL for an entry that has never been invalidated', () => {
+    const { source } = projectWithLocalView([
+      { id: 'a1', properties: { count: 3, tool_name: 'Bash' } },
+    ]);
+
+    withConnection((db) => {
+      const row = unionEntries(db, 'tool_denial', [source]).rows[0];
+      expect(row?.invalidated).toBeNull();
+    });
+  });
+
+  it('projects the label of a single invalidation', () => {
+    const { source } = projectWithLocalView(
+      [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }],
+      { entryId: 'a1', label: 'wrong_value', reason: 'count was miscounted' },
+    );
+
+    withConnection((db) => {
+      const row = unionEntries(db, 'tool_denial', [source]).rows[0];
+      expect(row?.invalidated).toBe('wrong_value');
+    });
+  });
+
+  it('keeps an invalidated row IN the union rather than filtering it out', () => {
+    // The same design point `views.ts` makes: dropping the row would make the union's own count
+    // disagree with `entries`' with nothing explaining the gap, so exclusion stays a WHERE clause
+    // a caller opts into, not something the union does silently.
+    const { source } = projectWithLocalView(
+      [
+        { id: 'a1', properties: { count: 3, tool_name: 'Bash' } },
+        { id: 'a2', properties: { count: 4, tool_name: 'Read' } },
+      ],
+      { entryId: 'a1', label: 'wrong_value', reason: 'struck, but still on record' },
+    );
+
+    withConnection((db) => {
+      const rows = unionEntries(db, 'tool_denial', [source]).rows;
+      expect(rows.map((row) => row.id)).toEqual(['a1', 'a2']);
+      expect(rows.filter((row) => row.invalidated === null).map((row) => row.id)).toEqual(['a2']);
+    });
+  });
+
+  it('agrees with the per-project view for the same entry', () => {
+    const { source, localInvalidated } = projectWithLocalView(
+      [{ id: 'a1', properties: { count: 3, tool_name: 'Bash' } }],
+      { entryId: 'a1', label: 'wrong_subject', reason: 'this was never about a1 at all' },
+    );
+
+    // Not vacuous: the per-project view really did see an invalidation, so agreeing with it and
+    // agreeing that both are NULL are different claims.
+    expect(localInvalidated).toBe('wrong_subject');
+
+    withConnection((db) => {
+      const row = unionEntries(db, 'tool_denial', [source]).rows[0];
+      expect(row?.invalidated).toBe(localInvalidated);
     });
   });
 });
