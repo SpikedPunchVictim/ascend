@@ -763,13 +763,26 @@ describe('asc ingest claude-code', () => {
   });
 
   /**
-   * `asc-90h`: two transcript files that reuse a `(session_id, uuid)` pair for two DIFFERENT
-   * events collide on id -- `derive.ts`'s key carries no file component -- and the per-file
-   * `keyCollisions` counter cannot see it, because it resets on every file change. The second
-   * file's event used to be swallowed as ordinary idempotency ("1 already present"); it must
-   * now be a visible, distinct outcome.
+   * The same case `asc-90h` found, now fixed at its cause rather than reported at its symptom.
+   *
+   * `asc-90h` saw two transcript files reuse a `(session_id, uuid)` pair for two DIFFERENT
+   * events, and made the loss VISIBLE at the store: the second event could not be written, so it
+   * became a counted `collided` rather than a silent "already present". That was the right fix
+   * for what was known then, and this test asserted it.
+   *
+   * `asc-iq6` found why the deriver could not prevent it: the set that suffixes a repeated key
+   * `#2` was scoped to one FILE, while the key it guards embeds a session id that all of a
+   * session's subagent transcripts share. Each file checked itself, found no repeat, and emitted
+   * the same key. With the set widened to the sweep, the second event is suffixed and KEPT, so
+   * the expectation here inverts: what used to be one entry and one loud loss is now two
+   * entries. Preserving the event is strictly better than reporting it as lost, which is why
+   * this is an inversion and not a regression.
+   *
+   * The store-level guard is not dead, and the test below covers it: it still fires when an id
+   * already in the store is re-proposed with DIFFERENT content, which a transcript edited in
+   * place between two ingests still produces.
    */
-  it('reports a cross-file id collision rather than swallowing it as idempotency', () => {
+  it('keeps both events when two files reuse one identity, rather than reporting one as lost', () => {
     const dir = project();
     const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
     mkdirSync(corpus, { recursive: true });
@@ -783,7 +796,8 @@ describe('asc ingest claude-code', () => {
     });
 
     // Two DIFFERENT physical files, deliberately not two records in one file: the mechanism is
-    // the deriver's per-file reset, which only a real file boundary exercises.
+    // the deriver's file boundary, and two records in one file would have been disambiguated
+    // even before `asc-iq6`. Only a real boundary exercises the scope that was wrong.
     writeFileSync(
       join(corpus, 'sess-collide-a.jsonl'),
       `${JSON.stringify(feedbackRecord('use approach A', '2026-01-02T03:05:00.000Z'))}\n`,
@@ -797,22 +811,80 @@ describe('asc ingest claude-code', () => {
 
     expect(run.status).toBe(0);
 
-    // The FIRST file's event landed -- sorted path order, so `sess-collide-a.jsonl` is read
-    // before `sess-collide-b.jsonl`.
+    // BOTH events landed. Read back rather than trusted, and sorted so the assertion does not
+    // silently encode the sweep's file order -- which file is read first is not what is being
+    // claimed here.
     const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    let rows: { id: string; t: string }[];
     try {
-      const row = db
-        .prepare('SELECT evidence_text AS t FROM entries WHERE type_name = ?')
-        .get('user_correction') as { t: string };
-      expect(row.t).toBe('use approach A');
+      rows = db
+        .prepare('SELECT id, evidence_text AS t FROM entries WHERE type_name = ?')
+        .all('user_correction') as { id: string; t: string }[];
     } finally {
       db.close();
     }
+    expect(rows.map((row) => row.t).sort()).toEqual(
+      ['use approach A', 'actually use approach B'].sort(),
+    );
 
-    // The SECOND is reported as a collision, not folded into "already present" -- the exact
-    // silent drop `asc-90h` names.
-    expect(outcomes(run.stdout)['user_correction']).toBe('1 new, 1 collided');
-    expect(run.stderr).toContain('1 derived entry collided with a DIFFERENT entry');
+    // Two distinct ids, exactly one of them suffixed. The suffix is the mechanism: without it
+    // the two events would share an id, which is the state `asc-iq6` removed.
+    const ids = rows.map((row) => row.id);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.filter((id) => id.endsWith('#2')).length).toBe(1);
+
+    expect(outcomes(run.stdout)['user_correction']).toBe('2 new');
+    expect(run.stderr).not.toContain('collided with a DIFFERENT entry');
+  });
+
+  /**
+   * The route by which the store-level guard from `asc-90h` is STILL reachable after `asc-iq6`.
+   *
+   * A derived id is a function of `(session_id, uuid)` and nothing else -- deliberately, so that
+   * re-ingesting the same transcript is idempotent. A transcript edited in place therefore
+   * re-proposes an id the store already holds, carrying different content, and entries are
+   * immutable, so the store cannot accept the new version. Widening the deriver's suffix set to
+   * the sweep does not touch this case: the two proposals are in two separate RUNS, and the
+   * second run's set starts empty.
+   */
+  it('reports a collision when a transcript is edited in place and re-ingested', () => {
+    const dir = project();
+    const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
+    mkdirSync(corpus, { recursive: true });
+
+    const file = join(corpus, 'sess-edited.jsonl');
+    const feedbackRecord = (feedback: string): Record<string, unknown> => ({
+      sessionId: 'sess-edited',
+      uuid: 'shared-uuid-2',
+      timestamp: '2026-01-02T03:06:00.000Z',
+      ...RECORD_AT,
+      userFeedback: feedback,
+    });
+
+    writeFileSync(file, `${JSON.stringify(feedbackRecord('the original wording'))}\n`);
+    const first = asc(['ingest', 'claude-code'], dir);
+    expect(first.status).toBe(0);
+    expect(outcomes(first.stdout)['user_correction']).toBe('1 new');
+
+    // Same session, same record uuid, same timestamp: the id is unchanged and only the content
+    // moves, which is exactly the pair the fingerprint comparison exists to tell apart.
+    writeFileSync(file, `${JSON.stringify(feedbackRecord('the edited wording'))}\n`);
+    const second = asc(['ingest', 'claude-code'], dir);
+
+    expect(second.status).toBe(0);
+    expect(outcomes(second.stdout)['user_correction']).toBe('1 collided');
+    expect(second.stderr).toContain('1 derived entry collided with a DIFFERENT entry');
+
+    // Immutability, read back: the edit did not overwrite what was already recorded.
+    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    try {
+      const rows = db
+        .prepare('SELECT evidence_text AS t FROM entries WHERE type_name = ?')
+        .all('user_correction') as { t: string }[];
+      expect(rows.map((row) => row.t)).toEqual(['the original wording']);
+    } finally {
+      db.close();
+    }
   });
 });
 

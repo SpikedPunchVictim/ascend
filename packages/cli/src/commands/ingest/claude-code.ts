@@ -21,12 +21,15 @@
  *     checkpoint, so `--root` is walked again every time (~5 s for the measured corpus). That is
  *     deliberate: a checkpoint file would be a second source of truth about what has been
  *     ingested, and a checkpoint that disagrees with the store is worse than no checkpoint.
- *   - **The `#2` disambiguation suffix is content-sensitive.** The deriver appends `#2` when a
- *     transcript repeats a per-event key. If a still-growing transcript file gains a colliding
- *     record between two ingests, that entry's suffix shifts and the run writes one more entry
- *     rather than recognising it. Measured: 6 key collisions in the whole corpus, so this is a
- *     handful of rows. It is a real limit of keying on a derived identity, not a bug to be fixed
- *     here -- which is why the count is reported rather than absorbed.
+ *   - **The `#2` disambiguation suffix is order-sensitive.** The deriver appends `#2` when a
+ *     sweep repeats a per-event key. If a still-growing corpus gains a colliding record between
+ *     two ingests, that entry's suffix shifts and the run writes one more entry rather than
+ *     recognising it. `asc-iq6` widened that set from per-file to per-sweep, which fixed a real
+ *     loss but also made the suffix depend on file traversal order rather than position within
+ *     one file. Measured 2026-09-20 on the live corpus: 1 observed collision among 1,812 derived
+ *     entries (`asc ingest claude-code --dry-run --json`), so this is a handful of rows. It is a
+ *     real limit of keying on a derived identity, not a bug to be fixed here -- which is why the
+ *     count is reported rather than absorbed.
  *
  * **ONE TRANSACTION, AND ALL-OR-NOTHING.** The writes go in a single `withTransaction`, matching
  * what `asc record` already promises for a batch. Measured twice on the real corpus with the same
@@ -196,13 +199,19 @@ function disclosingOf(entries: readonly DerivedEntry[]): readonly Disclosing[] {
  * A fingerprint of everything about an entry that is NOT its id -- the content a re-ingest of
  * the same event must reproduce exactly.
  *
- * `entry.key` and hence `idFor(entry)` deliberately excludes the file path (`asc-90h`'s own
- * mechanism note: the per-file collision counter cannot see a cross-file reuse of a
- * `(session_id, uuid)` or `(session_id, tool_use_id)` pair). So the id alone cannot tell a
- * genuine re-run of the same event from two DIFFERENT events that happened to reuse that pair
- * across two transcript files. Comparing content is the cheapest thing that can: two files
- * describing the same event will always agree on it, and `properties_json`/`cwd`/`branch`/
- * `evidence_text` together are the entirety of what a derived entry says beyond its id.
+ * `entry.key` and hence `idFor(entry)` deliberately excludes the file path, which is what makes
+ * re-ingesting the same transcript idempotent. So the id alone cannot tell a genuine re-run of
+ * the same event from a DIFFERENT event proposing the same id. Comparing content is the cheapest
+ * thing that can: a genuine re-run always reproduces it exactly, and
+ * `properties_json`/`cwd`/`branch`/`evidence_text` together are the entirety of what a derived
+ * entry says beyond its id.
+ *
+ * `asc-90h` needed this for a cross-file reuse of a `(session_id, uuid)` or
+ * `(session_id, tool_use_id)` pair WITHIN one sweep, which `asc-iq6` has since fixed at the
+ * deriver -- the suffix set is sweep-wide now, so that case never reaches here. What still does
+ * is a transcript edited in place between two ingests: same id, new content, in a later run
+ * whose suffix set starts empty. The comparison is therefore load-bearing for a narrower case
+ * than it was written for, and still load-bearing.
  */
 function fingerprint(entry: {
   readonly properties: Readonly<Record<string, unknown>>;
@@ -486,10 +495,10 @@ export default class IngestClaudeCode extends BaseCommand {
           // cannot be mistaken for idempotency working.
           if (error instanceof DuplicateEntryError) {
             // `asc-90h`: a duplicate id is ordinary idempotency ONLY when it is a re-proposal of
-            // the SAME content. `derive.ts`'s id has no file component, so two files that reuse a
-            // `(session_id, uuid)` or `(session_id, tool_use_id)` pair for DIFFERENT events
-            // collide on id -- and the per-file `keyCollisions` counter cannot see it, because it
-            // resets on every file change. Reading the existing row back and comparing content is
+            // the SAME content. `derive.ts`'s id has no file component, so an id already in the
+            // store can be re-proposed carrying something else -- today that means a transcript
+            // edited in place between two ingests, since `asc-iq6` made the deriver resolve the
+            // within-sweep case itself. Reading the existing row back and comparing content is
             // what tells the two cases apart; skipping the comparison is exactly how this bug
             // stayed invisible.
             const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
@@ -500,10 +509,10 @@ export default class IngestClaudeCode extends BaseCommand {
             } else {
               tally(entry.type, 'collided');
               collisions.push(
-                `${entry.type} ${idFor(entry)}: this id already holds a DIFFERENT entry. Two ` +
-                  `transcript files reused the same (session, record) identity for different ` +
-                  `content, so the second one was refused rather than silently dropped. This ` +
-                  `event is not recoverable without a key that also names the file it came from.`,
+                `${entry.type} ${idFor(entry)}: this id already holds a DIFFERENT entry. The ` +
+                  `same (session, record) identity was seen carrying different content -- most ` +
+                  `often a transcript edited after it was ingested -- so this one was refused ` +
+                  `rather than silently dropped. What is already recorded is unchanged.`,
               );
             }
             continue;
@@ -627,18 +636,20 @@ export default class IngestClaudeCode extends BaseCommand {
     }
     for (const rejection of writes.rejections) this.warn(rejection);
 
-    // A cross-file id collision (`asc-90h`): two transcripts reused the same per-event identity
-    // for different content. The second one cannot be recorded -- entries are immutable and this
-    // id is taken -- so, like a rejection, it must be a visible count rather than folded into the
-    // "already present" that ordinary idempotency produces.
+    // An id collision (`asc-90h`): an id already in the store was re-proposed carrying different
+    // content. The new one cannot be recorded -- entries are immutable and this id is taken --
+    // so, like a rejection, it must be a visible count rather than folded into the "already
+    // present" that ordinary idempotency produces. Since `asc-iq6` the within-sweep case is
+    // resolved by the deriver, so what reaches here is a transcript that changed under an id it
+    // had already been ingested under.
     const collided = [...writes.counts.values()].reduce((sum, one) => sum + one.collided, 0);
     if (collided > 0) {
       this.warn(
         `${String(collided)} derived entr${collided === 1 ? 'y' : 'ies'} collided with a ` +
           `DIFFERENT entry already recorded under the same id, and ` +
-          `${collided === 1 ? 'was' : 'were'} not written. See the line(s) below; recovering ` +
-          `${collided === 1 ? 'it' : 'them'} needs a re-ingest under a key that also names the ` +
-          `file it came from.`,
+          `${collided === 1 ? 'was' : 'were'} not written. See the line(s) below. The entry ` +
+          `already in the store stands: entries are immutable, so the newer content cannot ` +
+          `replace it under this id.`,
       );
     }
     for (const collision of writes.collisions) this.warn(collision);

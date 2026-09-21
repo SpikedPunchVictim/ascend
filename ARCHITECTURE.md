@@ -431,11 +431,18 @@ packages/analysis              pure: sampling, clustering, near-dup, log-odds, M
                                FP-growth, Wilson intervals, CUSUM/Pettitt, kappa. No I/O.
 packages/cli                   oclif. `asc`. Only interface in v1.
 packages/adapter-claude-code   derives entries from ~/.claude/projects/*.jsonl
-skill/                         analysis-method skill + /ascend-analyze command
+packages/cli/skill/            analysis-method skill + /ascend-analyze command (see below)
 ```
 
 Core never imports store or adapter types. `packages/analysis` is pure functions over plain arrays —
 statistics are testable against known fixtures with no database involved.
+
+The skill lives **inside `packages/cli`, not at the repository root**, which this diagram originally
+said. The reason is packaging, and it was found by reading `packages/cli/package.json` rather than
+by argument: `files` is `["dist", "oclif.manifest.json", "skill"]`, so only paths inside the package
+are published. A top-level `skill/` directory would exist in this checkout and be absent from every
+install, and `asc install-skill` — which resolves its sources from `import.meta.url` — would refuse
+on the one machine where it matters. The file that installs an artifact has to ship with it.
 
 ### CLI surface
 

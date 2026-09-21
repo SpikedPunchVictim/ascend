@@ -17,7 +17,8 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "oclif.manifest.json"
+    "oclif.manifest.json",
+    "skill"
   ],
   "scripts": {
     "build": "tsc -b"

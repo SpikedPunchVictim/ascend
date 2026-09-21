@@ -109,8 +109,11 @@ export interface DeriveCounters {
   /** Entries produced. */
   entries: number;
   /**
-   * Entries whose per-event key was already issued for this file, so it was suffixed `#2`.
-   * Measured: 6 across the whole 2026-09-15 corpus, out of 1,488 entries.
+   * Entries whose per-event key was already issued in this SWEEP, so it was suffixed `#2`.
+   * Measured: 6 across the whole 2026-09-15 corpus, out of 1,488 entries -- taken while the
+   * set was still per FILE, so that 6 counted only same-file repeats and is a floor, not a
+   * total. `asc-iq6` widened the set to the sweep, so this counter now also sees a repeat
+   * across two files of one session, which is a class it was previously blind to.
    *
    * Small, and reported rather than absorbed, because the alternative is a rule that silently
    * overwrites -- and a dropped event leaves no trace at all. The count is not broken down by
@@ -508,8 +511,33 @@ export function createDeriver(): Deriver {
     string,
     { readonly name: string; readonly command: string | undefined }
   >();
-  /** Keys already issued for THIS file, so a repeat is suffixed rather than lost. */
-  let issued = new Set<string>();
+  /**
+   * Keys already issued for THIS SWEEP, so a repeat is suffixed rather than lost.
+   *
+   * **Sweep-wide, not per file, and the difference is the whole of `asc-iq6`.** Every raw key
+   * here embeds a `sessionId`, and a session id is NOT per file: a session's subagent
+   * transcripts carry the PARENT's session id -- the same fact the verdict chain below relies
+   * on when it refuses to chain across one. Tool-use ids are unique within ONE agent's
+   * conversation, so two sibling subagent transcripts can independently mint the same
+   * `toolu_...`, and with a per-file set each file disambiguated against itself, found no
+   * repeat, and emitted the SAME unsuffixed key. The collision existed only in the union --
+   * which is exactly the scope the key claims.
+   *
+   * Measured when it was found, on the live corpus: one duplicate,
+   * `verification_run|<session>:toolu_...`, from two subagent transcripts of one session
+   * holding 218 and 141 records. Both reported the same `sessionId`. 861 of the 913
+   * transcripts in that corpus are subagent transcripts, so this is the majority surface
+   * rather than a corner of it.
+   *
+   * A set that spans the sweep costs one string per DERIVED entry, not per record read. Measured
+   * the same day with `asc ingest claude-code --dry-run --json`: 1,812 entries derived from
+   * 525,672 records across 910 transcripts. Three orders of magnitude below the input it is
+   * already holding in memory, and not a reason to reintroduce a correctness gap.
+   *
+   * `const` is load-bearing rather than tidiness: the defect was one assignment, in `begin()`,
+   * and `const` is what makes reintroducing it a compile error instead of a review question.
+   */
+  const issued = new Set<string>();
   let run: SkillRun | undefined;
   /**
    * The last check verdict in this file, which is what "a verdict change" is measured
@@ -606,9 +634,15 @@ export function createDeriver(): Deriver {
     );
   };
 
+  /**
+   * Reset the state that belongs to ONE file, when the sweep moves to the next one.
+   *
+   * `issued` is deliberately NOT reset here -- see its own doc. It is the one piece of state
+   * whose scope is the sweep rather than the file, because the keys it guards embed a session
+   * id that several files share.
+   */
   const begin = (): void => {
     invocations = new Map();
-    issued = new Set();
     lastVerdict = undefined;
   };
 

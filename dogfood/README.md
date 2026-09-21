@@ -48,8 +48,9 @@ context; the depth lives in the numbered files.
 | [0005](0005-2026-09-18-evidence-text-carries-tool-boilerplate.md) | `evidence_text` is 43 words of tool boilerplate before it is the user | `asc-m4u` (P2) | hand-reading merges from a measurement about something else |
 | [0006](0006-2026-09-18-recorded-at-is-the-ingest-clock.md) | `recorded_at` is the ingest clock — 94.7% of entries share one instant | `asc-bn0` (P2) | a refusal whose stated reason did not survive a check against the data |
 | [0007](0007-2026-09-18-the-suite-races-itself.md) | The gate's red was the suite competing with itself, on a deadline a growing corpus sets | `asc-3x1` (P2) | a hypothesis that predicted "quieter is faster" meeting a quieter run that was slower |
+| [0008](0008-2026-09-20-the-key-claimed-a-scope-its-guard-did-not-cover.md) | the derived key claimed uniqueness over a scope its guard did not cover | `asc-iq6` (P0) | a red gate read as known flakiness, until a quiet re-run named a value instead of a deadline |
 
-Seven findings, seven different mechanisms. The mechanism is the part that repeats even when
+Eight findings, eight different mechanisms. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 ## The convention

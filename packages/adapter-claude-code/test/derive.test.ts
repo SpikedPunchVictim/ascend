@@ -833,13 +833,29 @@ describe('keys and counters', () => {
     expect(deriver.counters.keyCollisions).toBe(2);
   });
 
-  it('resets the issued-key set per file, so two files do not collide', () => {
+  /**
+   * The inverse of what this test asserted until `asc-iq6`, and the inversion is the point.
+   *
+   * It used to read "resets the issued-key set per file, so two files do not collide" and
+   * expected two identical keys. That expectation was the defect written down: note that both
+   * records carry `sessionId: 'sess-1'` while the FILES differ, which is not a contrived
+   * fixture -- a session's subagent transcripts all carry the PARENT's session id, so this is
+   * the ordinary shape of the corpus rather than an edge of it. The key embeds that shared
+   * session id, so two files of one session CAN mint the same key, and a per-file set could not
+   * see it: each file disambiguated against itself, found no repeat, and emitted the same
+   * unsuffixed key.
+   *
+   * Measured on the live corpus before the fix: one real duplicate,
+   * `verification_run|<session>:toolu_...`, from two subagent transcripts of a single session.
+   * 861 of that corpus's 913 transcripts are subagent transcripts.
+   */
+  it('carries the issued-key set across files, because a session id is not per file', () => {
     const deriver = createDeriver();
     const a = deriver.accept(record([], { uuid: 'same', userFeedback: 'a' }), FILE);
     const b = deriver.accept(record([], { uuid: 'same', userFeedback: 'b' }), fileAt('bbb'));
     deriver.drain();
-    expect([...a, ...b].map((entry) => entry.key)).toEqual(['sess-1:same', 'sess-1:same']);
-    expect(deriver.counters.keyCollisions).toBe(0);
+    expect([...a, ...b].map((entry) => entry.key)).toEqual(['sess-1:same', 'sess-1:same#2']);
+    expect(deriver.counters.keyCollisions).toBe(1);
   });
 
   it('counts every record offered, including ones that yield nothing', () => {
