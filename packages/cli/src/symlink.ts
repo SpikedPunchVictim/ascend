@@ -54,10 +54,13 @@ export function symlinkTarget(path: string): string | null | undefined {
 /**
  * Quote a value for `/bin/sh`, exactly.
  *
- * The hook command written by `asc install-hook` carries three absolute paths -- the binary, the
- * store and the interpreter -- and an absolute path on macOS routinely contains a space
- * (`/Users/first last/...`). Unquoted, that command would silently split into two arguments and the
- * hook would run something else or nothing at all.
+ * Once used to quote the absolute paths `asc install-hook` baked into `.claude/settings.json`
+ * directly; asc-cjm removed those paths from the settings command entirely (dogfood/0009 -- a
+ * shared, tracked file is the wrong place for anything machine-specific). The remaining, and now
+ * only, caller is `install-hook.ts`'s `hookScript`, which quotes the PROJECT-RELATIVE path it
+ * embeds in the generated `.claude/ascend-hook.sh` for the same underlying reason: directory names
+ * inside a real checkout routinely contain a space (`packages/first last/...`), and unquoted that
+ * would silently split into two shell words and misresolve the binary or nothing at all.
  *
  * Single quotes, because they suppress every expansion: under double quotes a path containing `$`
  * or a backtick would be expanded by the shell into something the user never wrote. The one
