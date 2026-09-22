@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { statementCount, wrapPredicate } from '../src/index.js';
+import { PredicateError, statementCount, wrapPredicate } from '../src/index.js';
 
 /**
  * The statement scanner, and the predicate wrap built on it.
@@ -49,7 +49,7 @@ describe('the statement scanner', () => {
   });
 });
 
-describe('wrapping a rule predicate', () => {
+describe('wrapping a predicate', () => {
   it('returns the statement a single-condition predicate lands in', () => {
     expect(wrapPredicate('entries', "type_name = 'decision'")).toBe(
       "SELECT id FROM entries WHERE (type_name = 'decision')",
@@ -61,6 +61,9 @@ describe('wrapping a rule predicate', () => {
     // accepts `'SELECT a FROM t WHERE (a > 0); DROP TABLE t; --)'`, returns the FIRST statement's
     // rows, and silently discards the rest -- so a fragment like this one does not fail, it produces
     // a match count from a truncated predicate. Refused before prepare ever sees it.
+    expect(() => wrapPredicate('entries', '1=1); DELETE FROM annotations; --')).toThrow(
+      PredicateError,
+    );
     expect(() => wrapPredicate('entries', '1=1); DELETE FROM annotations; --')).toThrow(
       /must be a single condition/,
     );

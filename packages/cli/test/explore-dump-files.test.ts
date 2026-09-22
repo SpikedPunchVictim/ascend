@@ -234,7 +234,16 @@ describe('asc explore --dump: the flag, and what it refuses', () => {
     const dir = emptyProject();
     record(dir, 2);
 
-    for (const other of [['--page'], ['--cursor', 'x'], ['--sample', 'random']]) {
+    // `--select` and `--group-by` joined this list with `asc-56k` and are covered here rather than
+    // in a second test, because the reason they are refused is the reason the first three are:
+    // each names a subset, and a dump writes the whole type.
+    for (const other of [
+      ['--page'],
+      ['--cursor', 'x'],
+      ['--sample', 'random'],
+      ['--select', 'outcome'],
+      ['--group-by', 'outcome'],
+    ]) {
       const run = asc(['explore', SPEC.name, '--dump', 'out', ...other], dir);
       // A dump writes the WHOLE type. Silently honouring a window would put files on disk that a
       // caller reads as the whole corpus -- and a dump outlives the command that wrote it, so
@@ -242,7 +251,7 @@ describe('asc explore --dump: the flag, and what it refuses', () => {
       expect(run.status).toBe(2);
       expect(run.stdout).toBe('');
       expect(flatten(run.stderr)).toContain(
-        '--dump cannot be combined with --page, --cursor or --sample',
+        '--dump cannot be combined with --page, --cursor, --sample, --select or --group-by',
       );
     }
     expect(existsSync(join(dir, 'out'))).toBe(false);

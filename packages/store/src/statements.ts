@@ -180,6 +180,48 @@ export function statementCount(sql: string): number {
 }
 
 /**
+ * A caller-supplied predicate that `wrapPredicate` refused.
+ *
+ * A bare `TypeError` was the original choice, and it stayed harmless as long as `asc annotate
+ * --rule` was the only caller: nothing needed to tell "your predicate is bad" apart from anything
+ * else. `asc explore --filter` is a second caller, and it has to turn a refusal here into a clean,
+ * caller-facing message -- which means catching it, and the only way to catch a `TypeError`
+ * specifically is to catch the built-in `TypeError`. That would also catch a genuine programming
+ * bug elsewhere in `explore`'s own code (a wrong argument type, say) and report IT to the user as
+ * "your filter is bad", which is a worse answer than the one it replaces. A dedicated class is
+ * the one thing a `catch` can distinguish "this predicate" from "a bug in the caller" by.
+ */
+export class PredicateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PredicateError';
+  }
+}
+
+/**
+ * Refuse `statement` unless it is exactly one SQL statement.
+ *
+ * Split out of `wrapPredicate` (asc-56k) once a second caller (`typeFilterScope`) needed the
+ * identical guard over a statement it built its own way -- a subquery projection, not
+ * `wrapPredicate`'s own `SELECT id FROM <table> WHERE (...)` shape. Sharing this function rather
+ * than each caller writing its own count-and-throw is the same one-place rule the rest of this
+ * file is built on: two copies of "what does 'more than one statement' mean" could disagree about
+ * the exact wording a caller matches on, or about which state the refusal even is.
+ */
+function assertSingleStatement(statement: string): void {
+  const count = statementCount(statement);
+  if (count !== 1) {
+    throw new PredicateError(
+      `a predicate must be a single condition, and this one makes ${String(count)} statements ` +
+        `once wrapped as a WHERE clause: ${JSON.stringify(statement)}. A ';' outside a string ` +
+        `literal in the predicate is the usual cause. Refused rather than run, because SQLite runs ` +
+        `the first statement and discards the rest in silence -- a match count from a truncated ` +
+        `predicate would describe a rule that was never applied.`,
+    );
+  }
+}
+
+/**
  * Wrap a caller's predicate as the `WHERE` clause of a statement over `table`, or refuse it.
  *
  * The wrap and the check are one function rather than two because they are one decision: a fragment
@@ -195,17 +237,17 @@ export function statementCount(sql: string): number {
  */
 export function wrapPredicate(table: string, fragment: string): string {
   const statement = `SELECT id FROM ${table} WHERE (${fragment})`;
-  const count = statementCount(statement);
+  assertSingleStatement(statement);
+  return statement;
+}
 
-  if (count !== 1) {
-    throw new TypeError(
-      `a rule predicate must be a single condition, and this one makes ${String(count)} statements ` +
-        `once wrapped as a WHERE clause: ${JSON.stringify(statement)}. A ';' outside a string ` +
-        `literal in the predicate is the usual cause. Refused rather than run, because SQLite runs ` +
-        `the first statement and discards the rest in silence -- a match count from a truncated ` +
-        `predicate would describe a rule that was never applied.`,
-    );
-  }
-
+/**
+ * Wrap a caller's predicate as the `WHERE` clause over an arbitrary `SELECT ...` projection
+ * (rather than `wrapPredicate`'s bare table name), or refuse it. Exported for `typeFilterScope`
+ * (`type-filter.ts` -- asc-56k), the one caller that filters over a projection instead of a table.
+ */
+export function wrapPredicateOverQuery(projection: string, fragment: string): string {
+  const statement = `SELECT id FROM (${projection}) WHERE (${fragment})`;
+  assertSingleStatement(statement);
   return statement;
 }

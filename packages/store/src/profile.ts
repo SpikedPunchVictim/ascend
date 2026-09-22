@@ -147,8 +147,15 @@ export interface ProfileOptions {
 
 const STATES = ['measured', 'not_applicable', 'not_measured', 'not_declared'] as const;
 
-/** The summary a declared type earns. Exhaustive, so a new property type fails to compile. */
-function summaryFor(type: PropertyType): PropertySummary {
+/**
+ * The summary a declared type earns. Exhaustive, so a new property type fails to compile.
+ *
+ * Exported for `crosstab.ts` (`asc-56k`): a group-by key is refused when its declared type earns
+ * `range` or `cardinality` rather than `top`, and that refusal has to read this same classifier --
+ * a second switch over `PropertyType` here would drift from this one the next time a type is
+ * added to the vocabulary, and only one of the two copies would fail to compile.
+ */
+export function summaryFor(type: PropertyType): PropertySummary {
   switch (type) {
     case 'enum':
     case 'boolean':
@@ -175,7 +182,14 @@ function measuredTest(property: string): string {
   return `json_type(e.properties_json, ${literal(`$.${property}`)}) IS NOT NULL`;
 }
 
-function valueExpr(property: string): string {
+/**
+ * The `json_extract` projection of one property.
+ *
+ * Exported for `crosstab.ts` (`asc-56k`): the second SQL caller of this exact expression, so a
+ * group-by cell reads a property's raw value through the identical path `topValues` and
+ * `rangeOf` already use, rather than a second one that could disagree about the JSON path syntax.
+ */
+export function valueExpr(property: string): string {
   return `json_extract(e.properties_json, ${literal(`$.${property}`)})`;
 }
 
@@ -292,8 +306,15 @@ function rangeOf(
   return { min: row.lo, max: row.hi };
 }
 
-/** The property set of one type, unioned over the versions that declare each property. */
-function propertiesOf(
+/**
+ * The property set of one type, unioned over the versions that declare each property.
+ *
+ * Exported for `crosstab.ts` (`asc-56k`): resolving a group-by key's declared type has to walk
+ * the same "newest declaring version wins" union this function already computes for the profile
+ * (see the retyped-and-reverted case documented on `profileType`'s caller below) -- a second walk
+ * over `versions` here would be a second place that rule has to stay correct.
+ */
+export function propertiesOf(
   versions: readonly TypeVersionRow[],
 ): ReadonlyMap<string, { declaring: number[]; declaredTypes: PropertyType[] }> {
   const properties = new Map<string, { declaring: number[]; declaredTypes: PropertyType[] }>();

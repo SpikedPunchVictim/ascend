@@ -4,16 +4,19 @@
  * **The default output is a MAP, not a page of entries.** Handed rows, a reader looks at row 1 and
  * generalises; handed a profile, it chooses what to look at. So this prints counts, ranges,
  * cardinalities and per-property state tallies, and never an entry -- which also means a profile of
- * a corpus full of prose puts none of that prose into a caller's context. The remaining drill-down
- * flags (`--select`, `--filter`, `--group-by`) are separate work and land on this command; see
- * bead `asc-56k`.
+ * a corpus full of prose puts none of that prose into a caller's context. `--select`, `--filter` and
+ * `--group-by` (`asc-56k`) are the drill-down: naming columns, narrowing rows, and asking a joint
+ * question of two properties at once, each documented in its own paragraph below.
  *
- * **Four modes, and each is a different answer to "which entries, and how much of them".** The map
- * (nothing), `--page` (a stable window you resume), `--sample` (a subset chosen for spread), and
- * `--dump` (all of them, on disk, with an index). They are not composable and the command refuses
- * the combinations rather than resolving them: a caller who asked for a page and got a dump, or the
- * reverse, is looking at a different set of entries than the one they named, and nothing in either
- * output says so.
+ * **Four modes answer "which entries, and how much of them"; `--group-by` answers a different
+ * question and refuses all four of them.** The map (nothing), `--page` (a stable window you
+ * resume, and what `--select` flattens), `--sample` (a subset chosen for spread), and `--dump`
+ * (all of them, on disk, with an index) are not composable with each other, and the command
+ * refuses the combinations rather than resolving them: a caller who asked for a page and got a
+ * dump, or the reverse, is looking at a different set of entries than the one they named, and
+ * nothing in either output says so. `--group-by` is a fifth flag but not a fifth member of that
+ * family -- it hands back COUNTS over entries, never entries themselves, so it is refused
+ * alongside all four rather than merged with any of them (`explore-group.ts`).
  *
  * **`--dump` is the only mode whose output outlives the command, and that changes what it owes the
  * caller.** A page is read and gone; a dump directory is returned to days later by someone holding
@@ -85,6 +88,91 @@
  * rendered (`value`). Before this, `--json` for this command carried no `lower`, `upper`,
  * `confidence` or small-group key anywhere, while `asc annotate --backtest` already carried all four
  * for its own proportions -- the inconsistency `asc-5x7` closes.
+ *
+ * **`--filter` is one predicate language, not two -- but it is not the SAME scope `asc annotate
+ * --scope` takes, and the reason is what each command names.** Both are a SQL fragment over
+ * `entries`, wrapped by `wrapPredicate`/`typeFilterScope` so a fragment carrying a second statement
+ * is refused rather than silently run. `annotate --scope` is corpus-wide -- it runs before any type
+ * is chosen, so "the declared properties" is not a well-defined set to project as columns, and a
+ * caller writes `json_extract(properties_json, '$.name')` or an envelope column, same as ever. This
+ * command already names ONE type, so `--filter` runs over that type's OWN generated view instead
+ * (`typeFilterScope`, `@ascend/store`) -- every declared property is a bare column, exactly the
+ * name `--select` and `--group-by` already use for it. `--filter "stage = 'done'"` is the filtered
+ * read a declared property gets here; the envelope (`type_name`, `recorded_at`, `cwd`, ...) still
+ * compares bare too, unaffected by which of the two scopes is running. A second, bespoke expression
+ * syntax for this command alone would still be a worse idea than either of these -- there is one
+ * grammar (SQL), projected two different ways depending on what the command already knows.
+ *
+ * **A measured boolean is stored, and compared, as the INTEGER the generated view projects it as --
+ * not the word it PRINTS as, and this is the one place the bare-column convenience above still has
+ * a sharp edge.** `--select` prints a boolean as `true`/`false` (`renderDeclaredValue`), but
+ * `--filter` runs before any rendering happens, against the raw stored value. Measured directly
+ * (node v24.18.0, SQLite 3.53.4, `SELECT json_extract(p,'$.flag') AS flag` over two rows, one
+ * `true` and one `false` -- `p` standing for `properties_json`, what the generated view's `flag`
+ * column is itself built from):
+ *
+ * ```
+ * flag = true      1
+ * flag = false     1
+ * flag = 1         1
+ * flag = 0         1
+ * flag = 'false'   0
+ * flag = 'true'    0
+ * flag IS TRUE     1
+ * NOT flag         1
+ * typeof           integer
+ * ```
+ *
+ * **This is sharper than "a string comparison fails to match": `--filter "flag = 'false'"` does
+ * not fail -- it matches ZERO rows and raises nothing, so it reads as "there are none" rather than
+ * "you compared a string to an integer".** Write `--filter "flag = false"` or `--filter "flag =
+ * 0"`; never a quoted boolean. This is the one part of the stored-vs-declared asymmetry a caller
+ * can still trip over now that every other part of it (the column name itself) is gone.
+ *
+ * **One caveat this does not fix: a property declared only in a later version projects as SQL
+ * NULL for an entry recorded under an earlier one, so a filter cannot tell `not_declared` apart
+ * from `not_measured`** -- both are simply absent from the comparison, the same as any other NULL.
+ * That is inherent to what NULL means, not an oversight, and it is acceptable because `--filter` is
+ * a ROW SELECTOR, not a state reporter -- `--group-by` (and the default map) are what keep the two
+ * states apart, over the SAME entries a filter could narrow first.
+ *
+ * **`--filter` is refused with the default map, and with `--dump`, for two different reasons.** The
+ * map's per-property denominators (`asc-5x7`'s `declared_entries`, and the `not_declared` share of
+ * the type's own total, both above) are computed against the type's WHOLE recorded history;
+ * recomputing them for a filtered subset is real, undone work -- filed as `asc-qfk.1` rather than
+ * approximated here. A dump is meant to be the complete, reproducible record of a type, read again
+ * later by someone who never saw the command line that produced it -- a filtered dump would be
+ * indistinguishable on disk from a complete one, and its manifest has nowhere to carry the
+ * predicate that thinned it. `--page --filter ...` is the filtered read a dump cannot be.
+ *
+ * **`--select a,b,c` flattens a page's rows to named, declared columns (`asc-56k`), and implies
+ * `--page`.** Reading a page for properties you already know you want should not cost the
+ * `properties` object's nesting -- `--select stage,outcome --csv` needs a real two-column CSV
+ * (`id`, `recorded_at`, `type_version`, `stage`, `outcome`), not a JSON blob sitting in a CSV cell.
+ * `id` is always kept even when not named; every column beyond it is a declared property, in the
+ * order typed, refused if any name is not one this type's registered versions ever declared
+ * (listing the ones that are). A property with no measured value renders its STATE NAME
+ * (`not_measured`/`not_applicable`/`not_declared`), never a blank cell -- rendered from the store's
+ * own `entryStates` (the same four-state derivation `--group-by` and the default map use), not
+ * re-derived here, so this command cannot disagree with itself about what a state is. A selected
+ * column can never collide with the three envelope columns, because `reservedPropertyName`
+ * (`@ascend/core`) refuses `id`, `recorded_at` and `type_version` as property names when a type is
+ * DEFINED, long before a page is ever read. See `explore-select.ts` for the rendering rules this
+ * implements.
+ *
+ * **`--group-by a[,b]` answers a joint question -- how two properties co-occur -- that no number of
+ * single-property profiles can (`asc-56k`).** One key gives a single-property tally with a
+ * QUALIFIED proportion of `total` per value (`renderProportion` over `wilson`, the same rule
+ * `propertyTopRows` above already uses); two keys give counts only, because a cell's share could be
+ * of its row, its column or the grand total, and choosing one silently would answer a question the
+ * caller did not ask. Only a property `profileType`'s own `summaryFor` would call `top` -- enum,
+ * boolean, string or ref -- can be a key; the store throws a caller-facing error naming the
+ * property, its declared type and its actual summary otherwise, and this command surfaces that
+ * message as-is rather than re-deriving it. A result under `MIN_N` (20) is marked an anecdote, the
+ * same convention already applied to a small sample. `--group-by` is refused together with
+ * `--page`, `--cursor`, `--sample` and `--dump` (see the "Four modes" paragraph above) and together
+ * with `--select`: each of those answers "which entries", and `--group-by` answers "how many", so
+ * none of them compose with it. See `explore-group.ts` for the row shape this produces.
  */
 
 import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
@@ -96,9 +184,15 @@ import {
   entryIds,
   findEntry,
   findType,
+  groupEntries,
+  PredicateError,
   pageEntries,
   profileType,
   signatures,
+  typeFilterScope,
+  UngroupablePropertyError,
+  UnknownGroupKeyError,
+  type GroupResult,
   type PropertyProfile,
   type RecordedEntry,
   type PageResult,
@@ -115,6 +209,14 @@ import {
   type SampleMode,
   type SampleRequest,
 } from '../explore-sample.js';
+import {
+  makeVersionTypeCache,
+  parseSelect,
+  resolveSelect,
+  selectColumns,
+  selectRows,
+} from '../explore-select.js';
+import { buildGroupOutput, headerRowCount, parseGroupBy, rowKey } from '../explore-group.js';
 import {
   entryRow,
   render,
@@ -470,6 +572,27 @@ export default class Explore extends BaseCommand {
     force: Flags.boolean({
       description: 'With --dump: write into a directory that already has files in it.',
     }),
+    select: Flags.string({
+      description:
+        'Comma-separated declared properties to flatten a page to (id/recorded_at/type_version ' +
+        'plus these, in order). Implies --page. Refuses a name this type does not declare.',
+    }),
+    filter: Flags.string({
+      description:
+        'A SQL predicate over this type: a declared property (e.g. stage) and an envelope ' +
+        'column (e.g. cwd) both compare bare. Applies to --page, --sample and --group-by ' +
+        '(refused with the default map and with --dump). Unlike `asc annotate --scope`, which ' +
+        "is corpus-wide and needs json_extract(properties_json,'$.name') for a declared " +
+        'property. WATCH A BOOLEAN: it compares as the stored INTEGER, not the printed word -- ' +
+        '"...=true" and "...=1" both match; "...=\'false\'" silently matches ZERO rows instead ' +
+        'of failing, because it compares a string to an integer. Never quote a boolean.',
+    }),
+    'group-by': Flags.string({
+      description:
+        'One or two comma-separated declared properties to cross-tabulate instead of profiling. ' +
+        'Only enum, boolean, string or ref properties qualify. Not combinable with --page, ' +
+        '--cursor, --sample, --dump or --select.',
+    }),
   };
 
   /**
@@ -543,6 +666,32 @@ export default class Explore extends BaseCommand {
       );
     }
 
+    // The three drill-down flags (`asc-56k`). Parsed here, ahead of every mode below, so every
+    // conflict they enter into is checked before any of dump/sample/page does its own work.
+    const selectRaw = this.optionalFlag(flags.select);
+    const selectNames = selectRaw === undefined ? undefined : parseSelect(selectRaw);
+    const filter = this.optionalFlag(flags.filter);
+    const groupByRaw = this.optionalFlag(flags['group-by']);
+    const groupKeys = groupByRaw === undefined ? undefined : parseGroupBy(groupByRaw);
+
+    if (groupKeys !== undefined && groupKeys.length > 2) {
+      throw usageError(
+        `--group-by takes one or two properties, comma-separated. Got ${String(groupKeys.length)}` +
+          `: ${groupKeys.join(', ')}. Name one property for a single-property tally, or two for a ` +
+          'contingency table between them.',
+      );
+    }
+
+    // Entries vs counts -- the same kind of incomparable answer `--page` and `--dump` already
+    // refuse each other over (see the "Four modes" paragraph), so it is refused here too rather
+    // than resolved by picking one silently.
+    if (selectNames !== undefined && groupKeys !== undefined) {
+      throw usageError(
+        '--select cannot be combined with --group-by: --select flattens entries into rows, and ' +
+          '--group-by collapses entries into counts. Drop one of them.',
+      );
+    }
+
     // `--dump` is a third "which entries" mode, and it claims `--limit` too. Read here, ahead of the
     // paging decision below, because `--limit` implies `--page` there and in dump mode it means
     // entries per FILE -- one flag, two questions, and the caller typed it for one of them.
@@ -564,15 +713,30 @@ export default class Explore extends BaseCommand {
     } else if (
       this.flagValue(flags.page) ||
       flags.cursor !== undefined ||
-      flags.sample !== undefined
+      flags.sample !== undefined ||
+      selectNames !== undefined ||
+      groupKeys !== undefined
     ) {
-      // A dump writes the whole type. A page is a window you resume and a sample is a subset chosen
-      // for spread, so honouring either silently would write files the caller reads as the whole
-      // corpus -- the plausible-wrong-answer class, in the one output that outlives the command.
+      // A dump writes the whole type, as entries. A page is a window you resume, a sample is a
+      // subset chosen for spread, --select is a page flattened to named columns, and --group-by
+      // hands back counts rather than entries at all -- honouring any of them silently would write
+      // files the caller reads as the whole corpus, the plausible-wrong-answer class, in the one
+      // output that outlives the command.
       throw usageError(
-        '--dump cannot be combined with --page, --cursor or --sample: a dump writes the whole type, ' +
-          'in chunks of one stable order. To dump part of a type, narrow the type or read a page. ' +
-          'Drop one of them.',
+        '--dump cannot be combined with --page, --cursor, --sample, --select or --group-by: a dump ' +
+          'writes the whole type, in chunks of one stable order, as entries. To dump part of a ' +
+          'type, narrow the type or read a page. Drop one of them.',
+      );
+    } else if (filter !== undefined) {
+      // A dump is meant to be the complete, reproducible record of a type, read again later by
+      // someone who never saw the command line that produced it. A filtered dump would be
+      // indistinguishable on disk from a complete one, and its manifest has nowhere to carry the
+      // predicate that thinned it -- a different reason from the combinations just above, so it is
+      // its own branch rather than folded into that one message.
+      throw usageError(
+        '--dump cannot be combined with --filter: a dump is the whole type, and its manifest has ' +
+          'nowhere to record the predicate that would have thinned it. Read a filtered page ' +
+          'instead: --page --filter .... Drop --filter, or drop --dump.',
       );
     }
 
@@ -585,25 +749,29 @@ export default class Explore extends BaseCommand {
       );
     }
 
-    // Any of the three means the caller wants entries rather than the map. `--limit` and
-    // `--cursor` implying `--page` is what keeps the common cases to one flag while leaving
+    // Any of the four means the caller wants entries rather than the map. `--limit`, `--cursor`
+    // and `--select` implying `--page` is what keeps the common cases to one flag while leaving
     // `--page` for "just show me some entries, default size".
     const paging =
       !dumping &&
-      (this.flagValue(flags.page) || flags.cursor !== undefined || flags.limit !== undefined);
+      (this.flagValue(flags.page) ||
+        flags.cursor !== undefined ||
+        flags.limit !== undefined ||
+        selectNames !== undefined);
 
     const sample = sampleMode(flags.sample);
 
     // A sample and a page are two different answers to "which entries", and honouring one silently
     // would produce the plausible-wrong-answer class: rows a caller reads as the window they asked
     // for. So the combination is refused rather than resolved, and it cannot be expressed by
-    // accident -- `--limit` implies `--page`, so `--sample --limit 20` lands here unless this runs
-    // ahead of that.
+    // accident -- `--limit` and `--select` imply `--page`, so `--sample --limit 20` or
+    // `--sample --select stage` land here unless this runs ahead of that.
     if (flags.sample !== undefined) {
-      if (this.flagValue(flags.page) || flags.cursor !== undefined) {
+      if (this.flagValue(flags.page) || flags.cursor !== undefined || selectNames !== undefined) {
         throw usageError(
-          '--sample cannot be combined with --page or --cursor: a page is a stable window you ' +
-            'resume, and a sample is a subset chosen for spread. Drop one of them.',
+          '--sample cannot be combined with --page, --cursor or --select: a page (or --select, ' +
+            'which flattens one) is a stable window you resume, and a sample is a subset chosen ' +
+            'for spread. Drop one of them.',
         );
       }
       if (flags.seed !== undefined && flags.sample !== 'random' && flags.sample !== 'stratified') {
@@ -622,6 +790,30 @@ export default class Explore extends BaseCommand {
       );
     }
 
+    // `--group-by` answers a different question -- counts over entries, not entries -- so it is
+    // refused alongside every one of the other "which entries" flags rather than merged with any
+    // of them (the "Four modes" paragraph above; `--dump` is already refused earlier, since it
+    // exits this function before reaching here).
+    if (groupKeys !== undefined && (paging || sample !== undefined)) {
+      const other = paging ? '--page (or --cursor/--limit/--select, which imply it)' : '--sample';
+      throw usageError(
+        `--group-by cannot be combined with ${other}: --group-by hands back counts, not entries. ` +
+          'Drop one of them.',
+      );
+    }
+
+    // Refused with the default map for a reason that is real, undone work, not a missing flag on
+    // the caller's part -- see the docstring paragraph on --filter above.
+    if (filter !== undefined && !paging && sample === undefined && groupKeys === undefined) {
+      throw usageError(
+        "--filter only applies to --page, --sample or --group-by. The default map's per-property " +
+          "denominators (asc-5x7's declared_entries, and not_declared's share of the type's own " +
+          "total) are computed against the type's WHOLE recorded history; recomputing them for a " +
+          'filtered subset is real work nothing here does yet -- filed as bead asc-qfk.1. Add ' +
+          '--page, --sample or --group-by, or drop --filter.',
+      );
+    }
+
     await this.withProject(({ store }) => {
       // A name nobody registered is a mistyped name or the wrong project, and the fix differs
       // from "you have recorded nothing" -- which is a real profile of zeros, and a real page of
@@ -636,6 +828,13 @@ export default class Explore extends BaseCommand {
         refusal(
           `There is no entry type named '${args.type}' in this project. ${knownNames(store)}`,
         );
+
+      // `typeFilterScope` (used inside `pageEntries`, `groupEntries`, and directly below for
+      // `--sample`) throws a `PredicateError` naming what is wrong with the STATEMENT it built,
+      // with no idea the fragment came from `--filter`. This is the one place that context is
+      // added, so every one of those three call sites converts the identical way.
+      const filterUsageError = (error: PredicateError): Error =>
+        usageError(`--filter ${JSON.stringify(filter)} is not usable: ${error.message}`);
 
       // Dump mode. The entries go to disk and the INDEX comes back on stdout, so a caller -- or a
       // scheduler handing work to parallel subagents -- can pick files without having read a byte
@@ -771,6 +970,68 @@ export default class Explore extends BaseCommand {
         return;
       }
 
+      // Group-by mode. A contingency table over one or two declared properties -- a different
+      // question from every mode above, so it hands back counts, never a `Row` built from an
+      // entry (`explore-group.ts`, `asc-56k`).
+      if (groupKeys !== undefined) {
+        if (findType(store.db, args.type) === undefined) throw noSuchType();
+
+        // `groupEntries` validates the keys itself against this type's registered versions --
+        // `UnknownGroupKeyError` and `UngroupablePropertyError` already carry complete,
+        // caller-facing messages naming the property, its declared type and a fix, so they are
+        // surfaced as `refusal`s rather than re-derived: the world (this type's own definition)
+        // is what says no, the identical reasoning `resolveSelect` gives for the same shape of
+        // question (`explore-select.ts`).
+        const result: GroupResult = (() => {
+          try {
+            return groupEntries(store.db, {
+              type: args.type,
+              keys: groupKeys,
+              ...(filter === undefined ? {} : { filter }),
+            });
+          } catch (error) {
+            if (
+              error instanceof UnknownGroupKeyError ||
+              error instanceof UngroupablePropertyError
+            ) {
+              throw refusal(error.message);
+            }
+            if (error instanceof PredicateError) throw filterUsageError(error);
+            throw error;
+          }
+        })();
+
+        const { columns, rows } = buildGroupOutput(result, groupKeys, filter !== undefined);
+
+        this.emitBuilt(budget, {
+          requested: rows.length,
+          // The header rows state what the table IS (the population, and each axis's shape); a
+          // budget that cannot afford them cannot afford a crosstab at all.
+          floor: headerRowCount(result, groupKeys, filter !== undefined),
+          build: (keep) => rows.slice(0, keep),
+          rowsOf: (kept) => kept.length,
+          keysOf: (kept) => kept.map((row) => rowKey(row, groupKeys)),
+          noun: ['row', 'rows'],
+          render: (kept, trim) =>
+            render(
+              format,
+              {
+                columns,
+                rows: kept,
+                // `covered < total` exactly when a key's distinct values exceeded `topK` and the
+                // remainder was withheld -- entries that exist and are not represented by any cell
+                // shown, the same "more out there, not on screen" fact `has_more` names elsewhere.
+                ...(result.covered < result.total
+                  ? { coverage: subset(result.covered, result.total, true) }
+                  : {}),
+                ...(trim === undefined ? {} : { trim }),
+              },
+              csvRaw,
+            ),
+        });
+        return;
+      }
+
       // Sample mode. A sample is a subset of a population whose MEMBERSHIP is a function of a
       // parameter the reader cannot see, so it states both the share and the choice -- the same
       // argument as the coverage line, one step further.
@@ -797,7 +1058,30 @@ export default class Explore extends BaseCommand {
         // chosen, not of the sample size, and a budget makes this command build the sample several
         // times over. Re-reading per candidate would repeat a scan of the whole type for an answer
         // that cannot have changed.
-        const entries = signatures(store.db, args.type, resolved.properties);
+        const projected = signatures(store.db, args.type, resolved.properties);
+
+        // `signatures` has no `filter` of its own (unlike `pageEntries` and `groupEntries`), so a
+        // filtered sample is resolved client-side: `typeFilterScope` runs the same bare-column
+        // projection and single-statement guard those two use internally, scoped to `args.type`,
+        // and the id set it returns is intersected with the type's own projection. `entries` below
+        // is intentionally the FILTERED population, not `projected`: sampling and every proportion
+        // this mode reports must be computed over what the caller actually asked to draw from.
+        const entries =
+          filter === undefined
+            ? projected
+            : (() => {
+                let matched: readonly { readonly id: string }[];
+                try {
+                  matched = store.db
+                    .prepare(typeFilterScope(store.db, args.type, filter))
+                    .all() as unknown as { id: string }[];
+                } catch (error) {
+                  if (error instanceof PredicateError) throw filterUsageError(error);
+                  throw error;
+                }
+                const allowed = new Set(matched.map((row) => row.id));
+                return projected.filter((entry) => allowed.has(entry.id));
+              })();
 
         // Rebuilt for each candidate size rather than truncated from the full draw, and that is the
         // design rather than an implementation detail. A stratified sample of 40 cut to 25 is not a
@@ -837,8 +1121,18 @@ export default class Explore extends BaseCommand {
                 rows: built.rows,
                 // A sample has no remainder to resume, so `has_more` is false however small the share
                 // -- there is no cursor to hand back, and saying "more" would promise one.
-                coverage: subset(built.rows.length, profile.count, false),
+                // `entries.length`, not `profile.count`: with --filter, the population a sample is
+                // drawn FROM is the filtered one, and reporting the type's unfiltered total here
+                // would describe a sample of a population it was never drawn from.
+                coverage: subset(built.rows.length, entries.length, false),
                 sample: built.sample,
+                // `entries.length`/`projected.length`: the population the sample was drawn FROM,
+                // before and after `--filter` -- the same two numbers `--page` states from
+                // `PageResult.unfiltered`, computed locally because `signatures` (unlike
+                // `pageEntries`) has no filter of its own (see above).
+                ...(filter === undefined
+                  ? {}
+                  : { filter: { matched: entries.length, unfiltered: projected.length } }),
                 ...(trim === undefined ? {} : { trim }),
               },
               csvRaw,
@@ -851,11 +1145,35 @@ export default class Explore extends BaseCommand {
       // population, so it is the one that has to state its coverage rather than let `emit`
       // default it to "complete".
       if (paging) {
-        if (findType(store.db, args.type) === undefined) throw noSuchType();
+        // `--select` needs every registered version's declared properties (to validate names and
+        // to look up each entry's OWN version's declared type), which is `profileType`'s job, not
+        // `findType`'s -- the 280x-cheaper check above is for the common case that does not need
+        // it. Without `--select`, this stays the cheap `findType` check it always was.
+        let columns: readonly string[] = [
+          'id',
+          'recorded_at',
+          'type_version',
+          'properties',
+          'evidence_text',
+        ];
+        let rowsOf: (entries: readonly RecordedEntry[]) => readonly Row[] = (entries) =>
+          entries.map(entryRow);
+
+        if (selectNames !== undefined) {
+          const profile = profileType(store.db, args.type);
+          if (profile === undefined) throw noSuchType();
+          resolveSelect(profile, selectNames);
+          const propertyType = makeVersionTypeCache(store.db, args.type);
+          columns = selectColumns(selectNames);
+          rowsOf = (entries) => selectRows(store.db, args.type, entries, selectNames, propertyType);
+        } else if (findType(store.db, args.type) === undefined) {
+          throw noSuchType();
+        }
 
         const ask = {
           type: args.type,
           ...(flags.cursor === undefined ? {} : { cursor: flags.cursor }),
+          ...(filter === undefined ? {} : { filter }),
         };
 
         // A TRIMMED PAGE RE-QUERIES AT THE SMALLER LIMIT; IT DOES NOT SLICE. Slicing would leave the
@@ -864,7 +1182,14 @@ export default class Explore extends BaseCommand {
         // the corpus, in the one output whose contract is that it tells you what it did not show.
         // Asking the store for fewer rows makes it compute the cursor for the boundary actually on
         // screen, which costs one query per search step and cannot be wrong.
-        const build = (limit: number): PageResult => pageEntries(store.db, { ...ask, limit });
+        const build = (limit: number): PageResult => {
+          try {
+            return pageEntries(store.db, { ...ask, limit });
+          } catch (error) {
+            if (error instanceof PredicateError) throw filterUsageError(error);
+            throw error;
+          }
+        };
 
         this.emitBuilt(budget, {
           requested: flags.limit ?? DEFAULT_PAGE_SIZE,
@@ -879,10 +1204,16 @@ export default class Explore extends BaseCommand {
             render(
               format,
               {
-                columns: ['id', 'recorded_at', 'type_version', 'properties', 'evidence_text'],
-                rows: page.rows.map(entryRow),
+                columns,
+                rows: rowsOf(page.rows),
                 coverage: subset(page.rows.length, page.total, page.hasMore),
                 ...(page.nextCursor === null ? {} : { next_cursor: page.nextCursor }),
+                // `page.total`/`page.unfiltered`: a filtered `count` (or here, `coverage.total`) of
+                // zero cannot say whether the filter excluded everything or the type holds nothing
+                // -- `unfiltered` is the fact that tells the two apart (`PageResult.unfiltered`).
+                ...(filter === undefined
+                  ? {}
+                  : { filter: { matched: page.total, unfiltered: page.unfiltered } }),
                 ...(trim === undefined ? {} : { trim }),
               },
               csvRaw,

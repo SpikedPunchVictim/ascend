@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   openStore,
   pageEntries,
+  PredicateError,
   recordEntry,
   registerType,
   type PageResult,
@@ -383,5 +384,152 @@ describe('paging: a type named under a non-canonical spelling (asc-pw2)', () => 
     } finally {
       store.close();
     }
+  });
+});
+
+describe('paging: a filter joins the scope (asc-56k)', () => {
+  /** Records `count` entries alternating `cwd` between `/proj-a` and `/proj-b`. */
+  function seedFiltered(store: Store, count: number): { ids: string[]; projA: string[] } {
+    const ids: string[] = [];
+    const projA: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const id = `f-${String(i).padStart(3, '0')}`;
+      const cwd = i % 2 === 0 ? '/proj-a' : '/proj-b';
+      ids.push(id);
+      if (cwd === '/proj-a') projA.push(id);
+      recordEntry(
+        store.db,
+        { type: SPEC.name, properties: { body: id } },
+        { id, recordedAt: '2026-09-11T10:00:00.000Z', ascendVersion: '0.0.0', cwd },
+      );
+    }
+    return { ids, projA };
+  }
+
+  it('counts and pages only the filtered rows, and refuses a cursor from the unfiltered page', () => {
+    withStore((store) => {
+      const { projA } = seedFiltered(store, 10);
+
+      const unfiltered = pageEntries(store.db, { type: SPEC.name, limit: 20 });
+      const filtered = pageEntries(store.db, {
+        type: SPEC.name,
+        limit: 20,
+        filter: "cwd = '/proj-a'",
+      });
+
+      expect(unfiltered.total).toBe(10);
+      expect(filtered.total).toBe(projA.length);
+      expect(filtered.rows.map((row) => row.id).sort()).toStrictEqual([...projA].sort());
+
+      // `unfiltered` (the FIELD, not the `unfiltered` page above) is the type's whole population
+      // either way -- with no filter it equals `total`, and with one it still reports the 10 the
+      // filter drew from, not the 5 it admitted.
+      expect(unfiltered.unfiltered).toBe(unfiltered.total);
+      expect(unfiltered.unfiltered).toBe(10);
+      expect(filtered.unfiltered).toBe(10);
+
+      // Two different questions, two different fingerprints -- a cursor from one must not
+      // silently resume the other.
+      expect(filtered.scope).not.toBe(unfiltered.scope);
+    });
+  });
+
+  /**
+   * The case `unfiltered` exists for, pinned directly: a filter that matches nothing renders
+   * `total: 0` identically whether the type is empty or the predicate excluded every row.
+   * `unfiltered` is the only thing in the result that tells the two apart, so this fails if it is
+   * ever computed FROM the filtered query (which would also be 0) instead of from the type's own
+   * population.
+   */
+  it('reports the real population when the filter matches zero rows', () => {
+    withStore((store) => {
+      seedFiltered(store, 6);
+
+      const page = pageEntries(store.db, {
+        type: SPEC.name,
+        limit: 20,
+        filter: "cwd = '/nowhere'",
+      });
+
+      expect(page.total).toBe(0);
+      expect(page.rows).toStrictEqual([]);
+      expect(page.hasMore).toBe(false);
+      expect(page.unfiltered).toBe(6);
+    });
+  });
+
+  it('refuses a cursor minted on an unfiltered page when resumed against a filtered call', () => {
+    withStore((store) => {
+      seedFiltered(store, 12);
+
+      const unfiltered = pageEntries(store.db, { type: SPEC.name, limit: 5 });
+      expect(unfiltered.nextCursor).not.toBeNull();
+
+      // The position is plausible-looking and the rows would look entirely ordinary -- exactly
+      // the failure the scope fingerprint exists to catch (this file's module comment, and
+      // `pages.ts`'s comment on why the filter is folded into it).
+      expect(() =>
+        pageEntries(store.db, {
+          type: SPEC.name,
+          limit: 5,
+          filter: "cwd = '/proj-a'",
+          cursor: unfiltered.nextCursor as string,
+        }),
+      ).toThrow(CursorError);
+    });
+  });
+
+  it('refuses a cursor minted under one filter when resumed against a different filter', () => {
+    withStore((store) => {
+      seedFiltered(store, 12);
+
+      const first = pageEntries(store.db, { type: SPEC.name, limit: 3, filter: "cwd = '/proj-a'" });
+      expect(first.nextCursor).not.toBeNull();
+
+      expect(() =>
+        pageEntries(store.db, {
+          type: SPEC.name,
+          limit: 3,
+          filter: "cwd = '/proj-b'",
+          cursor: first.nextCursor as string,
+        }),
+      ).toThrow(CursorError);
+    });
+  });
+
+  it('resumes correctly when the same filter is passed again', () => {
+    withStore((store) => {
+      const { projA } = seedFiltered(store, 12);
+
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page = pageEntries(store.db, {
+          type: SPEC.name,
+          limit: 2,
+          filter: "cwd = '/proj-a'",
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        ids.push(...page.rows.map((row) => row.id));
+        if (page.nextCursor === null) break;
+        cursor = page.nextCursor;
+      }
+
+      expect(ids.sort()).toStrictEqual([...projA].sort());
+    });
+  });
+
+  it('refuses a filter that smuggles in a second statement, through wrapPredicate', () => {
+    withStore((store) => {
+      seed(store, 3);
+
+      expect(() =>
+        pageEntries(store.db, {
+          type: SPEC.name,
+          limit: 5,
+          filter: "cwd = 'x'; DROP TABLE entries; --",
+        }),
+      ).toThrow(PredicateError);
+    });
   });
 });

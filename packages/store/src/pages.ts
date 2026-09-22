@@ -46,12 +46,20 @@ import {
 } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
 import { findEntry, type RecordedEntry } from './recorder.js';
+import { typeFilterScope } from './type-filter.js';
 
-/** What to page through. `type` is the whole scope today; filters will join it in `asc-56k`. */
+/** What to page through (`asc-56k` added `filter`, joining it to the `type` scope). */
 export interface PageOptions {
   readonly type: string;
   readonly cursor?: string;
   readonly limit?: number;
+  /**
+   * A SQL predicate over `type`'s rows, with declared properties as bare columns -- see
+   * `typeFilterScope` (`type-filter.ts`). Not the same vocabulary `asc annotate --scope` takes:
+   * that predicate is corpus-wide, over the raw `entries` table, because it runs before any one
+   * type is chosen.
+   */
+  readonly filter?: string;
 }
 
 /** A page, with everything a caller needs to know how much of the corpus it is looking at. */
@@ -59,6 +67,16 @@ export interface PageResult {
   readonly rows: readonly RecordedEntry[];
   /** The size of the whole result set for this scope. */
   readonly total: number;
+  /**
+   * Entries of this type before the filter. Equal to `total` when there is no filter.
+   *
+   * A filtered `total` alone cannot tell "the filter excluded everything" from "there is nothing
+   * here" -- `total: 0` is the same number either way, and the two need different fixes from
+   * whoever is reading it: a typo in a predicate, or an empty corpus. `unfiltered` is the fact
+   * that tells them apart, the same rule this project already applies to every other proportion
+   * it reports (a denominator is stated, not left for the reader to assume).
+   */
+  readonly unfiltered: number;
   /** Whether the scope holds rows this page did not show. */
   readonly hasMore: boolean;
   /** Where to resume, or `null` when this page is the last one. */
@@ -90,13 +108,19 @@ export interface PageResult {
  */
 const ORDER = 'ORDER BY recorded_at, id';
 
-const AFTER_POSITION = `SELECT id FROM entries
-   WHERE type_name = ? AND (recorded_at, id) > (?, ?)
+/**
+ * `filterClause` is `''` with no filter, or ` AND id IN (<typeFilterScope's statement>)` with
+ * one -- built once per call by `pageEntries` (asc-56k) and spliced into whichever of these two
+ * statements the position decides between, so a filtered page and an unfiltered one differ by
+ * exactly this one clause and cannot drift into two different `ORDER BY`s or `LIMIT`s.
+ */
+const afterPosition = (filterClause: string): string => `SELECT id FROM entries
+   WHERE type_name = ? AND (recorded_at, id) > (?, ?)${filterClause}
    ${ORDER}
    LIMIT ?`;
 
-const FROM_START = `SELECT id FROM entries
-   WHERE type_name = ?
+const fromStart = (filterClause: string): string => `SELECT id FROM entries
+   WHERE type_name = ?${filterClause}
    ${ORDER}
    LIMIT ?`;
 
@@ -145,12 +169,32 @@ export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult 
   if (!Number.isInteger(limit) || limit < 1) throw new PageSizeError(limit);
 
   const type = canonicalName(options.type);
-  const scope = scopeFingerprint({ type, order: CURSOR_ORDER });
+
+  // Through `typeFilterScope`, not `wrapPredicate` over the raw table (asc-56k): `entries`
+  // projects every property inside `properties_json`, so a bare column name in a filter -- the
+  // same vocabulary a declared property is named with anywhere else in `asc explore` -- would fail
+  // with `no such column` against the raw table. `typeFilterScope` filters over a projection of
+  // THIS type's rows with declared properties as bare columns instead, and still refuses
+  // (`PredicateError`) a filter carrying a second statement rather than silently truncating it.
+  const filterClause =
+    options.filter === undefined ? '' : ` AND id IN (${typeFilterScope(db, type, options.filter)})`;
+
+  // `scopeFingerprint`'s `CursorScope` (`@ascend/core`) is a fixed two-field shape -- `type` and
+  // `order` -- and widening a pure core type for one store-layer feature is a bigger change than
+  // this bead is. So the filter is folded into the `type` half instead: two pages of the same
+  // type under two different filters (or one filtered, one not) must mint two different
+  // fingerprints, or a cursor from one would silently resume into rows the caller never queried
+  // (this file's own module comment on why the fingerprint exists at all). `canonicalName`
+  // (`spec.ts`) only ever produces `[a-z0-9_]`, so a `\u0000` separator cannot collide with a
+  // real canonical type name, and this string is never compared to anything but another value
+  // built the same way.
+  const fingerprintScope = options.filter === undefined ? type : `${type}\u0000${options.filter}`;
+  const scope = scopeFingerprint({ type: fingerprintScope, order: CURSOR_ORDER });
 
   let position: Cursor | undefined;
   if (options.cursor !== undefined) {
     const decoded = decodeCursor(options.cursor);
-    assertCursorScope(decoded, { type, order: CURSOR_ORDER });
+    assertCursorScope(decoded, { type: fingerprintScope, order: CURSOR_ORDER });
     position = decoded;
   }
 
@@ -159,8 +203,8 @@ export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult 
   const probe = limit + 1;
   const ids = (
     position === undefined
-      ? db.prepare(FROM_START).all(type, probe)
-      : db.prepare(AFTER_POSITION).all(type, position.recordedAt, position.id, probe)
+      ? db.prepare(fromStart(filterClause)).all(type, probe)
+      : db.prepare(afterPosition(filterClause)).all(type, position.recordedAt, position.id, probe)
   ) as { id: string }[];
 
   const hasMore = ids.length > limit;
@@ -183,11 +227,27 @@ export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult 
       ? encodeCursor({ id: last.id, recordedAt: last.recordedAt, scope })
       : null;
 
-  const counted = db.prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?').get(type) as {
+  const counted = db
+    .prepare(`SELECT COUNT(*) AS n FROM entries WHERE type_name = ?${filterClause}`)
+    .get(type) as {
     n: number;
   };
 
-  return { rows, total: counted.n, hasMore, nextCursor, scope };
+  // The population the filter drew `total` from, so a caller can tell "the filter excluded
+  // everything" apart from "there is nothing here" -- see `PageResult.unfiltered`. Skipped when
+  // there is no filter (`total` already answers this), and never re-run through `filterClause` or
+  // `profileType`: this is one plain `COUNT(*)`, not the filtered query again and not a whole map
+  // built to answer a single number (`profileType` measured 7.4 ms against `findType`'s 26 us).
+  const unfiltered =
+    options.filter === undefined
+      ? counted.n
+      : (
+          db.prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?').get(type) as {
+            n: number;
+          }
+        ).n;
+
+  return { rows, total: counted.n, unfiltered, hasMore, nextCursor, scope };
 }
 
 /**

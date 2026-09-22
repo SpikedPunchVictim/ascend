@@ -289,6 +289,50 @@ export interface Output {
    * query's terms occur that the rows do not cover.
    */
   readonly assist?: SearchAssist;
+
+  /**
+   * The population `--filter` narrowed this output to, present whenever a filter was applied.
+   *
+   * The sixth member of the family `coverage`, `next_cursor`, `sample`, `trim` and `assist` belong
+   * to, under the same rule: absent means "no filter was applied", which every unfiltered output
+   * says by saying nothing. It is present whenever `--filter` was passed, `matched === unfiltered`
+   * included -- a filter that excluded nothing still ran, and a caller who typed one and sees no
+   * acknowledgement of it cannot tell it took effect, the same reasoning behind this CLI's existing
+   * refusals for a `--seed` or `--by` that would otherwise be silently ignored.
+   *
+   * **Why this is its own field rather than a row mixed into `rows`.** `--page`'s and `--sample`'s
+   * rows are real entries, projected through `columns` for `--table`/`--csv` -- a synthetic
+   * field/value row among them would show up as a malformed record in `--csv`, which this CLI
+   * already refuses to do for `coverage` (see `renderCsv`'s own comment: a footer row is "a row
+   * with the wrong number of fields in it"). A top-level field, absent from `columns` and
+   * `--csv` entirely, states the fact without corrupting the one output shape that gets parsed.
+   *
+   * Why `--group-by` does NOT use this field: its header rows already share one `columns` array
+   * with its cell rows by design (`explore-group.ts`), and a filter fact is one more header row in
+   * that established idiom rather than a second mechanism doing the same job.
+   */
+  readonly filter?: FilterPopulation;
+}
+
+/**
+ * The population `--filter` narrowed an output to, and the population it narrowed it FROM.
+ *
+ * Two numbers rather than one, for the reason `PageResult.unfiltered` and `GroupResult.unfiltered`
+ * both carry the same pair (`@ascend/store`): a filtered population of zero does not say whether
+ * the filter excluded everything or the type held nothing to begin with, and those need opposite
+ * fixes from whoever reads it -- a typo in a predicate, or an empty corpus.
+ */
+export interface FilterPopulation {
+  /** Entries after the filter -- the population everything else on this output describes. */
+  readonly matched: number;
+  /** Entries before the filter. Equal to `matched` when the filter excluded nothing. */
+  readonly unfiltered: number;
+}
+
+/** `filter  matched 0 of 4 entries` -- the fact a filtered `count`/`coverage` of zero cannot state
+ * on its own (see `Output.filter`). */
+export function renderFilterPopulation(filter: FilterPopulation): string {
+  return `filter  matched ${String(filter.matched)} of ${String(filter.unfiltered)} entries`;
 }
 
 /**
@@ -464,6 +508,8 @@ export interface JsonEnvelope {
   readonly trim?: Trim;
   /** Mirrors `Output.assist`. Present on every search; `reason` says which case it is. */
   readonly assist?: SearchAssist;
+  /** Mirrors `Output.filter`. Present whenever `--filter` was applied, `matched === unfiltered` included. */
+  readonly filter?: FilterPopulation;
 }
 
 export function renderJson(output: Output): string {
@@ -477,6 +523,7 @@ export function renderJson(output: Output): string {
     ...(settled.sample === undefined ? {} : { sample: settled.sample }),
     ...(settled.trim === undefined ? {} : { trim: settled.trim }),
     ...(settled.assist === undefined ? {} : { assist: settled.assist }),
+    ...(settled.filter === undefined ? {} : { filter: settled.filter }),
   };
   return JSON.stringify(envelope);
 }
@@ -672,7 +719,22 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
       .join('  ')
       .trimEnd();
 
-  const body = [
+  // Placed before the column header, not after the rows with `coverage` and the rest: a filtered
+  // population changes how every cell below is read (`--group-by flag --filter "flag = 'false'"`
+  // over a 4-entry type renders `count 0` for a reason a reader has to know BEFORE the zero, not
+  // after it -- a footer arrives too late to stop the misreading `Output.filter`'s doc comment
+  // describes). `--group-by` states the identical fact as its own first header row instead
+  // (`explore-group.ts`) rather than through this field, so the two never both fire for one output.
+  //
+  // ONE ARRAY LITERAL, and `push(...rows)` is not an alternative to it. A spread in an argument
+  // list becomes that many arguments and overflows the stack; a spread in an array literal is
+  // iterated. Measured on this Node (v24.18.0) over 200,000 strings: `[...big]` and
+  // `['a', 'b', ...big]` both build the array, while `a.push(...big)` throws `Maximum call stack
+  // size exceeded`. That is the exact failure `query.test.ts`'s "renders past the row count that
+  // once overflowed a spread argument list" pins, and rewriting this literal as a `push` brought
+  // it straight back -- caught by that test, which is why it is there.
+  const body: string[] = [
+    ...(output.filter === undefined ? [] : [renderFilterPopulation(output.filter), '']),
     line([...output.columns]),
     widths.map((width) => '-'.repeat(width)).join('  '),
     ...rows.map((row) => line(row)),

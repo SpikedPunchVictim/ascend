@@ -100,7 +100,9 @@ export {
 
 export { entryIds, pageEntries, type PageOptions, type PageResult } from './pages.js';
 
-export { statementCount, wrapPredicate } from './statements.js';
+export { PredicateError, statementCount, wrapPredicate } from './statements.js';
+
+export { typeFilterScope } from './type-filter.js';
 
 export {
   AnnotationError,
@@ -157,6 +159,20 @@ export {
   type TypeProfile,
   type VersionProfile,
 } from './profile.js';
+
+export {
+  entryStates,
+  groupEntries,
+  GroupKeyCountError,
+  GroupTopKError,
+  UngroupablePropertyError,
+  UnknownGroupKeyError,
+  type GroupAxis,
+  type GroupCount,
+  type GroupKeyValue,
+  type GroupRequest,
+  type GroupResult,
+} from './crosstab.js';
 
 export {
   AliasInUseError,
