@@ -518,6 +518,100 @@ describe('scanTranscripts / streamCorpus: ephemeral OS temp projects (asc-80m)',
   });
 });
 
+describe('streamCorpus: cursor-driven "unchanged" skip (asc-4dm.4)', () => {
+  it('skips a file whose stat exactly matches a known cursor entry, reporting it as unchanged', async () => {
+    const info = statSync(SESSION);
+    const knownFiles = new Map([[SESSION, { mtimeMs: info.mtimeMs, size: info.size }]]);
+
+    const seen: string[] = [];
+    const totals = await streamCorpus((record, file) => seen.push(file.path), {
+      root: CORPUS,
+      knownFiles,
+    });
+
+    expect(totals.skipped).toContainEqual({ path: SESSION, reason: 'unchanged' });
+    expect(seen).not.toContain(SESSION);
+    // Discovered either way -- "unchanged" is a reason a file was not OPENED, not a reason it
+    // was never found.
+    expect(totals.files).toBe(4);
+    // The other files, with no cursor entry of their own, are read exactly as before.
+    expect(seen).toContain(SUBAGENT);
+    expect(seen).toContain(BETA);
+  });
+
+  it('reads a file normally when its stat no longer matches the known cursor', async () => {
+    const info = statSync(SESSION);
+    // Same mtime, a size that cannot be real -- the mismatch this test needs, without touching
+    // the committed fixture.
+    const knownFiles = new Map([[SESSION, { mtimeMs: info.mtimeMs, size: info.size + 1 }]]);
+
+    const seen: string[] = [];
+    const totals = await streamCorpus((record, file) => seen.push(file.path), {
+      root: CORPUS,
+      knownFiles,
+    });
+
+    expect(seen).toContain(SESSION);
+    expect(totals.skipped).toEqual([]);
+  });
+
+  it('reads a file normally when it has no entry in the known cursor at all', async () => {
+    const knownFiles = new Map([['/some/other/path.jsonl', { mtimeMs: 1, size: 1 }]]);
+
+    const seen: string[] = [];
+    await streamCorpus((record, file) => seen.push(file.path), { root: CORPUS, knownFiles });
+
+    expect(seen).toContain(SESSION);
+  });
+
+  it('takes no extra stat when neither knownFiles nor onFileRead is passed', async () => {
+    // The baseline every existing caller (and every test above this describe block) already
+    // exercises: `totals.skipped` stays empty and nothing here changes cost for a plain sweep.
+    const totals = await streamCorpus(() => {}, { root: CORPUS });
+    expect(totals.skipped).toEqual([]);
+  });
+
+  it('calls onFileRead with the OS-reported stat, for a file streamed to completion', async () => {
+    const readFiles: { path: string; mtimeMs: number; size: number }[] = [];
+    await streamCorpus(() => {}, {
+      root: CORPUS,
+      onFileRead: (file, stat) => readFiles.push({ path: file.path, ...stat }),
+    });
+
+    const found = readFiles.find((entry) => entry.path === SESSION);
+    expect(found).toBeDefined();
+    expect(found?.size).toBe(statSync(SESSION).size);
+    expect(found?.mtimeMs).toBe(statSync(SESSION).mtimeMs);
+    // Every discovered file was streamed to completion in this fixture, so all four are reported.
+    expect(readFiles.map((entry) => entry.path).sort()).toEqual([...FIXTURES].sort());
+  });
+
+  it('never calls onFileRead for a file skipped as unchanged, or one that could not be read to the end', async () => {
+    if (!canVandalize) return;
+    const root = scratchCopy();
+    chmodSync(inRoot(root, BETA), 0o000);
+
+    const sessionPath = inRoot(root, SESSION);
+    const info = statSync(sessionPath);
+    const knownFiles = new Map([[sessionPath, { mtimeMs: info.mtimeMs, size: info.size }]]);
+
+    const readFiles: string[] = [];
+    await streamCorpus(() => {}, {
+      root,
+      knownFiles,
+      onFileRead: (file) => readFiles.push(file.path),
+    });
+
+    // Skipped as unchanged -- never opened.
+    expect(readFiles).not.toContain(sessionPath);
+    // Unreadable -- opened, but never finished, so `incomplete` is true.
+    expect(readFiles).not.toContain(inRoot(root, BETA));
+    // The two remaining files streamed fine, and are the ones a caller would cursor.
+    expect(readFiles).toContain(inRoot(root, SUBAGENT));
+    expect(readFiles).toContain(inRoot(root, ODD));
+  });
+});
+
 describe('the reader releases what it opens', () => {
   it('returns the descriptor count to baseline across many files', async () => {
     // Measured, not assumed: on an early exit a readline interface does not

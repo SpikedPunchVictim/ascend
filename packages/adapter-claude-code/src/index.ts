@@ -74,6 +74,7 @@ export {
   streamTranscript,
   type CorpusOptions,
   type CorpusTotals,
+  type FileStat,
   type ScanOptions,
   type ScanResult,
   type SkipReason,

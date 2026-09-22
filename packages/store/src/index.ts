@@ -71,6 +71,8 @@ export {
 
 export { indexName, refreshTypeViews, viewName, type RefreshReport } from './views.js';
 
+export { ingestCursorRows, recordIngestCursor, type IngestCursorRow } from './ingest-cursor.js';
+
 export {
   DuplicateEntryError,
   ENTRY_SOURCES,

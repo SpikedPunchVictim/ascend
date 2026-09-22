@@ -444,6 +444,95 @@ describe('migration 3 -- rebuilding stale per-type views (asc-5ed)', () => {
   });
 });
 
+describe('migration 4 -- ingest_cursor for incremental claude-code ingest (asc-4dm.4)', () => {
+  /** A store on disk that has run migrations 1-3 only, i.e. one from before `ingest_cursor` existed. */
+  const buildPreMigration4Store = (dir: string): string => {
+    const file = join(dir, STORE_FILE);
+    const db = new DatabaseSync(file);
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((m) => m.version < 4),
+        file,
+      );
+    } finally {
+      db.close();
+    }
+    // Normalize to WAL like every real store, without touching the version-3 content just built.
+    openStore({ dir, migrate: false }).close();
+    return file;
+  };
+
+  it('FAILS without the migration: a version-3 store has no ingest_cursor table at all', () => {
+    // This is the test that pins the defect this migration fixes -- run against the store as it
+    // stood one migration earlier, it demonstrates the table genuinely does not exist yet, the
+    // same shape as migration 3's own "before" assertion.
+    const dir = tempDir();
+    const file = buildPreMigration4Store(dir);
+
+    const before = new DatabaseSync(file);
+    try {
+      expect(userVersion(before)).toBe(3);
+      expect(() => before.prepare('SELECT * FROM ingest_cursor').all()).toThrow(
+        /no such table: ingest_cursor/,
+      );
+    } finally {
+      before.close();
+    }
+  });
+
+  it('a writable open migrates the store and ingest_cursor becomes queryable', () => {
+    const dir = tempDir();
+    buildPreMigration4Store(dir);
+
+    const store = openStore({ dir });
+    try {
+      expect(store.migrations.applied).toContain(
+        'ingest cursor for incremental claude-code ingest (asc-4dm.4)',
+      );
+      expect(userVersion(store.db)).toBe(SCHEMA_VERSION);
+      expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(4);
+
+      // The same query that failed above now succeeds, and starts empty.
+      expect(store.db.prepare('SELECT * FROM ingest_cursor').all()).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('is a clean no-op on a brand-new store: it is created empty, not backfilled from anything', () => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      expect(userVersion(store.db)).toBe(SCHEMA_VERSION);
+      expect(store.db.prepare('SELECT COUNT(*) AS n FROM ingest_cursor').get()?.['n']).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('enforces its own constraints: no empty path, no negative mtime_ms or size', () => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      expect(() =>
+        store.db
+          .prepare(
+            `INSERT INTO ingest_cursor (path, mtime_ms, size, ingested_at) VALUES ('', 1, 1, '2026-09-22T00:00:00Z')`,
+          )
+          .run(),
+      ).toThrow(/CHECK constraint failed/);
+      expect(() =>
+        store.db
+          .prepare(
+            `INSERT INTO ingest_cursor (path, mtime_ms, size, ingested_at) VALUES ('/a', -1, 1, '2026-09-22T00:00:00Z')`,
+          )
+          .run(),
+      ).toThrow(/CHECK constraint failed/);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe('the Migration union enforces "sql xor run" at compile time (asc-5ed)', () => {
   it('documents the compile-time assertion and how it is checked', () => {
     // `Migration` is `SqlMigration | ProceduralMigration`. Verified directly, not assumed, that a

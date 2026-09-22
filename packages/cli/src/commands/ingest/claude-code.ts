@@ -17,10 +17,31 @@
  *
  * Two consequences worth stating rather than discovering:
  *
- *   - **A re-run costs a full re-read.** Idempotency is enforced at the store, not by a
- *     checkpoint, so `--root` is walked again every time (~5 s for the measured corpus). That is
- *     deliberate: a checkpoint file would be a second source of truth about what has been
- *     ingested, and a checkpoint that disagrees with the store is worse than no checkpoint.
+ *   - **A re-run reads only what changed, and that can never affect correctness (asc-4dm.4).**
+ *     Idempotency is enforced at `entries`, by the event-keyed id above, not by anything this
+ *     paragraph is about to describe -- so the stored cursor below (`ingest_cursor`, schema.ts
+ *     migration 4) is purely an optimisation that decides whether a file is opened AT ALL, never
+ *     what is derived from one that is. A file is recorded in the cursor only once it has been
+ *     streamed to completion (never one skipped as ephemeral, a symlink, unreadable, or itself
+ *     already unchanged -- `recordIngestCursor`'s own doc), and on the next run a file is skipped
+ *     WHOLE only when its `mtime` AND `size` both still match exactly what was recorded --
+ *     otherwise it is re-read from its first byte. No byte offset is ever stored: an
+ *     offset-resume would need the derive path to be provably correct on a partial read, which
+ *     nothing here proves, so the one file that is still growing (this session's own transcript)
+ *     simply never matches and is re-read whole every time, which is cheap. A missing, stale, or
+ *     deleted cursor costs time, never correctness -- delete every `ingest_cursor` row and this
+ *     command degrades exactly to reading every file, the behaviour it had before this paragraph
+ *     was true. `--full` asks for exactly that degradation on purpose. Measured 2026-09-22 on
+ *     this machine: 977 `.jsonl` files, 1.63 GiB, 7.965 s for a full read; only 33 of the
+ *     `session_id`s in this store have ever produced an entry, which is why the cursor is a
+ *     stored fact about the FILE and not something derived from `entries` -- deriving "already
+ *     ingested" from entries could skip at most those 33 files and would still read the other
+ *     944 every run.
+ *   - **`--dry-run` cannot poison the cursor.** The cursor's writes sit inside the exact same
+ *     transaction as the entry writes below (`write`) -- `withRollback` on a dry run in place of
+ *     `withTransaction` on a real one -- so a preview's rollback discards them along with
+ *     everything else. This is placement, not a conditional guarding the cursor write itself:
+ *     nothing here asks "is this a dry run?" before deciding whether to write a cursor row.
  *   - **The `#2` disambiguation suffix is order-sensitive.** The deriver appends `#2` when a
  *     sweep repeats a per-event key. If a still-growing corpus gains a colliding record between
  *     two ingests, that entry's suffix shifts and the run writes one more entry rather than
@@ -38,6 +59,10 @@
  * with a transaction per entry, then 240 ms against 356 ms on a re-run. The atomic choice is also
  * the faster one, on both runs, so there is no trade to make. A rejection part-way through
  * therefore leaves the store exactly as it was.
+ *
+ * As of asc-4dm.4, the cursor rows land inside this same transaction (or its `withRollback`
+ * counterpart on `--dry-run`) for exactly the same reason: a run that fails partway must not
+ * leave a cursor claiming files were read that the store does not actually hold entries for.
  *
  * **The entries are buffered before they are written**, because the corpus walk is async and
  * `withTransaction` takes a synchronous body. Measured: 1,489 entries for the corpus on this
@@ -76,13 +101,17 @@ import {
   type CorpusTotals,
   type DeriveCounters,
   type DerivedEntry,
+  type FileStat,
   type SkippedEntry,
 } from '@ascend/adapter-claude-code';
 import { canonicalJson, validateEntry } from '@ascend/core';
 import {
   DuplicateEntryError,
   findEntry,
+  ingestCursorRows,
   recordEntry,
+  recordIngestCursor,
+  withRollback,
   withTransaction,
   type RecordedEntry,
   type Store,
@@ -127,6 +156,17 @@ function ephemeralSkips(skipped: readonly SkippedEntry[]): readonly SkippedEntry
 }
 
 /**
+ * The skipped entries excluded because their `mtime` and `size` matched the stored cursor
+ * exactly (asc-4dm.4) -- kept separate from `ephemeralSkips` for the same reason that one is
+ * separate from the rest of `totals.skipped`: each reason is a different fact a reader acts on
+ * differently, and folding "already read, unchanged" into "excluded on purpose" or "damage to
+ * the walk" would misdescribe the one that is actually happening.
+ */
+function unchangedSkips(skipped: readonly SkippedEntry[]): readonly SkippedEntry[] {
+  return skipped.filter((entry) => entry.reason === 'unchanged');
+}
+
+/**
  * The distinct project labels behind those skips, sorted.
  *
  * Deduplicated because the skip is counted per FILE and the fact a reader needs is per PROJECT:
@@ -162,11 +202,23 @@ interface TypeOutcome {
 
 const ZERO_OUTCOME: TypeOutcome = { written: 0, present: 0, rejected: 0, collided: 0 };
 
+/**
+ * One file this sweep actually streamed to completion, and the stat to remember it by
+ * (asc-4dm.4). Never present for a file this sweep skipped for any reason.
+ */
+interface CursorUpdate {
+  readonly path: string;
+  readonly mtimeMs: number;
+  readonly size: number;
+}
+
 /** The corpus read: what was there, and what could not be used. */
 interface Sweep {
   readonly entries: readonly DerivedEntry[];
   readonly totals: CorpusTotals;
   readonly counters: DeriveCounters;
+  /** Every file this sweep actually streamed to completion -- the cursor rows to persist. */
+  readonly readFiles: readonly CursorUpdate[];
 }
 
 /** The writes, or what they would have been. */
@@ -239,6 +291,7 @@ export default class IngestClaudeCode extends BaseCommand {
     '<%= config.bin %> <%= command.id %>',
     '<%= config.bin %> <%= command.id %> --dry-run',
     '<%= config.bin %> <%= command.id %> --root /path/to/projects --json',
+    '<%= config.bin %> <%= command.id %> --full',
   ];
 
   static override flags = {
@@ -259,6 +312,13 @@ export default class IngestClaudeCode extends BaseCommand {
         'reach MIN_N, and they would otherwise sit in the store as permanent singleton strata ' +
         'in project-keyed analysis.',
     }),
+    full: Flags.boolean({
+      description:
+        'Ignore the stored cursor (asc-4dm.4) and read every transcript, exactly as this ' +
+        'command did before incremental reads existed. Use it to force a complete re-derive, or ' +
+        'to recover from a cursor you no longer trust -- a missing or stale cursor only ever ' +
+        'costs time, never correctness, so this flag is never required for a correct result.',
+    }),
   };
 
   public async run(): Promise<void> {
@@ -266,6 +326,7 @@ export default class IngestClaudeCode extends BaseCommand {
     const format = this.resolveFormat(flags);
     const dryRun = this.flagValue(flags['dry-run']);
     const includeEphemeral = this.flagValue(flags['include-ephemeral']);
+    const full = this.flagValue(flags.full);
     // CANONICALIZED, not refused (`asc-c8g`). `--root ./corpus` or `--root a/../corpus` is an
     // entirely ordinary thing to type, and `resolve` (pure, lexical, no filesystem access) turns
     // either into the exact absolute path `scanTranscripts` will walk and `classifyTranscript`
@@ -295,8 +356,20 @@ export default class IngestClaudeCode extends BaseCommand {
         rows.push({ [ACTION]: 'type', [TARGET]: spec.name, [OUTCOME]: registration.outcome });
       }
 
-      const sweep = await this.sweep(root, includeEphemeral);
-      const writes = this.write(project.store, sweep.entries, dryRun);
+      // `--full` (asc-4dm.4) ignores the cursor outright, by never building the map `streamCorpus`
+      // would otherwise consult -- the same "absence costs time, never correctness" contract as a
+      // store that predates migration 4, or one whose cursor rows were deleted by hand.
+      const knownFiles = full
+        ? undefined
+        : new Map(
+            ingestCursorRows(project.store.db).map((row): [string, FileStat] => [
+              row.path,
+              { mtimeMs: row.mtimeMs, size: row.size },
+            ]),
+          );
+
+      const sweep = await this.sweep(root, includeEphemeral, knownFiles);
+      const writes = this.write(project.store, sweep.entries, dryRun, sweep.readFiles);
 
       for (const spec of DERIVED_TYPES) {
         rows.push({
@@ -316,16 +389,34 @@ export default class IngestClaudeCode extends BaseCommand {
    *
    * The totals and counters travel back with the entries because "read nothing" and "read
    * everything and derived nothing" are different facts, and only the caller can tell them apart.
+   *
+   * `knownFiles` is the stored cursor (asc-4dm.4), or `undefined` for `--full`: passed straight
+   * through to `streamCorpus`, which is the one place that knows a file's actual stat and so is
+   * the only place that can decide whether it matches. `onFileRead` collects exactly the files
+   * this walk streamed to completion, for `write` to persist -- never a file this walk skipped,
+   * for any reason, and never one whose read did not finish.
    */
-  private async sweep(root: string, includeEphemeral: boolean): Promise<Sweep> {
+  private async sweep(
+    root: string,
+    includeEphemeral: boolean,
+    knownFiles: ReadonlyMap<string, FileStat> | undefined,
+  ): Promise<Sweep> {
     const deriver = createDeriver();
     const entries: DerivedEntry[] = [];
+    const readFiles: CursorUpdate[] = [];
 
     const totals = await streamCorpus(
       (record, file) => {
         for (const entry of deriver.accept(record, file)) entries.push(entry);
       },
-      { root, includeEphemeral },
+      {
+        root,
+        includeEphemeral,
+        ...(knownFiles === undefined ? {} : { knownFiles }),
+        onFileRead: (file, stat) => {
+          readFiles.push({ path: file.path, mtimeMs: stat.mtimeMs, size: stat.size });
+        },
+      },
     );
 
     // Flushed after the walk, never during: the deriver holds one run open until a different
@@ -356,18 +447,31 @@ export default class IngestClaudeCode extends BaseCommand {
       );
     }
 
-    return { entries, totals, counters: deriver.counters };
+    return { entries, totals, counters: deriver.counters, readFiles };
   }
 
   /**
-   * Write the derived entries, or report what writing them would do.
+   * Write the derived entries, or report what writing them would do -- and, either way, persist
+   * the cursor rows for the files this run actually streamed (asc-4dm.4).
    *
    * A dry run asks the store the same question the real run does -- `findEntry` on the exact id
    * the real run would use -- so the two cannot report different outcomes. It is not a second
    * implementation of the decision, because a preview computed by a copy of the logic is a
    * preview of the copy.
+   *
+   * **The cursor writes are unconditional inside the transaction body; only which transaction
+   * primitive wraps them depends on `dryRun`.** `withRollback` always undoes its body -- the same
+   * preview primitive `registerDocument`'s dry run already rests on -- so a `--dry-run` cannot
+   * poison the cursor by construction: there is no `if (!dryRun)` around `recordIngestCursor`
+   * for a future edit to delete by accident. This is D5 from asc-4dm.4, solved by which function
+   * is called rather than by a condition guarding the call inside it.
    */
-  private write(store: Store, entries: readonly DerivedEntry[], dryRun: boolean): Writes {
+  private write(
+    store: Store,
+    entries: readonly DerivedEntry[],
+    dryRun: boolean,
+    readFiles: readonly CursorUpdate[],
+  ): Writes {
     const counts = new Map<string, TypeOutcome>();
     const warnings: string[] = [];
 
@@ -434,29 +538,45 @@ export default class IngestClaudeCode extends BaseCommand {
       valid.push(entry);
     }
 
-    if (dryRun) {
-      for (const entry of valid) {
-        // Same content check as the real run's `DuplicateEntryError` branch (`asc-90h`), so a
-        // preview cannot describe a collision as an ordinary "already present" the real run
-        // would not agree with.
-        const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
-        if (existing === undefined) {
-          tally(entry.type, 'written');
-        } else if (fingerprint(existing) === fingerprint(entry)) {
-          tally(entry.type, 'present');
-        } else {
-          tally(entry.type, 'collided');
-          collisions.push(
-            `${entry.type} ${idFor(entry)}: this id already holds a DIFFERENT entry. Two ` +
-              `transcript files reused the same (session, record) identity for different ` +
-              `content, so the second one would be refused rather than silently dropped.`,
-          );
-        }
-      }
-      return { counts, warnings, rejections, collisions };
-    }
+    // D5 (asc-4dm.4): one transaction primitive, chosen by `dryRun`, wraps BOTH the cursor writes
+    // and the entry writes/preview below -- `withRollback` always undoes its body, so a dry run's
+    // cursor rows vanish with everything else it computed, by the same mechanism that already
+    // makes `--dry-run` write nothing else. Nothing inside the body below asks "is this a dry
+    // run?" before deciding whether to call `recordIngestCursor`.
+    const transact = dryRun
+      ? <T>(body: () => T): T => withRollback(store.db, body)
+      : <T>(body: () => T): T => withTransaction(store.db, body);
 
-    withTransaction(store.db, () => {
+    transact(() => {
+      // Every file this sweep actually streamed to completion, cursor'd unconditionally -- see
+      // this method's own doc for why `dryRun` is decided ABOVE, in which wrapper runs this body,
+      // and never here.
+      for (const file of readFiles) {
+        recordIngestCursor(store.db, file.path, file.mtimeMs, file.size, recordedAt);
+      }
+
+      if (dryRun) {
+        for (const entry of valid) {
+          // Same content check as the real run's `DuplicateEntryError` branch (`asc-90h`), so a
+          // preview cannot describe a collision as an ordinary "already present" the real run
+          // would not agree with.
+          const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
+          if (existing === undefined) {
+            tally(entry.type, 'written');
+          } else if (fingerprint(existing) === fingerprint(entry)) {
+            tally(entry.type, 'present');
+          } else {
+            tally(entry.type, 'collided');
+            collisions.push(
+              `${entry.type} ${idFor(entry)}: this id already holds a DIFFERENT entry. Two ` +
+                `transcript files reused the same (session, record) identity for different ` +
+                `content, so the second one would be refused rather than silently dropped.`,
+            );
+          }
+        }
+        return;
+      }
+
       for (const entry of valid) {
         try {
           const { warnings: issues } = recordEntry(
@@ -562,12 +682,14 @@ export default class IngestClaudeCode extends BaseCommand {
     }
 
     // Split by reason: a directory or symlink not descended into is a different fact from a
-    // project excluded on purpose, and folding them into one count would make the ephemeral
-    // exclusion (`asc-80m`) look like damage to the walk rather than a decision this command made.
-    const nonEphemeralSkipped = totals.skipped.filter((entry) => entry.reason !== 'ephemeral');
-    if (nonEphemeralSkipped.length > 0) {
+    // project excluded on purpose or a file skipped because it had not changed, and folding them
+    // together would make either of those deliberate decisions look like damage to the walk.
+    const structuralSkipped = totals.skipped.filter(
+      (entry) => entry.reason !== 'ephemeral' && entry.reason !== 'unchanged',
+    );
+    if (structuralSkipped.length > 0) {
       this.warn(
-        `${String(nonEphemeralSkipped.length)} directory or symlink was not descended into, so ` +
+        `${String(structuralSkipped.length)} directory or symlink was not descended into, so ` +
           `it is not in these totals.`,
       );
     }
@@ -583,6 +705,18 @@ export default class IngestClaudeCode extends BaseCommand {
         `${String(ephemeralSkipped.length)} transcript file(s) under known OS temp project(s) ` +
           `(${labels.join(', ')}) were skipped: these projects can never recur, so they are ` +
           `excluded by default. Pass --include-ephemeral to read them anyway.`,
+      );
+    }
+
+    // D4 (asc-4dm.4): a file the stored cursor already knew about is skipped whole, through the
+    // same "never silent" mechanism as every other skip reason here -- a reader must be able to
+    // see that a run read less than the full corpus and why, not infer it from a smaller number.
+    const unchanged = unchangedSkips(totals.skipped);
+    if (unchanged.length > 0) {
+      this.warn(
+        `${String(unchanged.length)} transcript file(s) unchanged since the last ingest (mtime ` +
+          `and size both matched the stored cursor) and were skipped without being opened. Pass ` +
+          `--full to read every file regardless of the cursor.`,
       );
     }
 

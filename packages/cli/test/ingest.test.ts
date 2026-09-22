@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -453,13 +453,18 @@ describe('asc ingest claude-code', () => {
     expect(again.status).toBe(0);
     expect(stored(dir)).toEqual(first);
 
-    // And the report says so in words, because a row of zeroes answers "did this work?"
-    // ambiguously.
+    // Since asc-4dm.4, the second run does not even re-open the one unchanged file, so it never
+    // re-derives these entries -- the stored cursor covers what used to require re-deriving and
+    // then finding each id `already present`. `entry.test.ts`'s incremental cursor block asserts
+    // that mechanism directly; the guarantee this test still exists to pin is the one in its own
+    // name: no duplicates land in the store.
     const rows = outcomes(again.stdout);
-    expect(rows['verification_run']).toBe('1 already present');
-    expect(rows['tool_denial']).toBe('1 already present');
+    expect(rows['verification_run']).toBe('none');
+    expect(rows['tool_denial']).toBe('none');
+    expect(again.stderr).toContain('1 transcript file(s) unchanged since the last ingest');
 
-    // The definitions are re-registered as `unchanged`, not rewritten into a new version.
+    // The definitions are re-registered as `unchanged`, not rewritten into a new version -- this
+    // half is independent of the cursor, since type registration is not gated on it.
     expect(again.stdout).toContain('unchanged');
     expect(again.stdout).not.toContain('prose-updated');
   });
@@ -885,6 +890,165 @@ describe('asc ingest claude-code', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+/**
+ * `ingest_cursor`, read back directly (asc-4dm.4) -- the same discipline `stored()` already uses
+ * for `entries`: a claim about what the cursor holds is only real if it survives a fresh
+ * `DatabaseSync` connection, never taken from the command's own report of itself.
+ */
+function cursorRows(dir: string): { path: string; mtimeMs: number; size: number }[] {
+  const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+  try {
+    return db
+      .prepare('SELECT path, mtime_ms AS mtimeMs, size FROM ingest_cursor ORDER BY path')
+      .all() as { path: string; mtimeMs: number; size: number }[];
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `asc-4dm.4`: a stored cursor lets a re-run skip a file whole when its `mtime` and `size` both
+ * still match what was recorded, rather than re-reading the full corpus on every run -- the
+ * measurement that motivated it (977 `.jsonl` files, 1.63 GiB, 7.965s for a full read; only 33
+ * of the `session_id`s already in a real store have ever produced an entry) is `claude-code.ts`'s
+ * own module doc, not repeated here.
+ */
+describe('asc ingest claude-code: incremental cursor (asc-4dm.4)', () => {
+  it('skips every file on a second run over an unchanged corpus, deriving nothing new', () => {
+    const dir = project();
+    transcripts(dir);
+
+    const first = asc(['ingest', 'claude-code'], dir);
+    expect(first.status).toBe(0);
+    const firstStored = stored(dir);
+    expect(firstStored.entries).toBe(5);
+
+    const second = asc(['ingest', 'claude-code'], dir);
+    expect(second.status).toBe(0);
+
+    // Nothing changed in the store: the one file in this corpus was never re-opened, so nothing
+    // was re-derived from it -- a stronger claim than "idempotency at `entries` absorbed a
+    // re-derivation", which the next test in this block covers separately.
+    expect(stored(dir)).toEqual(firstStored);
+
+    expect(second.stderr).toContain('1 transcript file(s) unchanged since the last ingest');
+    expect(second.stderr).toContain('were skipped without being opened');
+
+    // No type saw a written OR present outcome: the file that would have produced either was
+    // never read at all on this run.
+    const rows = outcomes(second.stdout);
+    expect(Object.values(rows).every((outcome) => outcome === 'none')).toBe(true);
+  });
+
+  it('re-reads exactly the file that changed, leaving an untouched sibling skipped as unchanged', () => {
+    const dir = project();
+    const corpus = transcripts(dir);
+
+    const secondFileRecord = {
+      sessionId: 's-2',
+      uuid: 'u-second',
+      timestamp: '2026-01-02T03:04:20.000Z',
+      ...RECORD_AT,
+      attributionSkill: 'second-file-skill',
+    };
+    writeFileSync(join(corpus, 's-2.jsonl'), `${JSON.stringify(secondFileRecord)}\n`);
+
+    const first = asc(['ingest', 'claude-code'], dir);
+    expect(first.status).toBe(0);
+    expect(stored(dir).entries).toBe(6); // 5 from s-1.jsonl, 1 from s-2.jsonl
+
+    // Touch s-1.jsonl only: append a new, distinct record, so BOTH its mtime and its size change.
+    const appended = {
+      sessionId: 's-1',
+      uuid: 'u-appended',
+      timestamp: '2026-01-02T03:04:21.000Z',
+      ...RECORD_AT,
+      attributionSkill: 'appended-skill',
+    };
+    const existing = readFileSync(join(corpus, 's-1.jsonl'), 'utf8');
+    writeFileSync(join(corpus, 's-1.jsonl'), existing + `${JSON.stringify(appended)}\n`);
+
+    const second = asc(['ingest', 'claude-code'], dir);
+    expect(second.status).toBe(0);
+
+    // Exactly one file (s-2.jsonl) matched the cursor and was skipped; s-1.jsonl did not match
+    // and was re-read.
+    expect(second.stderr).toContain('1 transcript file(s) unchanged since the last ingest');
+
+    // The re-read of s-1.jsonl picked up its newly appended record.
+    expect(stored(dir).entries).toBe(7);
+  });
+
+  it('leaves the cursor untouched on --dry-run: a subsequent real run still reads every file', () => {
+    const dir = project();
+    transcripts(dir);
+
+    const dry = asc(['ingest', 'claude-code', '--dry-run'], dir);
+    expect(dry.status).toBe(0);
+
+    // The store (and its ingest_cursor table) exists after a dry run -- opening a store always
+    // migrates it, dry run or not -- but no row was committed: `withRollback` discarded it along
+    // with everything else the preview computed.
+    expect(cursorRows(dir)).toEqual([]);
+
+    const real = asc(['ingest', 'claude-code'], dir);
+    expect(real.status).toBe(0);
+    // The proof the cursor was not poisoned: the real run does not report the file as unchanged.
+    expect(real.stderr).not.toContain('unchanged since the last ingest');
+    expect(stored(dir).entries).toBe(5);
+    expect(cursorRows(dir)).toHaveLength(1);
+  });
+
+  it('--full ignores the cursor and reads every file regardless', () => {
+    const dir = project();
+    transcripts(dir);
+
+    const first = asc(['ingest', 'claude-code'], dir);
+    expect(first.status).toBe(0);
+    expect(cursorRows(dir)).toHaveLength(1);
+
+    const full = asc(['ingest', 'claude-code', '--full'], dir);
+    expect(full.status).toBe(0);
+
+    // No unchanged skip at all: --full never builds the map streamCorpus would otherwise consult.
+    expect(full.stderr).not.toContain('unchanged since the last ingest');
+    // The re-read is ordinary idempotency at `entries` -- reported as already present -- and the
+    // store gains no duplicates.
+    expect(outcomes(full.stdout)['verification_run']).toBe('1 already present');
+    expect(stored(dir).entries).toBe(5);
+  });
+
+  it('deleting the cursor rows reproduces a full read, with no duplicate entries', () => {
+    const dir = project();
+    transcripts(dir);
+
+    const first = asc(['ingest', 'claude-code'], dir);
+    expect(first.status).toBe(0);
+    const firstStored = stored(dir);
+    expect(cursorRows(dir)).toHaveLength(1);
+
+    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    try {
+      db.exec('DELETE FROM ingest_cursor');
+    } finally {
+      db.close();
+    }
+    expect(cursorRows(dir)).toEqual([]);
+
+    const second = asc(['ingest', 'claude-code'], dir);
+    expect(second.status).toBe(0);
+
+    // No unchanged skip: with no cursor rows, the file cannot match one -- today's pre-asc-4dm.4
+    // behaviour, reproduced exactly.
+    expect(second.stderr).not.toContain('unchanged since the last ingest');
+    // Ordinary idempotency at `entries` absorbs the re-derivation: no duplicates.
+    expect(stored(dir)).toEqual(firstStored);
+    expect(outcomes(second.stdout)['verification_run']).toBe('1 already present');
+    // And the cursor is rebuilt: the file was actually streamed again in full.
+    expect(cursorRows(dir)).toHaveLength(1);
   });
 });
 

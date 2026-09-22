@@ -45,7 +45,7 @@
  */
 
 import { createReadStream } from 'node:fs';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -73,7 +73,15 @@ import {
  */
 export type Visit = (record: TranscriptRecord, file: TranscriptFile, line: number) => void;
 
-export type SkipReason = 'unreadable' | 'symlink' | 'ephemeral';
+/**
+ * `'unchanged'` (asc-4dm.4): the file's `mtime` AND `size` both matched a stat the caller passed
+ * in via `CorpusOptions.knownFiles`, so it was never opened at all -- the whole-file skip that
+ * makes a re-run of an unchanged corpus approach the cost of a stat-only walk instead of a full
+ * read. Decided here, at the same layer that already decides `'ephemeral'`, rather than by the
+ * caller re-implementing the walk: the caller supplies what it already knows (a stored cursor),
+ * this module is the one place that knows the actual stat.
+ */
+export type SkipReason = 'unreadable' | 'symlink' | 'ephemeral' | 'unchanged';
 
 /**
  * A path the sweep deliberately did not read. Never silent -- always reported.
@@ -143,8 +151,9 @@ export interface CorpusTotals {
   readonly failures: readonly TranscriptFailure[];
   /**
    * Everything the sweep deliberately did not read: directories not descended into, symlinks
-   * not followed, and -- unless `includeEphemeral` asked otherwise -- transcripts under a known
-   * OS temp root (`asc-80m`). Three different facts sharing one array, which is why
+   * not followed, transcripts under a known OS temp root unless `includeEphemeral` asked
+   * otherwise (`asc-80m`), and -- when `knownFiles` was passed -- a file whose stat exactly
+   * matched it (`asc-4dm.4`). Four different facts sharing one array, which is why
    * `SkippedEntry` carries the `reason` that tells them apart: a caller that reports the length
    * alone would describe a deliberate exclusion as damage to the walk.
    */
@@ -153,12 +162,38 @@ export interface CorpusTotals {
   readonly aborted: boolean;
 }
 
+/** One file's stat, as far as this module needs it: enough to tell "unchanged" from "changed". */
+export interface FileStat {
+  readonly mtimeMs: number;
+  readonly size: number;
+}
+
 export interface CorpusOptions {
   /** Defaults to `~/.claude/projects`. */
   readonly root?: string;
   readonly signal?: AbortSignal;
   /** See `ScanOptions`. Defaults to `false`, and is passed straight through to `scanTranscripts`. */
   readonly includeEphemeral?: boolean;
+  /**
+   * A stored cursor, keyed by absolute path (asc-4dm.4). A file whose CURRENT `mtime` and `size`
+   * both equal the entry recorded here is skipped whole -- never opened -- and reported as
+   * `SkippedEntry` with `reason: 'unchanged'`. A file with no entry, or one whose stat no longer
+   * matches, is read exactly as it would be with no cursor at all.
+   *
+   * Omit this (the default) to read every file, matching this module's behaviour before
+   * asc-4dm.4. A missing or stale entry only ever costs a re-read -- it can never suppress or
+   * alter what a file yields, because it only ever chooses NOT to open a file, never what is done
+   * with one that is opened.
+   */
+  readonly knownFiles?: ReadonlyMap<string, FileStat>;
+  /**
+   * Called once, synchronously, for every file this sweep actually streamed TO COMPLETION --
+   * i.e. `TranscriptCounters.incomplete` was `false`. Never called for a file this sweep skipped
+   * for any reason (`'unreadable'`, `'symlink'`, `'ephemeral'`, `'unchanged'`), and never for one
+   * whose read did not finish, so a caller building a cursor from this callback cannot record a
+   * file it never fully derived from.
+   */
+  readonly onFileRead?: (file: TranscriptFile, stat: FileStat) => void;
 }
 
 export interface ScanOptions {
@@ -401,11 +436,43 @@ export async function streamCorpus(
   let bytes = 0;
   let aborted = false;
   const failures: TranscriptFailure[] = [];
+  const unchanged: SkippedEntry[] = [];
+
+  // A stat costs a syscall per file, so it is taken only when a caller actually asked for
+  // something that needs one -- a cursor to compare against, or a callback that wants to build
+  // one. Neither is set for the plain `streamCorpus(visit)` call every existing caller (and
+  // every test that predates asc-4dm.4) already makes, so that path takes zero extra stats.
+  const wantsStat = options.knownFiles !== undefined || options.onFileRead !== undefined;
 
   for (const file of scan.files) {
     if (options.signal?.aborted === true) {
       aborted = true;
       break;
+    }
+
+    let currentStat: FileStat | undefined;
+    if (wantsStat) {
+      try {
+        const info = await stat(file.path);
+        currentStat = { mtimeMs: info.mtimeMs, size: info.size };
+      } catch {
+        // Unreadable, or removed between the walk and here. Fall through and let
+        // `streamTranscript` below report the real failure the way it always has -- this is not
+        // the place that turns a stat failure into a diagnosis.
+        currentStat = undefined;
+      }
+    }
+
+    if (options.knownFiles !== undefined && currentStat !== undefined) {
+      const known = options.knownFiles.get(file.path);
+      if (
+        known !== undefined &&
+        known.mtimeMs === currentStat.mtimeMs &&
+        known.size === currentStat.size
+      ) {
+        unchanged.push({ path: file.path, reason: 'unchanged' });
+        continue;
+      }
     }
 
     const counters = await streamTranscript(file, visit, options);
@@ -425,6 +492,10 @@ export async function streamCorpus(
           reason: counters.reason ?? 'incomplete',
           parsed: counters.parsed,
         });
+    } else if (currentStat !== undefined) {
+      // Read to completion, and only now: a file that failed partway must not reach a caller's
+      // cursor, or a later run would skip exactly the bytes this run never derived from.
+      options.onFileRead?.(file, currentStat);
     }
   }
 
@@ -436,7 +507,11 @@ export async function streamCorpus(
     malformed,
     bytes,
     failures,
-    skipped: scan.skipped,
+    // `scan.skipped` (directories, symlinks, ephemeral projects) is decided during the WALK;
+    // `unchanged` is decided here, per file, against the caller's cursor. Both are "a path the
+    // sweep deliberately did not read" (`CorpusTotals.skipped`'s own doc), so they share one
+    // array rather than a second one a caller would have to remember to check.
+    skipped: [...scan.skipped, ...unchanged],
     aborted,
   };
 }

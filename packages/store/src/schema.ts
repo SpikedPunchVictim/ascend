@@ -449,6 +449,47 @@ function rebuildAllTypeViews(db: DatabaseSync): void {
 }
 
 /**
+ * The cursor `asc ingest claude-code` uses to skip a transcript file it has already read in
+ * full (asc-4dm.4, migration 4).
+ *
+ * **Why a stored table and not something derived from `entries`.** Measured 2026-09-22 on the
+ * real corpus: 977 `.jsonl` files on disk, and only 33 distinct `session_id`s have ever produced
+ * an entry in this store. Deriving "already ingested" from `entries` could therefore skip at
+ * most 33 of 977 files and would still read the other 944 on every run -- it would not touch the
+ * cost this migration exists to remove. A fact about the FILE (its `mtime` and `size` the last
+ * time it was fully read) is not recoverable from the entries it produced, so it has to be its
+ * own row.
+ *
+ * **`path` is the primary key and it is the absolute transcript path**, not a session id: two
+ * different roots (`--root` pointed elsewhere, or a corpus moved) can hold a file the OS calls
+ * the same session, and this table must not conflate them.
+ *
+ * **This table can only make a run FASTER, never wrong.** Nothing here is read except to decide
+ * whether to skip a whole file, and idempotency at `entries` (this file's own header comment,
+ * point 2) does not depend on this table at all -- delete every row here, or open a store that
+ * predates this migration, and `asc ingest claude-code` degrades to reading every file, exactly
+ * as it always did. A missing, stale, or wrong row costs time, never correctness.
+ *
+ * No empty-string sentinels, matching the rest of this schema: `path` and `ingested_at` are
+ * `NOT NULL` with a `CHECK` against `''` rather than allowing it to sit there meaning nothing.
+ * `mtime_ms` and `size` are `CHECK (... >= 0)` for the same reason a negative byte count or
+ * timestamp would be a value with no honest reading.
+ */
+const INGEST_CURSOR = `
+CREATE TABLE ingest_cursor (
+  path        TEXT    NOT NULL PRIMARY KEY,
+  mtime_ms    INTEGER NOT NULL,
+  size        INTEGER NOT NULL,
+  ingested_at TEXT    NOT NULL,
+
+  CHECK (path <> ''),
+  CHECK (mtime_ms >= 0),
+  CHECK (size >= 0),
+  CHECK (ingested_at <> '')
+);
+`;
+
+/**
  * Every migration, in order.
  *
  * Append-only FROM THE FIRST RELEASE ON: an existing entry is never edited, because a
@@ -490,6 +531,12 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 3,
     name: 'rebuild per-type views to carry the invalidated column',
     run: rebuildAllTypeViews,
+  },
+  {
+    version: 4,
+    name: 'ingest cursor for incremental claude-code ingest (asc-4dm.4)',
+    sql: INGEST_CURSOR,
+    marker: 'ingest_cursor',
   },
 ];
 
