@@ -76,6 +76,7 @@ interface JsonProportion {
 interface ProfileRow {
   readonly field: string;
   readonly value?: unknown;
+  readonly type?: string;
   readonly tally?: string;
   readonly distinct?: number;
   readonly values?: string;
@@ -1023,5 +1024,179 @@ describe('asc explore --page --csv: --csv-raw opts out of formula neutralisation
     const raw = asc(['explore', SPEC.name, '--page', '--csv', '--csv-raw'], dir).stdout;
     expect(raw).not.toContain("'=CMD(bad)");
     expect(raw).toContain('=CMD(bad)');
+  });
+});
+
+/**
+ * `asc-6wn` -- profile mode renders a property's values by its DECLARED type, so `asc explore`
+ * agrees with itself.
+ *
+ * Before this fix, `--page` (which reads `properties_json` directly) printed a `boolean`
+ * property's value as `true`/`false`, while the profile's `top` summary -- reading the same
+ * property through the generated view's `json_extract` projection, which has no boolean storage
+ * class to draw on -- printed SQLite's own `0`/`1`, on a row whose own `type` column said
+ * `boolean` while doing it. The fixture below is the one the bead measured against: a boolean, a
+ * json, a string and an integer property, two entries.
+ */
+describe('asc explore: a boolean property renders true/false, agreeing with --page (asc-6wn)', () => {
+  const BOOL_SPEC = {
+    name: 'probe',
+    properties: [
+      { name: 'flag', type: 'boolean' },
+      { name: 'payload', type: 'json' },
+      { name: 'label', type: 'string' },
+      { name: 'count', type: 'integer' },
+    ],
+  };
+
+  function boolProject(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'asc-explore-bool-'));
+    dirs.push(dir);
+    expect(asc(['init'], dir).status).toBe(0);
+    writeFileSync(join(dir, 'spec.json'), JSON.stringify(BOOL_SPEC));
+    expect(asc(['types', 'define', join(dir, 'spec.json')], dir).status).toBe(0);
+    return dir;
+  }
+
+  it('renders top.* keys and values as true/false in --json, not 0/1', () => {
+    const dir = boolProject();
+    expect(
+      asc(
+        [
+          'record',
+          BOOL_SPEC.name,
+          '--prop',
+          'flag=true',
+          '--prop',
+          'label=x',
+          '--prop',
+          'count=7',
+          '--prop',
+          'payload={"a":[1,2]}',
+          '--json',
+        ],
+        dir,
+      ).status,
+    ).toBe(0);
+    expect(
+      asc(['record', BOOL_SPEC.name, '--prop', 'flag=false', '--prop', 'count=1', '--json'], dir)
+        .status,
+    ).toBe(0);
+
+    const list = rows(asc(['explore', BOOL_SPEC.name, '--json'], dir).stdout);
+    const flag = property(list, 'flag');
+
+    // The declared type is what the row itself already claims -- the defect was rendering a value
+    // that contradicted this same column.
+    expect(flag.type).toBe('boolean');
+    expect(flag.summary).toBe('top');
+    // Both values occur once, so the tie is broken ascending by the RAW stored value (SQLite's
+    // 0 before 1, i.e. false before true) -- `topValues`'s own documented order, unaffected by
+    // this fix, which only changes how a value is RENDERED once chosen.
+    expect(flag.top).toStrictEqual([
+      { value: 'false', count: 1 },
+      { value: 'true', count: 1 },
+    ]);
+    // The per-top-value row's `field` is namespaced by the rendered value, so it must spell it
+    // `true`/`false`, not `1`/`0`.
+    expect(fields(list, 'property.flag.top.')).toStrictEqual([
+      'property.flag.top.false',
+      'property.flag.top.true',
+    ]);
+    const topTrue = find(list, 'property.flag.top.true');
+    expect(topTrue?.top_value).toBe('true');
+    expect(find(list, 'property.flag.top.0')).toBeUndefined();
+    expect(find(list, 'property.flag.top.1')).toBeUndefined();
+  });
+
+  it('agrees with --page for the same store: both print true/false', () => {
+    const dir = boolProject();
+    expect(asc(['record', BOOL_SPEC.name, '--prop', 'flag=true', '--json'], dir).status).toBe(0);
+    expect(asc(['record', BOOL_SPEC.name, '--prop', 'flag=false', '--json'], dir).status).toBe(0);
+
+    const page = JSON.parse(asc(['explore', BOOL_SPEC.name, '--page', '--json'], dir).stdout) as {
+      rows: { properties: { flag?: boolean } }[];
+    };
+    // `--page` was already correct and stays untouched by this fix -- real JS booleans, not '0'/'1'.
+    const pageFlags = page.rows.map((row) => row.properties['flag']).sort();
+    expect(pageFlags).toStrictEqual([false, true]);
+
+    const profileTop = property(
+      rows(asc(['explore', BOOL_SPEC.name, '--json'], dir).stdout),
+      'flag',
+    ).top;
+    expect(profileTop).toStrictEqual([
+      { value: 'false', count: 1 },
+      { value: 'true', count: 1 },
+    ]);
+  });
+
+  it('does not render a not-measured boolean as false', () => {
+    const dir = boolProject();
+    expect(asc(['record', BOOL_SPEC.name, '--prop', 'flag=false', '--json'], dir).status).toBe(0);
+    // Never measured: no --prop for flag, and not listed in --na either.
+    expect(asc(['record', BOOL_SPEC.name, '--prop', 'count=1', '--json'], dir).status).toBe(0);
+
+    const list = rows(asc(['explore', BOOL_SPEC.name, '--json'], dir).stdout);
+    const flag = property(list, 'flag');
+
+    expect(flag.states).toStrictEqual({
+      measured: 1,
+      not_applicable: 0,
+      not_measured: 1,
+      not_declared: 0,
+    });
+    // Exactly the one measured false -- the not-measured entry contributes no value at all, and
+    // must not be counted as though `false` had been recorded for it too.
+    expect(flag.top).toStrictEqual([{ value: 'false', count: 1 }]);
+    expect(flag.distinct).toBe(1);
+  });
+
+  /**
+   * The guard against over-reach: `integer`, `string` and `json` on the SAME entries as the
+   * `boolean` fix above must render exactly as before. `json` stays `not summarised`; `--page`
+   * carries the real value untouched.
+   */
+  it('leaves integer, string and json profile output unchanged', () => {
+    const dir = boolProject();
+    expect(
+      asc(
+        [
+          'record',
+          BOOL_SPEC.name,
+          '--prop',
+          'flag=true',
+          '--prop',
+          'label=hello',
+          '--prop',
+          'count=7',
+          '--prop',
+          'payload={"a":[1,2]}',
+          '--json',
+        ],
+        dir,
+      ).status,
+    ).toBe(0);
+
+    const list = rows(asc(['explore', BOOL_SPEC.name, '--json'], dir).stdout);
+
+    const count = property(list, 'count');
+    expect(count.summary).toBe('range');
+    expect(count.min).toBe(7);
+    expect(count.max).toBe(7);
+
+    const label = property(list, 'label');
+    expect(label.summary).toBe('top');
+    expect(label.top).toStrictEqual([{ value: 'hello', count: 1 }]);
+
+    const payload = property(list, 'payload');
+    expect(payload.summary).toBe('cardinality');
+    expect(payload.top).toBeUndefined();
+    expect(payload.values).toBe('not summarised');
+    expect(payload.distinct).toBe(1);
+
+    // And the table renders the same true/false the JSON does, so the two never disagree.
+    const table = asc(['explore', BOOL_SPEC.name], dir).stdout;
+    expect(table).toContain('true 1');
   });
 });

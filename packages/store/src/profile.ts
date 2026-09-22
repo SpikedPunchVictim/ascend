@@ -33,13 +33,15 @@
  * two renderings of one fact can disagree. `count` is returned alongside the per-state counts so
  * the denominator is stated and the ratio is exact for whoever computes it.
  *
- * **Nothing here is a value of a `text` or `json` property.** Top-K values are returned verbatim
- * for categorical properties (they are identifiers and labels -- the thing being counted), and the
- * `cardinality` shape returns no values at all. A profile of a prose corpus therefore cannot put
- * prose in a caller's context by accident.
+ * **Nothing here is a value of a `text` or `json` property.** Top-K values are returned for
+ * categorical properties (they are identifiers and labels -- the thing being counted), rendered
+ * according to the property's DECLARED type rather than however `json_extract` happened to
+ * represent it (`renderDeclaredValue`, `@ascend/core` -- `asc-6wn`: a `boolean`'s `0`/`1` becomes
+ * `false`/`true`, every other type is unchanged). The `cardinality` shape returns no values at
+ * all. A profile of a prose corpus therefore cannot put prose in a caller's context by accident.
  */
 
-import { canonicalName, type PropertyType } from '@ascend/core';
+import { canonicalName, renderDeclaredValue, type PropertyType } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
 import { typeVersions, type TypeVersionRow } from './registry.js';
 import { literal, stateCase } from './sql.js';
@@ -236,12 +238,21 @@ function distinctCount(db: DatabaseSync, type: string, property: string): number
  * value that reaches `properties_json` is non-null, and `json_extract`'s collapse of "absent" and
  * "null" cannot be observed here. Stated because the collapse is real one layer down -- `state.ts`
  * documents it -- and a reader of this function deserves to know why it is not handled.
+ *
+ * `declared` is the property's own declared type (the NEWEST version's, same as `summaryFor`'s
+ * input below), passed to `renderDeclaredValue` (`@ascend/core`) rather than `String`-ing
+ * `row.value` verbatim. Without it a `boolean` property's top values are SQLite's `0`/`1` --
+ * `json_extract`'s own representation, not the declared type's -- which is the defect `asc-6wn`
+ * measured: `asc explore <type> --page` prints `true`/`false` for the same property because it
+ * reads `properties_json` directly, so the profile disagreed with itself about a value it was
+ * printing in the same command.
  */
 function topValues(
   db: DatabaseSync,
   type: string,
   property: string,
   k: number,
+  declared: PropertyType,
 ): readonly PropertyValueCount[] {
   const rows = db
     .prepare(
@@ -251,7 +262,16 @@ function topValues(
     )
     .all(type, k) as unknown as { value: string | number | null; n: number }[];
 
-  return rows.map((row) => ({ value: String(row.value), count: row.n }));
+  return rows.map((row) => {
+    if (row.value === null) {
+      // Unreachable per the file comment above: `measuredTest` excludes NULL, and no property
+      // type in the vocabulary can store one for a measured value. A null here would be a NEW way
+      // for that invariant to break, not a value this function has any business rendering as
+      // though it were one -- so it fails loudly rather than silently becoming a rendered `false`.
+      throw new Error(`topValues: '${property}' of '${type}' returned a null measured value`);
+    }
+    return { value: renderDeclaredValue(declared, row.value), count: row.n };
+  });
 }
 
 /** Lowest and highest measured value, or nulls when nothing was measured. */
@@ -381,7 +401,7 @@ export function profileType(
       summary,
       states: stateCounts(db, type, name, seen.declaring),
       distinct: distinctCount(db, type, name),
-      top: summary === 'top' ? topValues(db, type, name, topK) : [],
+      top: summary === 'top' ? topValues(db, type, name, topK, declared) : [],
       ...(summary === 'range' ? rangeOf(db, type, name) : { min: null, max: null }),
     });
   }

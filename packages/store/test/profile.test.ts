@@ -577,3 +577,70 @@ describe('profileType: the envelope around the properties', () => {
     );
   });
 });
+
+/**
+ * `asc-6wn`: a `boolean` property's `top` values, rendered by DECLARED type rather than by
+ * whatever `json_extract` handed back.
+ *
+ * SQLite has no boolean storage class, so `json_extract` returns the stored `true`/`false` as the
+ * INTEGER `1`/`0` -- and before this fix, `topValues` (`profile.ts`) printed exactly that,
+ * `String`-ed, while `asc explore <type> --page` (which reads `properties_json` directly) printed
+ * `true`/`false` for the same property in the same command. `SPEC` has no `boolean` property, so
+ * this uses its own fixture rather than widening a spec every other test in this file shares.
+ */
+describe('profileType: a boolean property renders true/false, not 0/1 (asc-6wn)', () => {
+  const BOOL_SPEC: TypeSpec = {
+    name: 'flag_check',
+    properties: [{ name: 'flag', type: 'boolean' }],
+  };
+
+  it("renders measured true and false by their declared type, not SQLite's 0/1", () => {
+    withStore(
+      (store) => {
+        // Two `false`s and one `true`, so the top-K's count ordering is unambiguous and does not
+        // rest on the tie-break rule a different test already covers.
+        recordEntry(store.db, { type: BOOL_SPEC.name, properties: { flag: false } }, context('e1'));
+        recordEntry(store.db, { type: BOOL_SPEC.name, properties: { flag: false } }, context('e2'));
+        recordEntry(store.db, { type: BOOL_SPEC.name, properties: { flag: true } }, context('e3'));
+
+        const profile = profileType(store.db, BOOL_SPEC.name);
+        const flag = profile?.properties.find((property) => property.name === 'flag');
+
+        expect(flag?.summary).toBe('top');
+        // Not `[{ value: '0', count: 2 }, { value: '1', count: 1 }]` -- the raw SQLite
+        // representation the pre-fix code rendered.
+        expect(flag?.top).toStrictEqual([
+          { value: 'false', count: 2 },
+          { value: 'true', count: 1 },
+        ]);
+      },
+      [BOOL_SPEC],
+    );
+  });
+
+  /**
+   * The other half of the fix: a NULL must never render as the string `'false'`. A property that
+   * is absent, N/A, or not declared is a STATE, and the only way this test can tell "we recorded
+   * a no" from "nobody looked" apart is if the not-measured entry contributes nothing to `top` at
+   * all -- the same guarantee `topValues`'s own file comment already documents for a JSON null.
+   */
+  it('does not render a not-measured (absent) boolean as false', () => {
+    withStore(
+      (store) => {
+        recordEntry(store.db, { type: BOOL_SPEC.name, properties: { flag: false } }, context('e1'));
+        recordEntry(store.db, { type: BOOL_SPEC.name, properties: {} }, context('e2'));
+        recordEntry(store.db, { type: BOOL_SPEC.name, na: ['flag'] }, context('e3'));
+
+        const profile = profileType(store.db, BOOL_SPEC.name);
+        const flag = profile?.properties.find((property) => property.name === 'flag');
+
+        expect(statesOf(flag?.states as StateCounts)).toBe('measured=1 na=1 nm=1 nd=0');
+        // Exactly the one MEASURED false -- the not-measured and not-applicable entries hold no
+        // value at all, and must not be counted as though `false` had been recorded for them too.
+        expect(flag?.top).toStrictEqual([{ value: 'false', count: 1 }]);
+        expect(flag?.distinct).toBe(1);
+      },
+      [BOOL_SPEC],
+    );
+  });
+});

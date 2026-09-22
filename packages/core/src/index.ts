@@ -35,6 +35,8 @@ export {
 
 export { confusableNames, nameTokens, type ConfusableName } from './names.js';
 
+export { renderDeclaredValue } from './render-value.js';
+
 export {
   buildSchema,
   describeProperty,
