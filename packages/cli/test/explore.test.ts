@@ -101,6 +101,8 @@ interface ProfileRow {
   // `asc-bn0`: the `recorded_at_clock` row's structured payload -- the type's own declared
   // `timestamp` properties, sorted.
   readonly event_clocks?: readonly string[];
+  // `asc-k6p.1`: the invalidation label an `invalidated.<label>` row is about.
+  readonly label?: string;
 }
 
 function rows(stdout: string): readonly ProfileRow[] {
@@ -1198,5 +1200,146 @@ describe('asc explore: a boolean property renders true/false, agreeing with --pa
     // And the table renders the same true/false the JSON does, so the two never disagree.
     const table = asc(['explore', BOOL_SPEC.name], dir).stdout;
     expect(table).toContain('true 1');
+  });
+});
+
+/**
+ * `asc-k6p.1`: how much of a type has stopped counting, driven end to end -- `asc invalidate`
+ * writes the claim, `asc explore` reads it back. `packages/store/test/profile.test.ts` already
+ * covers `profileType`'s own counting directly; this file's job is the command surface: the field
+ * names, the qualified proportion string, and that `--filter` narrows this the same as everything
+ * else on the map.
+ */
+describe('asc explore: invalidated -- how much has stopped counting (asc-k6p.1)', () => {
+  /** One entry, recorded with an explicit id so a later `asc invalidate` can name it. */
+  const record = (dir: string, id: string, outcome: 'ok' | 'bad' = 'ok'): void => {
+    const entry = { id, properties: { outcome } };
+    const run = asc(['record', SPEC.name, '-', '--json'], dir, JSON.stringify(entry));
+    expect(run.status, run.stderr).toBe(0);
+  };
+
+  const invalidate = (
+    dir: string,
+    id: string,
+    label: string,
+    reason: string,
+    supersededBy?: string,
+  ): void => {
+    const args = ['invalidate', id, '--label', label, '--reason', reason];
+    if (supersededBy !== undefined) args.push('--superseded-by', supersededBy);
+    args.push('--json');
+    const run = asc(args, dir);
+    expect(run.status, run.stderr).toBe(0);
+  };
+
+  it('reports a real zero -- not an absence -- when nothing has been invalidated', () => {
+    const dir = emptyProject();
+    record(dir, 'e1');
+    record(dir, 'e2');
+
+    const list = rows(asc(['explore', SPEC.name, '--json'], dir).stdout);
+
+    expect(find(list, 'invalidated')?.count).toBe(0);
+    // The bare count-and-percentage the table/CSV read (no `--json`-only `count` field to fall
+    // back on there): a real, measured zero of two.
+    expect(find(list, 'invalidated')?.tally).toBe('0 (0.0%)');
+    // No per-label row at all when nothing has ever been struck.
+    expect(fields(list, 'invalidated.')).toStrictEqual([]);
+  });
+
+  it('breaks down the aggregate by label, only for labels that actually occur', () => {
+    const dir = emptyProject();
+    for (const id of ['e1', 'e2', 'e3', 'e4']) record(dir, id);
+    invalidate(dir, 'e1', 'wrong_subject', 'never about this subject');
+    invalidate(dir, 'e2', 'wrong_subject', 'same mistake, a different entry');
+    invalidate(dir, 'e3', 'wrong_value', 'contaminated by a retry');
+    // e4 is left alone, and 'superseded' is never used on this type.
+
+    const list = rows(asc(['explore', SPEC.name, '--json'], dir).stdout);
+
+    expect(find(list, 'invalidated')?.count).toBe(3);
+    expect(find(list, 'invalidated.wrong_subject')?.count).toBe(2);
+    expect(find(list, 'invalidated.wrong_value')?.count).toBe(1);
+    // Each row's own raw count, bare (not Wilson-qualified) -- of the four entries, not of the
+    // aggregate invalidated count.
+    expect(find(list, 'invalidated')?.tally).toBe('3 (75.0%)');
+    expect(find(list, 'invalidated.wrong_subject')?.tally).toBe('2 (50.0%)');
+    expect(find(list, 'invalidated.wrong_value')?.tally).toBe('1 (25.0%)');
+    // A label with no instance on this type earns no zero row (`TASKS.md` #7).
+    expect(find(list, 'invalidated.superseded')).toBeUndefined();
+  });
+
+  it('judges MIN_N on the DENOMINATOR -- the population -- never on the invalidated count itself', () => {
+    // Below MIN_N (20): the share this type reports is an anecdote regardless of how confidently
+    // it was counted.
+    const small = emptyProject();
+    for (let i = 0; i < 19; i += 1) record(small, `e${String(i)}`);
+    invalidate(small, 'e0', 'wrong_value', 'bad reading');
+
+    const smallRow = find(rows(asc(['explore', SPEC.name, '--json'], small).stdout), 'invalidated');
+    expect(smallRow?.proportion?.n).toBe(19);
+    expect(smallRow?.proportion?.smallGroup).toBe(true);
+    expect(smallRow?.value).toContain('SMALL GROUP');
+
+    // At MIN_N exactly (20), with the SAME tiny numerator (one invalidated entry): this is real
+    // ascend live-store shape (`tool_denial`: 2 invalidated of 564) -- a small numerator over a
+    // large, fully-counted population is a well-estimated small share, not an anecdote.
+    // `isSmallGroup` (`@ascend/analysis`) tests the denominator, never the successes within it.
+    const large = emptyProject();
+    for (let i = 0; i < 20; i += 1) record(large, `e${String(i)}`);
+    invalidate(large, 'e0', 'wrong_value', 'bad reading');
+
+    const largeRow = find(rows(asc(['explore', SPEC.name, '--json'], large).stdout), 'invalidated');
+    expect(largeRow?.proportion?.n).toBe(20);
+    expect(largeRow?.proportion?.smallGroup).toBe(false);
+    expect(largeRow?.value).not.toContain('SMALL GROUP');
+  });
+
+  it('describes the FILTERED population under --filter: an entry the filter excludes is not counted, invalidated or not', () => {
+    const dir = emptyProject();
+    record(dir, 'e1', 'ok');
+    record(dir, 'e2', 'bad');
+    invalidate(dir, 'e1', 'wrong_value', 'bad');
+    invalidate(dir, 'e2', 'wrong_value', 'also bad');
+
+    const filtered = rows(
+      asc(['explore', SPEC.name, '--filter', "outcome = 'ok'", '--json'], dir).stdout,
+    );
+    const unfiltered = rows(asc(['explore', SPEC.name, '--json'], dir).stdout);
+
+    expect(find(filtered, 'invalidated')?.count).toBe(1);
+    expect(find(filtered, 'invalidated.wrong_value')?.count).toBe(1);
+    // The unfiltered read still sees both, so the filter -- not a defect that always drops e2 --
+    // is what did the excluding.
+    expect(find(unfiltered, 'invalidated')?.count).toBe(2);
+  });
+
+  /**
+   * `--json` carries a structured `count` on every invalidated row; `--table` and `--csv` do not,
+   * so the qualified `value` cell (`50.0% (95% CI ...)`) is the only thing either format has UNLESS
+   * `tally` states the raw count directly. A reader of either format would otherwise have to
+   * compute `percentage x n` to recover "1" -- exactly the derivation this project's own convention
+   * refuses to leave to a reader.
+   */
+  it('shows the raw count directly in the table and CSV, not only in --json', () => {
+    const dir = emptyProject();
+    record(dir, 'e1');
+    record(dir, 'e2');
+    invalidate(dir, 'e1', 'wrong_subject', 'never about this subject');
+
+    const table = asc(['explore', SPEC.name], dir).stdout;
+    const tableLine = table.split('\n').find((line) => line.startsWith('invalidated '));
+    expect(tableLine).toBeDefined();
+    expect(tableLine).toContain('1 (50.0%)');
+    const labelLine = table
+      .split('\n')
+      .find((line) => line.startsWith('invalidated.wrong_subject'));
+    expect(labelLine).toBeDefined();
+    expect(labelLine).toContain('1 (50.0%)');
+
+    const csv = asc(['explore', SPEC.name, '--csv'], dir).stdout;
+    const csvLine = csv.split('\n').find((line) => line.startsWith('invalidated,'));
+    expect(csvLine).toBeDefined();
+    expect(csvLine).toContain('1 (50.0%)');
   });
 });

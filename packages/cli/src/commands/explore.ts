@@ -182,6 +182,22 @@
  * `--page`, `--cursor`, `--sample` and `--dump` (see the "Four modes" paragraph above) and together
  * with `--select`: each of those answers "which entries", and `--group-by` answers "how many", so
  * none of them compose with it. See `explore-group.ts` for the row shape this produces.
+ *
+ * **The map also reports how much of the type has stopped counting (`asc-k6p.1`).** `asc-88m`
+ * gave every entry a latest invalidation label (or none), stored as an ordinary annotation under
+ * the reserved `invalidation` scheme; `invalidated` is the map's own reading of that -- an
+ * aggregate row in the undroppable header, alongside `count` itself, plus one row per label that
+ * actually occurs (`invalidated.<label>`), never a zero row for a label this type has no instance
+ * of. Both are qualified proportions of `count` (`renderProportion` over `wilson`, the same
+ * machinery every other share on this map already uses), under `--filter` exactly like everything
+ * else here -- an invalidated entry excluded by the filter is not counted, because it is not part
+ * of the population `--filter` named. Each row's `tally` cell ALSO carries the raw count and a bare
+ * percentage (`bareShare`, `invalidatedRow`'s own comment) -- the qualified `value` cell alone
+ * requires computing `percentage x n` to recover the count, which is exactly the derivation this
+ * project's own convention refuses to leave to a reader, and `--table`/`--csv` have no `count`
+ * field of their own to fall back on the way `--json` does. See `profile.ts`'s `InvalidatedSummary`
+ * for why this reads `annotations` directly rather than a generated view's own `invalidated`
+ * column, and why an invalidated entry is never excluded from any OTHER number on the map.
  */
 
 import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
@@ -202,6 +218,7 @@ import {
   UngroupablePropertyError,
   UnknownGroupKeyError,
   type GroupResult,
+  type InvalidatedSummary,
   type PropertyProfile,
   type RecordedEntry,
   type PageResult,
@@ -394,6 +411,99 @@ function versionRow(row: VersionProfile): Row {
     entries: row.entries,
     type_hash: row.typeHash,
   };
+}
+
+/**
+ * A count together with its BARE share of `n` -- `2 (0.4%)`, never the qualified `renderProportion`
+ * form. This is `renderStates`' own per-state fragment, extracted rather than re-derived: a
+ * property's `tally` cell already states a raw count beside an unqualified percentage for exactly
+ * this reason (the QUALIFIED form lives one row down, on the state's own `property.<name>.<state>`
+ * row), and `invalidatedRow`/`invalidatedLabelRows` below reuse the identical shape rather than
+ * inventing a second one for one more count.
+ *
+ * `n === 0` renders the bare count with nothing beside it -- a share of nothing is not a
+ * percentage, the same guard `renderStates`' own `share` closure applies.
+ */
+function bareShare(count: number, n: number): string {
+  return n === 0 ? String(count) : `${String(count)} (${((count / n) * 100).toFixed(1)}%)`;
+}
+
+/**
+ * The aggregate `invalidated` row (`asc-k6p.1`): how many of the (filtered) type's entries carry
+ * ANY invalidation label, qualified the same way every other share on this map is -- `wilson` over
+ * `renderProportion`, the identical machinery `propertyStateRows` and `propertyTopRows` already
+ * use, rather than a second formatting path for one more percentage.
+ *
+ * **The denominator is `count`, the type's own (filtered) total -- not the invalidated count
+ * itself.** An invalidated share answers "how much of this type has stopped counting", which is a
+ * share of the type, the same way a property's `not_declared` is a share of the type rather than
+ * of some other subset (`stateDenominator`'s own reasoning, one level up).
+ *
+ * **`MIN_N` (`wilson`'s `smallGroup`) is judged on `count`, the DENOMINATOR -- never on the
+ * invalidated count itself.** `tool_denial` has 564 entries and 2 invalidations: `wilson(2, 564)`
+ * is NOT a small group (564 >= 20), even though the numerator is tiny, because `isSmallGroup`
+ * (`@ascend/analysis`) tests `n` -- the population the share was estimated FROM -- not the count of
+ * successes within it. A share of a large, fully-enumerated population is a well-estimated small
+ * number, not an anecdote; MIN_N exists to flag the opposite failure, a share estimated from too
+ * FEW observations to trust at all.
+ *
+ * **`tally` carries the raw count, `value` stays the qualified proportion -- unchanged.** Driving
+ * this against the real corpus (`tool_denial`, 2 of 564) showed the gap: `value` alone reads
+ * `0.4% (95% CI 0.1-1.3%, n=564)`, and a reader of the TABLE or CSV -- which carry no `count`
+ * field, only `--json` does -- had to compute `0.4% x 564` to recover "2", which is exactly the
+ * "state a measured value, don't make the reader derive it" rule this project already applies
+ * everywhere else. `tally` is the existing column built for this: a property's own `tally` cell
+ * already carries a raw count beside a bare percentage (`renderStates`), so this reuses that column
+ * (via `bareShare`) rather than adding a new one or repurposing `values` -- `values` is for a LIST
+ * of several items in one row (a property's top-K), and this row names exactly one count.
+ *
+ * Placed in the map's undroppable header, alongside `count` itself: whether any of a type's
+ * entries have stopped counting is part of what the type IS, the same standing as `count` --
+ * unlike the per-label breakdown below, which is additional detail and trims like any other row.
+ */
+function invalidatedRow(invalidated: InvalidatedSummary, count: number): Row {
+  const proportion: Proportion | null = wilson(invalidated.count, count);
+  return {
+    field: 'invalidated',
+    value: renderProportion(proportion),
+    tally: bareShare(invalidated.count, count),
+    count: invalidated.count,
+    denominator: 'entries' satisfies Denominator,
+    proportion,
+  };
+}
+
+/**
+ * One row per invalidation label that actually OCCURS on this (filtered) type (`asc-k6p.1`) --
+ * never one for every label in `INVALIDATION_LABELS` that this type happens not to have. A zero
+ * row for an unused label would fabricate a taxonomy this type has no instance of, the same
+ * `TASKS.md` #7 rule `propertyTopRows` already follows for a property's top values (an unmeasured
+ * value earns no row either).
+ *
+ * Same denominator and same MIN_N judgement as `invalidatedRow`, per label rather than in
+ * aggregate -- `count`, the type's own total, not the aggregate invalidated count. The two
+ * therefore answer different but related questions: `invalidated` is "how much of this type has
+ * stopped counting at all", and `invalidated.<label>` is "how much of it stopped counting for THIS
+ * reason" -- both shares of the same population, so a reader can compare them directly.
+ *
+ * `tally` carries this label's own raw count the same way `invalidatedRow`'s does, and for the
+ * same reason: a CSV or table reader of THIS row alone -- one record, one line -- has no other
+ * row's cell to cross-reference, so the count has to be stated here rather than left to be read off
+ * the aggregate row it sits beside.
+ */
+function invalidatedLabelRows(invalidated: InvalidatedSummary, count: number): readonly Row[] {
+  return invalidated.labels.map((entry) => {
+    const proportion: Proportion | null = wilson(entry.count, count);
+    return {
+      field: `invalidated.${entry.label}`,
+      value: renderProportion(proportion),
+      tally: bareShare(entry.count, count),
+      label: entry.label,
+      count: entry.count,
+      denominator: 'entries' satisfies Denominator,
+      proportion,
+    };
+  });
 }
 
 /**
@@ -1239,9 +1349,13 @@ export default class Explore extends BaseCommand {
         { field: 'count', value: profile.count },
         { field: 'property_count', value: profile.properties.length },
         { field: 'version_count', value: profile.versions.length },
+        // `asc-k6p.1`: how much of this type has stopped counting, at the same standing as `count`
+        // itself -- see `invalidatedRow`'s own comment for why this belongs in the undroppable
+        // header rather than beside the trimmable per-label rows below.
+        invalidatedRow(profile.invalidated, profile.count),
       ];
 
-      // The floor: these four rows are what the map IS, and a budget that cannot afford them is a
+      // The floor: these five rows are what the map IS, and a budget that cannot afford them is a
       // budget that cannot afford a map at all -- dropping them would leave property rows with no
       // type name, no count, and no denominator, which is not a smaller answer but a different and
       // misleading one. `emitBuilt` refuses in that case rather than emitting the remainder.
@@ -1266,6 +1380,11 @@ export default class Explore extends BaseCommand {
 
       rows.push(
         ...profile.versions.map(versionRow),
+        // `asc-k6p.1`: the per-label breakdown, occurring labels only (`invalidatedLabelRows`'s own
+        // comment). Placed beside the version rows -- both describe the type's own structure, not a
+        // single property's -- so the two trim together under a tight budget, ahead of the property
+        // rows that follow.
+        ...invalidatedLabelRows(profile.invalidated, profile.count),
         ...profile.properties.flatMap((property) => [
           propertyRow(property, profile.count),
           ...propertyStateRows(property, profile.count),

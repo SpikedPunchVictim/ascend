@@ -151,6 +151,8 @@ export type { EntryState } from './sql.js';
 export {
   profileType,
   TOP_K,
+  type InvalidatedLabelCount,
+  type InvalidatedSummary,
   type ProfileOptions,
   type PropertyProfile,
   type PropertySummary,

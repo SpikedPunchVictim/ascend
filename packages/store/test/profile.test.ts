@@ -7,6 +7,7 @@ import {
   openStore,
   profileType,
   recordEntry,
+  recordInvalidation,
   registerType,
   type RecordContext,
   type StateCounts,
@@ -800,5 +801,181 @@ describe('profileType: a boolean property renders true/false, not 0/1 (asc-6wn)'
       },
       [BOOL_SPEC],
     );
+  });
+});
+
+/**
+ * `asc-k6p.1`: `profileType`'s own reading of how much of a type has stopped counting.
+ *
+ * Reads `annotations` directly (see `InvalidatedSummary`'s own comment for why), so these tests
+ * write invalidations with `recordInvalidation` -- the store's only write path onto the reserved
+ * scheme -- and then read them back through `profileType`, the same round trip a real `asc
+ * invalidate` followed by `asc explore` makes.
+ */
+describe('profileType: invalidated -- how much has stopped counting (asc-k6p.1)', () => {
+  it('reports a real zero when nothing has been invalidated, not an absence', () => {
+    withStore((store) => {
+      recordEntry(
+        store.db,
+        { type: SPEC.name, properties: { outcome: 'approved', findings: 1 } },
+        context('e1'),
+      );
+
+      const profile = profileType(store.db, SPEC.name);
+
+      // A measured zero (TASKS.md #7), not an omitted field: `invalidated` is always present, and
+      // `labels` is genuinely empty rather than missing.
+      expect(profile?.invalidated).toStrictEqual({ count: 0, labels: [] });
+    });
+  });
+
+  it('counts entries by their latest invalidation label, and lists only labels that occur', () => {
+    withStore((store) => {
+      for (const id of ['e1', 'e2', 'e3', 'e4']) {
+        recordEntry(
+          store.db,
+          { type: SPEC.name, properties: { outcome: 'approved', findings: 1 } },
+          context(id),
+        );
+      }
+      recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'wrong_subject',
+        reason: 'never about this subject',
+        createdAt: AT,
+      });
+      recordInvalidation(store.db, {
+        entryId: 'e2',
+        label: 'wrong_subject',
+        reason: 'same mistake, a different entry',
+        createdAt: AT,
+      });
+      recordInvalidation(store.db, {
+        entryId: 'e3',
+        label: 'wrong_value',
+        reason: 'contaminated by a retry',
+        createdAt: AT,
+      });
+      // e4 is never invalidated, and 'superseded' never occurs on this type -- neither earns a row.
+
+      const profile = profileType(store.db, SPEC.name);
+
+      expect(profile?.invalidated.count).toBe(3);
+      // Ordered by count descending then label ascending, `topValues`'s own determinism rule.
+      expect(profile?.invalidated.labels).toStrictEqual([
+        { label: 'wrong_subject', count: 2 },
+        { label: 'wrong_value', count: 1 },
+      ]);
+      expect(profile?.invalidated.labels.some((entry) => entry.label === 'superseded')).toBe(false);
+    });
+  });
+
+  it('reads the LATEST invalidation, not the first, when one entry is struck twice', () => {
+    withStore((store) => {
+      recordEntry(
+        store.db,
+        { type: SPEC.name, properties: { outcome: 'approved', findings: 1 } },
+        context('e1'),
+      );
+      recordEntry(
+        store.db,
+        { type: SPEC.name, properties: { outcome: 'approved', findings: 2 } },
+        context('e2'),
+      );
+
+      recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'wrong_value',
+        reason: 'first pass: wrong number',
+        createdAt: AT,
+      });
+      recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'superseded',
+        reason: 'e2 measures the same thing better',
+        supersededBy: 'e2',
+        createdAt: '2026-09-11T11:00:00.000Z',
+      });
+
+      const profile = profileType(store.db, SPEC.name);
+
+      // e1's LATEST label is 'superseded'. The earlier 'wrong_value' claim is still on record --
+      // annotations are append-only -- but is no longer e1's live invalidation state, so it must
+      // not also be counted under 'wrong_value'.
+      expect(profile?.invalidated.count).toBe(1);
+      expect(profile?.invalidated.labels).toStrictEqual([{ label: 'superseded', count: 1 }]);
+    });
+  });
+
+  it('does not exclude invalidated entries from count, top, distinct or ranges (asc-88m decision, upheld here)', () => {
+    withStore((store) => {
+      recordEntry(
+        store.db,
+        { type: SPEC.name, properties: { outcome: 'approved', findings: 7 } },
+        context('e1'),
+      );
+      recordEntry(
+        store.db,
+        { type: SPEC.name, properties: { outcome: 'approved', findings: 9 } },
+        context('e2'),
+      );
+      recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'wrong_value',
+        reason: 'bad reading',
+        createdAt: AT,
+      });
+
+      const profile = profileType(store.db, SPEC.name);
+      const findings = profile?.properties.find((property) => property.name === 'findings');
+      const outcome = profile?.properties.find((property) => property.name === 'outcome');
+
+      // The invalidated entry (e1, findings=7) still contributes to every one of these -- an
+      // invalidated row is exposed as a fact, never dropped from anything else on the map.
+      expect(profile?.count).toBe(2);
+      expect(findings?.min).toBe(7);
+      expect(findings?.max).toBe(9);
+      expect(outcome?.top).toStrictEqual([{ value: 'approved', count: 2 }]);
+      expect(profile?.invalidated.count).toBe(1);
+    });
+  });
+
+  it('describes the FILTERED population under --filter, the same rule every other number on the map follows', () => {
+    withStore((store) => {
+      recordEntry(
+        store.db,
+        { type: SPEC.name, properties: { outcome: 'approved', findings: 1 } },
+        context('e1'),
+      );
+      recordEntry(
+        store.db,
+        { type: SPEC.name, properties: { outcome: 'rejected', findings: 2 } },
+        context('e2'),
+      );
+      // Both invalidated -- but e2 ('rejected') is excluded by the filter below, so an entry the
+      // filter excludes must not be counted here either, invalidated or not.
+      recordInvalidation(store.db, {
+        entryId: 'e1',
+        label: 'wrong_value',
+        reason: 'bad',
+        createdAt: AT,
+      });
+      recordInvalidation(store.db, {
+        entryId: 'e2',
+        label: 'wrong_value',
+        reason: 'also bad',
+        createdAt: AT,
+      });
+
+      const filtered = profileType(store.db, SPEC.name, { filter: "outcome = 'approved'" });
+      const unfiltered = profileType(store.db, SPEC.name);
+
+      expect(filtered?.count).toBe(1);
+      expect(filtered?.invalidated.count).toBe(1);
+      expect(filtered?.invalidated.labels).toStrictEqual([{ label: 'wrong_value', count: 1 }]);
+      // The unfiltered profile still sees both -- proof the filter did the excluding, not a
+      // defect that always drops e2 regardless of the predicate.
+      expect(unfiltered?.invalidated.count).toBe(2);
+    });
   });
 });

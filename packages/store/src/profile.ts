@@ -43,6 +43,7 @@
 
 import { canonicalName, renderDeclaredValue, type PropertyType } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
+import { INVALIDATION_LABELS, RESERVED_SCHEME, type InvalidationLabel } from './annotations.js';
 import { propertiesOf, valueExpr } from './properties.js';
 import { typeVersions } from './registry.js';
 import { literal, stateCase } from './sql.js';
@@ -131,6 +132,57 @@ export interface VersionProfile {
   readonly entries: number;
 }
 
+/** One invalidation label, and how many entries carry it as their LATEST invalidation. */
+export interface InvalidatedLabelCount {
+  readonly label: InvalidationLabel;
+  readonly count: number;
+}
+
+/**
+ * How much of a type has stopped counting (`asc-k6p.1`), and why.
+ *
+ * **Read from `annotations` directly, not from the generated view's `invalidated` column
+ * (`asc-88m`).** That column exists in `views.ts` (`invalidatedColumnSql`) but `views.ts` only
+ * drops and recreates a type's views inside the REGISTRATION transaction, so a store whose types
+ * were registered before `asc-88m` landed has views with no such column at all -- verified
+ * 2026-09-22 on the live store: `SELECT invalidated FROM v_tool_denial_v1` fails with `no such
+ * column: invalidated`, while the identical query against a type registered after that change
+ * succeeds. That staleness is `asc-5ed`'s to fix, not this one's, so this queries `annotations`
+ * itself rather than depending on a column that may not exist yet. `count` and `labels` below use
+ * EXACTLY the "latest annotation wins" subquery `invalidatedColumnSql` (`sql.ts`) uses for the
+ * view -- same table, same scheme, same `ORDER BY created_at DESC, rowid DESC LIMIT 1` -- so the
+ * two answer the identical question and cannot drift apart the way a hand-rewritten copy of that
+ * subquery could.
+ *
+ * **Invalidated entries are counted here, and nowhere excluded.** `count`, `top`, `distinct`,
+ * `min`/`max` and the per-version tallies above all still include an invalidated entry -- the
+ * same decision `views.ts` records for its own column ("NOT a filter... exposes the fact
+ * instead"), so this map's other numbers cannot silently disagree with `entries`'s own row count.
+ * This is purely an ADDITIONAL fact about the population already counted everywhere else.
+ *
+ * **`count` is a real measurement, even at zero.** Zero invalidated is "none of these have
+ * stopped counting", not "nobody looked" -- `TASKS.md` #7's omit-vs-fabricate rule protects a
+ * value that does not exist, and this one always does: every entry either has a latest
+ * invalidation label or it does not, over a population that was fully read.
+ *
+ * **`labels` lists only labels that actually occur.** `INVALIDATION_LABELS` is the closed
+ * vocabulary a label may be drawn from, not a taxonomy this type is presumed to have an instance
+ * of -- a zero row for every unused label would fabricate a category this type has never seen
+ * (`TASKS.md` #7's other half). Ordered by count descending then label ascending, the same
+ * determinism rule `topValues` applies for the identical reason: two runs over one store return
+ * the labels in the same order even when counts tie.
+ *
+ * **Over the FILTERED population when `ProfileOptions.filter` is set**, exactly like every other
+ * number `profileType` returns (see that function's own comment) -- an invalidated share under a
+ * filter describes the filter's own population, not the type's unfiltered total.
+ */
+export interface InvalidatedSummary {
+  /** Entries (of the scope in force) carrying ANY invalidation label. Always present, even at 0. */
+  readonly count: number;
+  /** Per-label breakdown, occurring labels only. Sums to `count`. */
+  readonly labels: readonly InvalidatedLabelCount[];
+}
+
 export interface TypeProfile {
   readonly type: string;
   /** Entries of this type that passed the filter (or all of them, when there is none). */
@@ -159,6 +211,8 @@ export interface TypeProfile {
   readonly recordedAtMax: string | null;
   /** Per-version entry counts, over the filtered population. */
   readonly versions: readonly VersionProfile[];
+  /** How much of the (filtered) population has stopped counting, and why. See `InvalidatedSummary`. */
+  readonly invalidated: InvalidatedSummary;
   /** Every declared property's summary, over the filtered population. */
   readonly properties: readonly PropertyProfile[];
 }
@@ -355,6 +409,58 @@ function rangeOf(
 }
 
 /**
+ * How much of `type`'s (filtered) population carries a latest invalidation label, broken down by
+ * label. See `InvalidatedSummary` for why this reads `annotations` directly rather than a
+ * generated view's `invalidated` column, and why an invalidated row is never excluded.
+ *
+ * One query, not two: grouping the per-entry "latest label" subquery directly gives both the
+ * per-label counts and (by summing them) the aggregate, so there is no second query that could
+ * count a different set of rows than the one the breakdown was drawn from. `WHERE label IS NOT
+ * NULL` drops the entries with no invalidation at all -- the subquery returns NULL for those,
+ * exactly as `invalidatedColumnSql` does for the view -- so only entries that DO carry a label
+ * reach the `GROUP BY`.
+ *
+ * `ORDER BY n DESC, label ASC` is `topValues`'s own determinism rule: two runs over one store
+ * return the labels in the same order even when two labels tie on count.
+ */
+function invalidatedCounts(
+  db: DatabaseSync,
+  type: string,
+  scopeClause: string,
+): InvalidatedSummary {
+  const rows = db
+    .prepare(
+      `SELECT label, COUNT(*) AS n FROM (\n` +
+        `  SELECT (SELECT a.label FROM annotations AS a\n` +
+        `            WHERE a.entry_id = e.id AND a.scheme = ${literal(RESERVED_SCHEME)}\n` +
+        `            ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1) AS label\n` +
+        `    FROM entries AS e WHERE e.type_name = ?${scopeClause}\n` +
+        `) WHERE label IS NOT NULL\n` +
+        ` GROUP BY label ORDER BY n DESC, label ASC`,
+    )
+    .all(type) as unknown as { label: string; n: number }[];
+
+  const labels: InvalidatedLabelCount[] = rows.map((row) => {
+    // `recordInvalidation` (`annotations.ts`) is the ONLY writer of this scheme and refuses every
+    // label outside `INVALIDATION_LABELS` before it ever inserts a row, so a row read back here
+    // with a label outside that vocabulary would mean that invariant broke somewhere upstream --
+    // worth failing loudly over, not worth silently rendering as though it were expected.
+    if (!INVALIDATION_LABELS.includes(row.label as InvalidationLabel)) {
+      throw new Error(
+        `invalidatedCounts: '${type}' has an invalidation labelled '${row.label}', which is not ` +
+          `one of ${INVALIDATION_LABELS.map((label) => `'${label}'`).join(', ')}`,
+      );
+    }
+    return { label: row.label as InvalidationLabel, count: row.n };
+  });
+
+  return {
+    count: labels.reduce((sum, entry) => sum + entry.count, 0),
+    labels,
+  };
+}
+
+/**
  * Profile one registered type, or `undefined` when the type is not registered.
  *
  * `undefined` rather than an empty profile for an unknown name, because the two are different
@@ -487,6 +593,7 @@ export function profileType(
       status: row.status,
       entries: perVersion.get(row.version) ?? 0,
     })),
+    invalidated: invalidatedCounts(db, type, scopeClause),
     properties,
   };
 }

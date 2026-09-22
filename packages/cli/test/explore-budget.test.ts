@@ -329,35 +329,40 @@ describe('asc explore --max-tokens: what it drops, it says it dropped', () => {
     expect(parsed.coverage?.total).toBe(6);
   });
 
-  it('names the map rows it could not afford, because four of them are the map', () => {
+  it('names the map rows it could not afford, because five of them are the map', () => {
     const dir = emptyProject();
     record(dir, 3);
 
     const extra = ['--json'];
-    // The smallest budget that fits anything at all: it keeps the four header rows and drops the
+    // The smallest budget that fits anything at all: it keeps the five header rows and drops the
     // rest, which is the widest set of drops this fixture can produce.
     const budget = namedMinimum(dir, extra);
     const run = asc(['explore', SPEC.name, ...extra, '--max-tokens', String(budget)], dir);
     const parsed = expectHonest(run, budget);
 
-    // The first four rows are the type, the count, the property count and the version count. A map
-    // that dropped one of those is not a smaller map, so the floor holds -- and this is the test's
-    // whole point, unaffected by anything below: `asc-cbk` did not touch what the map IS or how many
-    // of its rows are unconditionally kept.
+    // The first five rows are the type, the count, the property count, the version count and
+    // `invalidated` (`asc-k6p.1`: how much of the type has stopped counting, at the same standing
+    // as `count` itself). A map that dropped one of those is not a smaller map, so the floor holds
+    // -- and this is the test's whole point, unaffected by anything below: `asc-cbk` did not touch
+    // what the map IS or how many of its rows are unconditionally kept.
     expect(parsed.rows.map((row) => row['field'])).toStrictEqual([
       'type',
       'count',
       'property_count',
       'version_count',
+      'invalidated',
     ]);
     expect(parsed.trim?.dropped).toBeGreaterThan(0);
     // `asc-cbk` gave every property four state rows alongside its own summary row, and `asc-5x7`
     // then gave every `top`-summarised property one row per top value. This fixture's `outcome` is
     // an enum (`summary` = `top`) holding two distinct values across its three records, so it
     // contributes two such rows; `note` is `text` (`cardinality`) and contributes none. So the
-    // fixture's two properties, plus its recorded-range pair and its one version, now drop 15 rows
-    // at the floor: 4 header + 2 recorded_at + 1 version + 2*(1 summary + 4 state) + 2 top = 19
-    // rows, minus the 4-row floor. That is past `MAX_NAMED_DROPS`
+    // fixture's two properties, plus its recorded-range pair, its one version and its (empty, so
+    // zero-row) invalidated breakdown, now drop 15 rows at the floor: 5 header + 2 recorded_at + 1
+    // version + 2*(1 summary + 4 state) + 2 top = 20 rows, minus the 5-row floor. `asc-k6p.1` added
+    // one row to BOTH the numerator (the `invalidated` header row) and the floor it is measured
+    // against, so the drop count this fixture demonstrates is unchanged from before that bead. That
+    // is past `MAX_NAMED_DROPS`
     // (8, `budget.ts`), where the cap stops naming individual rows because the names would cost more
     // of the budget than the drop just saved. Below the cap, `dropped_keys` is undefined rather than
     // an empty array (`budget.ts`'s `dropped_keys.length < dropped` signal), and that is itself the
@@ -487,18 +492,19 @@ describe('asc explore --max-tokens: a budget it cannot meet is refused, and the 
     const whole = asc(['explore', SPEC.name, ...extra], dir);
     expect(whole.status).toBe(0);
     const allRows = envelope(whole.stdout).rows.length;
-    expect(allRows).toBeGreaterThan(4);
+    expect(allRows).toBeGreaterThan(5);
 
-    // The smallest budget that fits anything: it must keep the four header rows and stop there. A
-    // fit without a floor would go on down to one property row, which is not a smaller map -- it is
-    // a property with no type name, no count and no denominator.
+    // The smallest budget that fits anything: it must keep the five header rows (`asc-k6p.1` added
+    // `invalidated` to the type, the count, the property count and the version count) and stop
+    // there. A fit without a floor would go on down to one property row, which is not a smaller map
+    // -- it is a property with no type name, no count and no denominator.
     const budget = namedMinimum(dir, extra);
     const parsed = expectHonest(
       asc(['explore', SPEC.name, ...extra, '--max-tokens', String(budget)], dir),
       budget,
     );
-    expect(parsed.rows).toHaveLength(4);
+    expect(parsed.rows).toHaveLength(5);
     // And the count is the whole remainder, so nothing was dropped twice or quietly kept.
-    expect(parsed.trim?.dropped).toBe(allRows - 4);
+    expect(parsed.trim?.dropped).toBe(allRows - 5);
   });
 });
