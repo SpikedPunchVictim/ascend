@@ -41,6 +41,7 @@ export {
 
 export {
   assertNotAhead,
+  HIGHEST_MARKED_VERSION,
   LedgerMismatchError,
   migrate,
   MIGRATIONS,

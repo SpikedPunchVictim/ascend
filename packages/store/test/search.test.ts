@@ -12,6 +12,7 @@ import {
   propertyValueMatches,
   recordEntry,
   registerType,
+  SCHEMA_VERSION,
   searchEntries,
   searchScope,
   toFtsMatch,
@@ -455,8 +456,12 @@ describe('migration 2 backfills entries that predate it', () => {
 
       const result = migrate(store.db);
       expect(result.from).toBe(1);
-      expect(result.to).toBe(2);
-      expect(result.applied).toEqual(['full-text search over evidence_text']);
+      // Not a hardcoded 2: the default `migrate()` walks all the way to `SCHEMA_VERSION`, which
+      // includes migration 3 (asc-5ed) now that it exists -- this store already registered 'note'
+      // through the current `registerType`, so migration 3's rebuild is a harmless no-op here, but
+      // it still runs and is still reported in `applied`.
+      expect(result.to).toBe(SCHEMA_VERSION);
+      expect(result.applied).toEqual(MIGRATIONS.slice(1).map((m) => m.name));
 
       // The row that already existed is in the index.
       expect(indexedDocumentCount(store.db)).toBe(1);
@@ -492,7 +497,8 @@ describe('migration 2 backfills entries that predate it', () => {
     try {
       registerType(first.db, NOTE, { registeredAt: AT });
       recordEntry(first.db, { type: 'note' }, context('e1', 'a durable searchable entry'));
-      expect(first.migrations.to).toBe(2);
+      // Not a hardcoded 2: a fresh store's default open migrates all the way to `SCHEMA_VERSION`.
+      expect(first.migrations.to).toBe(SCHEMA_VERSION);
     } finally {
       first.close();
     }

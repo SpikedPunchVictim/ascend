@@ -24,8 +24,15 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import { refreshTypeViews } from './views.js';
 
-export interface Migration {
+/**
+ * A migration whose body is a fixed SQL string.
+ *
+ * This is the ordinary case: `CREATE TABLE`, `CREATE VIRTUAL TABLE`, and friends are the same
+ * text on every store, because they do not depend on anything the store itself holds.
+ */
+interface SqlMigration {
   readonly version: number;
   readonly name: string;
   readonly sql: string;
@@ -36,9 +43,91 @@ export interface Migration {
    * content check, so it is one wrong write away from disagreeing with the tables it describes
    * (asc-u11), and this is what lets `migrate` tell "genuinely pending" from "the ledger is
    * wrong" before it runs DDL against an object that already exists.
+   *
+   * **Required here, and nowhere else.** The check this field powers protects DDL that is NOT
+   * idempotent -- `CREATE TABLE entries` fails outright on a table that already exists, so
+   * `migrate` has to know, before running it, whether the failure it is about to risk would mean
+   * "this genuinely has not run" or "the ledger lied". A `marker` is how it knows. See
+   * `ProceduralMigration` for the arm that has no such field, and why it needs none.
    */
   readonly marker: string;
+  /**
+   * Never present on an `sql` migration -- see `Migration`'s own doc for why this field has to
+   * exist at all, typed as `never`, rather than being left off `SqlMigration` and trusted to
+   * TypeScript's structural typing.
+   */
+  readonly run?: never;
 }
+
+/**
+ * A migration whose body is a function run against the open handle, for a rebuild that cannot be
+ * static SQL because its content depends on what the STORE holds (asc-5ed).
+ *
+ * Migration 3 is the first of these: it rebuilds every registered type's views, and the view
+ * body is generated per type from `entry_types` -- there is no fixed string to write down that
+ * would be correct for every store, because two stores can have registered different types.
+ *
+ * **No `marker`, and that is not an oversight -- it is the reason this arm exists as a separate
+ * type rather than as an optional field on `SqlMigration`.** `marker` exists to protect DDL that
+ * is NOT idempotent, so that running it a second time fails loudly (`CREATE TABLE` on a table
+ * that exists) instead of doing nothing. A view rebuild is `DROP VIEW IF EXISTS` followed by
+ * `CREATE VIEW`, and creates no `sqlite_master` name that did not already exist under the same
+ * name after its FIRST run -- so running it twice, or ten times, leaves the store in exactly the
+ * state one run would have. There is no "already ran, and running again would fail" state for
+ * `migrate` to distinguish from "the ledger is wrong", because there is no failure mode the check
+ * exists to prevent. Giving this arm a `marker` field anyway -- naming some view that already
+ * exists, say -- would not add protection; it would make `objectExists` find a real object that
+ * proves nothing about whether THIS migration ran, and fire `LedgerMismatchError` over a
+ * disagreement that was never a problem. So `run` migrations skip that check entirely (see
+ * `migrate`, the `typeof migration.sql === 'string'` branch), and the type system is what keeps a future
+ * migration from carrying both fields and quietly assuming the check still applies to it.
+ *
+ * **Must not manage its own transaction.** `migrate` already wraps every migration -- this one
+ * included -- in `BEGIN IMMEDIATE` / `COMMIT`, with `user_version` bumped inside the same
+ * transaction so a crash mid-migration leaves the store exactly where it started. A `run` that
+ * issued its own `BEGIN`, `COMMIT`, or `ROLLBACK` would either fail outright (SQLite refuses a
+ * nested `BEGIN`) or, worse, commit early and leave the version bump to land in a transaction of
+ * its own -- reopening exactly the non-atomicity `migrate`'s own `BEGIN IMMEDIATE` comment exists
+ * to close.
+ */
+interface ProceduralMigration {
+  readonly version: number;
+  readonly name: string;
+  readonly run: (db: DatabaseSync) => void;
+  /**
+   * Never present on a `run` migration -- see `Migration`'s own doc for why this field has to
+   * exist at all, typed as `never`, rather than being left off `ProceduralMigration` and trusted
+   * to TypeScript's structural typing.
+   */
+  readonly sql?: never;
+  /** Same reasoning as `sql` above: a procedural migration has no marker to carry (see
+   *  `SqlMigration.marker`'s doc for why), and this is what makes writing one a type error rather
+   *  than a silently-ignored field. */
+  readonly marker?: never;
+}
+
+/**
+ * One migration, as either a fixed SQL string or a procedure -- never both, never neither.
+ *
+ * A discriminated union rather than two optional fields (`sql?`, `run?`) on one interface, so
+ * that "a migration must carry exactly one" is a compile error on the wrong shape rather than a
+ * runtime check `migrate` would have to remember to perform.
+ *
+ * **The `run?: never` / `sql?: never` / `marker?: never` fields on each interface are not
+ * decoration -- they are the entire enforcement, and a plain `SqlMigration | ProceduralMigration`
+ * union without them does NOT reject an object carrying both arms.** Verified directly (not
+ * assumed): TypeScript's excess-property check on a fresh object literal assigned to a union
+ * treats a property as "known", and so exempt from the excess-property error, as soon as it
+ * appears on ANY member of the union -- so `{ ...every SqlMigration field, run: () => {} }`
+ * satisfies `SqlMigration` structurally (all of its required fields are present; the extra `run`
+ * is "known" because `ProceduralMigration` has one) and passed `tsc --strict` with no error at
+ * all in a standalone probe. Only once each interface also declares the OTHER arm's fields as
+ * `never` does that same literal fail -- `run: () => {}` is no longer assignable to `run?: never`
+ * -- which is what makes "carries both" a genuine type error instead of a union that happens to
+ * look discriminated. `neither` was never the problem: TypeScript already refuses an object
+ * missing a required field of every member.
+ */
+export type Migration = SqlMigration | ProceduralMigration;
 
 const INITIAL = `
 -- ---------------------------------------------------------------------------
@@ -315,6 +404,51 @@ END;
 `;
 
 /**
+ * Rebuild every registered type's views (migration 3, asc-5ed).
+ *
+ * **Why this cannot be a `sql` migration.** `refreshTypeViews` (views.ts) generates each view's
+ * body from that type's declared properties, read out of `entry_types` -- the SQL is a function
+ * of what THIS store has registered, not a fixed string shared by every store. There is no
+ * single `CREATE VIEW ...` text to write down here that would be correct for a store with four
+ * types and also for one with none.
+ *
+ * **One generator, called, not copied.** The view SQL itself -- the envelope columns, the
+ * `invalidated` projection, the per-property `_state` columns -- stays defined in exactly one
+ * place (`views.ts`). Reimplementing any of it here would create a second definition that could
+ * drift from the first, which is precisely the schema-drift confound this package exists to rule
+ * out, just relocated into its own migration code.
+ *
+ * **The type list comes from `entry_types` directly, not from `@ascend/store`'s registry
+ * module.** `entry_types` *is* the registry -- the table `registerType` (registry.ts) writes and
+ * `registeredNames` reads back -- so querying it here asks the registry's own question without
+ * adding an import edge beyond the one already checked: `schema.ts -> views.ts` introduces no
+ * cycle (`views.ts` imports only `@ascend/core`, `./sql.js` and `node:sqlite`), and this keeps it
+ * that way rather than also reaching into `registry.ts`.
+ *
+ * **Clean no-op on a store with zero registered types**, deliberately: `DISTINCT name` over an
+ * empty `entry_types` returns zero rows, the loop below does not execute, and nothing throws. A
+ * brand-new store migrating 1 -> 3 has no types yet -- that is the ordinary case, not an edge
+ * case, since every store starts empty and only gains types afterwards.
+ *
+ * **Idempotent, like `refreshTypeViews` itself.** Running this migration is `DROP VIEW IF EXISTS`
+ * followed by `CREATE VIEW`, for each type, which leaves the store in the same state whether it
+ * runs once or a hundred times -- see `ProceduralMigration`'s doc for why that is exactly what
+ * lets this migration skip the `marker` / `objectExists` check the `sql` arm requires.
+ *
+ * **Runs inside `migrate`'s own transaction.** No `BEGIN`, `COMMIT`, or `ROLLBACK` here -- see
+ * `ProceduralMigration`.
+ */
+function rebuildAllTypeViews(db: DatabaseSync): void {
+  const rows = db.prepare('SELECT DISTINCT name FROM entry_types ORDER BY name').all() as {
+    name: string;
+  }[];
+
+  for (const { name } of rows) {
+    refreshTypeViews(db, name);
+  }
+}
+
+/**
  * Every migration, in order.
  *
  * Append-only FROM THE FIRST RELEASE ON: an existing entry is never edited, because a
@@ -334,17 +468,57 @@ END;
  * Migration 2 is a genuine schema change, so it is a genuine new migration rather than
  * an edit to migration 1 -- which is also what makes it the first exercise of the
  * migration path, and the reason its test opens a version-1 store and migrates it.
+ *
+ * Migration 3 is the first PROCEDURAL one (`rebuildAllTypeViews` below), and it exists to reach
+ * stores that migrations 1 and 2 cannot touch retroactively: `refreshTypeViews` (views.ts) is
+ * called at type-REGISTRATION time, not at open time, so a column it started projecting after a
+ * store's types were already registered (`invalidatedColumnSql`, asc-88m) never reaches that
+ * store's views on its own. Measured on this project's own store (asc-5ed): 13 views, 0 with the
+ * column, and `SELECT invalidated FROM v_tool_denial_v1` failing with `no such column:
+ * invalidated` -- a silent gap in the documented read path ("a reader who wants live rows only
+ * writes WHERE invalidated IS NULL", views.ts) rather than a loud one. Routing the fix through a
+ * migration is what turns that silence into `StaleStoreError` on a read-only open: a store behind
+ * `SCHEMA_VERSION` is refused, by machinery `db.ts` already has, with a message naming the exact
+ * repair, instead of quietly serving a view that predates the column it is supposed to carry.
  */
 export const MIGRATIONS: readonly Migration[] = [
   // 'entry_types' is one of the three names STORE_MARKER_TABLES (db.ts) already treats as proof
   // a file is an ascend store; reused here as proof migration 1 specifically has run.
   { version: 1, name: 'initial schema', sql: INITIAL, marker: 'entry_types' },
   { version: 2, name: 'full-text search over evidence_text', sql: FTS, marker: 'entries_fts' },
+  {
+    version: 3,
+    name: 'rebuild per-type views to carry the invalidated column',
+    run: rebuildAllTypeViews,
+  },
 ];
 
 /** The schema version this build of ascend writes. */
 export const SCHEMA_VERSION: number = MIGRATIONS.reduce(
   (highest, migration) => Math.max(highest, migration.version),
+  0,
+);
+
+/**
+ * The highest migration version whose application can be CONFIRMED from `sqlite_master` content
+ * alone -- i.e. the highest version among migrations that carry a `marker` (`SqlMigration`).
+ *
+ * Derived with the same `reduce` shape as `SCHEMA_VERSION`, over the same `MIGRATIONS` list, so
+ * the two can never drift out of sync by a hand edit to one and not the other; this is never
+ * hardcoded.
+ *
+ * **Why this can differ from `SCHEMA_VERSION`, and why that is correct rather than a bug.** A
+ * procedural migration (`ProceduralMigration`) creates no `sqlite_master` name of its own -- that
+ * is exactly why it carries no `marker` (see that interface's doc) -- so `inferAppliedVersion`
+ * cannot read its having run off the schema, and does not try to (it skips these entries rather
+ * than guessing). `LedgerMismatchError`'s repair command is worded from `inferAppliedVersion`'s
+ * answer, so it can only ever name a version up to this one, never `SCHEMA_VERSION` itself, for as
+ * long as the highest migration is procedural. See `LedgerMismatchError`'s own doc for why naming
+ * this number instead of `SCHEMA_VERSION` is still a complete repair.
+ */
+export const HIGHEST_MARKED_VERSION: number = MIGRATIONS.reduce(
+  (highest, migration) =>
+    typeof migration.sql === 'string' ? Math.max(highest, migration.version) : highest,
   0,
 );
 
@@ -408,10 +582,21 @@ function objectExists(db: DatabaseSync, name: string): boolean {
  * itself does. Content agreeing with a candidate version is strong evidence that version ran,
  * but it is evidence, not proof (a hand-restored table would look the same), so it names the
  * number for an operator to confirm and apply rather than applying it here.
+ *
+ * **A procedural migration (`ProceduralMigration`) has no `marker`, so it is skipped rather than
+ * checked.** It creates no new `sqlite_master` name, so there is no content-based question to ask
+ * of it at all -- neither "did it run" nor "did the ledger lie about it" has an answer this
+ * function could read from the schema. Skipping it (rather than treating a missing marker as a
+ * break, the way an `sql` migration's absent object would be) is also the only choice that keeps
+ * this loop meaningful: `LedgerMismatchError` -- the one thing this function's answer feeds -- can
+ * only be thrown for an `sql` migration in the first place (`migrate` skips the `objectExists`
+ * check for `run` migrations entirely), so a procedural step never being able to move `inferred`
+ * costs this function nothing it was ever asked to report.
  */
 function inferAppliedVersion(db: DatabaseSync, migrations: readonly Migration[]): number {
   let inferred = 0;
   for (const migration of [...migrations].sort((left, right) => left.version - right.version)) {
+    if (typeof migration.sql !== 'string') continue;
     if (!objectExists(db, migration.marker)) break;
     inferred = migration.version;
   }
@@ -444,6 +629,16 @@ function inferAppliedVersion(db: DatabaseSync, migrations: readonly Migration[])
  * apart; an operator who has actually looked at the schema can. So this throws and states the
  * exact command instead of running it -- one `PRAGMA` write, via a tool ascend never invokes on
  * the operator's behalf, so there is no way to trigger it by accident.
+ *
+ * **The repair command names the highest MARKED version (`HIGHEST_MARKED_VERSION`'s ceiling),
+ * never `SCHEMA_VERSION` directly, whenever the schema's tail is procedural.** `inferredVersion`
+ * comes from `inferAppliedVersion`, which can only confirm a version from schema content, and a
+ * procedural migration (asc-5ed's view rebuild is the first) leaves no content to confirm. Naming
+ * a lower, confirmable number is still a COMPLETE repair rather than a partial one: the very next
+ * `migrate` call, right after the operator's `PRAGMA` write, walks forward from that number and
+ * re-runs every migration after it -- including the procedural ones, which are idempotent by
+ * construction (`ProceduralMigration`'s doc) and so cost nothing to repeat. The gap between the
+ * named version and `SCHEMA_VERSION` closes itself on that next open; it is never left open.
  */
 export class LedgerMismatchError extends Error {
   constructor(
@@ -538,17 +733,28 @@ export function migrate(
         continue;
       }
 
-      // The re-read above still says this migration is pending, so a well-behaved concurrent
-      // migration is ruled out -- one always bumps `user_version` and creates its marker in the
-      // same commit, so `current >= migration.version` above would have caught it instead. An
-      // object that exists anyway means the LEDGER is wrong, not that we lost a race (asc-u11):
-      // check before running DDL that would otherwise fail on the object's own CREATE and blame
-      // whichever migration the ledger happened to point at.
-      if (objectExists(db, migration.marker)) {
-        throw new LedgerMismatchError(current, inferAppliedVersion(db, migrations), file);
+      if (typeof migration.sql === 'string') {
+        // The re-read above still says this migration is pending, so a well-behaved concurrent
+        // migration is ruled out -- one always bumps `user_version` and creates its marker in the
+        // same commit, so `current >= migration.version` above would have caught it instead. An
+        // object that exists anyway means the LEDGER is wrong, not that we lost a race (asc-u11):
+        // check before running DDL that would otherwise fail on the object's own CREATE and blame
+        // whichever migration the ledger happened to point at.
+        if (objectExists(db, migration.marker)) {
+          throw new LedgerMismatchError(current, inferAppliedVersion(db, migrations), file);
+        }
+
+        db.exec(migration.sql);
+      } else {
+        // No `objectExists` check here, and deliberately: that check exists to protect DDL that
+        // is not idempotent, and `migration.run` is (`ProceduralMigration`'s doc). Running it
+        // against a ledger that understates reality does the same work a second time and leaves
+        // the store exactly where a correct ledger would have -- there is no object it could find
+        // that would mean anything different from "this migration is safe to run right now",
+        // which is already true unconditionally for this arm.
+        migration.run(db);
       }
 
-      db.exec(migration.sql);
       db.exec(`PRAGMA user_version = ${String(migration.version)}`);
       db.exec('COMMIT');
     } catch (error) {

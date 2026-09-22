@@ -4,16 +4,19 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  HIGHEST_MARKED_VERSION,
   LedgerMismatchError,
   MIGRATIONS,
   NewerSchemaError,
   PragmaError,
   SCHEMA_VERSION,
+  StaleStoreError,
   STORE_FILE,
   migrate,
   openStore,
   userVersion,
   verifyPragmas,
+  viewName,
   type Migration,
 } from '../src/index.js';
 
@@ -154,10 +157,13 @@ describe('migration', () => {
     expect(caught).toBeInstanceOf(LedgerMismatchError);
     const err = caught as LedgerMismatchError;
     expect(err.ledgerVersion).toBe(0);
-    expect(err.inferredVersion).toBe(SCHEMA_VERSION);
+    // Not SCHEMA_VERSION: migration 3 is procedural and creates no sqlite_master name of its
+    // own, so `inferAppliedVersion` cannot confirm it from content -- only the highest MARKED
+    // (sql) migration is nameable here. See `HIGHEST_MARKED_VERSION`'s doc.
+    expect(err.inferredVersion).toBe(HIGHEST_MARKED_VERSION);
     const dbFile = join(dir, STORE_FILE);
     expect(err.message).toContain(dbFile);
-    expect(err.message).toContain(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
+    expect(err.message).toContain(`PRAGMA user_version = ${String(HIGHEST_MARKED_VERSION)}`);
 
     // The refusal touched nothing: the file's content and its (wrong) ledger are exactly as they
     // were before the failed open -- not a "fix" of its own, and not further damage either.
@@ -172,13 +178,19 @@ describe('migration', () => {
     // The repair path this error names, run literally: one PRAGMA write, through a tool ascend
     // never invokes on the operator's behalf, so it cannot happen except on purpose.
     const repair = new DatabaseSync(dbFile);
-    repair.exec(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
+    repair.exec(`PRAGMA user_version = ${String(HIGHEST_MARKED_VERSION)}`);
     repair.close();
 
     const repaired = openStore({ dir });
     try {
+      // The repair set the ledger to the highest CONFIRMABLE version, not to SCHEMA_VERSION, so
+      // reopening still has real work left: every migration after HIGHEST_MARKED_VERSION is
+      // procedural and idempotent, so re-running it here is harmless -- this is the "gap closes
+      // itself" `LedgerMismatchError` documents, exercised rather than assumed.
+      expect(repaired.migrations.applied).toEqual(
+        MIGRATIONS.filter((m) => m.version > HIGHEST_MARKED_VERSION).map((m) => m.name),
+      );
       expect(userVersion(repaired.db)).toBe(SCHEMA_VERSION);
-      expect(repaired.migrations.applied).toEqual([]);
       expect(repaired.db.prepare("SELECT id FROM entries WHERE id = 'e1'").get()).toBeDefined();
     } finally {
       repaired.close();
@@ -201,7 +213,7 @@ describe('migration', () => {
     expect(caught).toBeInstanceOf(LedgerMismatchError);
     const err = caught as LedgerMismatchError;
     expect(err.ledgerVersion).toBe(1);
-    expect(err.inferredVersion).toBe(SCHEMA_VERSION);
+    expect(err.inferredVersion).toBe(HIGHEST_MARKED_VERSION);
   });
 
   it('names the file in the repair command when migrate is given one, and a placeholder otherwise', () => {
@@ -210,7 +222,7 @@ describe('migration', () => {
     db.exec('PRAGMA user_version = 0');
 
     expect(() => migrate(db, MIGRATIONS, '/example/project/.ascend/ascend.db')).toThrow(
-      'sqlite3 /example/project/.ascend/ascend.db "PRAGMA user_version = 2"',
+      `sqlite3 /example/project/.ascend/ascend.db "PRAGMA user_version = ${String(HIGHEST_MARKED_VERSION)}"`,
     );
     expect(() => migrate(db, MIGRATIONS)).toThrow(/this store's database file/);
     db.close();
@@ -253,6 +265,227 @@ describe('migration', () => {
     const store = openStore({ dir });
     store.close();
     expect(() => openStore({ dir })).not.toThrow();
+  });
+});
+
+describe('migration 3 -- rebuilding stale per-type views (asc-5ed)', () => {
+  /**
+   * A store on disk at schema version 2 (migrations 1 and 2 only) with one registered type and a
+   * hand-built view in the PRE-asc-88m shape -- no `invalidated` column. This is what asc-5ed
+   * measured on every store that predates that column: `refreshTypeViews` only regenerates a
+   * type's view at REGISTRATION time, so a type registered before the column existed keeps a view
+   * that predates it, forever, with nothing to re-trigger a rebuild until this migration.
+   *
+   * The view body here is deliberately not the real one `refreshTypeViews` would have built --
+   * only its ABSENCE of `invalidated` matters for this fixture, and building the real pre-88m
+   * shape would mean vendoring an old version of the generator just to delete one line from it.
+   */
+  const buildPreMigration3Store = (dir: string): string => {
+    const file = join(dir, STORE_FILE);
+    const db = new DatabaseSync(file);
+    try {
+      // Bring the file to the schema version asc-88m's column landed into, before migration 3
+      // (this fix) existed at all.
+      migrate(
+        db,
+        MIGRATIONS.filter((m) => m.version < 3),
+        file,
+      );
+
+      db.exec(
+        `INSERT INTO entry_types (name, version, major, type_hash, spec_json, created_at)
+         VALUES ('review_completed', 1, 1, 'hash_v1', '{"name":"review_completed","properties":[]}', '2026-09-11T10:00:00Z')`,
+      );
+
+      db.exec(
+        `CREATE VIEW ${viewName('review_completed', 1)} AS
+           SELECT id, type_name, recorded_at FROM entries WHERE type_name = 'review_completed'`,
+      );
+    } finally {
+      db.close();
+    }
+
+    // Normalize the file to WAL, the way every real store is (`openStore` always switches a
+    // writable, on-disk store to WAL) -- `migrate: false` so this pass touches pragmas only and
+    // leaves the version-2 content this fixture just built untouched.
+    openStore({ dir, migrate: false }).close();
+
+    return file;
+  };
+
+  it('a read-only open refuses a store still at schema version 2, naming the repair', () => {
+    const dir = tempDir();
+    buildPreMigration3Store(dir);
+
+    let caught: unknown;
+    try {
+      openStore({ dir, readOnly: true });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(StaleStoreError);
+    const err = caught as StaleStoreError;
+    expect(err.storeVersion).toBe(2);
+    expect(err.buildVersion).toBe(SCHEMA_VERSION);
+    expect(err.message).toContain(join(dir, STORE_FILE));
+
+    // The refusal is real, not cosmetic: the file is untouched, still at version 2.
+    const verify = new DatabaseSync(join(dir, STORE_FILE));
+    try {
+      expect(userVersion(verify)).toBe(2);
+    } finally {
+      verify.close();
+    }
+  });
+
+  it('a writable open migrates the store and the view gains the invalidated column', () => {
+    const dir = tempDir();
+    buildPreMigration3Store(dir);
+
+    // Before: the pre-asc-88m shape, queried the same way asc-5ed measured the real store --
+    // the column is simply not there.
+    const before = new DatabaseSync(join(dir, STORE_FILE));
+    try {
+      expect(() =>
+        before.prepare(`SELECT invalidated FROM ${viewName('review_completed', 1)}`).all(),
+      ).toThrow(/no such column: invalidated/);
+    } finally {
+      before.close();
+    }
+
+    const store = openStore({ dir });
+    try {
+      expect(store.migrations.applied).toContain(
+        'rebuild per-type views to carry the invalidated column',
+      );
+      expect(userVersion(store.db)).toBe(SCHEMA_VERSION);
+
+      // After: the same query that failed above now succeeds -- the column exists, and (nothing
+      // in this fixture was ever invalidated) reads back NULL rather than throwing.
+      const rows = store.db
+        .prepare(`SELECT invalidated FROM ${viewName('review_completed', 1)}`)
+        .all() as { invalidated: string | null }[];
+      expect(rows).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('is a clean no-op on a store with zero registered types', () => {
+    // Decision 6: a brand-new store migrating 1 -> 3 has no types in the registry at all -- the
+    // ordinary case, since every store starts empty. `entry_types` here genuinely has zero rows,
+    // unlike the fixture above.
+    const dir = tempDir();
+    const file = join(dir, STORE_FILE);
+    const db = new DatabaseSync(file);
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((m) => m.version < 3),
+        file,
+      );
+      expect(db.prepare('SELECT COUNT(*) AS n FROM entry_types').get()?.['n']).toBe(0);
+    } finally {
+      db.close();
+    }
+
+    let store: ReturnType<typeof openStore> | undefined;
+    expect(() => {
+      store = openStore({ dir });
+    }).not.toThrow();
+    if (store === undefined) throw new Error('expected openStore to have succeeded above');
+    try {
+      expect(userVersion(store.db)).toBe(SCHEMA_VERSION);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('is idempotent -- running the rebuild a second time, directly, changes nothing', () => {
+    const dir = tempDir();
+    buildPreMigration3Store(dir);
+
+    const first = openStore({ dir });
+    const firstDefinition = first.db
+      .prepare('SELECT sql FROM sqlite_master WHERE name = ?')
+      .get(viewName('review_completed', 1)) as { sql: string };
+    first.close();
+
+    // The ordinary idempotency test above ('is idempotent -- reopening applies nothing') proves
+    // `migrate` itself skips a current store. This proves the narrower claim asc-5ed needs:
+    // forcing migration 3's own procedure to run a second time, directly, is harmless -- exactly
+    // the property `ProceduralMigration`'s doc rests the missing `marker` check on.
+    const migration3 = MIGRATIONS.find((m) => m.version === 3);
+    // `typeof migration3.run === 'function'`, not `'run' in migration3`: both `Migration` arms
+    // DECLARE a `run` key (`ProceduralMigration.run` on one side, `SqlMigration.run?: never` on
+    // the other, added so the union rejects an object literal carrying both arms -- see
+    // `Migration`'s own doc), so `in` sees the key on every member and does not narrow the union
+    // at all. Checking the VALUE's type discriminates correctly, the same way `migrate` and
+    // `inferAppliedVersion` (schema.ts) check `typeof migration.sql === 'string'` rather than
+    // `'sql' in migration`.
+    if (migration3 === undefined || typeof migration3.run !== 'function') {
+      throw new Error('expected migration 3 to be a procedural migration');
+    }
+
+    const second = new DatabaseSync(join(dir, STORE_FILE));
+    try {
+      expect(() => {
+        migration3.run(second);
+      }).not.toThrow();
+
+      const secondDefinition = second
+        .prepare('SELECT sql FROM sqlite_master WHERE name = ?')
+        .get(viewName('review_completed', 1)) as { sql: string };
+      expect(secondDefinition.sql).toBe(firstDefinition.sql);
+    } finally {
+      second.close();
+    }
+  });
+});
+
+describe('the Migration union enforces "sql xor run" at compile time (asc-5ed)', () => {
+  it('documents the compile-time assertion and how it is checked', () => {
+    // `Migration` is `SqlMigration | ProceduralMigration`. Verified directly, not assumed, that a
+    // bare two-interface union does NOT by itself reject an object carrying both arms:
+    // TypeScript's excess-property check on a fresh object literal treats a property as "known"
+    // -- and so exempt from the excess-property error -- as soon as it appears on ANY member of
+    // the union. A standalone probe (`tsc --strict --noEmit`) confirmed
+    // `{ version, name, sql, marker, run }` type-checked with NO error against a bare
+    // `SqlMigration | ProceduralMigration`, because it satisfies `SqlMigration` structurally and
+    // `run` is "known" (it belongs to the sibling member).
+    //
+    // That is why `SqlMigration` and `ProceduralMigration` (schema.ts) each also declare the
+    // OTHER arm's fields as `?: never`. With those in place, the same literal fails: `run` is no
+    // longer assignable to `run?: never`, and a `sql`-and-`marker`-only literal is no longer
+    // assignable to `ProceduralMigration`'s `sql?: never; marker?: never`. That is what the
+    // `@ts-expect-error` lines immediately below assert.
+    //
+    // Neither `tsc -b` nor `vitest run` checks this: `tsc -b` builds only `packages/*/src/**`
+    // (this package's tsconfig `include` is `src/**/*.ts`), and Vitest transpiles test files with
+    // esbuild without type-checking them at all -- a `@ts-expect-error` here is inert under
+    // `vitest run` and would not fail the suite even if the assertion were wrong. The check that
+    // actually exercises this file's types is `tsc -p tsconfig.eslint.json`, the types-only
+    // project `pnpm typecheck` runs specifically to cover `packages/*/test/**` (see that file's
+    // own doc comment). Run directly: `npx tsc -p tsconfig.eslint.json` -- a passing run means
+    // every `@ts-expect-error` below found the error it expects, no more and no fewer.
+    //
+    // @ts-expect-error -- a Migration cannot carry both `sql` and `run`.
+    const both: Migration = {
+      version: 99,
+      name: 'invalid: both arms',
+      sql: 'SELECT 1',
+      marker: 'm',
+      run: () => {
+        /* unreachable: this literal must not compile */
+      },
+    };
+    // @ts-expect-error -- a Migration must carry one of `sql` or `run`; neither is not a Migration.
+    const neither: Migration = { version: 99, name: 'invalid: neither arm' };
+
+    // Used only so the unused-variable lint rule has nothing to flag; the two assignments above,
+    // and whether `tsc` accepts or rejects them, are the entire assertion.
+    expect([both, neither]).toHaveLength(2);
   });
 });
 
