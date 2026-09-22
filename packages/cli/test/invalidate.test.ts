@@ -552,4 +552,32 @@ describe('asc invalidate: the surface', () => {
     expect(help.stdout).toContain('--superseded-by');
     expect(help.stdout).toContain('--list');
   });
+
+  // `--superseded-by` is refused for every label but `superseded` -- the store enforces it and the
+  // refusal reaches the caller as-is. An EXAMPLE that breaks that rule is worse than a missing one:
+  // it is the command teaching an invocation that exits non-zero, and nothing else here would catch
+  // it, because examples are printed rather than run. One shipped for a while (asc-y7p), pairing
+  // `--label wrong_value` with `--superseded-by e19`, and it was found by running it rather than by
+  // reading it. This pins the invariant instead of the wording, so rephrasing an example is free
+  // and contradicting the flag rule is not.
+  it('shows no example that the flags themselves would refuse', () => {
+    const dir = seeded();
+
+    const help = asc(['invalidate', '--help'], dir);
+
+    expect(help.status, help.stderr).toBe(0);
+    const examples = help.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('$ ') && line.includes('invalidate'));
+    expect(examples.length).toBeGreaterThan(0);
+
+    for (const example of examples) {
+      if (!example.includes('--superseded-by')) continue;
+      expect(
+        example,
+        `example names --superseded-by without --label superseded: ${example}`,
+      ).toContain('--label superseded');
+    }
+  });
 });

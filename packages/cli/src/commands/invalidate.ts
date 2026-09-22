@@ -118,7 +118,11 @@ export default class Invalidate extends BaseCommand {
     'Entries are immutable and are never edited or deleted.';
 
   static override examples = [
-    '<%= config.bin %> <%= command.id %> e12 --label wrong_value --reason "unit mismatch, fixed in e19" --superseded-by e19',
+    // `--superseded-by` is REFUSED for any label but `superseded` (the store enforces it, and the
+    // refusal explains that the flag carries a replacement claim `wrong_value` does not make).
+    // This example paired it with `wrong_value` until asc-y7p, so the command's own documentation
+    // printed an invocation that exits non-zero -- found by running it, not by reading it.
+    '<%= config.bin %> <%= command.id %> e12 --label superseded --reason "unit mismatch, fixed in e19" --superseded-by e19',
     '<%= config.bin %> <%= command.id %> e12 e13 e14 --label wrong_subject --reason "measured the wrong endpoint"',
     '<%= config.bin %> <%= command.id %> e12 --label wrong_value --reason "..." --dry-run',
     '<%= config.bin %> <%= command.id %> --list',
