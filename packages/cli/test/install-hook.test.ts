@@ -142,6 +142,46 @@ function withBeadsHook(dir: string): string {
   return raw;
 }
 
+/**
+ * A settings file holding the beads hook AND a pre-asc-4dm.2 ascend hook -- `types brief` alone,
+ * no `ingest claude-code` -- so an upgrade can be tested against a fixture that also carries a
+ * hook that is NOT ascend's, side by side.
+ *
+ * The old-style command's paths are deliberately stale (`/old/checkout/...`), the same way a real
+ * one goes stale when a checkout moves: the upgrade must replace the whole command, paths
+ * included, not merely append the ingest clause to what is already there.
+ */
+function withOldStyleHook(dir: string): string {
+  const raw = `{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bd prime --hook-json",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "[ ! -f '/old/checkout/dist/bin.js' ] || [ ! -d '/old/checkout/.ascend' ] || '/old/node' '/old/checkout/dist/bin.js' types brief",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
+}
+`;
+  mkdirSync(join(dir, '.claude'), { recursive: true });
+  writeFileSync(settingsPath(dir), raw, 'utf8');
+  return raw;
+}
+
 describe('asc install-hook: consent', () => {
   it('refuses when stdout is not a terminal, naming the flag that would work', () => {
     // `cli-best-practices` rule 3. The alternative failure is worse than this one: a command that
@@ -242,25 +282,113 @@ describe('asc install-hook: appending alongside another tool', () => {
   });
 });
 
+describe('asc install-hook: upgrading a pre-ingest hook in place (D5)', () => {
+  it('replaces a types-brief-only command with the chained one, reported "upgraded"', () => {
+    const dir = project();
+    withOldStyleHook(dir);
+
+    const run = asc(['install-hook', '--yes', '--json'], dir);
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ rows: [{ outcome: 'upgraded' }] });
+
+    const commands = hookCommands(dir);
+    expect(commands).toHaveLength(2);
+    // Every other entry in the array, and the order, are unchanged.
+    expect(commands[0]).toBe('bd prime --hook-json');
+    // The stale command is gone entirely -- replaced, not merely extended.
+    // Bound to a local first: `noUncheckedIndexedAccess` types the element as possibly
+    // undefined, and a throw here says "the array was not the shape the assertion above just
+    // established" rather than silently comparing indexes on `undefined`.
+    const upgraded = commands[1];
+    if (upgraded === undefined) throw new Error('expected a second SessionStart command');
+    expect(upgraded).not.toContain('/old/checkout');
+    expect(upgraded).toContain('ingest claude-code');
+    expect(upgraded).toContain('types brief');
+    expect(upgraded.indexOf('ingest claude-code')).toBeLessThan(upgraded.indexOf('types brief'));
+
+    // The beads entry survives byte for byte, same as the plain-append case.
+    expect(readFileSync(settingsPath(dir), 'utf8')).toContain(
+      `      {
+        "hooks": [
+          {
+            "command": "bd prime --hook-json",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }`,
+    );
+  });
+
+  it('is a no-op the second time, once upgraded', () => {
+    const dir = project();
+    withOldStyleHook(dir);
+    asc(['install-hook', '--yes'], dir);
+    const after = readFileSync(settingsPath(dir), 'utf8');
+
+    const again = asc(['install-hook', '--yes', '--json'], dir);
+    expect(again.status).toBe(0);
+    expect(JSON.parse(again.stdout)).toMatchObject({ rows: [{ outcome: 'already installed' }] });
+    expect(readFileSync(settingsPath(dir), 'utf8')).toBe(after);
+  });
+
+  it("never touches a SessionStart command that is not ascend's", () => {
+    // A hook with no ascend marker at all -- as distinct from the stale-ascend-marker case above --
+    // must never be treated as a candidate for replacement.
+    const dir = project();
+    withBeadsHook(dir);
+
+    asc(['install-hook', '--yes'], dir);
+    expect(hookCommands(dir)[0]).toBe('bd prime --hook-json');
+
+    // Upgrading again (still current) leaves it untouched too.
+    asc(['install-hook', '--yes'], dir);
+    expect(hookCommands(dir)[0]).toBe('bd prime --hook-json');
+  });
+
+  it('--dry-run reports "would upgrade" and writes nothing', () => {
+    const dir = project();
+    const before = withOldStyleHook(dir);
+
+    const run = asc(['install-hook', '--dry-run', '--json'], dir);
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ rows: [{ outcome: 'would upgrade' }] });
+    expect(readFileSync(settingsPath(dir), 'utf8')).toBe(before);
+  });
+});
+
 describe('asc install-hook: the command it writes works', () => {
   it('prints the brief when run verbatim, and both guards are silent no-ops', () => {
     const dir = project();
     asc(['install-hook', '--yes'], dir);
     const command = hookCommands(dir)[0] ?? '';
 
+    // `HOME` is redirected the same way `asc()` redirects it: the command now runs `asc ingest
+    // claude-code` for real, and without this it would read the machine's ACTUAL
+    // `~/.claude/projects` -- slow, nondeterministic, and exactly the corpus this test must not
+    // touch. `dir/.claude` already holds `settings.json`, not a `projects/` sibling, so the
+    // resulting `~/.claude/projects` does not exist and ingest sweeps zero files.
+    const isolated = { ...process.env, HOME: dir, XDG_CACHE_HOME: join(dir, '.cache') };
+
     // The positive case. Driven through `sh`, because that is what a hook runner does with it -- a
     // command that works when passed to execFile's argv form and not through a shell would be a
     // command that does not work.
-    const live = spawnSync('sh', ['-c', command], { cwd: dir, encoding: 'utf8' });
+    const live = spawnSync('sh', ['-c', command], { cwd: dir, encoding: 'utf8', env: isolated });
     expect(live.status).toBe(0);
     expect(live.stdout).toContain('decision');
     expect(live.stdout).toContain('-- a choice is made');
+    // Ingest ran first (D2/D3): its report table and its identity-vocabulary disclosure line
+    // would show up here if either of its streams leaked, and `types brief`'s own stdout is the
+    // ONLY thing that is supposed to arrive on either stream.
+    expect(live.stdout).not.toContain('identity vocabulary');
+    expect(live.stderr).toBe('');
 
     // Guard 1: the binary is gone. Asserted on BOTH streams being empty, because the guard's whole
     // job is to be invisible -- an error on stderr would still exit 0 and still be wrong.
     const missing = spawnSync('sh', ['-c', command.replaceAll('dist/bin.js', 'dist/GONE.js')], {
       cwd: dir,
       encoding: 'utf8',
+      env: isolated,
     });
     expect(missing.status).toBe(0);
     expect(missing.stdout).toBe('');
@@ -269,10 +397,22 @@ describe('asc install-hook: the command it writes works', () => {
     // Guard 2: the store is gone. This is the one the architecture's guard did not cover, and the
     // one every teammate hits -- `.ascend/` is gitignored, so a clone has the hook and no store.
     rmSync(join(dir, '.ascend'), { recursive: true, force: true });
-    const noStore = spawnSync('sh', ['-c', command], { cwd: dir, encoding: 'utf8' });
+    const noStore = spawnSync('sh', ['-c', command], { cwd: dir, encoding: 'utf8', env: isolated });
     expect(noStore.status).toBe(0);
     expect(noStore.stdout).toBe('');
     expect(noStore.stderr).toBe('');
+  });
+
+  it('runs ingest before types brief, discarding both of its streams', () => {
+    // The literal shape D1-D4 require: ingest ordered ahead of the brief, both of its streams
+    // thrown away, and the two joined by `;` rather than `&&` so a failing ingest cannot suppress
+    // the brief.
+    const dir = project();
+    const command = generated(dir);
+    expect(command).toContain('ingest claude-code >/dev/null 2>&1;');
+    expect(command.indexOf('ingest claude-code')).toBeLessThan(command.indexOf('types brief'));
+    expect(command.indexOf('>/dev/null 2>&1')).toBeLessThan(command.indexOf('types brief'));
+    expect(command).not.toContain('&&');
   });
 
   it('writes a command whose paths are absolute, so it does not depend on a PATH', () => {

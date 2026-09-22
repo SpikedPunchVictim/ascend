@@ -24,6 +24,18 @@
  * architecture specified by name (`asc types brief`). No new flag on `types brief`, and no second
  * output format to keep in sync.
  *
+ * **`asc ingest claude-code` runs first, chained into the same guarded command, ahead of `types
+ * brief` -- not a second hook entry** (asc-4dm.2, decision entry 79696d45). The hazard just above
+ * (silently dropped output when a second raw-text `SessionStart` hook coexists) means there must
+ * remain exactly ONE ascend hook. `;` joins the two rather than `&&`: `types brief` must run
+ * regardless of ingest's exit status, because a broken ingest must never be able to break recall,
+ * the one thing this hook already reliably did. Both of ingest's streams are discarded
+ * (`>/dev/null 2>&1`) -- `SessionStart` is the only event whose stdout is injected into context
+ * (below), `types brief` stdout must stay the only payload, and ingest also writes an identity-
+ * vocabulary disclosure line to stderr (`ingest/claude-code.ts`'s `reportIdentityVocabulary`) that
+ * must not leak into the session either. Ingest runs BEFORE the brief, not after, so the brief
+ * reflects a corpus that is current as of this session start.
+ *
  * **Two guards, and the second was not in the design until it was measured.** `ARCHITECTURE.md`
  * specifies the `[ ! -f ... ] ||` no-op pattern "so a missing binary is inert". That guard is
  * correct and incomplete: driven for real, `asc types brief` with a binary present and **no store**
@@ -37,9 +49,17 @@
  * terminal is asked and a non-terminal is refused with the flag it is missing. That last branch is
  * `cli-best-practices` rule 3: a command that prompts into a pipe hangs CI rather than failing.
  *
- * **Idempotent**, and by a marker rather than by comparing generated text: any existing
- * `SessionStart` hook whose command mentions `types brief` counts as already installed, and the
- * report prints the command it found so a reader can see *which* one rather than being told "done".
+ * **Idempotent**, and by two markers rather than by comparing generated text. A command mentioning
+ * `types brief` is recognised as ascend's own hook; one that ALSO mentions `ingest claude-code` is
+ * current and left untouched (`already installed`). One that carries the first marker but not the
+ * second predates the ingest clause and is REPLACED in place, reported `upgraded`, so an existing
+ * install gets ingest without a second copy of the hook. The report prints the command it found
+ * (or wrote) so a reader can see *which* one rather than being told "done".
+ *
+ * **Consent now discloses a behaviour change, not just a file edit.** Chaining ingest in means this
+ * hook reads `~/.claude/projects` and writes derived entries into the project's store on every
+ * session start, not only prints a digest -- privacy-relevant, and said plainly before the y/N
+ * prompt rather than left implicit in the command text.
  */
 
 import {
@@ -83,6 +103,16 @@ const SETTINGS_PATH = join('.claude', 'settings.json');
  */
 const INSTALLED_MARKER = 'types brief';
 
+/**
+ * How a CURRENT (ingest-chained) hook is recognised, distinct from `INSTALLED_MARKER`.
+ *
+ * A command can carry `INSTALLED_MARKER` without this one -- that is exactly the pre-asc-4dm.2
+ * shape, `types brief` alone -- and the distinction between the two markers is what lets
+ * `withHook` tell "already current" from "ascend's, but stale" apart, rather than treating both as
+ * the same "already installed" no-op the way a single marker would.
+ */
+const INGEST_MARKER = 'ingest claude-code';
+
 /** One row of the report: what was touched, and what happened to it. */
 interface HookRow extends Record<string, unknown> {
   readonly action: string;
@@ -119,58 +149,90 @@ const isArray = (value: unknown): value is readonly unknown[] => Array.isArray(v
  * while the running interpreter is known to satisfy it. The cost, stated plainly: switching Node
  * versions after installing leaves the hook pinned to the old one, and it fails inert rather than
  * loudly. Re-running this command rewrites it.
+ *
+ * **The third clause is now a GROUP of two commands, not one** (asc-4dm.2). `ingest claude-code`
+ * runs first, its output thrown away on both streams (`>/dev/null 2>&1`), then `;` -- not `&&` --
+ * runs `types brief` unconditionally. `;` is load-bearing: a broken or slow ingest must never be
+ * able to suppress the brief, which is the one thing this hook already reliably did before ingest
+ * existed. The pair is wrapped in `( ... )` so the two guard clauses above still short-circuit the
+ * WHOLE group -- without the parens, `sh` would parse `A || B || C; D` as two separate statements
+ * and `D` (`types brief`) would run even when a guard fired, exactly the "inert" contract this
+ * function exists to keep. The group's own exit status is `types brief`'s, since that is the last
+ * command in it and the only one whose failure this hook should ever surface.
  */
 function installCommand(binary: string, interpreter: string, storeDir: string): string {
+  const node = shellQuote(interpreter);
+  const asc = shellQuote(binary);
   return (
-    `[ ! -f ${shellQuote(binary)} ] || ` +
+    `[ ! -f ${asc} ] || ` +
     `[ ! -d ${shellQuote(storeDir)} ] || ` +
-    `${shellQuote(interpreter)} ${shellQuote(binary)} types brief`
+    `(${node} ${asc} ingest claude-code >/dev/null 2>&1; ${node} ${asc} types brief)`
   );
 }
 
+/** Where, positionally, an existing command was found -- the matcher and the entry within it. */
+interface LocatedHook {
+  readonly matcherIndex: number;
+  readonly entryIndex: number;
+  readonly command: string;
+}
+
 /**
- * Every command string already registered on `SessionStart`, in file order.
+ * Ascend's own previously-written command within an existing `SessionStart` array, if there is
+ * one -- found by `INSTALLED_MARKER`, the same marker that has always meant "this is ascend's".
+ *
+ * Positional, unlike the flat list this replaced, because upgrading a stale command means writing
+ * back into the exact matcher and entry it came from rather than merely knowing its text existed.
  *
  * Deliberately permissive: this walks untyped JSON a user may have hand-written, so anything that
  * is not the shape it expects is skipped rather than thrown on. A malformed entry is the user's, and
  * it is not this command's to reject while it is only *reading*.
  */
-function sessionStartCommands(settings: Record<string, unknown>): readonly string[] {
-  const hooks = settings['hooks'];
-  if (!isRecord(hooks)) return [];
-  const sessionStart = hooks[HOOK_EVENT];
-  if (!isArray(sessionStart)) return [];
-
-  const commands: string[] = [];
-  for (const matcher of sessionStart) {
+function locateAscendHook(sessionStart: readonly unknown[]): LocatedHook | undefined {
+  for (let matcherIndex = 0; matcherIndex < sessionStart.length; matcherIndex += 1) {
+    const matcher = sessionStart[matcherIndex];
     if (!isRecord(matcher)) continue;
     const entries = matcher['hooks'];
     if (!isArray(entries)) continue;
-    for (const entry of entries) {
+    for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+      const entry = entries[entryIndex];
       if (!isRecord(entry)) continue;
       const command = entry['command'];
-      if (typeof command === 'string') commands.push(command);
+      if (typeof command === 'string' && command.includes(INSTALLED_MARKER)) {
+        return { matcherIndex, entryIndex, command };
+      }
     }
   }
-  return commands;
+  return undefined;
 }
 
 interface Merge {
-  /** The settings object to write. Identical to the input when nothing was added. */
+  /** The settings object to write. Identical to the input when nothing changed. */
   readonly next: Record<string, unknown>;
-  /** The command now registered by this command -- the one found, or the one generated. */
+  /** The command now registered by this command -- the one found, or the one written. */
   readonly command: string;
-  /** Whether `command` was already there, in which case nothing is written. */
+  /** Whether `command` was already current, in which case nothing is written. */
   readonly alreadyInstalled: boolean;
+  /** Whether an existing ascend command was rewritten in place, rather than appended or found current. */
+  readonly upgraded: boolean;
 }
 
 /**
- * `settings` with the hook appended, or unchanged when it is already there.
+ * `settings` with the hook appended, upgraded in place, or unchanged, per which of those three a
+ * prior `SessionStart` array already reflects.
  *
- * The appended element is a *new* matcher object rather than an extra command inside the existing
- * one. That is what makes "never overwrite" checkable at the level of the file: whatever was in the
- * array is still in the array, in the same order. Merging into an existing element would be equally
- * correct to the hook runner and would make the guarantee harder to see.
+ * **Appending** a new matcher element is what makes "never overwrite" checkable at the level of the
+ * file: whatever was in the array is still in the array, in the same order. That guarantee is about
+ * a DIFFERENT tool's hook -- ascend cannot know what such a command is for, so it never touches one.
+ *
+ * **Upgrading** is a different case wearing a similar shape, and deliberately handled differently:
+ * a command found by `locateAscendHook` carries `INSTALLED_MARKER`, which has only ever meant
+ * "ascend wrote this". Rewriting ascend's OWN prior output in place -- to add the ingest clause
+ * asc-4dm.2 needs, reported `upgraded` -- is not the overwrite the guarantee above forbids; it is
+ * this command noticing its own earlier work is stale and bringing it current, the same way a
+ * second `asc init` updates a `.gitignore` block it wrote before. A command that does NOT carry
+ * `INSTALLED_MARKER` is never a candidate for this branch at all, by construction of
+ * `locateAscendHook`, so someone else's hook can never be mistaken for ascend's own.
  *
  * `matcher: ''` matches every session source, which is what recall needs -- in particular `compact`,
  * because the model most in need of being reminded what to record is the one that just lost the
@@ -181,11 +243,6 @@ interface Merge {
  * user meant; the refusal names the key and the type actually found.
  */
 function withHook(settings: Record<string, unknown>, command: string, target: string): Merge {
-  const already = sessionStartCommands(settings).find((candidate) =>
-    candidate.includes(INSTALLED_MARKER),
-  );
-  if (already !== undefined) return { next: settings, command: already, alreadyInstalled: true };
-
   const hooks = settings['hooks'];
   if (hooks !== undefined && !isRecord(hooks)) {
     throw refusal(
@@ -204,11 +261,44 @@ function withHook(settings: Record<string, unknown>, command: string, target: st
     );
   }
 
+  const located = isArray(sessionStart) ? locateAscendHook(sessionStart) : undefined;
+
+  if (located !== undefined && isArray(sessionStart)) {
+    if (located.command.includes(INGEST_MARKER)) {
+      return { next: settings, command: located.command, alreadyInstalled: true, upgraded: false };
+    }
+
+    const nextSessionStart = sessionStart.map((matcher, matcherIndex) => {
+      if (matcherIndex !== located.matcherIndex) return matcher;
+      const record = matcher as Record<string, unknown>;
+      const entries = record['hooks'] as readonly unknown[];
+      const nextEntries = entries.map((entry, entryIndex) =>
+        entryIndex === located.entryIndex
+          ? { ...(entry as Record<string, unknown>), command }
+          : entry,
+      );
+      return { ...record, hooks: nextEntries };
+    });
+
+    const nextHooks = { ...(hooks as Record<string, unknown>), [HOOK_EVENT]: nextSessionStart };
+    return {
+      next: { ...settings, hooks: nextHooks },
+      command,
+      alreadyInstalled: false,
+      upgraded: true,
+    };
+  }
+
   const entry = { matcher: '', hooks: [{ type: 'command', command }] };
   const nextHooks = isRecord(hooks) ? { ...hooks } : {};
   nextHooks[HOOK_EVENT] = isArray(sessionStart) ? [...sessionStart, entry] : [entry];
 
-  return { next: { ...settings, hooks: nextHooks }, command, alreadyInstalled: false };
+  return {
+    next: { ...settings, hooks: nextHooks },
+    command,
+    alreadyInstalled: false,
+    upgraded: false,
+  };
 }
 
 export default class InstallHook extends BaseCommand {
@@ -262,15 +352,19 @@ export default class InstallHook extends BaseCommand {
 
     const outcome = merged.alreadyInstalled
       ? 'already installed'
-      : dryRun
-        ? 'would install'
-        : 'installed';
+      : merged.upgraded
+        ? dryRun
+          ? 'would upgrade'
+          : 'upgraded'
+        : dryRun
+          ? 'would install'
+          : 'installed';
 
     // Nothing is written unless it is both asked for and consented to. The order matters: a dry run
     // and an already-installed hook are both *reports*, and prompting for either would ask the user
     // to approve something that is not about to happen.
     if (!merged.alreadyInstalled && !dryRun) {
-      await this.consent(yes, requested, merged.command);
+      await this.consent(yes, requested, merged.command, merged.upgraded);
       this.writeAtomically(target, `${JSON.stringify(merged.next, null, 2)}\n`);
     }
 
@@ -281,7 +375,11 @@ export default class InstallHook extends BaseCommand {
     if (dryRun) {
       this.warn('dry run: nothing was written.');
       if (!merged.alreadyInstalled) {
-        this.warn(`the hook that would be appended to ${requested} is:`);
+        this.warn(
+          merged.upgraded
+            ? `the hook that would replace ascend's existing one in ${requested} is:`
+            : `the hook that would be appended to ${requested} is:`,
+        );
         this.warn(`  ${merged.command}`);
       }
     }
@@ -410,8 +508,19 @@ export default class InstallHook extends BaseCommand {
    * stdout to be terminals -- `cli-best-practices` rule 3, and the reason is a real one: a command
    * that prompts into a pipe does not fail, it waits, and a CI job that hangs is worse than one that
    * exits 2 naming the flag it wanted.
+   *
+   * **Discloses the behaviour change, not just the file edit** (asc-4dm.2). The hook this writes
+   * now reads `~/.claude/projects` and writes what it derives into this project's store on every
+   * session start -- it used to only print a digest. That is said plainly, before the command
+   * text and before the y/N prompt, rather than left for the reader to notice inside the command
+   * itself.
    */
-  private async consent(yes: boolean, target: string, command: string): Promise<void> {
+  private async consent(
+    yes: boolean,
+    target: string,
+    command: string,
+    upgraded: boolean,
+  ): Promise<void> {
     if (yes) return;
 
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -422,7 +531,16 @@ export default class InstallHook extends BaseCommand {
       );
     }
 
-    this.warn(`ascend will append this hook to ${target}:`);
+    this.warn(
+      `this hook now reads this machine's Claude Code transcripts (~/.claude/projects) and ` +
+        `writes what it derives from them into this project's ${STORE_DIR}/ store on every ` +
+        `session start, before printing the entry-type brief it already printed. That is new.`,
+    );
+    this.warn(
+      upgraded
+        ? `ascend will replace its existing hook in ${target} with:`
+        : `ascend will append this hook to ${target}:`,
+    );
     this.warn(`  ${command}`);
     if (!(await this.ask('Install it? [y/N] '))) {
       throw refusal(
