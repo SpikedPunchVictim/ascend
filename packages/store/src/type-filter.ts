@@ -14,10 +14,11 @@
  * **The fix is to filter over a PROJECTION, not the raw table**: a subquery selecting the type's
  * envelope columns unchanged, plus one `json_extract` alias per declared property, named after the
  * property. `views.ts` already builds exactly this projection, once per major family, for the
- * generated `v_<type>_v<major>` views, and `profile.ts`'s `valueExpr` already knows how to render
- * one property's `json_extract`. Both are reused rather than a third expression builder being
- * written here -- the same one-place rule this bead has already applied twice (`stateCase` for
- * `EntryState`, `propertiesOf`/`valueExpr` for `crosstab.ts`).
+ * generated `v_<type>_v<major>` views, and `properties.ts`'s `valueExpr` already knows how to
+ * render one property's `json_extract` -- `profile.ts` uses the identical function for its own
+ * per-property queries. Both are reused rather than a third expression builder being written here
+ * -- the same one-place rule this bead has already applied twice (`stateCase` for `EntryState`,
+ * `propertiesOf`/`valueExpr` for `crosstab.ts`).
  *
  * **The collision that would normally make this ambiguous cannot happen.** `ENVELOPE_PROPERTY_NAMES`
  * (`@ascend/core`'s `spec.ts:148`) reserves `id`, `type_name`, `recorded_at`, `cwd` and the rest,
@@ -44,7 +45,7 @@
 
 import { canonicalName } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
-import { propertiesOf, valueExpr } from './profile.js';
+import { propertiesOf, valueExpr } from './properties.js';
 import { UnknownTypeError } from './recorder.js';
 import { registeredNames, typeVersions } from './registry.js';
 import { ENVELOPE_COLUMNS, ident, literal } from './sql.js';

@@ -588,6 +588,164 @@ describe('profileType: the envelope around the properties', () => {
  * `true`/`false` for the same property in the same command. `SPEC` has no `boolean` property, so
  * this uses its own fixture rather than widening a spec every other test in this file shares.
  */
+/**
+ * `asc-qfk.1`: `--filter` lifted from a refusal to a real recomputation, and EVERY number on the
+ * profile has to describe the filtered population -- not only `count` and the two state
+ * denominators `explore.ts`'s `stateDenominator` names.
+ *
+ * The fixture is the asc-5x7 shape: `added_later` is declared only by v2, entries are recorded
+ * under both v1 and v2, and the filter (`outcome = 'approved'`) admits some of each -- so
+ * `declared_entries` (a share of the FILTERED declaring population, 2) and `count` (the FILTERED
+ * total, 4) are two different numbers in one profile. A test -- or an implementation -- that
+ * confused the two would not go unnoticed here the way it would in a fixture where they happened
+ * to coincide.
+ */
+describe('profileType: --filter narrows every number, not just the denominators (asc-qfk.1)', () => {
+  const v2: TypeSpec = {
+    name: SPEC.name,
+    properties: [...SPEC.properties, { name: 'added_later', type: 'string' }],
+  };
+
+  /**
+   * Six entries, three per version, split two-'approved'/one-'rejected' within each version.
+   * `outcome = 'approved'` then admits four rows (two per version) and excludes two (one per
+   * version) -- a filter that narrows across BOTH the declaring and the non-declaring version,
+   * rather than one that happens to line up with a version boundary.
+   */
+  const build = (): Store => {
+    const store = openStore({ dir: tempDir() });
+    registerType(store.db, SPEC, { registeredAt: AT });
+    recordEntry(
+      store.db,
+      { type: SPEC.name, properties: { outcome: 'approved', findings: 5 } },
+      context('e1', { recordedAt: '2026-09-11T09:00:00.000Z' }),
+    );
+    recordEntry(
+      store.db,
+      { type: SPEC.name, properties: { outcome: 'approved', findings: 1 } },
+      context('e2', { recordedAt: '2026-09-11T10:00:00.000Z' }),
+    );
+    recordEntry(
+      store.db,
+      { type: SPEC.name, properties: { outcome: 'rejected', findings: 100 } },
+      context('e3', { recordedAt: '2026-09-11T11:00:00.000Z' }),
+    );
+    registerType(store.db, v2, { registeredAt: AT });
+    recordEntry(
+      store.db,
+      { type: SPEC.name, properties: { outcome: 'approved', findings: 3, added_later: 'x' } },
+      context('e4', { recordedAt: '2026-09-11T12:00:00.000Z' }),
+    );
+    recordEntry(
+      store.db,
+      { type: SPEC.name, properties: { outcome: 'approved', findings: 2 } },
+      context('e5', { recordedAt: '2026-09-11T13:00:00.000Z' }),
+    );
+    recordEntry(
+      store.db,
+      { type: SPEC.name, properties: { outcome: 'rejected', findings: 999, added_later: 'y' } },
+      context('e6', { recordedAt: '2026-09-11T14:00:00.000Z' }),
+    );
+    return store;
+  };
+
+  const declaredCount = (states: StateCounts): number =>
+    states.measured + states.not_applicable + states.not_measured;
+
+  it('computes declared_entries and not_declared against the FILTERED population, and the two denominators differ', () => {
+    const store = build();
+    try {
+      const profile = profileType(store.db, SPEC.name, { filter: "outcome = 'approved'" });
+      const addedLater = profile?.properties.find((property) => property.name === 'added_later');
+
+      expect(profile?.count).toBe(4);
+      expect(profile?.unfiltered).toBe(6);
+
+      // 2 of the 4 admitted rows are v2 (declare `added_later`, one measured and one not); the
+      // other 2 are v1, `not_declared`.
+      expect(statesOf(addedLater?.states as StateCounts)).toBe('measured=1 na=0 nm=1 nd=2');
+
+      const declared = declaredCount(addedLater?.states as StateCounts);
+      // `declared_entries`: the FILTERED count of v2-declaring rows -- not the unfiltered
+      // declaring count (3: e4, e5, e6) and not the filtered total (4).
+      expect(declared).toBe(2);
+      expect(declared).not.toBe(3);
+      expect(declared).not.toBe(profile?.count);
+
+      // The two denominators `not_declared`'s share and the other three states' share are drawn
+      // from genuinely differ in this fixture (2 vs 4) -- a fixture where they coincided would
+      // let a swapped denominator pass unnoticed.
+      expect(declared).not.toBe(profile?.count);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('a filter admitting only v1 rows makes the v2-only property 100% not_declared, with declared_entries zero', () => {
+    const store = build();
+    try {
+      const profile = profileType(store.db, SPEC.name, { filter: 'type_version = 1' });
+      const addedLater = profile?.properties.find((property) => property.name === 'added_later');
+
+      expect(profile?.count).toBe(3);
+      expect(statesOf(addedLater?.states as StateCounts)).toBe('measured=0 na=0 nm=0 nd=3');
+      expect(declaredCount(addedLater?.states as StateCounts)).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('describes the filtered population in top, distinct, min/max and the per-version tallies -- not just the states', () => {
+    const store = build();
+    try {
+      const profile = profileType(store.db, SPEC.name, { filter: "outcome = 'approved'" });
+
+      // Every admitted row is 'approved' -- the top-K and the distinct count see only that value,
+      // even though 'rejected' exists elsewhere in the (unfiltered) type.
+      const outcome = profile?.properties.find((property) => property.name === 'outcome');
+      expect(outcome?.top).toStrictEqual([{ value: 'approved', count: 4 }]);
+      expect(outcome?.distinct).toBe(1);
+
+      // findings: 5, 1 (v1) and 3, 2 (v2) survive the filter; 100 and 999 (both 'rejected') do
+      // not -- so the filtered range (1..5) is narrower than the unfiltered one (1..999).
+      const findings = profile?.properties.find((property) => property.name === 'findings');
+      expect(findings?.min).toBe(1);
+      expect(findings?.max).toBe(5);
+
+      // Two admitted rows per version (e1/e2 for v1, e4/e5 for v2), not the unfiltered three each.
+      expect(profile?.versions.map((row) => [row.version, row.entries])).toStrictEqual([
+        [1, 2],
+        [2, 2],
+      ]);
+
+      // The envelope's own range is over the admitted rows only: e3 (11:00) and e6 (14:00), both
+      // 'rejected', are excluded and would otherwise widen it.
+      expect(profile?.recordedAtMin).toBe('2026-09-11T09:00:00.000Z');
+      expect(profile?.recordedAtMax).toBe('2026-09-11T13:00:00.000Z');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('reports unfiltered equal to count with no filter, and the real unfiltered count when the filter matches nothing', () => {
+    const store = build();
+    try {
+      const noFilter = profileType(store.db, SPEC.name);
+      expect(noFilter?.count).toBe(6);
+      expect(noFilter?.unfiltered).toBe(6);
+
+      // The trap `PageResult.unfiltered`/`GroupResult.unfiltered` exist for: a filtered `count` of
+      // zero does not by itself say whether the filter excluded everything or the type held
+      // nothing to begin with.
+      const matchesNothing = profileType(store.db, SPEC.name, { filter: 'type_version = 99' });
+      expect(matchesNothing?.count).toBe(0);
+      expect(matchesNothing?.unfiltered).toBe(6);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe('profileType: a boolean property renders true/false, not 0/1 (asc-6wn)', () => {
   const BOOL_SPEC: TypeSpec = {
     name: 'flag_check',

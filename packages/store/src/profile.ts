@@ -43,8 +43,15 @@
 
 import { canonicalName, renderDeclaredValue, type PropertyType } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
-import { typeVersions, type TypeVersionRow } from './registry.js';
+import { propertiesOf, valueExpr } from './properties.js';
+import { typeVersions } from './registry.js';
 import { literal, stateCase } from './sql.js';
+import { typeFilterScope } from './type-filter.js';
+
+// Re-exported so every existing importer of `propertiesOf`/`valueExpr` from `./profile.js`
+// (`crosstab.ts`, `@ascend/store`'s own index) keeps working unchanged -- see `properties.ts`'s
+// own module comment for why the two moved out of this file.
+export { propertiesOf, valueExpr } from './properties.js';
 
 /**
  * How many values a `top` summary reports.
@@ -126,23 +133,60 @@ export interface VersionProfile {
 
 export interface TypeProfile {
   readonly type: string;
-  /** Entries of this type, across every version. */
+  /** Entries of this type that passed the filter (or all of them, when there is none). */
   readonly count: number;
+  /**
+   * Entries of this type before the filter. Equal to `count` when there is no filter.
+   *
+   * A filtered `count` alone cannot tell "the filter excluded everything" from "there is nothing
+   * here" -- `count: 0` is the same number either way, and the two need different fixes from
+   * whoever is reading it: a typo in a predicate, or an empty corpus. `unfiltered` is the fact
+   * that tells them apart, the same rule this project already applies to every other proportion
+   * it reports (a denominator is stated, not left for the reader to assume) -- see
+   * `PageResult.unfiltered` and `GroupResult.unfiltered` (`pages.ts`, `crosstab.ts`), which exist
+   * for the identical reason.
+   */
+  readonly unfiltered: number;
   /**
    * The envelope's own range. Always present for a non-empty type, and it is the ONLY range a
    * hand-recorded corpus has -- which is why it is reported even though it is uninformative for a
    * derived one, where every entry shares one clock reading. Per-property ranges are reported
    * separately, so a derived corpus's event time is not lost to this column's narrowness.
+   *
+   * Over the FILTERED population, same as everything else on this type (`ProfileOptions.filter`).
    */
   readonly recordedAtMin: string | null;
   readonly recordedAtMax: string | null;
+  /** Per-version entry counts, over the filtered population. */
   readonly versions: readonly VersionProfile[];
+  /** Every declared property's summary, over the filtered population. */
   readonly properties: readonly PropertyProfile[];
 }
 
 export interface ProfileOptions {
   /** Overrides `TOP_K`. Used by tests to reach the truncation boundary without 11 fixtures. */
   readonly topK?: number;
+  /**
+   * A SQL predicate over `type`'s rows, with declared properties as bare columns -- see
+   * `typeFilterScope` (`type-filter.ts`). Not the same vocabulary `asc annotate --scope` takes:
+   * that predicate is corpus-wide, over the raw `entries` table, because it runs before any one
+   * type is chosen. The same vocabulary `pageEntries` and `groupEntries` take (`asc-56k`).
+   *
+   * **EVERY number this function returns is computed against the FILTERED population when this is
+   * set -- not only `count` and the state denominators.** `top`, `distinct`, `min`/`max`, the
+   * per-version tallies and `recordedAtMin`/`recordedAtMax` all describe the same filtered rows.
+   * A profile whose ratios were filtered while its values still described the unfiltered corpus
+   * would report true facts about a population the caller never asked about, under a `count` that
+   * says otherwise -- worse than refusing the filter outright, which is what this command did
+   * before `asc-qfk.1`.
+   *
+   * The two denominators a property's four state ratios use (`stateDenominator` in `explore.ts`,
+   * and `asc-5x7`) are BOTH the filtered ones under a filter: `declared_entries` is the count of
+   * FILTERED entries whose recording version declared the property, and `not_declared` is a share
+   * of the FILTERED `count` -- not the type's unfiltered total. Both fall out of narrowing every
+   * subquery below by the same scope; neither is computed separately.
+   */
+  readonly filter?: string;
 }
 
 const STATES = ['measured', 'not_applicable', 'not_measured', 'not_declared'] as const;
@@ -183,33 +227,30 @@ function measuredTest(property: string): string {
 }
 
 /**
- * The `json_extract` projection of one property.
- *
- * Exported for `crosstab.ts` (`asc-56k`): the second SQL caller of this exact expression, so a
- * group-by cell reads a property's raw value through the identical path `topValues` and
- * `rangeOf` already use, rather than a second one that could disagree about the JSON path syntax.
- */
-export function valueExpr(property: string): string {
-  return `json_extract(e.properties_json, ${literal(`$.${property}`)})`;
-}
-
-/**
  * Every state's count for one property, with the absent states filled in as zero.
  *
  * The `GROUP BY` is on the generated CASE's output alias. SQLite resolves output aliases in
  * `GROUP BY`, and the alternative -- a positional `GROUP BY 1` -- would silently follow the
  * SELECT list if anyone ever reorders it.
+ *
+ * `scopeClause` narrows to the filtered population when `--filter` was given (`''` otherwise) --
+ * see `profileType`'s own comment on why this is BOTH denominators at once. `measured`,
+ * `not_applicable` and `not_measured` sum to the FILTERED `declared_entries` because the `WHERE`
+ * they are grouped under already excludes anything the filter excluded; `not_declared` is
+ * automatically a share of the FILTERED `count` for the identical reason -- all four states are
+ * counted over the same narrowed `WHERE`, so there is no second denominator to get wrong.
  */
 function stateCounts(
   db: DatabaseSync,
   type: string,
   property: string,
   declaring: readonly number[],
+  scopeClause: string,
 ): StateCounts {
   const rows = db
     .prepare(
       `SELECT ${stateCase(property, declaring)} AS state, COUNT(*) AS n\n` +
-        `  FROM entries AS e WHERE e.type_name = ? GROUP BY state`,
+        `  FROM entries AS e WHERE e.type_name = ?${scopeClause} GROUP BY state`,
     )
     .all(type) as unknown as { state: string; n: number }[];
 
@@ -226,11 +267,16 @@ function stateCounts(
 }
 
 /** Distinct measured values -- the size of the set the top-K was drawn from. */
-function distinctCount(db: DatabaseSync, type: string, property: string): number {
+function distinctCount(
+  db: DatabaseSync,
+  type: string,
+  property: string,
+  scopeClause: string,
+): number {
   const row = db
     .prepare(
       `SELECT COUNT(DISTINCT ${valueExpr(property)}) AS n\n` +
-        `  FROM entries AS e WHERE e.type_name = ? AND ${measuredTest(property)}`,
+        `  FROM entries AS e WHERE e.type_name = ?${scopeClause} AND ${measuredTest(property)}`,
     )
     .get(type) as unknown as { n: number };
   return row.n;
@@ -267,11 +313,12 @@ function topValues(
   property: string,
   k: number,
   declared: PropertyType,
+  scopeClause: string,
 ): readonly PropertyValueCount[] {
   const rows = db
     .prepare(
       `SELECT ${valueExpr(property)} AS value, COUNT(*) AS n\n` +
-        `  FROM entries AS e WHERE e.type_name = ? AND ${measuredTest(property)}\n` +
+        `  FROM entries AS e WHERE e.type_name = ?${scopeClause} AND ${measuredTest(property)}\n` +
         ` GROUP BY value ORDER BY n DESC, value ASC LIMIT ?`,
     )
     .all(type, k) as unknown as { value: string | number | null; n: number }[];
@@ -293,47 +340,18 @@ function rangeOf(
   db: DatabaseSync,
   type: string,
   property: string,
+  scopeClause: string,
 ): { readonly min: string | number | null; readonly max: string | number | null } {
   const row = db
     .prepare(
       `SELECT MIN(${valueExpr(property)}) AS lo, MAX(${valueExpr(property)}) AS hi\n` +
-        `  FROM entries AS e WHERE e.type_name = ? AND ${measuredTest(property)}`,
+        `  FROM entries AS e WHERE e.type_name = ?${scopeClause} AND ${measuredTest(property)}`,
     )
     .get(type) as unknown as { lo: string | number | null; hi: string | number | null };
 
   // `MIN` over an empty set is NULL, and SQLite returns null rather than 0 -- which is what this
   // returns too, so "no measurements" stays distinguishable from "a minimum of zero".
   return { min: row.lo, max: row.hi };
-}
-
-/**
- * The property set of one type, unioned over the versions that declare each property.
- *
- * Exported for `crosstab.ts` (`asc-56k`): resolving a group-by key's declared type has to walk
- * the same "newest declaring version wins" union this function already computes for the profile
- * (see the retyped-and-reverted case documented on `profileType`'s caller below) -- a second walk
- * over `versions` here would be a second place that rule has to stay correct.
- */
-export function propertiesOf(
-  versions: readonly TypeVersionRow[],
-): ReadonlyMap<string, { declaring: number[]; declaredTypes: PropertyType[] }> {
-  const properties = new Map<string, { declaring: number[]; declaredTypes: PropertyType[] }>();
-
-  // Ascending by version, so the LAST write for each property is the definition the newest
-  // declaring version states -- which is what `required` and the summary are read from.
-  for (const { version, spec } of versions) {
-    for (const property of spec.properties) {
-      const seen = properties.get(property.name);
-      if (seen === undefined) {
-        properties.set(property.name, { declaring: [version], declaredTypes: [property.type] });
-        continue;
-      }
-      seen.declaring.push(version);
-      if (!seen.declaredTypes.includes(property.type)) seen.declaredTypes.push(property.type);
-    }
-  }
-
-  return properties;
 }
 
 /**
@@ -356,6 +374,16 @@ export function propertiesOf(
  * from "the whole lookup is asking the wrong question". `type` is used, not `versions[0]?.name`,
  * for the queries below and the returned `TypeProfile.type`, matching `TypeVersionRow.name`
  * (registry.ts): a caller reads back the identity the store actually matched against.
+ *
+ * **`options.filter` (`asc-qfk.1`) narrows every query below to one id scope, computed ONCE.**
+ * `typeFilterScope` (`type-filter.ts`) runs its own query over `entry_types` to build the
+ * bare-column projection a predicate compares against, and this function issues one subquery per
+ * property (`stateCounts`, `distinctCount`, `topValues`, `rangeOf`) plus two for the envelope
+ * (`totals`, `perVersion`) -- so the scope is resolved into a `scopeClause` string here and
+ * threaded through all of them, rather than calling `typeFilterScope` again per property and
+ * paying its own query N more times over. `PredicateError` (a filter carrying a second statement)
+ * propagates out of this call uncaught, the same as it does out of `pageEntries` and
+ * `groupEntries` -- the CLI is where all three become a `usageError` naming `--filter`.
  */
 export function profileType(
   db: DatabaseSync,
@@ -368,19 +396,38 @@ export function profileType(
 
   const topK = options.topK ?? TOP_K;
 
+  const scopeClause =
+    options.filter === undefined
+      ? ''
+      : ` AND e.id IN (${typeFilterScope(db, type, options.filter)})`;
+
   const totals = db
     .prepare(
-      `SELECT COUNT(*) AS n, MIN(recorded_at) AS lo, MAX(recorded_at) AS hi\n` +
-        `  FROM entries WHERE type_name = ?`,
+      `SELECT COUNT(*) AS n, MIN(e.recorded_at) AS lo, MAX(e.recorded_at) AS hi\n` +
+        `  FROM entries AS e WHERE e.type_name = ?${scopeClause}`,
     )
     .get(type) as unknown as { n: number; lo: string | null; hi: string | null };
+
+  // The population `count` was drawn from, so a caller can tell "the filter excluded everything"
+  // apart from "there is nothing here" (see `TypeProfile.unfiltered`). Skipped when there is no
+  // filter -- `totals.n` already answers this -- and computed as one plain `COUNT(*)`, not a
+  // second run of `scopeClause` or a second `profileType` call: the population before the filter
+  // needs no projection at all, only a count of the type's own rows.
+  const unfiltered =
+    options.filter === undefined
+      ? totals.n
+      : (
+          db.prepare(`SELECT COUNT(*) AS n FROM entries WHERE type_name = ?`).get(type) as {
+            n: number;
+          }
+        ).n;
 
   const perVersion = new Map(
     (
       db
         .prepare(
-          `SELECT type_version AS version, COUNT(*) AS n FROM entries\n` +
-            ` WHERE type_name = ? GROUP BY type_version`,
+          `SELECT e.type_version AS version, COUNT(*) AS n FROM entries AS e\n` +
+            ` WHERE e.type_name = ?${scopeClause} GROUP BY version`,
         )
         .all(type) as unknown as { version: number; n: number }[]
     ).map((row) => [row.version, row.n]),
@@ -420,16 +467,17 @@ export function profileType(
       required,
       declaringVersions: seen.declaring,
       summary,
-      states: stateCounts(db, type, name, seen.declaring),
-      distinct: distinctCount(db, type, name),
-      top: summary === 'top' ? topValues(db, type, name, topK, declared) : [],
-      ...(summary === 'range' ? rangeOf(db, type, name) : { min: null, max: null }),
+      states: stateCounts(db, type, name, seen.declaring, scopeClause),
+      distinct: distinctCount(db, type, name, scopeClause),
+      top: summary === 'top' ? topValues(db, type, name, topK, declared, scopeClause) : [],
+      ...(summary === 'range' ? rangeOf(db, type, name, scopeClause) : { min: null, max: null }),
     });
   }
 
   return {
     type,
     count: totals.n,
+    unfiltered,
     recordedAtMin: totals.lo,
     recordedAtMax: totals.hi,
     versions: versions.map((row) => ({

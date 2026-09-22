@@ -289,15 +289,92 @@ describe('asc explore --filter', () => {
     expect((JSON.parse(bare.stdout) as { rows: unknown[] }).rows).toHaveLength(1);
   });
 
-  it('is refused with the default map, naming the follow-up bead', () => {
+  /**
+   * `asc-qfk.1`: the refusal this test used to pin is gone -- `--filter` now applies to the
+   * default map, and every number on it (not only the state denominators `asc-5x7` named) is
+   * recomputed against the filtered population. `packages/store/test/profile.test.ts` pins the
+   * denominator arithmetic directly (the asc-5x7 shape, filtered); this is the command-surface
+   * check that the flag reaches the map at all and that the `filter` fact -- the same
+   * `matched N of M entries` line `--page`, `--sample` and `--group-by` already print -- lands on
+   * it.
+   */
+  it('applies to the default map, narrowing count and reporting the filter fact (asc-qfk.1)', () => {
     const dir = project();
     record(dir, 'draft', true, 1);
-    const run = asc(['explore', SPEC.name, '--filter', "stage = 'draft'"], dir);
-    expect(run.status).toBe(2);
-    expect(flatten(run.stderr)).toContain(
-      '--filter only applies to --page, --sample or --group-by',
-    );
-    expect(flatten(run.stderr)).toContain('asc-qfk.1');
+    record(dir, 'draft', true, 2);
+    record(dir, 'done', true, 3);
+
+    const run = asc(['explore', SPEC.name, '--filter', "stage = 'draft'", '--json'], dir);
+    expect(run.status).toBe(0);
+    const parsed = JSON.parse(run.stdout) as {
+      filter?: { matched: number; unfiltered: number };
+      rows: { field: string; value?: unknown; values?: unknown }[];
+    };
+
+    expect(parsed.filter).toStrictEqual({ matched: 2, unfiltered: 3 });
+    const countRow = parsed.rows.find((row) => row.field === 'count');
+    // `count` is the FILTERED population, not the type's whole recorded history.
+    expect(countRow?.value).toBe(2);
+
+    const stageRow = parsed.rows.find((row) => row.field === 'property.stage');
+    // `values` (the top-K rendering) sees only 'draft': the one 'done' entry was excluded before
+    // any property was summarised, not just before the state tally.
+    expect(stageRow?.values).toBe('draft 2');
+  });
+
+  /**
+   * The asc-5x7 shape, driven through the CLI: a property declared only in v2, entries recorded
+   * under both v1 and v2, and a filter admitting some of each -- so `declared_entries` (a share of
+   * the FILTERED declaring population) and `count` (the FILTERED total) genuinely differ on this
+   * one map. `profile.test.ts` asserts the same shape directly against `profileType`; this checks
+   * the numbers survive rendering onto the command's own rows.
+   */
+  it('recomputes a property’s declared_entries against the filtered population on the default map', () => {
+    const dir = project();
+    record(dir, 'draft', true, 1);
+    record(dir, 'draft', true, 2);
+    record(dir, 'done', true, 3);
+
+    const v2 = { ...SPEC, properties: [...SPEC.properties, { name: 'extra', type: 'string' }] };
+    writeFileSync(join(dir, 'spec2.json'), JSON.stringify(v2));
+    expect(asc(['types', 'define', join(dir, 'spec2.json')], dir).status).toBe(0);
+    // v2, 'draft', declares and measures `extra` -- admitted by the filter below.
+    expect(
+      asc(['record', SPEC.name, '--prop', 'stage=draft', '--prop', 'extra=x', '--json'], dir)
+        .status,
+    ).toBe(0);
+    // v2, 'done' -- excluded by the filter, so it must not count toward anything on the map.
+    expect(asc(['record', SPEC.name, '--prop', 'stage=done', '--json'], dir).status).toBe(0);
+
+    const run = asc(['explore', SPEC.name, '--filter', "stage = 'draft'", '--json'], dir);
+    expect(run.status).toBe(0);
+    const parsed = JSON.parse(run.stdout) as {
+      filter?: { matched: number; unfiltered: number };
+      rows: {
+        field: string;
+        value?: unknown;
+        declared_entries?: number;
+        count?: number;
+      }[];
+    };
+
+    // 3 of the 5 recorded entries are 'draft': the two v1 ones plus the one v2 one.
+    expect(parsed.filter).toStrictEqual({ matched: 3, unfiltered: 5 });
+
+    const filteredCount = parsed.rows.find((row) => row.field === 'count')?.value;
+    expect(filteredCount).toBe(3);
+
+    const extraRow = parsed.rows.find((row) => row.field === 'property.extra');
+    // Filtered declared_entries is 1 (the one admitted v2 row) -- not 2 (the unfiltered declaring
+    // count: both v2 rows) and not 3 (the filtered total). The two denominators this fixture is
+    // built to keep apart, 1 and 3, are unequal.
+    expect(extraRow?.declared_entries).toBe(1);
+    expect(extraRow?.declared_entries).not.toBe(filteredCount);
+
+    const notDeclaredRow = parsed.rows.find((row) => row.field === 'property.extra.not_declared');
+    // The two admitted v1 rows never declared `extra`: not_declared is 2 of the filtered 3, not 2
+    // of the filtered declared_entries (1) -- which would be over 100%.
+    expect(notDeclaredRow?.count).toBe(2);
   });
 
   it('is refused combined with --dump', () => {

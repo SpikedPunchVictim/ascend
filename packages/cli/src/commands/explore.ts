@@ -136,14 +136,23 @@
  * a ROW SELECTOR, not a state reporter -- `--group-by` (and the default map) are what keep the two
  * states apart, over the SAME entries a filter could narrow first.
  *
- * **`--filter` is refused with the default map, and with `--dump`, for two different reasons.** The
- * map's per-property denominators (`asc-5x7`'s `declared_entries`, and the `not_declared` share of
- * the type's own total, both above) are computed against the type's WHOLE recorded history;
- * recomputing them for a filtered subset is real, undone work -- filed as `asc-qfk.1` rather than
- * approximated here. A dump is meant to be the complete, reproducible record of a type, read again
- * later by someone who never saw the command line that produced it -- a filtered dump would be
- * indistinguishable on disk from a complete one, and its manifest has nowhere to carry the
- * predicate that thinned it. `--page --filter ...` is the filtered read a dump cannot be.
+ * **`--filter` applies to the default map too (`asc-qfk.1`), and EVERY number on it is then over
+ * the filtered population -- not only the two denominators `asc-5x7` named.** `profileType`
+ * (`@ascend/store`) narrows every subquery it issues -- `top`, `distinct`, `min`/`max`, the
+ * per-version tallies, `recorded_at_min`/`max`, and both of a property's state denominators (the
+ * map's own `declared_entries`, and `not_declared`'s share of the type's own total) -- through one
+ * scope built once from `--filter`'s predicate. A map whose ratios were filtered while its values
+ * still described the unfiltered corpus would be worse than the refusal this bead replaced: every
+ * one of those values would be a true statement about a population the caller did not ask about,
+ * under a `count` that said otherwise. `filter matched N of M entries` (the same line `--page`,
+ * `--sample` and `--group-by` already print, from `Output.filter`) says which population every
+ * number on the map now describes.
+ *
+ * **`--filter` is still refused with `--dump`, for a reason unrelated to the map's own refusal.**
+ * A dump is meant to be the complete, reproducible record of a type, read again later by someone
+ * who never saw the command line that produced it -- a filtered dump would be indistinguishable
+ * on disk from a complete one, and its manifest has nowhere to carry the predicate that thinned
+ * it. `--page --filter ...` is the filtered read a dump cannot be.
  *
  * **`--select a,b,c` flattens a page's rows to named, declared columns (`asc-56k`), and implies
  * `--page`.** Reading a page for properties you already know you want should not cost the
@@ -580,12 +589,14 @@ export default class Explore extends BaseCommand {
     filter: Flags.string({
       description:
         'A SQL predicate over this type: a declared property (e.g. stage) and an envelope ' +
-        'column (e.g. cwd) both compare bare. Applies to --page, --sample and --group-by ' +
-        '(refused with the default map and with --dump). Unlike `asc annotate --scope`, which ' +
-        "is corpus-wide and needs json_extract(properties_json,'$.name') for a declared " +
-        'property. WATCH A BOOLEAN: it compares as the stored INTEGER, not the printed word -- ' +
-        '"...=true" and "...=1" both match; "...=\'false\'" silently matches ZERO rows instead ' +
-        'of failing, because it compares a string to an integer. Never quote a boolean.',
+        'column (e.g. cwd) both compare bare. Applies to the default map, --page, --sample and ' +
+        '--group-by (refused with --dump). With the default map, every number on it -- top, ' +
+        'distinct, min/max, per-version tallies and both state denominators -- is recomputed ' +
+        'against the filtered population. Unlike `asc annotate --scope`, which is corpus-wide ' +
+        "and needs json_extract(properties_json,'$.name') for a declared property. WATCH A " +
+        'BOOLEAN: it compares as the stored INTEGER, not the printed word -- "...=true" and ' +
+        '"...=1" both match; "...=\'false\'" silently matches ZERO rows instead of failing, ' +
+        'because it compares a string to an integer. Never quote a boolean.',
     }),
     'group-by': Flags.string({
       description:
@@ -799,18 +810,6 @@ export default class Explore extends BaseCommand {
       throw usageError(
         `--group-by cannot be combined with ${other}: --group-by hands back counts, not entries. ` +
           'Drop one of them.',
-      );
-    }
-
-    // Refused with the default map for a reason that is real, undone work, not a missing flag on
-    // the caller's part -- see the docstring paragraph on --filter above.
-    if (filter !== undefined && !paging && sample === undefined && groupKeys === undefined) {
-      throw usageError(
-        "--filter only applies to --page, --sample or --group-by. The default map's per-property " +
-          "denominators (asc-5x7's declared_entries, and not_declared's share of the type's own " +
-          "total) are computed against the type's WHOLE recorded history; recomputing them for a " +
-          'filtered subset is real work nothing here does yet -- filed as bead asc-qfk.1. Add ' +
-          '--page, --sample or --group-by, or drop --filter.',
       );
     }
 
@@ -1222,7 +1221,17 @@ export default class Explore extends BaseCommand {
         return;
       }
 
-      const profile = profileType(store.db, args.type);
+      // `profileType` throws `PredicateError` for a filter carrying a second statement -- the
+      // same wrap-and-count guard `pageEntries`, `groupEntries` and the sample mode's direct
+      // `typeFilterScope` call above all go through -- so it converts here the identical way.
+      const profile = (() => {
+        try {
+          return profileType(store.db, args.type, filter === undefined ? {} : { filter });
+        } catch (error) {
+          if (error instanceof PredicateError) throw filterUsageError(error);
+          throw error;
+        }
+      })();
       if (profile === undefined) throw noSuchType();
 
       const rows: Row[] = [
@@ -1288,6 +1297,13 @@ export default class Explore extends BaseCommand {
               ...(trim === undefined || trim.dropped === 0
                 ? {}
                 : { coverage: subset(kept.length, rows.length, true) }),
+              // `profile.count`/`profile.unfiltered`: the population every number on this map now
+              // describes, and the population it was drawn from (`asc-qfk.1`) -- the same pair
+              // `--page` states from `PageResult.unfiltered` and `--sample` states locally, for the
+              // identical reason (`TypeProfile.unfiltered`'s own comment).
+              ...(filter === undefined
+                ? {}
+                : { filter: { matched: profile.count, unfiltered: profile.unfiltered } }),
               ...(trim === undefined ? {} : { trim }),
             },
             csvRaw,
