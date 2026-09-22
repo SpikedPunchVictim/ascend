@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/packages/cli/dist/bin.js\" ] || [ ! -d \"$CLAUDE_PROJECT_DIR/.ascend\" ] || node \"$CLAUDE_PROJECT_DIR/packages/cli/dist/bin.js\" types brief"
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/packages/cli/dist/bin.js\" ] || [ ! -d \"$CLAUDE_PROJECT_DIR/.ascend\" ] || (node \"$CLAUDE_PROJECT_DIR/packages/cli/dist/bin.js\" ingest claude-code >/dev/null 2>&1; node \"$CLAUDE_PROJECT_DIR/packages/cli/dist/bin.js\" types brief)"
           }
         ]
       }
