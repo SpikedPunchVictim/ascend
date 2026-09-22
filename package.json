@@ -6,7 +6,7 @@
   "description": "A structured entry store for self-improving LLM workflows",
   "packageManager": "pnpm@11.8.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.5"
   },
   "scripts": {
     "build": "tsc -b",

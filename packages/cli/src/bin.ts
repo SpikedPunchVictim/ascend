@@ -44,6 +44,7 @@
  */
 import { execute } from '@oclif/core';
 import { installPipeGuards } from './streams.js';
+import { nodeVersionRefusal } from './node-version.js';
 
 /**
  * The flags that say how to print rather than what to do.
@@ -77,6 +78,21 @@ function namesNoCommand(argv: readonly string[]): boolean {
 // Before `execute`, so the guard is in place for every path -- including `--help` and
 // `--version`, which oclif answers without ever instantiating a command.
 installPipeGuards();
+
+// Before argv is even read. `nodeVersionRefusal` is the one call in this file that can fail
+// the process outright, and it runs first for two reasons. First, ordering after the pipe
+// guard means the write below is already synchronous and cannot be truncated by `process.exit`
+// -- the same truncation `streams.ts` documents for oclif's own error path. Second, and the
+// reason this isn't routed through `errors.ts`'s `refusal()`: `errors.ts` imports `@ascend/store`
+// (for `isBusyError`) and `@ascend/core`/`@ascend/analysis`, so on a Node old enough to lack
+// `node:sqlite`, importing `errors.ts` throws the exact confusing error this check exists to
+// replace. `node-version.ts` imports nothing, by design, so it is the one module guaranteed to
+// still work on the Node it is warning about.
+const versionRefusal = nodeVersionRefusal(process.versions.node);
+if (versionRefusal !== undefined) {
+  process.stderr.write(`Error: ${versionRefusal}\n`);
+  process.exit(1);
+}
 
 const argv = process.argv.slice(2);
 
