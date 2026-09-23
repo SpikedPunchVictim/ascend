@@ -53,6 +53,8 @@ context; the depth lives in the numbered files.
 | [0010](0010-2026-09-23-the-segmenter-runs-program-text.md) | the command segmenter reads multi-line program text as commands | `asc-7gz2` (P2) | eyeballing a matcher's input distribution before trusting it — nobody was looking |
 | [0011](0011-2026-09-23-a-session-is-not-a-randomization-unit-here.md) | a per-session holdout has about two units per arm in a long-session project | `asc-6ola.4` (P1) | a power check printing a count nobody asked for (`sessions 4`) beside an ICC that clamped to 0 — nobody was looking |
 | [0012](0012-2026-09-23-a-pipe-hides-every-failing-test-run.md) | the event model's success flag reports every failing test run as a success (a pipe masks the exit status) | `asc-6ola.6` (P0) | a read-only review agent, re-verified by hand; the mechanism was already known and routed around in one metric, never filed |
+| [0013](0013-2026-09-23-ingest-undoes-the-scrub.md) | every ingest since the store scrub has written the real identity back (316 of 316 later rows) | `asc-i2kw` (P1) | a dry run's collisions on types whose rule had not changed, followed to one row and its hex bytes — nobody was looking |
+| [0014](0014-2026-09-23-scrub-collisions-blamed-on-transcripts.md) | a full re-ingest blames 1,135 scrub-caused collisions on reused transcript identities | `asc-o3tn` (P2) | the same dry run: collisions where the plan predicted none — nobody was looking |
 
 Ten findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
