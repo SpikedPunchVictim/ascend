@@ -50,8 +50,9 @@ context; the depth lives in the numbered files.
 | [0007](0007-2026-09-18-the-suite-races-itself.md) | The gate's red was the suite competing with itself, on a deadline a growing corpus sets | `asc-3x1` (P2) | a hypothesis that predicted "quieter is faster" meeting a quieter run that was slower |
 | [0008](0008-2026-09-20-the-key-claimed-a-scope-its-guard-did-not-cover.md) | the derived key claimed uniqueness over a scope its guard did not cover | `asc-iq6` (P0) | a red gate read as known flakiness, until a quiet re-run named a value instead of a deadline |
 | [0009](0009-2026-09-22-the-installer-cannot-install-into-us.md) | the installer we shipped cannot install into this repository | `asc-cjm` (P2) | asking whether to dogfood a just-shipped hook, then checking whether the destination file was tracked |
+| [0010](0010-2026-09-23-the-segmenter-runs-program-text.md) | the command segmenter reads multi-line program text as commands | `asc-7gz2` (P2) | eyeballing a matcher's input distribution before trusting it — nobody was looking |
 
-Eight findings, eight different mechanisms. The mechanism is the part that repeats even when
+Ten findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 ## The convention
