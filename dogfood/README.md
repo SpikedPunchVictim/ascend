@@ -51,6 +51,7 @@ context; the depth lives in the numbered files.
 | [0008](0008-2026-09-20-the-key-claimed-a-scope-its-guard-did-not-cover.md) | the derived key claimed uniqueness over a scope its guard did not cover | `asc-iq6` (P0) | a red gate read as known flakiness, until a quiet re-run named a value instead of a deadline |
 | [0009](0009-2026-09-22-the-installer-cannot-install-into-us.md) | the installer we shipped cannot install into this repository | `asc-cjm` (P2) | asking whether to dogfood a just-shipped hook, then checking whether the destination file was tracked |
 | [0010](0010-2026-09-23-the-segmenter-runs-program-text.md) | the command segmenter reads multi-line program text as commands | `asc-7gz2` (P2) | eyeballing a matcher's input distribution before trusting it — nobody was looking |
+| [0011](0011-2026-09-23-a-session-is-not-a-randomization-unit-here.md) | a per-session holdout has about two units per arm in a long-session project | `asc-6ola.4` (P1) | a power check printing a count nobody asked for (`sessions 4`) beside an ICC that clamped to 0 — nobody was looking |
 
 Ten findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
