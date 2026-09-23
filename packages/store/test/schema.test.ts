@@ -157,9 +157,10 @@ describe('migration', () => {
     expect(caught).toBeInstanceOf(LedgerMismatchError);
     const err = caught as LedgerMismatchError;
     expect(err.ledgerVersion).toBe(0);
-    // Not SCHEMA_VERSION: migration 3 is procedural and creates no sqlite_master name of its
-    // own, so `inferAppliedVersion` cannot confirm it from content -- only the highest MARKED
-    // (sql) migration is nameable here. See `HIGHEST_MARKED_VERSION`'s doc.
+    // HIGHEST_MARKED_VERSION, not SCHEMA_VERSION: a procedural migration leaves no content for
+    // `inferAppliedVersion` to confirm, so only the highest MARKED (sql) migration is nameable
+    // here. The two happen to be equal while the schema's tail is marked (migration 5); this
+    // assertion stays right if a procedural migration is ever appended after it.
     expect(err.inferredVersion).toBe(HIGHEST_MARKED_VERSION);
     const dbFile = join(dir, STORE_FILE);
     expect(err.message).toContain(dbFile);
@@ -530,6 +531,127 @@ describe('migration 4 -- ingest_cursor for incremental claude-code ingest (asc-4
     } finally {
       store.close();
     }
+  });
+});
+
+describe('migration 5 -- guidance_json on entry_types (asc-bli.1)', () => {
+  /** A store on disk that has run migrations 1-4 only, holding one registered type. */
+  const buildPreMigration5Store = (dir: string): string => {
+    const file = join(dir, STORE_FILE);
+    const db = new DatabaseSync(file);
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((m) => m.version < 5),
+        file,
+      );
+      register(db);
+    } finally {
+      db.close();
+    }
+    openStore({ dir, migrate: false }).close();
+    return file;
+  };
+
+  const hasGuidanceColumn = (db: DatabaseSync): boolean =>
+    db
+      .prepare(`SELECT 1 FROM pragma_table_info('entry_types') WHERE name = 'guidance_json'`)
+      .get() !== undefined;
+
+  it('FAILS without the migration: a version-4 store has no guidance_json column', () => {
+    const dir = tempDir();
+    const file = buildPreMigration5Store(dir);
+
+    const before = new DatabaseSync(file);
+    try {
+      expect(userVersion(before)).toBe(4);
+      expect(hasGuidanceColumn(before)).toBe(false);
+      expect(() => before.prepare('SELECT guidance_json FROM entry_types').all()).toThrow(
+        /no such column: guidance_json/,
+      );
+    } finally {
+      before.close();
+    }
+  });
+
+  it('a writable open adds the column, and a type registered before it reads back NULL', () => {
+    const dir = tempDir();
+    buildPreMigration5Store(dir);
+
+    const store = openStore({ dir });
+    try {
+      expect(store.migrations.applied).toEqual([
+        'guidance prose and review_after on entry_types (asc-bli.1)',
+      ]);
+      expect(userVersion(store.db)).toBe(SCHEMA_VERSION);
+      expect(store.db.prepare('SELECT guidance_json FROM entry_types').all()).toEqual([
+        { guidance_json: null },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('is a clean no-op on a brand-new store with zero registered types', () => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      expect(hasGuidanceColumn(store.db)).toBe(true);
+      expect(store.db.prepare('SELECT COUNT(*) AS n FROM entry_types').get()?.['n']).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('accepts a JSON object and NULL, and refuses anything else', () => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      register(store.db);
+      const set = (value: string | null): void => {
+        store.db.prepare('UPDATE entry_types SET guidance_json = ?').run(value);
+      };
+
+      // Mutable, like the other prose columns: the identity trigger does not fire on it.
+      expect(() => {
+        set('{"purpose":"why"}');
+      }).not.toThrow();
+      expect(() => {
+        set(null);
+      }).not.toThrow();
+      expect(() => {
+        set('not json');
+      }).toThrow(/CHECK constraint failed/);
+      expect(() => {
+        set('["purpose"]');
+      }).toThrow(/CHECK constraint failed/);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('is a MARKED migration: its column is the evidence, so a ledger that understates it is caught', () => {
+    // The question asc-bli.1 left open. An ADD COLUMN creates no sqlite_master name, so the
+    // original name-only marker had nothing to find -- yet the DDL is exactly as non-idempotent as
+    // a CREATE TABLE ("duplicate column name"), which is the case a marker exists for. A ledger
+    // wound back to 4 must therefore be refused with the repair command, not fail on the DDL.
+    expect(HIGHEST_MARKED_VERSION).toBe(SCHEMA_VERSION);
+
+    const dir = tempDir();
+    openStore({ dir }).close();
+    const file = join(dir, STORE_FILE);
+    const wind = new DatabaseSync(file);
+    wind.exec('PRAGMA user_version = 4');
+    wind.close();
+
+    let caught: unknown;
+    try {
+      openStore({ dir });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(LedgerMismatchError);
+    expect((caught as LedgerMismatchError).ledgerVersion).toBe(4);
+    expect((caught as LedgerMismatchError).inferredVersion).toBe(5);
   });
 });
 

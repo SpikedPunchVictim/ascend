@@ -27,6 +27,12 @@ import type { DatabaseSync } from 'node:sqlite';
 import { refreshTypeViews } from './views.js';
 
 /**
+ * What a `SqlMigration` leaves in the file as proof it ran: a new `sqlite_master` name, or a new
+ * column on an existing table. See `SqlMigration.marker`.
+ */
+type Marker = string | { readonly table: string; readonly column: string };
+
+/**
  * A migration whose body is a fixed SQL string.
  *
  * This is the ordinary case: `CREATE TABLE`, `CREATE VIRTUAL TABLE`, and friends are the same
@@ -49,8 +55,16 @@ interface SqlMigration {
    * `migrate` has to know, before running it, whether the failure it is about to risk would mean
    * "this genuinely has not run" or "the ledger lied". A `marker` is how it knows. See
    * `ProceduralMigration` for the arm that has no such field, and why it needs none.
+   *
+   * **A name, or a column.** Most migrations create a new `sqlite_master` name, and that name is
+   * the marker. An `ALTER TABLE ... ADD COLUMN` creates no name at all, yet it is just as
+   * non-idempotent -- a second run fails with `duplicate column name` (probed, node v24.18.0 /
+   * SQLite 3.53.4) -- so it needs the same protection, and the column itself is the evidence:
+   * `pragma_table_info` reads it back from the file exactly as `sqlite_master` reads a name.
+   * Migration 5 (asc-bli.1) is the first such migration; decision entry `150897fe` records why
+   * this was chosen over a decorative companion object or a procedural arm.
    */
-  readonly marker: string;
+  readonly marker: Marker;
   /**
    * Never present on an `sql` migration -- see `Migration`'s own doc for why this field has to
    * exist at all, typed as `never`, rather than being left off `SqlMigration` and trusted to
@@ -76,7 +90,7 @@ interface SqlMigration {
  * state one run would have. There is no "already ran, and running again would fail" state for
  * `migrate` to distinguish from "the ledger is wrong", because there is no failure mode the check
  * exists to prevent. Giving this arm a `marker` field anyway -- naming some view that already
- * exists, say -- would not add protection; it would make `objectExists` find a real object that
+ * exists, say -- would not add protection; it would make `markerPresent` find a real object that
  * proves nothing about whether THIS migration ran, and fire `LedgerMismatchError` over a
  * disagreement that was never a problem. So `run` migrations skip that check entirely (see
  * `migrate`, the `typeof migration.sql === 'string'` branch), and the type system is what keeps a future
@@ -433,7 +447,7 @@ END;
  * **Idempotent, like `refreshTypeViews` itself.** Running this migration is `DROP VIEW IF EXISTS`
  * followed by `CREATE VIEW`, for each type, which leaves the store in the same state whether it
  * runs once or a hundred times -- see `ProceduralMigration`'s doc for why that is exactly what
- * lets this migration skip the `marker` / `objectExists` check the `sql` arm requires.
+ * lets this migration skip the `marker` / `markerPresent` check the `sql` arm requires.
  *
  * **Runs inside `migrate`'s own transaction.** No `BEGIN`, `COMMIT`, or `ROLLBACK` here -- see
  * `ProceduralMigration`.
@@ -490,6 +504,27 @@ CREATE TABLE ingest_cursor (
 `;
 
 /**
+ * A type's guidance (asc-bli.1, migration 5): why it exists, what to ask of it, how to read it,
+ * and `review_after` -- the entry count at which someone declared they meant to look at it.
+ *
+ * **One JSON column, not a table.** Guidance is one-to-one with a registered version and is only
+ * ever read with it; a separate table would add a join and a question this store would then have
+ * to answer (can guidance outlive or predate its version?) for no gain.
+ *
+ * **Mutable by construction, and outside the identity on purpose.** `entry_types_identity_is_immutable`
+ * fires only on the identity columns it names, so this column can change the way `prose_json`
+ * does; and `definitionShape` (core) projects only name and properties into `type_hash`, so no
+ * guidance edit can mint a version. The CHECK is the same object-shape guard `prose_json` has --
+ * the fields inside are validated where the spec is parsed (core), not re-validated in SQL.
+ *
+ * Existing rows read NULL, which means "no guidance declared", never "empty guidance".
+ */
+const GUIDANCE = `
+ALTER TABLE entry_types ADD COLUMN guidance_json TEXT
+  CHECK (guidance_json IS NULL OR (json_valid(guidance_json) AND json_type(guidance_json) = 'object'));
+`;
+
+/**
  * Every migration, in order.
  *
  * Append-only FROM THE FIRST RELEASE ON: an existing entry is never edited, because a
@@ -537,6 +572,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'ingest cursor for incremental claude-code ingest (asc-4dm.4)',
     sql: INGEST_CURSOR,
     marker: 'ingest_cursor',
+  },
+  {
+    version: 5,
+    name: 'guidance prose and review_after on entry_types (asc-bli.1)',
+    sql: GUIDANCE,
+    marker: { table: 'entry_types', column: 'guidance_json' },
   },
 ];
 
@@ -617,8 +658,15 @@ export function assertNotAhead(observed: number, target: number = SCHEMA_VERSION
   if (observed > target) throw new NewerSchemaError(observed, target);
 }
 
-function objectExists(db: DatabaseSync, name: string): boolean {
-  return db.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(name) !== undefined;
+function markerPresent(db: DatabaseSync, marker: Marker): boolean {
+  if (typeof marker === 'string') {
+    return db.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(marker) !== undefined;
+  }
+  return (
+    db
+      .prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?')
+      .get(marker.table, marker.column) !== undefined
+  );
 }
 
 /**
@@ -636,7 +684,7 @@ function objectExists(db: DatabaseSync, name: string): boolean {
  * function could read from the schema. Skipping it (rather than treating a missing marker as a
  * break, the way an `sql` migration's absent object would be) is also the only choice that keeps
  * this loop meaningful: `LedgerMismatchError` -- the one thing this function's answer feeds -- can
- * only be thrown for an `sql` migration in the first place (`migrate` skips the `objectExists`
+ * only be thrown for an `sql` migration in the first place (`migrate` skips the `markerPresent`
  * check for `run` migrations entirely), so a procedural step never being able to move `inferred`
  * costs this function nothing it was ever asked to report.
  */
@@ -644,7 +692,7 @@ function inferAppliedVersion(db: DatabaseSync, migrations: readonly Migration[])
   let inferred = 0;
   for (const migration of [...migrations].sort((left, right) => left.version - right.version)) {
     if (typeof migration.sql !== 'string') continue;
-    if (!objectExists(db, migration.marker)) break;
+    if (!markerPresent(db, migration.marker)) break;
     inferred = migration.version;
   }
   return inferred;
@@ -787,13 +835,13 @@ export function migrate(
         // object that exists anyway means the LEDGER is wrong, not that we lost a race (asc-u11):
         // check before running DDL that would otherwise fail on the object's own CREATE and blame
         // whichever migration the ledger happened to point at.
-        if (objectExists(db, migration.marker)) {
+        if (markerPresent(db, migration.marker)) {
           throw new LedgerMismatchError(current, inferAppliedVersion(db, migrations), file);
         }
 
         db.exec(migration.sql);
       } else {
-        // No `objectExists` check here, and deliberately: that check exists to protect DDL that
+        // No `markerPresent` check here, and deliberately: that check exists to protect DDL that
         // is not idempotent, and `migration.run` is (`ProceduralMigration`'s doc). Running it
         // against a ledger that understates reality does the same work a second time and leaves
         // the store exactly where a correct ledger would have -- there is no object it could find
