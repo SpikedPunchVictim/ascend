@@ -1302,3 +1302,84 @@ describe('a piped value is never taken for an operand', () => {
     });
   });
 });
+
+describe('asc record -- the review_after advisory (asc-bli.5)', () => {
+  /** A project holding one type that declares review_after = 3. */
+  function guided(reviewAfter = 3): string {
+    const dir = project();
+    const file = join(dir, 'probe.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        name: 'probe',
+        properties: [{ name: 'note', type: 'string' }],
+        review_after: reviewAfter,
+      }),
+    );
+    expect(asc(['types', 'define', file], dir).status).toBe(0);
+    return dir;
+  }
+
+  const recordOne = (dir: string): Run => asc(['record', 'probe', '--prop=note=x'], dir);
+  // A phrase the advisory says exactly once. Not a line count: oclif wraps a warning to the
+  // terminal width, so one advisory is several physical lines.
+  const ADVISORY = 'reaching the review_after';
+  const advisories = (run: Run): number => flatten(run.stderr).split(ADVISORY).length - 1;
+
+  it('is silent below the threshold, speaks once AT it, and is silent again past it', () => {
+    // The edge-trigger property the bead requires proven: true exactly once, by arithmetic, with
+    // no stored "already told you" state to go stale.
+    const dir = guided(3);
+
+    const first = recordOne(dir);
+    const second = recordOne(dir);
+    const third = recordOne(dir);
+    const fourth = recordOne(dir);
+
+    for (const run of [first, second, third, fourth]) expect(run.status).toBe(0);
+    expect(advisories(first)).toBe(0);
+    expect(advisories(second)).toBe(0);
+    expect(flatten(third.stderr)).toContain(
+      'probe now has 3 entries, reaching the review_after of 3',
+    );
+    expect(advisories(third)).toBe(1);
+    expect(advisories(fourth)).toBe(0);
+  });
+
+  it('speaks on stderr only: stdout stays the data a script reads', () => {
+    const dir = guided(1);
+    const run = asc(['record', 'probe', '--prop=note=x', '--json'], dir);
+    expect(advisories(run)).toBe(1);
+    expect(run.stdout).not.toContain(ADVISORY);
+    expect(envelope(run.stdout)).toHaveLength(1);
+  });
+
+  it('speaks once for a batch that jumps over the threshold, so a batch cannot skip it', () => {
+    const dir = guided(3);
+    const batch = JSON.stringify(Array.from({ length: 5 }, () => ({ properties: { note: 'x' } })));
+    const run = asc(['record', 'probe', '-'], dir, batch);
+    expect(run.status).toBe(0);
+    expect(flatten(run.stderr)).toContain(
+      'probe now has 5 entries, reaching the review_after of 3',
+    );
+    expect(advisories(run)).toBe(1);
+    expect(advisories(recordOne(dir))).toBe(0);
+  });
+
+  it('is silent on a dry run, which writes nothing and so crosses nothing', () => {
+    const dir = guided(1);
+    const run = asc(['record', 'probe', '--prop=note=x', '--dry-run'], dir);
+    expect(run.status).toBe(0);
+    expect(advisories(run)).toBe(0);
+    // And the real crossing is still ahead: the dry run consumed nothing.
+    expect(advisories(recordOne(dir))).toBe(1);
+  });
+
+  it('never speaks for a type that declares no review_after', () => {
+    const dir = project();
+    for (let i = 0; i < 3; i++) {
+      const run = asc(['record', 'decision', '--prop=chosen=a', '--prop=rationale=r'], dir);
+      expect(advisories(run)).toBe(0);
+    }
+  });
+});

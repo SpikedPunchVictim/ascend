@@ -76,3 +76,16 @@ export function guidanceProblems(guidance: TypeGuidance): string[] {
 
   return problems;
 }
+
+/**
+ * Whether a write that took a type from `before` entries to `after` reached its `review_after`.
+ *
+ * **Edge-triggered by arithmetic**, which is the whole design (asc-bli.5): true for exactly one
+ * write in a type's life -- the one that crosses -- so the advisory it drives needs no
+ * `last_analyzed_at`, no snooze and no table, and cannot nag. For a single entry this is "the
+ * post-write count equals the threshold"; stated as a crossing so a batch that jumps from below
+ * it to past it still fires once rather than skipping it.
+ */
+export function reviewAfterCrossed(before: number, after: number, reviewAfter: number): boolean {
+  return before < reviewAfter && after >= reviewAfter;
+}

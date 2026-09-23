@@ -808,6 +808,18 @@ export function listTypes(db: DatabaseSync): readonly TypeSummary[] {
 }
 
 /**
+ * How many entries a type holds, across every version -- the same count `listTypes` reports as
+ * `entryCount`, by the same definition, so `asc types list` and the `review_after` advisory
+ * (asc-bli.5) cannot disagree about a number. One `COUNT(*)` over `idx_entries_type_time`.
+ */
+export function entryCount(db: DatabaseSync, typeName: string): number {
+  const row = db
+    .prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?')
+    .get(canonicalName(typeName)) as { n: number };
+  return row.n;
+}
+
+/**
  * The version of a type, or the latest one when `version` is omitted.
  *
  * Returns undefined rather than throwing: "not registered" is an ordinary answer for

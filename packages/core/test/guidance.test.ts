@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GUIDANCE_FIELDS, guidanceProblems } from '../src/index.js';
+import { GUIDANCE_FIELDS, guidanceProblems, reviewAfterCrossed } from '../src/index.js';
 
 describe('guidanceProblems', () => {
   it('accepts no guidance at all', () => {
@@ -55,5 +55,22 @@ describe('guidanceProblems', () => {
 
   it('reports every problem at once rather than the first', () => {
     expect(guidanceProblems({ purpose: '', review_after: 0 })).toHaveLength(2);
+  });
+});
+
+describe('reviewAfterCrossed', () => {
+  it('is true exactly when a write moves the count from below the threshold to at or above it', () => {
+    expect(reviewAfterCrossed(1, 2, 3)).toBe(false);
+    expect(reviewAfterCrossed(2, 3, 3)).toBe(true);
+    expect(reviewAfterCrossed(3, 4, 3)).toBe(false);
+  });
+
+  it('is true once for a batch that jumps over the threshold, so a batch cannot skip it', () => {
+    expect(reviewAfterCrossed(1, 6, 3)).toBe(true);
+    expect(reviewAfterCrossed(6, 9, 3)).toBe(false);
+  });
+
+  it('is false when nothing was written', () => {
+    expect(reviewAfterCrossed(2, 2, 2)).toBe(false);
   });
 });

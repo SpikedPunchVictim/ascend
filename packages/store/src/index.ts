@@ -54,6 +54,7 @@ export {
 
 export {
   deprecateType,
+  entryCount,
   findType,
   listTypes,
   registeredNames,

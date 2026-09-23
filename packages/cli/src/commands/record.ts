@@ -55,6 +55,8 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute, relative } from 'node:path';
 import { Args, Flags } from '@oclif/core';
 import {
+  entryCount,
+  findType,
   recordEntry,
   UnknownTypeError,
   withRollback,
@@ -63,7 +65,7 @@ import {
   type RecordRequest,
   type RecordResult,
 } from '@ascend/store';
-import { canonicalJson } from '@ascend/core';
+import { canonicalJson, reviewAfterCrossed } from '@ascend/core';
 import { BaseCommand } from '../base.js';
 import { parseEntryDocuments, type EntryDocument } from '../entry-document.js';
 import { refusal, usageError } from '../errors.js';
@@ -558,7 +560,18 @@ export default class RecordEntry extends BaseCommand {
         }
       };
 
+      // The `review_after` advisory (asc-bli.5). Read only when the type declares one, so a type
+      // without it pays nothing on the write path; and never on a dry run, which writes nothing
+      // and so crosses nothing. An unknown type reads as undefined here and is refused, with its
+      // own message, by the first `recordEntry` below.
+      const reviewAfter = dryRun ? undefined : findType(store.db, args.type)?.guidance.review_after;
+      let countBefore = 0;
+
       const writeAll = (): RecordRow[] => {
+        // Counted inside the transaction, so the "before" this compares against cannot include a
+        // concurrent writer's entries and make two processes both claim, or both miss, the crossing.
+        if (reviewAfter !== undefined) countBefore = entryCount(store.db, args.type);
+
         const rows = documents.map((document, index) => {
           // Call-level flags are DEFAULTS: an entry that states its own value keeps it. A batch
           // carrying one run id per entry and a `--run-id` for the rest must not have the flag
@@ -616,6 +629,22 @@ export default class RecordEntry extends BaseCommand {
       const rows = dryRun ? withRollback(store.db, writeAll) : withTransaction(store.db, writeAll);
 
       if (dryRun) this.warn('dry run: nothing was written.');
+
+      // Every document was written or the transaction threw, so the post-write count is
+      // arithmetic -- one COUNT on this path, not two. Stderr, like every advisory here
+      // (`init.ts`'s offerRecall, `stats.ts`): stdout stays the data a script reads. It reports and
+      // never gates -- `stats.ts:51`'s rule, which a threshold nobody measured must not overturn.
+      const countAfter = countBefore + rows.length;
+      if (reviewAfter !== undefined && reviewAfterCrossed(countBefore, countAfter, reviewAfter)) {
+        const name = rows[0]?.type ?? args.type;
+        this.warn(
+          `${name} now has ${String(countAfter)} entries, reaching the review_after of ` +
+            `${String(reviewAfter)} its definition declares -- the point someone said they meant to ` +
+            `look at it. 'asc stats ${name}' is one place to start. A note, not a gate; raise ` +
+            `review_after to move the point.`,
+        );
+      }
+
       this.emit(format, { columns: ['index', 'id', 'type', 'version'], rows });
     });
   }
