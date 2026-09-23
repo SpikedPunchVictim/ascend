@@ -60,6 +60,21 @@ function scalarRows(row: TypeVersionRow): readonly { field: string; value: unkno
   if (row.description !== null) rows.push({ field: 'description', value: row.description });
   if (row.recordWhen !== null) rows.push({ field: 'record_when', value: row.recordWhen });
 
+  // Guidance (asc-bli), under the same omit-when-absent rule and in document order. One row per
+  // question rather than one joined value: the table elides at 60 characters, so a joined list
+  // would lose every question after the first, and `--json` gets each as a plain string.
+  const { guidance } = row;
+  if (guidance.purpose !== undefined) rows.push({ field: 'purpose', value: guidance.purpose });
+  (guidance.analysis_questions ?? []).forEach((question, index) => {
+    rows.push({ field: `analysis_questions[${String(index)}]`, value: question });
+  });
+  if (guidance.interpretation_notes !== undefined) {
+    rows.push({ field: 'interpretation_notes', value: guidance.interpretation_notes });
+  }
+  if (guidance.review_after !== undefined) {
+    rows.push({ field: 'review_after', value: guidance.review_after });
+  }
+
   return rows;
 }
 

@@ -200,6 +200,15 @@ const REVIEW = {
   prose: { rounds: 'How many rounds of review it took.' },
 };
 
+/** REVIEW with every guidance field declared (asc-bli). Same shape, so the same hash. */
+const REVIEW_GUIDED = {
+  ...REVIEW,
+  purpose: 'Why reviews are recorded: to see which kinds of change need rework.',
+  analysis_questions: ['Which review_kind dominates?', 'Do more rounds mean more rework?'],
+  interpretation_notes: 'rounds is omitted when the review was a single pass.',
+  review_after: 25,
+};
+
 /**
  * REVIEW with one property dropped, so it hashes differently and becomes version 2.
  *
@@ -584,7 +593,75 @@ describe('asc types deprecate', () => {
   });
 });
 
+describe('asc types show -- guidance (asc-bli.4)', () => {
+  it('renders every guidance field in the table, after record_when', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW_GUIDED)], dir);
+
+    const run = asc(['types', 'show', 'review_completed'], dir);
+    expect(run.status).toBe(0);
+    for (const field of [
+      'purpose',
+      'analysis_questions[0]',
+      'analysis_questions[1]',
+      'interpretation_notes',
+      'review_after',
+    ]) {
+      expect(run.stdout).toContain(field);
+    }
+    expect(run.stdout.indexOf('record_when')).toBeLessThan(run.stdout.indexOf('purpose'));
+  });
+
+  it('carries the values unrendered under --json: review_after is a number, each question a row', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW_GUIDED)], dir);
+
+    const rows = envelope(asc(['types', 'show', '--json', 'review_completed'], dir).stdout);
+    const value = (field: string): unknown => rows.find((row) => row['field'] === field)?.['value'];
+    expect(value('purpose')).toBe(REVIEW_GUIDED.purpose);
+    expect(value('analysis_questions[1]')).toBe('Do more rounds mean more rework?');
+    expect(value('interpretation_notes')).toBe(REVIEW_GUIDED.interpretation_notes);
+    expect(value('review_after')).toBe(25);
+  });
+
+  it('omits every guidance row when none was declared, rather than rendering empty ones', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+
+    const fields = envelope(asc(['types', 'show', '--json', 'review_completed'], dir).stdout).map(
+      (row) => row['field'],
+    );
+    expect(
+      fields.filter((field) =>
+        /^(purpose|analysis_questions|interpretation_notes|review_after)/.test(String(field)),
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe('asc types export and import', () => {
+  it('preserves every guidance field through export | import - (asc-bli.4)', () => {
+    const source = project();
+    const target = project();
+    asc(['types', 'define', json(source, 'r.json', REVIEW_GUIDED)], source);
+
+    const run = shell(
+      `( cd "$SRC" && HOME="$SRC" "$NODE" "$BIN" types export ) | ` +
+        `( cd "$DST" && HOME="$DST" "$NODE" "$BIN" types import - )`,
+      { cwd: target, src: source, dst: target },
+    );
+    expect(run.status).toBe(0);
+
+    const exported = (dir: string): string => asc(['types', 'export'], dir).stdout;
+    expect(exported(target)).toBe(exported(source));
+    expect(documents(exported(target))[0]).toMatchObject({
+      purpose: REVIEW_GUIDED.purpose,
+      analysis_questions: REVIEW_GUIDED.analysis_questions,
+      interpretation_notes: REVIEW_GUIDED.interpretation_notes,
+      review_after: 25,
+    });
+  });
+
   it('round-trips a registry through a real export | import pipeline, versions included', () => {
     const source = project();
     const target = project();
