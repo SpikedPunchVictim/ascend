@@ -32,6 +32,8 @@ export default class TypesList extends BaseCommand {
         version: type.latestVersion,
         properties: type.propertyCount,
         entries: type.entryCount,
+        // Beside `entries`, which is what it is read against. Omitted when undeclared (TASKS.md #7).
+        ...(type.reviewAfter === null ? {} : { review_after: type.reviewAfter }),
         status: type.status,
         major: type.major,
         versions: type.versionCount,
@@ -42,7 +44,7 @@ export default class TypesList extends BaseCommand {
     );
 
     this.emit(format, {
-      columns: ['name', 'version', 'properties', 'entries', 'status'],
+      columns: ['name', 'version', 'properties', 'entries', 'review_after', 'status'],
       rows,
     });
   }

@@ -561,6 +561,72 @@ describe('asc types brief', () => {
   });
 });
 
+describe('readiness in asc types brief and asc types list (asc-bli.6)', () => {
+  const LINE = 'Record when a review of a change reaches a verdict.';
+  const review = (dir: string): void => {
+    expect(asc(['record', 'review_completed', '--prop=review_kind=approved'], dir).status).toBe(0);
+  };
+  /** REVIEW_GUIDED with a threshold small enough to reach in a test. */
+  const guided = (reviewAfter: number): string => {
+    const dir = project();
+    asc(
+      ['types', 'define', json(dir, 'r.json', { ...REVIEW_GUIDED, review_after: reviewAfter })],
+      dir,
+    );
+    return dir;
+  };
+
+  it('leaves the brief line byte-identical below the threshold: readiness costs nothing until it is true', () => {
+    const dir = guided(2);
+    review(dir);
+    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(`review_completed -- ${LINE}`);
+  });
+
+  it('marks the existing line, not a new section, once the count reaches review_after', () => {
+    const dir = guided(2);
+    review(dir);
+    review(dir);
+    const brief = asc(['types', 'brief'], dir).stdout.trim();
+    expect(brief).toBe(`review_completed [review_after 2 reached: 2 entries] -- ${LINE}`);
+    expect(brief.split('\n')).toHaveLength(1);
+  });
+
+  it('stays marked past the threshold, because it states a level; raising review_after clears it', () => {
+    const dir = guided(1);
+    review(dir);
+    review(dir);
+    expect(asc(['types', 'brief'], dir).stdout).toContain('[review_after 1 reached: 2 entries]');
+
+    // Dismissal is a real act of intent, not a snooze: declare a later point.
+    asc(['types', 'define', json(dir, 'r2.json', { ...REVIEW_GUIDED, review_after: 10 })], dir);
+    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(`review_completed -- ${LINE}`);
+  });
+
+  it('reports the threshold and whether it is reached in --json, and omits both when undeclared', () => {
+    const dir = guided(1);
+    review(dir);
+    const [row] = envelope(asc(['types', 'brief', '--json'], dir).stdout);
+    expect(row).toMatchObject({ review_after: 1, review_after_reached: true });
+
+    const bare = project();
+    asc(['types', 'define', json(bare, 'r.json', REVIEW)], bare);
+    const [plain] = envelope(asc(['types', 'brief', '--json'], bare).stdout);
+    expect(plain).not.toHaveProperty('review_after');
+    expect(plain).not.toHaveProperty('review_after_reached');
+  });
+
+  it('puts review_after beside entries in asc types list', () => {
+    const dir = guided(5);
+    review(dir);
+    const table = asc(['types', 'list'], dir).stdout;
+    const header = table.split('\n')[0] ?? '';
+    expect(header.indexOf('entries')).toBeLessThan(header.indexOf('review_after'));
+
+    const [row] = envelope(asc(['types', 'list', '--json'], dir).stdout);
+    expect(row).toMatchObject({ entries: 1, review_after: 5 });
+  });
+});
+
 describe('asc types deprecate', () => {
   it('separates "no such type" from "already deprecated"', () => {
     const dir = project();

@@ -738,6 +738,11 @@ export interface TypeSummary {
   readonly entryCount: number;
   readonly description: string | null;
   readonly recordWhen: string | null;
+  /**
+   * The latest version's declared `review_after` (asc-bli), or null when none was declared.
+   * Only this one guidance field is summarized: it is the one a listing compares to `entryCount`.
+   */
+  readonly reviewAfter: number | null;
 }
 
 interface SummaryRowShape {
@@ -751,6 +756,7 @@ interface SummaryRowShape {
   property_count: number;
   version_count: number;
   entry_count: number;
+  review_after: number | null;
 }
 
 /**
@@ -774,7 +780,8 @@ export function listTypes(db: DatabaseSync): readonly TypeSummary[] {
       `SELECT t.name, t.version AS latest_version, t.major, t.type_hash, t.status,
               t.description, t.record_when,
               json_array_length(t.spec_json, '$.properties') AS property_count,
-              v.version_count, COALESCE(e.entry_count, 0) AS entry_count
+              v.version_count, COALESCE(e.entry_count, 0) AS entry_count,
+              json_extract(t.guidance_json, '$.review_after') AS review_after
          FROM entry_types AS t
          JOIN (SELECT name, MAX(version) AS max_version, COUNT(*) AS version_count
                  FROM entry_types GROUP BY name) AS v
@@ -804,6 +811,7 @@ export function listTypes(db: DatabaseSync): readonly TypeSummary[] {
     entryCount: row.entry_count,
     description: row.description,
     recordWhen: row.record_when,
+    reviewAfter: row.review_after,
   }));
 }
 

@@ -23,11 +23,33 @@ import { listTypes, type TypeSummary } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
 import { usageError } from '../../errors.js';
 
-/** The line a model reads. Recorded-never is stated, not left blank -- blank reads as "unknown". */
+/**
+ * Whether a type holds at least the entries its `review_after` names (asc-bli.6).
+ *
+ * A LEVEL, where `asc record`'s advisory is an edge: the advisory speaks once, on the write that
+ * crosses; the brief states, every session, that the point has been reached. It stays true until
+ * someone raises `review_after` -- dismissal is a real act of intent, and there is no snooze state
+ * by design. It is never a gate and never a claim of statistical sufficiency; nobody measured one.
+ */
+function reviewAfterReached(summary: TypeSummary): boolean | undefined {
+  return summary.reviewAfter === null ? undefined : summary.entryCount >= summary.reviewAfter;
+}
+
+/**
+ * The line a model reads. Recorded-never is stated, not left blank -- blank reads as "unknown".
+ *
+ * A reached `review_after` marks the existing line rather than adding a section, and costs nothing
+ * on a type that has not reached it: this is the SessionStart payload, and EV-16 measured its cost
+ * as linear in lines, so a header or a per-type count on every line would be a tax on every session.
+ */
 function line(summary: TypeSummary): string {
+  const marker =
+    reviewAfterReached(summary) === true
+      ? ` [review_after ${String(summary.reviewAfter)} reached: ${String(summary.entryCount)} entries]`
+      : '';
   return summary.recordWhen === null
-    ? `${summary.name} -- no record_when given`
-    : `${summary.name} -- ${summary.recordWhen}`;
+    ? `${summary.name}${marker} -- no record_when given`
+    : `${summary.name}${marker} -- ${summary.recordWhen}`;
 }
 
 export default class TypesBrief extends BaseCommand {
@@ -66,6 +88,13 @@ export default class TypesBrief extends BaseCommand {
             major: summary.major,
             property_count: summary.propertyCount,
             type_hash: summary.typeHash,
+            // Omitted together when undeclared, for the same `TASKS.md` #7 reason as record_when.
+            ...(summary.reviewAfter === null
+              ? {}
+              : {
+                  review_after: summary.reviewAfter,
+                  review_after_reached: reviewAfterReached(summary),
+                }),
           })),
         });
         return;
