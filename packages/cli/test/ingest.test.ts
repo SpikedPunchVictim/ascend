@@ -294,9 +294,11 @@ describe('asc ingest claude-code', () => {
     // self-report, and the type's whole reason for existing.
     expect(db.sources).toEqual([DERIVED_SOURCE]);
 
-    // The id is a pure function of the event, so it is checkable by hand -- and stable enough that
-    // a later rule change does not orphan the row.
-    expect(db.ids).toContain(`derived:claude-code:verification_run:s-1:toolu-bash`);
+    // The id is a pure function of the event and of the RULE that derived it, so it is checkable
+    // by hand. `@2` is verification_run's derivation version (asc-6ola.6): its verdict rule
+    // changed, and an entry the old rule wrote must not be read as the new rule's. A type whose
+    // rule never changed carries no version, so its ids are byte-identical to every earlier run.
+    expect(db.ids).toContain(`derived:claude-code:verification_run@2:s-1:toolu-bash`);
     expect(db.ids).toContain(`derived:claude-code:context_compaction:s-1:u-4`);
 
     // Five definitions registered, through the ordinary registry path.
@@ -483,6 +485,48 @@ describe('asc ingest claude-code', () => {
     expect(outcomes(run.stdout)['context_compaction']).toBe('1 new');
   });
 
+  it('reports masked check runs as a count, and writes no verdict for them (asc-6ola.6)', () => {
+    // `| tail` owns the exit status, and this output holds no summary line, so nothing can say
+    // whether the check passed. is_error says "passed", and it is exactly the field not to trust.
+    const dir = project();
+    const at = (n: number): string => `2026-01-02T03:04:0${String(n)}.000Z`;
+    transcripts(dir, [
+      {
+        sessionId: 's-1',
+        uuid: 'inv-1',
+        timestamp: at(1),
+        ...RECORD_AT,
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu-m',
+              name: 'Bash',
+              input: { command: 'pnpm test 2>&1 | tail -3' },
+            },
+          ],
+        },
+      },
+      {
+        sessionId: 's-1',
+        uuid: 'res-1',
+        timestamp: at(2),
+        ...RECORD_AT,
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu-m', is_error: false, content: 'done' },
+          ],
+        },
+      },
+    ]);
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('1 check run(s) had their exit status masked');
+    expect(stored(dir).byType['verification_run']).toBeUndefined();
+  });
+
   it('counts a sessionless verdict rather than dropping it uncounted, and still recovers the next attributable one', () => {
     // `asc-joo`: a verdict with no session used to be dropped silently AND advance the verdict
     // chain, so the very next (attributable) run compared itself against a value the store
@@ -548,7 +592,7 @@ describe('asc ingest claude-code', () => {
         .prepare('SELECT id, properties_json AS p FROM entries WHERE type_name = ?')
         .all('verification_run') as { id: string; p: string }[];
       expect(rows).toHaveLength(1);
-      expect(rows[0]?.id).toBe('derived:claude-code:verification_run:s-2:toolu-b');
+      expect(rows[0]?.id).toBe('derived:claude-code:verification_run@2:s-2:toolu-b');
       const properties = JSON.parse(rows[0]?.p ?? '{}') as Record<string, unknown>;
       expect(properties['verdict']).toBe('passed');
       expect(properties).not.toHaveProperty('previous_verdict');

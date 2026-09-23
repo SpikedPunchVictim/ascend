@@ -94,6 +94,7 @@ import { Flags } from '@oclif/core';
 import {
   DERIVED_SOURCE,
   DERIVED_TYPES,
+  derivationVersion,
   createDeriver,
   defaultTranscriptRoot,
   derivedType,
@@ -139,7 +140,11 @@ const OUTCOME = 'outcome';
  * event, so the re-run recognises it instead of writing a second copy.
  */
 function idFor(entry: DerivedEntry): string {
-  return `${DERIVED_SOURCE}:${entry.type}:${entry.key}`;
+  // `@n` only once a type's derivation rule has changed (`derivationVersion`), so the ids of
+  // every type still on its first rule are byte-identical to the ones earlier runs wrote.
+  const version = derivationVersion(entry.type);
+  const type = version === 1 ? entry.type : `${entry.type}@${String(version)}`;
+  return `${DERIVED_SOURCE}:${type}:${entry.key}`;
 }
 
 /**
@@ -733,6 +738,15 @@ export default class IngestClaudeCode extends BaseCommand {
         `${String(counters.unverdictable)} check run(s) carried no readable pass/fail result ` +
           `and were not written. The transcript's shape changed; re-running will not recover ` +
           `them unless the source transcript is regenerated.`,
+      );
+    }
+    // Not a warning: nothing broke. It is the size of what this adapter cannot see -- a check
+    // whose exit status something later replaced (`| tail`, `;`, `||`) and whose output held no
+    // line that settles a verdict. Measured, most masked runs are this (dogfood/0012).
+    if (counters.masked > 0) {
+      this.logToStderr(
+        `${String(counters.masked)} check run(s) had their exit status masked by a later ` +
+          `command and printed no summary line that settles a verdict, so none was recorded.`,
       );
     }
     if (counters.unquotable > 0) {

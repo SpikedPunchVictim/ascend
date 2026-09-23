@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { checkRunner, createDeriver, execSegments, type DerivedEntry } from '../src/index.js';
+import {
+  checkRun,
+  checkRunner,
+  createDeriver,
+  execSegments,
+  type DerivedEntry,
+} from '../src/index.js';
 import type { TranscriptFile, TranscriptRecord } from '../src/index.js';
 
 /**
@@ -202,6 +208,87 @@ describe('execSegments and checkRunner', () => {
     // 5 of the real corpus's 12,818 openers are in this state.
     const command = ["cat > x <<'EOF'", 'pnpm test'].join('\n');
     expect(checkRunner(command)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Whose exit status is `is_error`? The shell reports the status of the LAST step it ran, so a
+// check's own verdict reaches `is_error` only when nothing after it can replace that status.
+// `&&` cannot: when the check fails, the rest never runs. Everything else can -- a pipe reports
+// its last command (`| tail` exits 0 on a failing suite), `;`/newline/`||` run something else
+// afterwards, and `&` exits 0 at once. Measured on the frozen corpus (spike/verdict/measure.mjs,
+// dogfood/0012): 1,578 of 3,349 summarized runs outside this rule had is_error "passed" over a
+// failing summary; inside it, 17 of 17 agreed.
+
+describe("checkRun: is the exit status the check's own", () => {
+  const owns = (command: string): boolean | undefined => checkRun(command)?.exitStatusIsCheck;
+
+  it('owns it when the check is the whole command', () => {
+    expect(checkRun('pnpm test')).toEqual({ runner: 'pnpm test', exitStatusIsCheck: true });
+  });
+
+  it('owns it when only setup runs BEFORE the check', () => {
+    expect(owns('cd packages/core && pnpm test')).toBe(true);
+    expect(owns('cd packages/core\npnpm test')).toBe(true);
+    expect(owns('pnpm build; pnpm test')).toBe(false); // first check is the build, `;` follows it
+  });
+
+  it('owns it when only `&&` follows the check', () => {
+    expect(owns('pnpm test && echo ok')).toBe(true);
+  });
+
+  it('does NOT own it through a pipe', () => {
+    expect(owns('pnpm test | tail -20')).toBe(false);
+    expect(owns('pnpm test |& tail -20')).toBe(false);
+    expect(execSegments('pnpm test |& tail -20')).toEqual([
+      ['pnpm', 'test'],
+      ['tail', '-20'],
+    ]);
+  });
+
+  it('does NOT read a redirection as a background `&`', () => {
+    expect(owns('pnpm test 2>&1')).toBe(true);
+    expect(owns('pnpm test >out.log 2>&1 && echo ok')).toBe(true);
+    expect(owns('pnpm test &>out.log')).toBe(true);
+  });
+
+  it('does NOT own it when anything else runs after the check', () => {
+    expect(owns('pnpm test; echo done')).toBe(false);
+    expect(owns('pnpm test\necho done')).toBe(false);
+    expect(owns('pnpm test || true')).toBe(false);
+    expect(owns('pnpm test &')).toBe(false);
+  });
+
+  it('does NOT own it when a later `&&` step is piped', () => {
+    // The measured shape: `&&` right after the check, and the mask further along.
+    expect(owns('pnpm build >b.log 2>&1 && pnpm vitest run 2>&1 | tail -15')).toBe(false);
+  });
+
+  it('treats a trailing separator as nothing running', () => {
+    expect(owns('pnpm test;')).toBe(true);
+    expect(owns('pnpm test\n')).toBe(true);
+  });
+
+  it('counts a step stripped to nothing, such as `cd`, as running', () => {
+    // `cd ..` sets the exit status to its own, so it masks the check as surely as `echo`.
+    expect(owns('pnpm test; cd ..')).toBe(false);
+  });
+
+  it('ignores a heredoc body after the check, but not a command after the heredoc', () => {
+    expect(owns(["pnpm test && cat > x <<'EOF'", 'echo inside', 'EOF'].join('\n'))).toBe(true);
+    expect(owns(["pnpm test && cat > x <<'EOF'", 'body', 'EOF', 'echo after'].join('\n'))).toBe(
+      false,
+    );
+  });
+
+  it('is undefined when the command runs no check', () => {
+    expect(checkRun('echo hi | tail')).toBeUndefined();
+  });
+
+  it('names the same runner as checkRunner', () => {
+    expect(checkRun('cd x && npm -w a run test | tail')?.runner).toBe(
+      checkRunner('cd x && npm -w a run test | tail'),
+    );
   });
 });
 
@@ -651,6 +738,110 @@ describe('verification_run', () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe('verification_run: whose verdict it is (asc-6ola.6)', () => {
+  /** A check run whose result carries output text, as a real tool result does. */
+  const runWith = (
+    id: string,
+    isError: boolean | undefined,
+    command: string,
+    content: unknown,
+  ): TranscriptRecord[] => [
+    invoke(id, 'Bash', command),
+    record([
+      {
+        type: 'tool_result',
+        tool_use_id: id,
+        content,
+        ...(isError === undefined ? {} : { is_error: isError }),
+      },
+    ]),
+  ];
+  const PIPED = 'pnpm test 2>&1 | tail -20';
+  const FAILED_SUMMARY = ' Test Files  1 failed | 8 passed (9)';
+  const PASSED_SUMMARY = ' Test Files  9 passed (9)';
+
+  it("takes the verdict from is_error when the exit status is the check's own", () => {
+    const entries = ofType(derive(runWith('t1', false, 'pnpm test', 'ok')), 'verification_run');
+    expect(entries[0]?.properties).toMatchObject({
+      verdict: 'passed',
+      verdict_source: 'exit_status',
+    });
+  });
+
+  it('keeps is_error over the output when the exit status is owned', () => {
+    // `pnpm test && pnpm lint`: the suite printed a passing summary, then lint failed. The
+    // exit status is the whole `&&` chain's, and it is the one that says what happened.
+    const entries = ofType(
+      derive([
+        ...runWith('t1', false, 'pnpm test', 'ok'),
+        ...runWith('t2', true, 'pnpm test && pnpm lint', PASSED_SUMMARY),
+      ]),
+      'verification_run',
+    );
+    expect(entries[1]?.properties).toMatchObject({
+      verdict: 'failed',
+      verdict_source: 'exit_status',
+    });
+  });
+
+  it('takes the verdict from the OUTPUT when a pipe masks the exit status', () => {
+    // The false green of dogfood/0012: `| tail` exits 0, so is_error says passed over a
+    // failing suite. The output's own summary is what the run actually said.
+    const entries = ofType(
+      derive([
+        ...runWith('t1', false, 'pnpm test', 'ok'),
+        ...runWith('t2', false, PIPED, FAILED_SUMMARY),
+      ]),
+      'verification_run',
+    );
+    expect(entries.length).toBe(2);
+    expect(entries[1]?.properties).toMatchObject({
+      verdict: 'failed',
+      verdict_source: 'output',
+      previous_verdict: 'passed',
+    });
+  });
+
+  it('reads output given as an array of text blocks, not only as a string', () => {
+    const content = [{ type: 'text', text: PASSED_SUMMARY }];
+    const entries = ofType(derive(runWith('t1', false, PIPED, content)), 'verification_run');
+    expect(entries[0]?.properties).toMatchObject({ verdict: 'passed', verdict_source: 'output' });
+  });
+
+  it('does not need is_error at all when the output settles the verdict', () => {
+    const entries = ofType(
+      derive(runWith('t1', undefined, PIPED, PASSED_SUMMARY)),
+      'verification_run',
+    );
+    expect(entries[0]?.properties).toMatchObject({ verdict: 'passed', verdict_source: 'output' });
+  });
+
+  it('counts a masked run with no readable output as masked, emits nothing, and holds the chain', () => {
+    // The mutation this kills: falling back to is_error. The masked run's is_error says
+    // "passed"; trusting it would advance the chain to green, and the red run after it would
+    // be written as a change that the store has no evidence ever happened.
+    const deriver = createDeriver();
+    const out: DerivedEntry[] = [];
+    for (const one of [
+      ...runWith('t1', true, 'pnpm test', 'x'),
+      ...runWith('t2', false, PIPED, '(Bash completed with no output)'),
+      ...runWith('t3', true, 'pnpm test', 'x'),
+    ]) {
+      out.push(...deriver.accept(one, FILE));
+    }
+    out.push(...deriver.drain());
+    expect(ofType(out, 'verification_run')).toEqual([]);
+    expect(deriver.counters.masked).toBe(1);
+  });
+
+  it('does not count an owned run as masked', () => {
+    const deriver = createDeriver();
+    for (const one of runWith('t1', false, 'pnpm test', 'ok')) deriver.accept(one, FILE);
+    deriver.drain();
+    expect(deriver.counters.masked).toBe(0);
+  });
+});
 
 describe('user_correction', () => {
   it('carries the user text in evidence_text, which no other type records', () => {

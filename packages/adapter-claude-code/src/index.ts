@@ -41,11 +41,14 @@ export {
   type TranscriptRecord,
 } from './decode.js';
 
-export { DERIVED_SOURCE, DERIVED_TYPES, derivedType } from './derived-types.js';
+export { DERIVED_SOURCE, DERIVED_TYPES, derivationVersion, derivedType } from './derived-types.js';
 
 export { EPHEMERAL_ROOTS, isEphemeralProject } from './ephemeral.js';
 
+export { outputVerdict, type OutputVerdict } from './output-verdict.js';
+
 export {
+  checkRun,
   checkRunner,
   createDeriver,
   execSegments,

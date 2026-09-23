@@ -108,6 +108,29 @@ import type { TypeSpec } from '@ascend/core';
 export const DERIVED_SOURCE = 'derived:claude-code';
 
 /**
+ * The version of the RULE that derives a type, for the types whose rule has changed.
+ *
+ * It is part of a derived entry's id (`derived:claude-code:<type>@<n>:<key>`), and the reason is
+ * that the id is what makes ingest idempotent. With one id per event across rule versions, a
+ * re-run under a new rule finds the old entry and reports it as a collision, and the store keeps
+ * the old rule's reading. A new id lets the new rule's entry exist beside it, and the old one is
+ * then retired the way every entry here is corrected: by an `invalidation` annotation, never a
+ * delete.
+ *
+ * Only a changed type carries a version. Every type absent from this map is at 1 and keeps the
+ * id it always had, so a rule change in one type does not re-key the others.
+ *
+ * `verification_run` is at 2 because its verdict was read from `is_error` even when a pipe or a
+ * later command owned that status (asc-6ola.6, dogfood/0012).
+ */
+const DERIVATION_VERSIONS: Readonly<Record<string, number>> = { verification_run: 2 };
+
+/** The derivation rule's version for a derived type; 1 when the rule has never changed. */
+export function derivationVersion(type: string): number {
+  return DERIVATION_VERSIONS[type] ?? 1;
+}
+
+/**
  * The sentence a model reads in `asc types brief`, and it must stay short: the brief is a
  * context tax on EVERY session in the project. Five of these cost roughly 350 characters,
  * about 90 tokens -- cheaper than the four starter types, and for a fact the model needs,
@@ -323,10 +346,23 @@ export const DERIVED_TYPES: readonly TypeSpec[] = [
         enum_values: ['passed', 'failed'],
         required: true,
         description:
-          'Whether the run passed, from the tool result’s own `is_error` field rather ' +
-          'than from anything in the output text. Measured: `is_error` was a boolean on ' +
-          'every check result seen, so this is never inferred from prose. A result without ' +
-          'one yields no entry at all rather than a guessed verdict.',
+          'Whether the run passed. Read from the tool result’s `is_error` only when that exit ' +
+          'status is the check’s own -- nothing after the check but `&&`. Otherwise from a ' +
+          'summary line in the output (`verdict_source`), because `pnpm test | tail` exits 0 on ' +
+          'a failing suite: measured, `is_error` said passed over 1,236 runs whose own output ' +
+          'said failed. A run where neither settles it yields no entry at all.',
+      },
+      {
+        name: 'verdict_source',
+        type: 'enum',
+        enum_values: ['exit_status', 'output'],
+        required: true,
+        description:
+          'Where `verdict` was read. `exit_status`: the tool result’s `is_error`, which was the ' +
+          'check’s own. `output`: a summary line the check printed, used when something after ' +
+          'the check could replace its exit status. An output pass needs a line that speaks ' +
+          'for the whole run (vitest’s `Test Files`, align’s `verdict:`); a failure needs any ' +
+          'failure line, because filtering output can hide one but never invent one.',
       },
       {
         name: 'previous_verdict',

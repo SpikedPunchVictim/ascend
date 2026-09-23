@@ -35,6 +35,7 @@
 
 import type { TranscriptRecord } from './decode.js';
 import { DERIVED_SOURCE } from './derived-types.js';
+import { outputVerdict } from './output-verdict.js';
 import { projectRelativeCwd } from './transcript-file.js';
 import type { TranscriptFile } from './transcript-file.js';
 
@@ -162,6 +163,19 @@ export interface DeriveCounters {
    * as `unkeyable`, just above) is held to the same rule for the same reason.
    */
   unverdictable: number;
+  /**
+   * Check runs whose exit status is NOT the check's own -- something after it can replace its
+   * status (`| tail`, `;`, `||`, `&`; see `checkRun`) -- and whose output holds no line that
+   * settles a verdict (`outputVerdict`). No entry is written and the chain does not advance,
+   * for the reason `unverdictable` gives: the alternative is trusting `is_error`, and measured
+   * on the frozen corpus (dogfood/0012) it said "passed" over 1,236 masked runs whose own
+   * output said "failed".
+   *
+   * NOT expected to be zero, unlike the two counters above: it is the size of what this
+   * adapter cannot see, and measured it is most masked runs -- 5,442 of 8,157 on the corpus,
+   * largely output cut by `| tail` or never printed.
+   */
+  masked: number;
   /**
    * `user_correction` records whose `userFeedback` was the AskUserQuestion clarification form
    * (`CLARIFICATION_PREAMBLE`, above) rather than the user's own prose. THE ENTRY IS STILL
@@ -385,7 +399,28 @@ const HEREDOC = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/;
  * an error.
  */
 export function execSegments(command: string): readonly (readonly string[])[] {
-  const out: string[][] = [];
+  return execSteps(command).flatMap((step) => (step.segment === undefined ? [] : [step.segment]));
+}
+
+/**
+ * The shell's control operators, CAPTURED so a step keeps the one that follows it. `|&` before
+ * `|`, and `&` only when it is not part of a redirection: `2>&1`, `>&2` and `&>file` are not
+ * operators, and reading them as one would split `pnpm test 2>&1` into two steps.
+ */
+const OPERATOR = /(\|\||&&|;|\|&|\|(?!&)|(?<![<>&])&(?![>&]))/;
+
+/**
+ * One executed step: its segment (`undefined` when stripping leaves nothing, as `cd dir` does --
+ * it still RAN, and still sets the exit status) and the operator after it (`'\n'` for a line
+ * end, `undefined` after the last step unless that step is backgrounded).
+ */
+interface ExecStep {
+  readonly segment: readonly string[] | undefined;
+  readonly next: string | undefined;
+}
+
+function execSteps(command: string): readonly ExecStep[] {
+  const steps: { segment: readonly string[] | undefined; next: string | undefined }[] = [];
   let heredoc: string | undefined;
 
   for (const line of command.split('\n')) {
@@ -396,33 +431,45 @@ export function execSegments(command: string): readonly (readonly string[])[] {
     }
     const opened = HEREDOC.exec(line);
 
-    for (const raw of line.split(/&&|;|\|/)) {
-      const tokens = raw
-        .trim()
-        .split(/\s+/)
-        .filter((token) => token.length > 0);
-      let at = 0;
-      while (at < tokens.length) {
-        const token = tokens[at] ?? '';
-        if (ASSIGNMENT.test(token)) {
-          at += 1;
-          continue;
-        }
-        const head = token.split('/').pop() ?? token;
-        if (STRIP_ONE.has(head)) {
-          at += 2;
-          continue;
-        }
-        out.push(tokens.slice(at).map((one) => one.split('/').pop() ?? one));
-        break;
-      }
+    const parts = line.split(OPERATOR);
+    for (let at = 0; at < parts.length; at += 2) {
+      const raw = parts[at] ?? '';
+      if (raw.trim().length === 0) continue;
+      steps.push({ segment: stripSegment(raw), next: parts[at + 1] ?? '\n' });
     }
 
     // After the line's own segments: the body starts on the NEXT line.
     if (opened !== null) heredoc = opened[1];
   }
 
-  return out;
+  // A trailing `;` or line end is no operator: nothing follows it. A trailing `&` still is --
+  // it backgrounds the step, and the command's status becomes 0 at once.
+  const last = steps.at(-1);
+  if (last !== undefined && last.next !== '&') last.next = undefined;
+  return steps;
+}
+
+/** The step's tokens from its real head on, or `undefined` if stripping consumes them all. */
+function stripSegment(raw: string): readonly string[] | undefined {
+  const tokens = raw
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
+  let at = 0;
+  while (at < tokens.length) {
+    const token = tokens[at] ?? '';
+    if (ASSIGNMENT.test(token)) {
+      at += 1;
+      continue;
+    }
+    const head = token.split('/').pop() ?? token;
+    if (STRIP_ONE.has(head)) {
+      at += 2;
+      continue;
+    }
+    return tokens.slice(at).map((one) => one.split('/').pop() ?? one);
+  }
+  return undefined;
 }
 
 /**
@@ -464,11 +511,75 @@ function checkLabel(segment: readonly string[]): string | undefined {
 
 /** The first check a command runs, or `undefined`. */
 export function checkRunner(command: string): string | undefined {
-  for (const segment of execSegments(command)) {
-    const label = checkLabel(segment);
-    if (label !== undefined) return label.slice(0, 60);
+  return checkRun(command)?.runner;
+}
+
+/**
+ * The first check a command runs, and whether the command's exit status -- the tool result's
+ * `is_error` -- is that check's own.
+ *
+ * The shell reports the status of the last step it ran. `&&` cannot replace a check's status:
+ * when the check fails, nothing after it runs. Every other operator can. A pipe reports its
+ * last command, so `pnpm test | tail` exits 0 on a failing suite; `;`, a newline and `||` run
+ * something else afterwards; `&` returns 0 at once. So the status is the check's own exactly
+ * when every operator after it is `&&`. Measured on the frozen corpus (dogfood/0012): outside
+ * that rule, 1,578 of 3,349 runs with a summary had `is_error` false over a failing one.
+ *
+ * `set -o pipefail` would make a pipe honest, and is not honoured: 9 of 8,339 check runs
+ * mention it, and treating them as masked costs a verdict, never a wrong one.
+ */
+export function checkRun(
+  command: string,
+): { readonly runner: string; readonly exitStatusIsCheck: boolean } | undefined {
+  const steps = execSteps(command);
+  for (const [at, step] of steps.entries()) {
+    const label = step.segment === undefined ? undefined : checkLabel(step.segment);
+    if (label === undefined) continue;
+    const exitStatusIsCheck = steps
+      .slice(at)
+      .every((later) => later.next === undefined || later.next === '&&');
+    return { runner: label.slice(0, 60), exitStatusIsCheck };
   }
   return undefined;
+}
+
+/**
+ * A check run's verdict and where it was read from, or why none could be read.
+ *
+ * `exitStatusIsCheck` decides the source, and there is no fallback between the two. An owned
+ * run reads `is_error`; a masked run reads its output, and never `is_error`, because masked is
+ * exactly the case where `is_error` belongs to something else.
+ */
+function readVerdict(
+  exitStatusIsCheck: boolean,
+  block: Readonly<Record<string, unknown>>,
+):
+  | { readonly verdict: boolean; readonly source: 'exit_status' | 'output' }
+  | 'unverdictable'
+  | 'masked' {
+  if (exitStatusIsCheck) {
+    const failed = block['is_error'];
+    return typeof failed === 'boolean'
+      ? { verdict: !failed, source: 'exit_status' }
+      : 'unverdictable';
+  }
+  const said = outputVerdict(resultText(block['content']));
+  return said === undefined ? 'masked' : { verdict: said === 'passed', source: 'output' };
+}
+
+/** A tool result's text: a string, or the `text` of each text block in an array. */
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part: unknown) =>
+      typeof part === 'object' &&
+      part !== null &&
+      typeof (part as { text?: unknown }).text === 'string'
+        ? (part as { text: string }).text
+        : '',
+    )
+    .join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -564,6 +675,7 @@ export function createDeriver(): Deriver {
     keyCollisions: 0,
     unkeyable: 0,
     unverdictable: 0,
+    masked: 0,
     unquotable: 0,
   };
 
@@ -798,13 +910,16 @@ export function createDeriver(): Deriver {
       if (invocation?.name === 'Bash') {
         const command = invocation.command;
         if (command !== undefined) {
-          const runner = checkRunner(command);
-          if (runner !== undefined) {
-            const failed = block['is_error'];
-            if (typeof failed !== 'boolean') {
+          const run = checkRun(command);
+          if (run !== undefined) {
+            const reading = readVerdict(run.exitStatusIsCheck, block);
+            if (reading === 'unverdictable') {
               counters.unverdictable += 1;
+            } else if (reading === 'masked') {
+              counters.masked += 1;
             } else {
-              const verdict = !failed;
+              const { verdict, source } = reading;
+              const runner = run.runner;
               const previous = lastVerdict;
               // The filter, and it is a filter rather than a preference. Measured: the corpus
               // holds 6,826 commands that run a check, which without this filter would make
@@ -843,6 +958,7 @@ export function createDeriver(): Deriver {
                     {
                       runner,
                       verdict: verdict ? 'passed' : 'failed',
+                      verdict_source: source,
                       // OMITTED on a first verified pass. "There was no earlier run" and
                       // "the earlier run agreed" are different facts.
                       ...(previous === undefined

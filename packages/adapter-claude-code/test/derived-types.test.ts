@@ -7,7 +7,7 @@ import {
   validateEntry,
   type PropertySpec,
 } from '@ascend/core';
-import { DERIVED_SOURCE, DERIVED_TYPES, derivedType } from '../src/index.js';
+import { DERIVED_SOURCE, DERIVED_TYPES, derivationVersion, derivedType } from '../src/index.js';
 
 /**
  * Invariants the five derived type definitions must hold, checked against core's own rules
@@ -312,7 +312,7 @@ describe('the definitions accept what the deriver produces', () => {
         cumulative_dropped_tokens: 0,
         duration_ms: 0,
       },
-      verification_run: { runner: 'pnpm test', verdict: 'failed' },
+      verification_run: { runner: 'pnpm test', verdict: 'failed', verdict_source: 'output' },
       skill_activation: { skill: 'bug-hunt' },
       user_correction: {},
     };
@@ -355,5 +355,18 @@ describe('the definitions accept what the deriver produces', () => {
     });
     expect(result.states['verdict']).toBe('not_measured');
     expect(result.errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe('derivationVersion', () => {
+  it('is 2 for verification_run, whose verdict rule changed (asc-6ola.6)', () => {
+    expect(derivationVersion('verification_run')).toBe(2);
+  });
+
+  it('is 1 for every type whose rule never changed', () => {
+    for (const spec of DERIVED_TYPES) {
+      if (spec.name === 'verification_run') continue;
+      expect(derivationVersion(spec.name), spec.name).toBe(1);
+    }
   });
 });
