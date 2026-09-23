@@ -127,3 +127,82 @@ describe('asc-v7t -- per-property prose on re-registering an existing type', () 
     });
   });
 });
+
+describe('asc-bli.2/.3 -- guidance on a document', () => {
+  const GUIDANCE = {
+    purpose: 'why widgets are reviewed',
+    analysis_questions: ['which kinds fail review most?'],
+    interpretation_notes: 'widget_kind is omitted for bundles',
+    review_after: 30,
+  } as const;
+
+  it('stores guidance when the document creates the type', () => {
+    withStore((store) => {
+      const created = registerDocument(store, document('k', GUIDANCE), {
+        registeredAt: AT,
+        dryRun: false,
+      });
+      expect(findType(store.db, 'widget_reviewed', created.version)?.guidance).toEqual(GUIDANCE);
+    });
+  });
+
+  it('editing only purpose is prose-updated: the hash is byte-identical and no version is minted', () => {
+    // The load-bearing regression test the bead names. If guidance ever reached the hash, this
+    // would report `created` at version 2.
+    withStore((store) => {
+      const created = registerDocument(store, document('k', GUIDANCE), {
+        registeredAt: AT,
+        dryRun: false,
+      });
+      const edited = registerDocument(
+        store,
+        document('k', { ...GUIDANCE, purpose: 'a sharper reason' }),
+        { registeredAt: LATER, dryRun: false },
+      );
+
+      expect(edited.outcome).toBe('prose-updated');
+      expect(edited.version).toBe(created.version);
+      expect(edited.typeHash).toBe(created.typeHash);
+      expect(findType(store.db, 'widget_reviewed', created.version)?.guidance.purpose).toBe(
+        'a sharper reason',
+      );
+    });
+  });
+
+  it('is unchanged when the guidance already matches, including a question list in the same order', () => {
+    withStore((store) => {
+      registerDocument(store, document('k', GUIDANCE), { registeredAt: AT, dryRun: false });
+      const again = registerDocument(store, document('k', GUIDANCE), {
+        registeredAt: LATER,
+        dryRun: false,
+      });
+      expect(again.outcome).toBe('unchanged');
+    });
+  });
+
+  it('keeps guidance the document does not mention: omission is not a request to clear', () => {
+    withStore((store) => {
+      registerDocument(store, document('k', GUIDANCE), { registeredAt: AT, dryRun: false });
+      registerDocument(store, document('k', { review_after: 50 }), {
+        registeredAt: LATER,
+        dryRun: false,
+      });
+      expect(findType(store.db, 'widget_reviewed', 1)?.guidance).toEqual({
+        ...GUIDANCE,
+        review_after: 50,
+      });
+    });
+  });
+
+  it('a dry run reports prose-updated for a guidance edit and writes nothing', () => {
+    withStore((store) => {
+      registerDocument(store, document('k', GUIDANCE), { registeredAt: AT, dryRun: false });
+      const preview = registerDocument(store, document('k', { ...GUIDANCE, review_after: 99 }), {
+        registeredAt: LATER,
+        dryRun: true,
+      });
+      expect(preview.outcome).toBe('prose-updated');
+      expect(findType(store.db, 'widget_reviewed', 1)?.guidance.review_after).toBe(30);
+    });
+  });
+});

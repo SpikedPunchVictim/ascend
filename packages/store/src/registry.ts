@@ -26,10 +26,13 @@ import {
   confusableNames,
   definitionShape,
   diffTypeSpec,
+  GUIDANCE_FIELDS,
+  guidanceProblems,
   typeHash,
   type Bump,
   type Rename,
   type SpecChange,
+  type TypeGuidance,
   type TypeSpec,
 } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
@@ -45,6 +48,8 @@ export interface RegisterTypeOptions {
   readonly recordWhen?: string;
   /** Per-property prose, keyed by canonical property name. Also not identity. */
   readonly prose?: Readonly<Record<string, string>>;
+  /** Purpose, analysis questions, interpretation notes and `review_after` (asc-bli). Not identity. */
+  readonly guidance?: TypeGuidance;
   /**
    * Do the whole registration, then discard it.
    *
@@ -197,6 +202,8 @@ export interface TypeVersionRow {
   readonly description: string | null;
   readonly recordWhen: string | null;
   readonly prose: Readonly<Record<string, string>>;
+  /** Empty when none was declared -- `guidance_json` is NULL then, never `{}`. */
+  readonly guidance: TypeGuidance;
   readonly status: 'active' | 'deprecated';
   readonly registeredAt: string;
 }
@@ -210,6 +217,7 @@ interface VersionRowShape {
   description: string | null;
   record_when: string | null;
   prose_json: string | null;
+  guidance_json: string | null;
   status: string;
   created_at: string;
 }
@@ -244,6 +252,7 @@ const toStorage = (
 ): {
   shape: TypeSpec;
   proseJson: string | null;
+  guidanceJson: string | null;
 } => {
   const shape = definitionShape(spec);
 
@@ -263,11 +272,30 @@ const toStorage = (
     prose[key] = value;
   }
 
+  const guidance = options.guidance ?? {};
+  const guidanceIssues = guidanceProblems(guidance);
+  if (guidanceIssues.length > 0) throw new UnusableProseError(spec.name, guidanceIssues);
+
   return {
     shape,
     proseJson: Object.keys(prose).length === 0 ? null : JSON.stringify(prose),
+    guidanceJson: guidanceJson(guidance),
   };
 };
+
+/**
+ * The stored form of a type's guidance: its fields in document order, or NULL for none.
+ *
+ * NULL rather than `{}` for "nothing declared", matching `prose_json`: the store never uses an
+ * empty value to mean unset. The fixed order is what makes two stores that hold the same guidance
+ * hold the same bytes.
+ */
+function guidanceJson(guidance: TypeGuidance): string | null {
+  const ordered = GUIDANCE_FIELDS.filter((field) => guidance[field] !== undefined).map(
+    (field) => [field, guidance[field]] as const,
+  );
+  return ordered.length === 0 ? null : JSON.stringify(Object.fromEntries(ordered));
+}
 
 /**
  * Every name this store has already seen: the type names, and every property name ever defined.
@@ -436,7 +464,7 @@ export function registerType(
     throw new UnusableDefinitionError(canonical.spec.name, canonical.errors);
   }
 
-  const { shape, proseJson } = toStorage(canonical.spec, options);
+  const { shape, proseJson, guidanceJson: storedGuidance } = toStorage(canonical.spec, options);
   const hash = specHash(shape);
 
   // ONE transaction around the whole body, beginning ABOVE the version reads. That placement is
@@ -591,8 +619,9 @@ export function registerType(
 
     db.prepare(
       `INSERT INTO entry_types
-         (name, version, major, type_hash, spec_json, description, record_when, prose_json, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (name, version, major, type_hash, spec_json, description, record_when, prose_json,
+          guidance_json, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       shape.name,
       version,
@@ -602,6 +631,7 @@ export function registerType(
       options.description ?? null,
       options.recordWhen ?? null,
       proseJson,
+      storedGuidance,
       status,
       options.registeredAt,
     );
@@ -652,12 +682,13 @@ const rowToVersion = (row: VersionRowShape): TypeVersionRow => ({
   description: row.description,
   recordWhen: row.record_when,
   prose: row.prose_json === null ? {} : (JSON.parse(row.prose_json) as Record<string, string>),
+  guidance: row.guidance_json === null ? {} : (JSON.parse(row.guidance_json) as TypeGuidance),
   status: row.status === 'deprecated' ? 'deprecated' : 'active',
   registeredAt: row.created_at,
 });
 
 const SELECT_VERSION = `SELECT name, version, major, type_hash, spec_json, description, record_when,
-                                prose_json, status, created_at
+                                prose_json, guidance_json, status, created_at
                            FROM entry_types`;
 
 /**
@@ -841,6 +872,12 @@ export function updateTypeProse(
     readonly description?: string | null;
     readonly recordWhen?: string | null;
     readonly propertyProse?: Readonly<Record<string, string>>;
+    /**
+     * Merged field by field, with the same `undefined` / `null` rule as the fields above: an
+     * omitted guidance field is kept, a `null` one is cleared. So a document that mentions only
+     * `purpose` does not erase the questions someone else wrote.
+     */
+    readonly guidance?: GuidanceEdit;
   },
 ): void {
   // The same protocol `registerType` uses, and for the same reason (asc-vnn): the read of
@@ -876,14 +913,19 @@ export function updateTypeProse(
     const nextProse =
       canonical === undefined ? existing.prose : { ...existing.prose, ...canonical };
 
+    const nextGuidance = mergeGuidance(existing.guidance, prose.guidance ?? {});
+    const guidanceIssues = guidanceProblems(nextGuidance);
+    if (guidanceIssues.length > 0) throw new UnusableProseError(existing.name, guidanceIssues);
+
     db.prepare(
       `UPDATE entry_types
-          SET description = ?, record_when = ?, prose_json = ?
+          SET description = ?, record_when = ?, prose_json = ?, guidance_json = ?
         WHERE name = ? AND version = ?`,
     ).run(
       prose.description === undefined ? existing.description : prose.description,
       prose.recordWhen === undefined ? existing.recordWhen : prose.recordWhen,
       Object.keys(nextProse).length === 0 ? null : JSON.stringify(nextProse),
+      guidanceJson(nextGuidance),
       name,
       version,
     );
@@ -895,4 +937,26 @@ export function updateTypeProse(
     if (ownsTransaction) db.exec('ROLLBACK');
     throw error;
   }
+}
+
+/** An edit to a type's guidance: each field set, cleared (`null`), or left alone (omitted). */
+export type GuidanceEdit = {
+  readonly [Field in keyof TypeGuidance]?: TypeGuidance[Field] | null;
+};
+
+function mergeGuidance(existing: TypeGuidance, edit: GuidanceEdit): TypeGuidance {
+  // `null` clears, `undefined` keeps -- `updateTypeProse`'s rule for every prose field.
+  const pick = <T>(edited: T | null | undefined, stored: T | undefined): T | undefined =>
+    edited === null ? undefined : (edited ?? stored);
+
+  const purpose = pick(edit.purpose, existing.purpose);
+  const questions = pick(edit.analysis_questions, existing.analysis_questions);
+  const notes = pick(edit.interpretation_notes, existing.interpretation_notes);
+  const reviewAfter = pick(edit.review_after, existing.review_after);
+  return {
+    ...(purpose === undefined ? {} : { purpose }),
+    ...(questions === undefined ? {} : { analysis_questions: questions }),
+    ...(notes === undefined ? {} : { interpretation_notes: notes }),
+    ...(reviewAfter === undefined ? {} : { review_after: reviewAfter }),
+  };
 }

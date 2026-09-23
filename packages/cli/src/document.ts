@@ -12,6 +12,10 @@
  *   "properties": [{ "name": "review_kind", "type": "enum", "enum_values": ["approved"] }],
  *   "description":  "prose about the type",          // not identity
  *   "record_when":  "prose telling a model when",     // not identity
+ *   "purpose":      "why this type exists",           // guidance (asc-bli): not identity
+ *   "analysis_questions":   ["what to ask of it"],     // guidance
+ *   "interpretation_notes": "how to read it",          // guidance
+ *   "review_after": 20,                                // guidance: an intention, never a gate
  *   "prose":        { "review_kind": "per-property" },// not identity
  *   "type_hash":    "…64 hex…"                        // checked on import, never trusted
  * }
@@ -40,12 +44,25 @@
  * the ones that exist.
  */
 
-import { PROPERTY_TYPES, type PropertySpec, type PropertyType, type TypeSpec } from '@ascend/core';
+import {
+  GUIDANCE_FIELDS,
+  guidanceProblems,
+  PROPERTY_TYPES,
+  type PropertySpec,
+  type PropertyType,
+  type TypeGuidance,
+  type TypeSpec,
+} from '@ascend/core';
 import { specHash, type TypeVersionRow } from '@ascend/store';
 import { refusal } from './errors.js';
 import { describeValue, fieldError, isJsonObject } from './json-fields.js';
 
-export interface TypeDocument {
+/**
+ * The guidance fields sit at the top level beside `record_when`, rather than nested under a
+ * `guidance` key, because they are the same kind of thing -- prose about the type that is not
+ * its identity -- and a document already spells that kind of thing flat.
+ */
+export interface TypeDocument extends TypeGuidance {
   readonly name: string;
   readonly properties: readonly PropertySpec[];
   /** Type-level prose. Not part of identity; editable in place. */
@@ -63,6 +80,7 @@ const KNOWN_KEYS = [
   'properties',
   'description',
   'record_when',
+  ...GUIDANCE_FIELDS,
   'prose',
   'type_hash',
 ] as const;
@@ -204,6 +222,8 @@ export function parseDocument(text: string, source: string): TypeDocument {
     );
   }
 
+  const guidance = parseGuidance(source, raw);
+
   const prose = raw['prose'];
   if (prose !== undefined && !isPlainObject(prose)) {
     fieldError(source, 'prose', 'an object of strings, keyed by property name', prose);
@@ -219,8 +239,61 @@ export function parseDocument(text: string, source: string): TypeDocument {
     properties: properties.map((property, index) => parseProperty(source, index, property)),
     ...(description === undefined ? {} : { description }),
     ...(recordWhen === undefined ? {} : { record_when: recordWhen }),
+    ...guidance,
     ...(prose === undefined ? {} : { prose: prose as Record<string, string> }),
     ...(hash === undefined ? {} : { type_hash: hash }),
+  };
+}
+
+/**
+ * The guidance fields of a raw document, type-checked here and then checked for content by
+ * core's `guidanceProblems` -- the same function the store refuses with, so a document cannot
+ * pass this and then be refused by the store with a message that names no document.
+ */
+function parseGuidance(source: string, raw: Record<string, unknown>): TypeGuidance {
+  const purpose = raw['purpose'];
+  if (purpose !== undefined && typeof purpose !== 'string') {
+    fieldError(source, 'purpose', 'a string', purpose);
+  }
+  const notes = raw['interpretation_notes'];
+  if (notes !== undefined && typeof notes !== 'string') {
+    fieldError(source, 'interpretation_notes', 'a string', notes);
+  }
+  const questions = raw['analysis_questions'];
+  if (
+    questions !== undefined &&
+    !(Array.isArray(questions) && questions.every((question) => typeof question === 'string'))
+  ) {
+    fieldError(source, 'analysis_questions', 'an array of strings', questions);
+  }
+  const reviewAfter = raw['review_after'];
+  if (reviewAfter !== undefined && typeof reviewAfter !== 'number') {
+    fieldError(source, 'review_after', 'a number', reviewAfter);
+  }
+
+  const guidance: TypeGuidance = {
+    ...(purpose === undefined ? {} : { purpose }),
+    ...(questions === undefined ? {} : { analysis_questions: questions }),
+    ...(notes === undefined ? {} : { interpretation_notes: notes }),
+    ...(reviewAfter === undefined ? {} : { review_after: reviewAfter }),
+  };
+
+  const problems = guidanceProblems(guidance);
+  if (problems.length > 0) throw refusal(`${source}: ${problems.join('; ')}.`);
+  return guidance;
+}
+
+/** Only the guidance fields of a document, in document order, for the store. */
+export function documentGuidance(document: TypeDocument): TypeGuidance {
+  return {
+    ...(document.purpose === undefined ? {} : { purpose: document.purpose }),
+    ...(document.analysis_questions === undefined
+      ? {}
+      : { analysis_questions: document.analysis_questions }),
+    ...(document.interpretation_notes === undefined
+      ? {}
+      : { interpretation_notes: document.interpretation_notes }),
+    ...(document.review_after === undefined ? {} : { review_after: document.review_after }),
   };
 }
 
@@ -295,6 +368,7 @@ export function documentFromRow(row: TypeVersionRow): TypeDocument {
     properties: row.spec.properties,
     ...(row.description === null ? {} : { description: row.description }),
     ...(row.recordWhen === null ? {} : { record_when: row.recordWhen }),
+    ...row.guidance,
     ...(Object.keys(row.prose).length === 0 ? {} : { prose: row.prose }),
     type_hash: row.typeHash,
   };
@@ -313,6 +387,7 @@ export function orderedDocument(document: TypeDocument): Record<string, unknown>
     properties: document.properties,
     ...(document.description === undefined ? {} : { description: document.description }),
     ...(document.record_when === undefined ? {} : { record_when: document.record_when }),
+    ...documentGuidance(document),
     ...(document.prose === undefined ? {} : { prose: document.prose }),
     ...(document.type_hash === undefined ? {} : { type_hash: document.type_hash }),
   };

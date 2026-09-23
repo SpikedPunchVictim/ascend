@@ -33,6 +33,8 @@ export {
   type UnaddressableName,
 } from './spec.js';
 
+export { GUIDANCE_FIELDS, guidanceProblems, type TypeGuidance } from './guidance.js';
+
 export { confusableNames, nameTokens, type ConfusableName } from './names.js';
 
 export { renderDeclaredValue } from './render-value.js';

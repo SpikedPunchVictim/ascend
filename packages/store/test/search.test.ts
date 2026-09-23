@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import type { TypeSpec } from '@ascend/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -438,6 +439,26 @@ describe('options', () => {
 });
 
 describe('migration 2 backfills entries that predate it', () => {
+  /**
+   * One registered type and one entry, written as a version-1 store holds them -- by raw SQL
+   * rather than through `registerType` and `recordEntry`. Those write and read the columns of the
+   * CURRENT schema (migration 5's `guidance_json`, asc-bli.1), which a store stopped at version 1
+   * does not have; production never calls them on such a store, because every writable open
+   * migrates first. Seeding by hand is what keeps this test about a store from before migration 2
+   * rather than about today's code run against yesterday's schema.
+   */
+  const seedVersion1Entry = (db: DatabaseSync, id: string, evidenceText: string): void => {
+    db.prepare(
+      `INSERT INTO entry_types (name, version, major, type_hash, spec_json, created_at)
+       VALUES ('note', 1, 1, 'hash_v1', ?, ?)`,
+    ).run(JSON.stringify(NOTE), AT);
+    db.prepare(
+      `INSERT INTO entries (id, type_name, type_version, type_hash, recorded_at, source,
+                            ascend_version, schema_version, evidence_text)
+       VALUES (?, 'note', 1, 'hash_v1', ?, 'self', '0.0.0', 1, ?)`,
+    ).run(id, AT, evidenceText);
+  };
+
   it('makes a pre-migration entry findable, rather than silently invisible', () => {
     // The failure this prevents is invisible by construction: an index built only from future
     // inserts leaves every existing entry unsearchable, with no error anywhere. That is the
@@ -446,8 +467,7 @@ describe('migration 2 backfills entries that predate it', () => {
     const store = openStore({ dir, migrate: false });
     try {
       migrate(store.db, [MIGRATIONS[0] as (typeof MIGRATIONS)[number]]);
-      registerType(store.db, NOTE, { registeredAt: AT });
-      recordEntry(store.db, { type: 'note' }, context('old', 'an entry from before the index'));
+      seedVersion1Entry(store.db, 'old', 'an entry from before the index');
 
       // No FTS table exists yet, so nothing can find it.
       expect(
@@ -457,9 +477,8 @@ describe('migration 2 backfills entries that predate it', () => {
       const result = migrate(store.db);
       expect(result.from).toBe(1);
       // Not a hardcoded 2: the default `migrate()` walks all the way to `SCHEMA_VERSION`, which
-      // includes migration 3 (asc-5ed) now that it exists -- this store already registered 'note'
-      // through the current `registerType`, so migration 3's rebuild is a harmless no-op here, but
-      // it still runs and is still reported in `applied`.
+      // includes every later migration -- migration 3 (asc-5ed) builds the views the hand-seeded
+      // 'note' row never got, and each is reported in `applied`.
       expect(result.to).toBe(SCHEMA_VERSION);
       expect(result.applied).toEqual(MIGRATIONS.slice(1).map((m) => m.name));
 
@@ -476,8 +495,7 @@ describe('migration 2 backfills entries that predate it', () => {
     const store = openStore({ dir, migrate: false });
     try {
       migrate(store.db, [MIGRATIONS[0] as (typeof MIGRATIONS)[number]]);
-      registerType(store.db, NOTE, { registeredAt: AT });
-      recordEntry(store.db, { type: 'note' }, context('old', 'an entry from before the index'));
+      seedVersion1Entry(store.db, 'old', 'an entry from before the index');
 
       migrate(store.db);
       const second = migrate(store.db);

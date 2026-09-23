@@ -1289,3 +1289,95 @@ describe('updateTypeProse opens its own transaction around the read and the writ
     });
   });
 });
+
+describe('guidance (asc-bli.3): stored beside the shape, never inside it', () => {
+  const GUIDANCE = {
+    purpose: 'why reviews are recorded',
+    analysis_questions: ['which kinds of review find the most?'],
+    interpretation_notes: 'count is findings, not comments',
+    review_after: 20,
+  } as const;
+
+  it('stores guidance given at registration and reads it back', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT, guidance: GUIDANCE });
+      expect(findType(store.db, 'review_completed', 1)?.guidance).toEqual(GUIDANCE);
+    });
+  });
+
+  it('reads back as an empty object, not null, when none was declared', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      expect(findType(store.db, 'review_completed', 1)?.guidance).toEqual({});
+      expect(
+        store.db.prepare('SELECT guidance_json FROM entry_types').get()?.['guidance_json'],
+      ).toBeNull();
+    });
+  });
+
+  it('does not reach the hash: the same shape with different guidance is unchanged, not a version', () => {
+    // The load-bearing regression test from asc-bli.2. If guidance ever leaked into
+    // definitionShape, this is the test that says so.
+    withStore((store) => {
+      const first = registerType(store.db, spec(), { registeredAt: AT, guidance: GUIDANCE });
+      const again = registerType(store.db, spec(), {
+        registeredAt: LATER,
+        guidance: { ...GUIDANCE, purpose: 'a different reason entirely' },
+      });
+
+      expect(again.outcome).toBe('unchanged');
+      expect(again.version).toBe(1);
+      expect(again.typeHash).toBe(first.typeHash);
+      expect(rowCount(store)).toBe(1);
+    });
+  });
+
+  it('refuses unusable guidance at registration and writes nothing', () => {
+    withStore((store) => {
+      expect(() =>
+        registerType(store.db, spec(), { registeredAt: AT, guidance: { review_after: 0 } }),
+      ).toThrow(UnusableProseError);
+      expect(rowCount(store)).toBe(0);
+    });
+  });
+
+  it('updates guidance field by field: an omitted field is kept, null clears one', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT, guidance: GUIDANCE });
+      const hashBefore = findType(store.db, 'review_completed', 1)?.typeHash;
+
+      updateTypeProse(store.db, 'review_completed', 1, {
+        guidance: { purpose: 'edited', review_after: null },
+      });
+
+      const row = findType(store.db, 'review_completed', 1);
+      expect(row?.guidance).toEqual({
+        purpose: 'edited',
+        analysis_questions: GUIDANCE.analysis_questions,
+        interpretation_notes: GUIDANCE.interpretation_notes,
+      });
+      expect(row?.typeHash).toBe(hashBefore);
+      expect(rowCount(store)).toBe(1);
+    });
+  });
+
+  it('stores NULL again once every field has been cleared', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT, guidance: { purpose: 'p' } });
+      updateTypeProse(store.db, 'review_completed', 1, { guidance: { purpose: null } });
+      expect(
+        store.db.prepare('SELECT guidance_json FROM entry_types').get()?.['guidance_json'],
+      ).toBeNull();
+    });
+  });
+
+  it('refuses unusable guidance on update and leaves the stored guidance alone', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT, guidance: GUIDANCE });
+      expect(() => {
+        updateTypeProse(store.db, 'review_completed', 1, { guidance: { analysis_questions: [] } });
+      }).toThrow(UnusableProseError);
+      expect(findType(store.db, 'review_completed', 1)?.guidance).toEqual(GUIDANCE);
+    });
+  });
+});

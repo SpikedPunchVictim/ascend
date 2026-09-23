@@ -16,9 +16,9 @@
  * comparable.
  */
 
-import { canonicalName, type Bump, type Rename } from '@ascend/core';
+import { canonicalName, GUIDANCE_FIELDS, type Bump, type Rename } from '@ascend/core';
 import { findType, listTypes, registerType, updateTypeProse, type Store } from '@ascend/store';
-import { documentSpec, type TypeDocument } from './document.js';
+import { documentGuidance, documentSpec, type TypeDocument } from './document.js';
 
 /** What registering a document did, in the terms a caller cares about. */
 export interface DocumentRegistration {
@@ -58,8 +58,10 @@ export function registerDocument(
   document: TypeDocument,
   options: RegisterDocumentOptions,
 ): DocumentRegistration {
+  const guidance = documentGuidance(document);
   const result = registerType(store.db, documentSpec(document), {
     registeredAt: options.registeredAt,
+    ...(Object.keys(guidance).length === 0 ? {} : { guidance }),
     ...(document.description === undefined ? {} : { description: document.description }),
     ...(document.record_when === undefined ? {} : { recordWhen: document.record_when }),
     ...(document.prose === undefined ? {} : { prose: document.prose }),
@@ -79,6 +81,8 @@ export function registerDocument(
       ...(document.description === undefined ? {} : { description: document.description }),
       ...(document.record_when === undefined ? {} : { recordWhen: document.record_when }),
       ...(Object.keys(propertyProse).length === 0 ? {} : { propertyProse }),
+      // Field by field, like property prose: the store keeps whatever this document omits.
+      ...(Object.keys(guidance).length === 0 ? {} : { guidance }),
     });
   }
 
@@ -148,6 +152,15 @@ function pendingProseChange(
     document.record_when !== (stored.recordWhen ?? undefined)
   ) {
     return 'pending';
+  }
+  // Guidance (asc-bli), with the same rule: only the fields this document mentions. Compared as
+  // JSON so `analysis_questions` is compared by content and order rather than by reference --
+  // a document re-read from disk is never the same array object as the one the store returned.
+  for (const field of GUIDANCE_FIELDS) {
+    const wanted = document[field];
+    if (wanted !== undefined && JSON.stringify(wanted) !== JSON.stringify(stored.guidance[field])) {
+      return 'pending';
+    }
   }
   // Inline `properties[].description` and the top-level `prose` map both land here (asc-v7t):
   // comparing only the top-level map is how a re-registration with an edited INLINE description

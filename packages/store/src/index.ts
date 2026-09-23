@@ -67,6 +67,7 @@ export {
   type RegisterTypeOptions,
   type TypeSummary,
   type TypeVersionRow,
+  type GuidanceEdit,
 } from './registry.js';
 
 export { indexName, refreshTypeViews, viewName, type RefreshReport } from './views.js';
