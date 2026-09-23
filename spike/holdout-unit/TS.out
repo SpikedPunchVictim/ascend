@@ -1,0 +1,9 @@
+{"arm":"TS","model":"claude-haiku-4-5-20251001","i":0,"delivered":true,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1702,"s2":["date"],"s4":["ls -la"]}
+{"arm":"TS","model":"claude-haiku-4-5-20251001","i":1,"delivered":true,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1735,"s2":["date"],"s4":["ls -la"]}
+{"arm":"TS","model":"claude-haiku-4-5-20251001","i":2,"delivered":true,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1748,"s2":["date"],"s4":["ls -la"]}
+{"arm":"TS","model":"claude-haiku-4-5-20251001","i":3,"delivered":true,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1727,"s2":["date"],"s4":["ls -la"]}
+{"arm":"TS","model":"claude-haiku-4-5-20251001","i":4,"delivered":true,"step2":"yes","step4":"no","summaryVetted":true,"summaryAsc":false,"compacted":true,"cost":0.1738,"s2":["date # vetted"],"s4":["ls"]}
+{"arm":"TS","model":"claude-haiku-4-5-20251001","i":5,"delivered":true,"step2":"yes","step4":"no","summaryVetted":true,"summaryAsc":false,"compacted":true,"cost":0.1712,"s2":["date # vetted"],"s4":["ls -la"]}
+{"arm":"TS","model":"claude-haiku-4-5-20251001","i":6,"delivered":true,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1736,"s2":["date"],"s4":["ls -la"]}
+{"arm":"TS","model":"claude-haiku-4-5-20251001","i":7,"delivered":true,"step2":"yes","step4":"yes","summaryVetted":true,"summaryAsc":false,"compacted":true,"cost":0.1733,"s2":["date # vetted"],"s4":["ls -la # vetted"]}
+SUMMARY TS claude-haiku-4-5-20251001: step2 yes 3/8  step4 yes 1/8  summary mentions vetted 3/8  compacted 8  cost $1.383

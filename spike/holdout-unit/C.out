@@ -1,0 +1,5 @@
+{"arm":"C","model":"claude-haiku-4-5-20251001","i":0,"delivered":false,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1672,"s2":["date"],"s4":["ls -la"]}
+{"arm":"C","model":"claude-haiku-4-5-20251001","i":1,"delivered":false,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1668,"s2":["date"],"s4":["ls -la"]}
+{"arm":"C","model":"claude-haiku-4-5-20251001","i":2,"delivered":false,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1696,"s2":["date"],"s4":["ls -la"]}
+{"arm":"C","model":"claude-haiku-4-5-20251001","i":3,"delivered":false,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1669,"s2":["date"],"s4":["ls -la"]}
+SUMMARY C claude-haiku-4-5-20251001: step2 yes 0/4  step4 yes 0/4  summary mentions vetted 0/4  compacted 4  cost $0.670

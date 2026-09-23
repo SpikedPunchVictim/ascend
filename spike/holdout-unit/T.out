@@ -1,0 +1,8 @@
+{"arm":"T","model":"claude-haiku-4-5-20251001","i":0,"delivered":true,"step2":"no","step4":"no","summaryVetted":true,"summaryAsc":false,"compacted":true,"cost":0.1738,"s2":["date"],"s4":["ls -la"]}
+{"arm":"T","model":"claude-haiku-4-5-20251001","i":1,"delivered":true,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1721,"s2":["date"],"s4":["ls -la"]}
+{"arm":"T","model":"claude-haiku-4-5-20251001","i":2,"delivered":true,"step2":"yes","step4":"yes","summaryVetted":true,"summaryAsc":false,"compacted":true,"cost":0.1708,"s2":["date # vetted"],"s4":["ls -la # vetted"]}
+{"arm":"T","model":"claude-haiku-4-5-20251001","i":3,"delivered":true,"step2":"no","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1745,"s2":["date"],"s4":["ls -la"]}
+{"arm":"T","model":"claude-haiku-4-5-20251001","i":4,"delivered":true,"step2":"yes","step4":"yes","summaryVetted":true,"summaryAsc":false,"compacted":true,"cost":0.1728,"s2":["date # vetted"],"s4":["ls # vetted"]}
+{"arm":"T","model":"claude-haiku-4-5-20251001","i":5,"delivered":true,"step2":"yes","step4":"yes","summaryVetted":true,"summaryAsc":false,"compacted":true,"cost":0.1748,"s2":["date # vetted"],"s4":["ls # vetted"]}
+{"arm":"T","model":"claude-haiku-4-5-20251001","i":6,"delivered":true,"step2":"yes","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1732,"s2":["date # vetted"],"s4":["ls -la"]}
+SUMMARY T claude-haiku-4-5-20251001: step2 yes 4/7  step4 yes 3/7  summary mentions vetted 4/7  compacted 7  cost $1.212

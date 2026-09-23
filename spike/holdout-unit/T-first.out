@@ -1,0 +1,2 @@
+{"arm":"T","model":"claude-haiku-4-5-20251001","i":0,"delivered":true,"step2":"yes","step4":"no","summaryVetted":false,"summaryAsc":false,"compacted":true,"cost":0.1749,"s2":["date # vetted"],"s4":["ls -la"]}
+SUMMARY T claude-haiku-4-5-20251001: step2 yes 1/1  step4 yes 0/1  summary mentions vetted 0/1  compacted 1  cost $0.175

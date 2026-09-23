@@ -1,0 +1,4 @@
+{"arm":"T","model":"claude-sonnet-5","i":0,"delivered":true,"step2":"yes","step4":"no","summaryVetted":true,"summaryAsc":true,"compacted":true,"cost":0.6588,"s2":["date # vetted"],"s4":["ls -la"]}
+{"arm":"T","model":"claude-sonnet-5","i":1,"delivered":true,"step2":"no","step4":"no","summaryVetted":true,"summaryAsc":true,"compacted":true,"cost":0.6613,"s2":["date"],"s4":["ls"]}
+{"arm":"T","model":"claude-sonnet-5","i":2,"delivered":true,"step2":"no","step4":"no","summaryVetted":true,"summaryAsc":true,"compacted":true,"cost":0.6435,"s2":["date"],"s4":["ls"]}
+SUMMARY T claude-sonnet-5: step2 yes 1/3  step4 yes 0/3  summary mentions vetted 3/3  compacted 3  cost $1.964

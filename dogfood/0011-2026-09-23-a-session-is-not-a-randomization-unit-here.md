@@ -7,7 +7,7 @@
 | **Surfaced by** | `node spike/power/power.mjs` (asc-6ola.3), replaying this project's transcripts to size a holdout comparison |
 | **Entry type(s)** | none yet; it concerns the planned `guidance.decided` holdout arm (asc-6ola.2) |
 | **Severity** | P1, matching the bead |
-| **Status** | open |
+| **Status** | design settled (`spike/holdout-unit/FINDINGS.md`); implementation lands with `asc-6ola` |
 
 ## What was found
 
