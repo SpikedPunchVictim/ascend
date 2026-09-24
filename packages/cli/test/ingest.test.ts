@@ -298,7 +298,7 @@ describe('asc ingest claude-code', () => {
     // by hand. `@2` is verification_run's derivation version (asc-6ola.6): its verdict rule
     // changed, and an entry the old rule wrote must not be read as the new rule's. A type whose
     // rule never changed carries no version, so its ids are byte-identical to every earlier run.
-    expect(db.ids).toContain(`derived:claude-code:verification_run@2:s-1:toolu-bash`);
+    expect(db.ids).toContain(`derived:claude-code:verification_run@3:s-1:toolu-bash`);
     expect(db.ids).toContain(`derived:claude-code:context_compaction:s-1:u-4`);
 
     // Five definitions registered, through the ordinary registry path.
@@ -592,7 +592,7 @@ describe('asc ingest claude-code', () => {
         .prepare('SELECT id, properties_json AS p FROM entries WHERE type_name = ?')
         .all('verification_run') as { id: string; p: string }[];
       expect(rows).toHaveLength(1);
-      expect(rows[0]?.id).toBe('derived:claude-code:verification_run@2:s-2:toolu-b');
+      expect(rows[0]?.id).toBe('derived:claude-code:verification_run@3:s-2:toolu-b');
       const properties = JSON.parse(rows[0]?.p ?? '{}') as Record<string, unknown>;
       expect(properties['verdict']).toBe('passed');
       expect(properties).not.toHaveProperty('previous_verdict');

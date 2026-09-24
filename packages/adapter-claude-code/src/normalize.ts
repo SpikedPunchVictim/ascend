@@ -28,8 +28,10 @@ import type { TranscriptFile } from './transcript-file.js';
 /**
  * Bumped whenever a change here can change what a handler sees. Every event carries it, so a
  * count that moves between two replays can be attributed to the normalizer or to the handler.
+ *
+ * 2: `check.run` no longer fires for `prettier --write` (asc-6ola.15).
  */
-export const EVENT_DERIVE_VERSION = 1;
+export const EVENT_DERIVE_VERSION = 2;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {

@@ -120,10 +120,11 @@ export const DERIVED_SOURCE = 'derived:claude-code';
  * Only a changed type carries a version. Every type absent from this map is at 1 and keeps the
  * id it always had, so a rule change in one type does not re-key the others.
  *
- * `verification_run` is at 2 because its verdict was read from `is_error` even when a pipe or a
- * later command owned that status (asc-6ola.6, dogfood/0012).
+ * `verification_run` went to 2 because its verdict was read from `is_error` even when a pipe or a
+ * later command owned that status (asc-6ola.6, dogfood/0012), and to 3 because `prettier --write`
+ * counted as a check (asc-6ola.15, dogfood/0015).
  */
-const DERIVATION_VERSIONS: Readonly<Record<string, number>> = { verification_run: 2 };
+const DERIVATION_VERSIONS: Readonly<Record<string, number>> = { verification_run: 3 };
 
 /** The derivation rule's version for a derived type; 1 when the rule has never changed. */
 export function derivationVersion(type: string): number {

@@ -118,6 +118,31 @@ describe('execSegments and checkRunner', () => {
     expect(checkRunner('vitest run --reporter=dot')).toBe('vitest');
   });
 
+  describe('prettier is a check only in a check mode (asc-6ola.15, dogfood/0015)', () => {
+    it.each([
+      'prettier --check .',
+      'npx prettier -c src',
+      'prettier --list-different .',
+      'npx prettier -l x.ts',
+    ])('counts %s', (command) => {
+      expect(checkRunner(command)).toMatch(/prettier$/);
+    });
+
+    it.each(['prettier --write .', 'npx prettier -w src', 'npx prettier x.ts'])(
+      'does NOT count %s, which formats rather than checks',
+      (command) => {
+        expect(checkRunner(command)).toBeUndefined();
+      },
+    );
+
+    it('reaches the real check after a formatting step', () => {
+      expect(checkRun('npx prettier --write . && pnpm test')).toEqual({
+        runner: 'pnpm test',
+        exitStatusIsCheck: true,
+      });
+    });
+  });
+
   it('recognizes a cargo sub-verb', () => {
     expect(checkRunner('cargo test --all')).toBe('cargo test');
   });

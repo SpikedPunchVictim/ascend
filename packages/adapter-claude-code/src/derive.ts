@@ -342,6 +342,27 @@ const CHECK_VERB = new Set([
   'build',
 ]);
 const RUN_VIA = new Set(['npx', 'bunx']);
+
+/**
+ * Runners that are a check only in some modes, and the flags that select one (asc-6ola.15).
+ *
+ * `prettier --write` rewrites files and exits 0; counting it made a formatting step a passed
+ * verification. Measured on the frozen corpus (dogfood/0015): of 231 prettier segments, 138
+ * were `--write`, 92 a check mode and 1 neither -- and without a check flag prettier prints the
+ * formatted text, which checks nothing either. So prettier counts only with a flag listed here.
+ *
+ * `eslint --fix` is NOT here: it still exits non-zero on what it cannot fix, so it is a check.
+ * `ruff format` would belong here and is left out because the corpus runs ruff zero times.
+ */
+const CHECK_MODE: Readonly<Record<string, ReadonlySet<string>>> = {
+  prettier: new Set(['--check', '-c', '--list-different', '-l']),
+};
+
+/** Whether `runner`, given `args`, runs in a mode that checks rather than one that rewrites. */
+function inCheckMode(runner: string, args: readonly string[]): boolean {
+  const modes = CHECK_MODE[runner];
+  return modes === undefined || args.some((arg) => modes.has(arg));
+}
 /** Flags that consume the token after them, so the verb is further right. */
 const FLAG_WITH_VALUE = new Set([
   '-F',
@@ -483,7 +504,7 @@ function checkLabel(segment: readonly string[]): string | undefined {
   const head = segment[0];
   if (head === undefined) return undefined;
 
-  if (BARE_RUNNERS.has(head)) return head;
+  if (BARE_RUNNERS.has(head)) return inCheckMode(head, segment.slice(1)) ? head : undefined;
   if (head === 'cargo') {
     const verb = segment[1];
     return verb === 'test' || verb === 'clippy' || verb === 'check' ? `${head} ${verb}` : undefined;
@@ -492,6 +513,7 @@ function checkLabel(segment: readonly string[]): string | undefined {
   if (RUN_VIA.has(head)) {
     const verb = segment[1];
     if (verb === undefined) return undefined;
+    if (!inCheckMode(verb, segment.slice(2))) return undefined;
     return CHECK_VERB.has(verb) || BARE_RUNNERS.has(verb) || verb === 'align'
       ? `${head} ${verb}`
       : undefined;

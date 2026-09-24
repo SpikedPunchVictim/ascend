@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { EVENT_DERIVE_VERSION } from '@ascend/adapter-claude-code';
 import { encodeProjectDir, spreadSample } from '../src/handler-replay.js';
 
 /**
@@ -127,7 +128,7 @@ describe('asc handlers check', () => {
       valueOf(run, '(log)', 'first_ts'),
       valueOf(run, '(log)', 'last_ts'),
       valueOf(run, '(log)', 'derive_version'),
-    ]).toEqual([1, '2026-09-24T10:01:00.000Z', '2026-09-24T10:04:00.000Z', 1]);
+    ]).toEqual([1, '2026-09-24T10:01:00.000Z', '2026-09-24T10:04:00.000Z', EVENT_DERIVE_VERSION]);
   });
 
   it('shows the requested number of sample rows', () => {
