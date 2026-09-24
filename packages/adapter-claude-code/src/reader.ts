@@ -174,6 +174,8 @@ export interface CorpusOptions {
   readonly signal?: AbortSignal;
   /** See `ScanOptions`. Defaults to `false`, and is passed straight through to `scanTranscripts`. */
   readonly includeEphemeral?: boolean;
+  /** See `ScanOptions`. Passed straight through to `scanTranscripts`. */
+  readonly projects?: ReadonlySet<string>;
   /**
    * A stored cursor, keyed by absolute path (asc-4dm.4). A file whose CURRENT `mtime` and `size`
    * both equal the entry recorded here is skipped whole -- never opened -- and reported as
@@ -206,6 +208,14 @@ export interface ScanOptions {
    * "never silent" treatment this module already gives a symlink or an unreadable directory.
    */
   readonly includeEphemeral?: boolean;
+  /**
+   * Walk only these project directories (the encoded names directly under the root). Omit it to
+   * walk every project. A replay of one project's handlers reads that project and nothing else:
+   * reading the whole root and discarding the rest measured 26 s against the frozen corpus
+   * (550,494 records seen for 77,743 used; asc-6ola.13). Not reported as skipped, because it was
+   * asked for rather than decided.
+   */
+  readonly projects?: ReadonlySet<string>;
 }
 
 /**
@@ -238,7 +248,7 @@ export async function scanTranscripts(
   const files: TranscriptFile[] = [];
   const skipped: SkippedEntry[] = [];
 
-  const walk = async (directory: string): Promise<void> => {
+  const walk = async (directory: string, top: boolean): Promise<void> => {
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
@@ -252,7 +262,8 @@ export async function scanTranscripts(
       if (entry.isSymbolicLink()) {
         skipped.push({ path, reason: 'symlink' });
       } else if (entry.isDirectory()) {
-        await walk(path);
+        if (top && options.projects !== undefined && !options.projects.has(entry.name)) continue;
+        await walk(path, false);
       } else if (entry.isFile() && entry.name.endsWith(JSONL_SUFFIX)) {
         // Classified BEFORE the ephemeral check, deliberately: the check needs the project
         // label, and `classifyTranscript` is what reads it off the path. Note that the
@@ -270,7 +281,7 @@ export async function scanTranscripts(
     }
   };
 
-  await walk(root);
+  await walk(root, true);
 
   // Compared with `<`/`>` rather than `localeCompare`, which is locale-dependent:
   // two users with different `LANG` would otherwise sweep the same corpus in
@@ -427,7 +438,10 @@ export async function streamCorpus(
   options: CorpusOptions = {},
 ): Promise<CorpusTotals> {
   const root = options.root ?? defaultTranscriptRoot();
-  const scan = await scanTranscripts(root, { includeEphemeral: options.includeEphemeral ?? false });
+  const scan = await scanTranscripts(root, {
+    includeEphemeral: options.includeEphemeral ?? false,
+    ...(options.projects === undefined ? {} : { projects: options.projects }),
+  });
 
   let lines = 0;
   let parsed = 0;

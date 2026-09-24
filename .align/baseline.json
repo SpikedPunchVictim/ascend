@@ -2,6 +2,14 @@
   "schemaVersion": 2,
   "entries": [
     {
+      "fingerprint": "0be0484aeeca6143",
+      "ruleId": "security.manifest.new-dependency",
+      "file": "packages/cli/package.json",
+      "acceptedAt": 1790266326151,
+      "acceptedBy": "manual",
+      "contentFingerprint": "968980b4e35057c1"
+    },
+    {
       "fingerprint": "32f295a8bc7203ae",
       "ruleId": "security.manifest.new-dependency",
       "file": "package.json",
@@ -103,7 +111,7 @@
       "file": "packages/cli/package.json",
       "acceptedAt": 1789178992175,
       "acceptedBy": "manual",
-      "contentFingerprint": "b41f007526cb98a5"
+      "contentFingerprint": "f9fbbfe1b80d3f5a"
     },
     {
       "fingerprint": "ba1f69d6d56ae5a3",

@@ -45,6 +45,13 @@ export { DERIVED_SOURCE, DERIVED_TYPES, derivationVersion, derivedType } from '.
 
 export { EPHEMERAL_ROOTS, isEphemeralProject } from './ephemeral.js';
 
+export {
+  EVENT_DERIVE_VERSION,
+  createNormalizer,
+  type NormalizeCounters,
+  type Normalizer,
+} from './normalize.js';
+
 export { outputVerdict, type OutputVerdict } from './output-verdict.js';
 
 export {

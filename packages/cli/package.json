@@ -28,7 +28,8 @@
     "@ascend/analysis": "workspace:*",
     "@ascend/core": "workspace:*",
     "@ascend/store": "workspace:*",
-    "@oclif/core": "^5.0.0"
+    "@oclif/core": "^5.0.0",
+    "yaml": "2.9.0"
   },
   "oclif": {
     "bin": "asc",
@@ -37,6 +38,9 @@
     "helpClass": "./dist/help.js",
     "topicSeparator": " ",
     "topics": {
+      "handlers": {
+        "description": "Check replay handlers against this project's recorded transcripts."
+      },
       "ingest": {
         "description": "Derive entries from sources outside this project, and write them into the store."
       },

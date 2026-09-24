@@ -86,3 +86,28 @@ export {
   type CursorPosition,
   type CursorScope,
 } from './cursor.js';
+
+export {
+  ENVELOPE_FIELDS,
+  EVENT_KINDS,
+  EVENT_ROLES,
+  MAIN_AGENT,
+  eventFieldType,
+  type EventFieldType,
+  type EventRole,
+  type EventValue,
+  type NormalizedEvent,
+} from './event.js';
+
+export {
+  HandlerError,
+  MAX_REGEX_LENGTH,
+  MAX_SUBJECT_LENGTH,
+  compileHandler,
+  handlerTokens,
+  runHandler,
+  type ClosedBy,
+  type CompiledHandler,
+  type HandlerRow,
+  type HandlerRun,
+} from './handler.js';

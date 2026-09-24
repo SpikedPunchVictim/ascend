@@ -518,6 +518,55 @@ describe('scanTranscripts / streamCorpus: ephemeral OS temp projects (asc-80m)',
   });
 });
 
+describe('scanTranscripts / streamCorpus: a projects filter (asc-6ola.13)', () => {
+  const buildRoot = (): string => {
+    const dir = temp();
+    scratch.push(dir);
+    for (const [project, text] of [
+      ['-Users-me-wanted', 'wanted main'],
+      ['-Users-me-other', 'other main'],
+    ] as const) {
+      mkdirSync(join(dir, project, '66666666-6666-4666-8666-666666666666', 'subagents'), {
+        recursive: true,
+      });
+      writeFileSync(
+        join(dir, project, '66666666-6666-4666-8666-666666666666.jsonl'),
+        `${JSON.stringify({ type: 'user', text })}\n`,
+      );
+      writeFileSync(
+        join(dir, project, '66666666-6666-4666-8666-666666666666', 'subagents', 'agent-a1.jsonl'),
+        `${JSON.stringify({ type: 'user', text: `${text} subagent` })}\n`,
+      );
+    }
+    return dir;
+  };
+
+  it('walks only the named projects, subagent files included, and reports nothing skipped', async () => {
+    const scan = await scanTranscripts(buildRoot(), { projects: new Set(['-Users-me-wanted']) });
+    expect(scan.files.map((file) => [file.project, file.kind])).toEqual([
+      ['-Users-me-wanted', 'session'],
+      ['-Users-me-wanted', 'subagent'],
+    ]);
+    expect(scan.skipped).toEqual([]);
+  });
+
+  it('walks every project when the filter is omitted', async () => {
+    const scan = await scanTranscripts(buildRoot());
+    expect(new Set(scan.files.map((file) => file.project))).toEqual(
+      new Set(['-Users-me-wanted', '-Users-me-other']),
+    );
+  });
+
+  it('streamCorpus propagates the filter', async () => {
+    const records: TranscriptRecord[] = [];
+    await streamCorpus((record) => records.push(record), {
+      root: buildRoot(),
+      projects: new Set(['-Users-me-other']),
+    });
+    expect(records.map((record) => record['text'])).toEqual(['other main', 'other main subagent']);
+  });
+});
+
 describe('streamCorpus: cursor-driven "unchanged" skip (asc-4dm.4)', () => {
   it('skips a file whose stat exactly matches a known cursor entry, reporting it as unchanged', async () => {
     const info = statSync(SESSION);

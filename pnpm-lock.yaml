@@ -67,6 +67,9 @@ importers:
       '@oclif/core':
         specifier: ^5.0.0
         version: 5.0.0
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
 
   packages/core:
     dependencies:
@@ -1860,7 +1863,7 @@ snapshots:
   '@esbuild/win32-x64@0.21.5':
     optional: true
 
-  '@eslint-community/eslint-utils@4.10.1(eslint@9.39.5)':
+  '@eslint-community/eslint-utils@4.10.1(eslint@9.39.5(supports-color@8.1.1))':
     dependencies:
       eslint: 9.39.5(supports-color@8.1.1)
       eslint-visitor-keys: 3.4.3
@@ -2221,7 +2224,7 @@ snapshots:
 
   '@typescript-eslint/utils@8.70.0(eslint@9.39.5(supports-color@8.1.1))(typescript@5.9.3)':
     dependencies:
-      '@eslint-community/eslint-utils': 4.10.1(eslint@9.39.5)
+      '@eslint-community/eslint-utils': 4.10.1(eslint@9.39.5(supports-color@8.1.1))
       '@typescript-eslint/scope-manager': 8.70.0
       '@typescript-eslint/types': 8.70.0
       '@typescript-eslint/typescript-estree': 8.70.0(typescript@5.9.3)
@@ -2540,7 +2543,7 @@ snapshots:
 
   eslint@9.39.5(supports-color@8.1.1):
     dependencies:
-      '@eslint-community/eslint-utils': 4.10.1(eslint@9.39.5)
+      '@eslint-community/eslint-utils': 4.10.1(eslint@9.39.5(supports-color@8.1.1))
       '@eslint-community/regexpp': 4.12.2
       '@eslint/config-array': 0.21.2(supports-color@8.1.1)
       '@eslint/config-helpers': 0.4.2

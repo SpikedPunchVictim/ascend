@@ -550,7 +550,7 @@ export function checkRun(
  * run reads `is_error`; a masked run reads its output, and never `is_error`, because masked is
  * exactly the case where `is_error` belongs to something else.
  */
-function readVerdict(
+export function readVerdict(
   exitStatusIsCheck: boolean,
   block: Readonly<Record<string, unknown>>,
 ):
@@ -568,7 +568,7 @@ function readVerdict(
 }
 
 /** A tool result's text: a string, or the `text` of each text block in an array. */
-function resultText(content: unknown): string {
+export function resultText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   return content
