@@ -55,6 +55,7 @@ context; the depth lives in the numbered files.
 | [0012](0012-2026-09-23-a-pipe-hides-every-failing-test-run.md) | the event model's success flag reports every failing test run as a success (a pipe masks the exit status) | `asc-6ola.6` (P0) | a read-only review agent, re-verified by hand; the mechanism was already known and routed around in one metric, never filed |
 | [0013](0013-2026-09-23-ingest-undoes-the-scrub.md) | ~~every ingest since the store scrub has written the real identity back~~ **corrected:** by design (asc-hqr); the real residue is the hand scrub splitting one project label into two spellings (288 / 105) | `asc-o3tn` (P2; `asc-i2kw` closed) | a dry run's collisions on types whose rule had not changed — nobody was looking; the first reading missed a closed ruling because `bd search` hides closed issues |
 | [0014](0014-2026-09-23-scrub-collisions-blamed-on-transcripts.md) | a full re-ingest blames 1,135 scrub-caused collisions on reused transcript identities | `asc-o3tn` (P2) | the same dry run: collisions where the plan predicted none — nobody was looking |
+| [0015](0015-2026-09-24-prettier-write-counted-as-a-check.md) | `prettier --write` is recorded as a passed verification run: 35 of the 54 joinable prettier `verification_run` rows | `asc-6ola.15` (P1) | grouping the runners a new handler emitted (asc-6ola.7) — nobody was looking |
 
 Ten findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.

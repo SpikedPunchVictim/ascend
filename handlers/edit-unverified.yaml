@@ -1,0 +1,15 @@
+# asc-6ola.7: an edit that reaches the next user prompt with no check run after it.
+#
+# Any check.run counts, whatever its verdict: the question is whether a check ran at all, not
+# whether it passed -- which is why this depends on check.run seeing through a pipe (asc-6ola.6).
+# The window is one (session, agent) stream, so a check a subagent ran does not verify the
+# parent's edit. An edit whose stream ends before another prompt is unclosed, not emitted.
+on: file.changed
+description: An edit reached the next prompt with no check run after it.
+window:
+  until: prompt.submit
+  absent:
+    on: check.run
+emit:
+  path: '${path}'
+  tool: '${tool}'

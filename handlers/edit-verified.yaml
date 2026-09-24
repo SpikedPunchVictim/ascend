@@ -1,0 +1,15 @@
+# asc-6ola.7, the complement of edit-unverified: the first check run after an edit, before the
+# next prompt. Emits both timestamps so the edit-to-check latency is computed downstream, in the
+# analysis layer, rather than in the handler.
+on: file.changed
+description: The first check run after an edit, before the next prompt.
+window:
+  until: prompt.submit
+  first:
+    on: check.run
+emit:
+  path: '${path}'
+  tool: '${tool}'
+  edited_at: '${ts}'
+  checked_at: '${window.first.ts}'
+  runner: '${window.first.runner}'

@@ -28,8 +28,9 @@ import {
 /**
  * Claude Code's directory name for a project: every character that is not a letter, a digit or a
  * `-` becomes `-`. Checked 2026-09-24 against the 138 directories under `~/.claude/projects` on
- * this machine: none contains a `.`, `_` or space, which is consistent with this rule but does
- * not exercise it for those characters. A caller whose directory is spelled otherwise passes
+ * this machine: none contains a `.`, `_` or space, and one is `-Users-<user>--claude-jobs-…`,
+ * a `.claude` path with its `.` written as `-`. `_` and space are not exercised by any directory
+ * there; the rule treats them the same way. A caller whose directory is spelled otherwise passes
  * `--project`, and a name that matches no directory is refused rather than replayed as empty.
  */
 export function encodeProjectDir(path: string): string {
