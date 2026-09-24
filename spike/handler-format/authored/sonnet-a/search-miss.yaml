@@ -1,0 +1,16 @@
+# search-miss
+on: search.run
+where:
+  hits: 0
+window:
+  calls: 5
+  first:
+    on: search.run
+    where:
+      hits: { gt: 0 }
+      pattern: { shares_token: $pattern }
+emit:
+  pattern: '${pattern}'
+  returned: '0'
+  corrected_by: '${window.first.pattern}'
+  search_tool: '${via}'

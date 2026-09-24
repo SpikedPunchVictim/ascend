@@ -1,0 +1,12 @@
+on: file.changed
+capture:
+  to:   { field: after,  regex: '\*\*Status:\s*(Not Started|In Progress|Complete|Blocked)', flags: i }
+  from: { field: before, regex: '\*\*Status:\s*(Not Started|In Progress|Complete|Blocked)', flags: i }
+where:
+  path: { matches: 'IMPLEMENTATION_PLAN\.md$|PLAN\.md$', flags: i }
+  $to: { exists: true }
+  $from: { ne: $to }
+emit:
+  stage: '${path|basename}'
+  from_status: '${from|snake}'
+  to_status: '${to|snake}'

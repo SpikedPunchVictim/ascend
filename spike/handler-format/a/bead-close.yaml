@@ -1,0 +1,9 @@
+on: command.run
+where:
+  ok: true
+  head: bd
+  argv.1: close
+each: { field: argv, from: 2, matches: '^[a-z]+-[a-z0-9]+(\.[0-9]+)*$', as: id }
+emit:
+  stage: '${id}'
+  to_status: complete

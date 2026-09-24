@@ -1,0 +1,15 @@
+on: command.run
+where:
+  is_error: true
+window:
+  calls: 10
+  count:
+    on: command.run
+    where:
+      head: $head
+      is_error: true
+      call: { gt: $call }
+  at_least: 1
+emit:
+  command: '${head}'
+  failed_again: '${window.count}'

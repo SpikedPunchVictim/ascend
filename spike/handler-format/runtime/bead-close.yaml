@@ -1,0 +1,9 @@
+on: command.run
+where:
+  is_error: false
+  head: bd
+  argv.1: close
+each: { field: argv, from: 2, matches: '^[a-z]+-[a-z0-9]+(\.[0-9]+)*$', as: bead }
+emit:
+  stage: '${bead}'
+  to_status: complete

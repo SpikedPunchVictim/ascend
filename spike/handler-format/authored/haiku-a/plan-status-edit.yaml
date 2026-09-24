@@ -1,0 +1,15 @@
+# plan-status-edit
+on: file.changed
+capture:
+  new_status: { field: after, regex: '\*\*Status:\s*(Not Started|In Progress|Complete|Blocked)', group: 1, flags: i }
+  old_status: { field: before, regex: '\*\*Status:\s*(Not Started|In Progress|Complete|Blocked)', group: 1, flags: i }
+where:
+  path: { matches: 'PLAN\.md$', flags: i }
+  after: { matches: '\*\*Status:\s*(Not Started|In Progress|Complete|Blocked)', flags: i }
+  any:
+    - old_status: { exists: false }
+    - old_status: { ne: '$new_status' }
+emit:
+  stage: '${path|basename}'
+  to_status: '${new_status|snake}'
+  from_status: '${old_status|snake}'
