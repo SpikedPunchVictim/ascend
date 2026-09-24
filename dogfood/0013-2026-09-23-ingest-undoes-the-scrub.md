@@ -7,7 +7,15 @@
 | **Surfaced by** | the dry run before `asc-6ola.6` stage 5 (`asc ingest claude-code --full --dry-run`), then a read-only count of the store |
 | **Entry type(s)** | all five derived types (derived) |
 | **Severity** | P1 |
-| **Status** | open |
+| **Status** | **corrected 2026-09-23: the headline claim was wrong.** `asc-i2kw` closed as by design; the real residue is in `asc-o3tn` |
+
+> **CORRECTION, 2026-09-23 (same day).** The headline is wrong. Ingest writing the real
+> identity is **by design**: on 2026-09-20 the owner ruled that identity is tokenised when it
+> leaves the machine (`asc export --redact`), and that ingest copies the `project` label
+> verbatim and says so (`asc-37x`, `asc-hqr`, decision `6c2e807a`). A write-path redaction bead,
+> `asc-4a6.1`, had already been closed for contradicting `export.ts:33`. This record was written
+> without finding either one, because `bd search` hides closed issues unless given
+> `--status all`. See **Correction** at the end. The original text stays below, unedited.
 
 ## What was found
 
@@ -93,3 +101,43 @@ cannot exist until a write-time step does.
 - Bead: `asc-i2kw` (blocks `asc-6ola.6`, `asc-o3tn`)
 - The scrub: `fc8313f`, `4469340`
 - Related: [0004](0004-2026-09-18-the-corpus-records-identity.md), [0014](0014-2026-09-23-scrub-collisions-blamed-on-transcripts.md)
+
+## Correction
+
+**What was wrong.** The claim that "the scrub's goal, a store without identity at rest, has
+been failing quietly" states a goal the project had already given up, two days after the scrub
+and on purpose. Measured again: the username is in the `project` label only, and `cwd` has 0
+hits in the 316 rows:
+
+```
+context_compaction|0|108|0|108
+skill_activation|0|13|0|13
+tool_denial|0|44|0|44
+user_correction|0|1|0|1
+verification_run|0|150|0|150
+```
+
+(columns: type, `cwd` hits, `project` property hits, other property hits, rows written since the scrub)
+
+So `asc-37x`'s prevention works (`cwd` is project-relative), and the `project` label is verbatim
+as ruled.
+
+**How it happened.** `bd search anonym | pseudonym | scrub | identif ..` returned "No issues found"
+every time, and I read that as "nothing tracks this". The default status filter excludes closed
+issues: `bd search redact` returns 3 results, and with `--status all` it returns 5. That is the same
+absence-trusted failure this series keeps recording. It is recorded as `search_miss` `7582df5b`.
+The positive control that would have caught it: `fc8313f`'s own message names `asc-37x` as
+carrying "prevention at write time", and I read that message only after filing.
+
+**What is real.** The hand scrub of 2026-09-18 came before the 09-20 ruling. Everything
+ingested since carries the verbatim label, so one project now has two spellings in the store:
+
+```
+-Users-<user>-projects-ascend   288   (scrubbed rows)
+<verbatim label>                105   (written since)
+```
+
+Anything grouped by `project` splits this repository in two. That, and the 1,135 collisions in
+[0014](0014-2026-09-23-scrub-collisions-blamed-on-transcripts.md), are the scrub's leftovers.
+Both are tracked in `asc-o3tn`. Entries are immutable, so the fix has to happen when the data is
+read.

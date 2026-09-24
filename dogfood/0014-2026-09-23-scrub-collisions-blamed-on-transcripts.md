@@ -74,11 +74,12 @@ message is correct in every test.
 
 ## Consequences and constraints
 
-- Largely resolved by `asc-i2kw`: with the pseudonyms applied at write time, re-derivation would
-  reproduce the stored rows and they would be `present`, not `collided`.
+- ~~Largely resolved by `asc-i2kw`~~ **Corrected 2026-09-23:** `asc-i2kw` was closed as by design (see
+  [0013](0013-2026-09-23-ingest-undoes-the-scrub.md)'s correction), because ingest keeps the label verbatim. The
+  scrubbed rows will therefore collide on every `--full` run. They need a read-side alias, tracked in `asc-o3tn`.
 - Separately, the message should say *what* differs (which fields), not guess *why*.
 
 ## Links
 
-- Bead: `asc-o3tn` (depends on `asc-i2kw`)
+- Bead: `asc-o3tn`
 - Related: [0013](0013-2026-09-23-ingest-undoes-the-scrub.md), `fc8313f`
