@@ -17,11 +17,50 @@
  *
  * **`--table` is accepted as the default's name.** The line format *is* this command's table --
  * it is not `output.ts`'s aligned grid, and `--json` is where the rows become a contract.
+ *
+ * **Above a measured ceiling the payload is capped, and the whole brief is written beside the
+ * store.** A `SessionStart` hook's stdout is truncated to a ~2 KiB preview somewhere between 8,990
+ * and 10,495 bytes (`asc-3q7`, located one session per point by `spike/ev16-brief-canary.mjs`), and
+ * **nothing reports the loss**: the hook exits 0, this command prints everything, and the
+ * transcript's own `hook_response` carries the full text even when the model received almost none
+ * of it. When the brief does not fit under `BRIEF_CAP_BYTES`, the whole text is written to
+ * `.ascend/brief.txt` and stdout carries as many whole lines as fit plus a note saying how many
+ * were dropped and where they went. That pointer is the arm `9bf45ed` measured delivering a canary
+ * whole at 121,865 bytes, where stdout and the JSON envelope both truncated.
+ *
+ * **No flag turns this on, and that is a constraint rather than an oversight.** `install-hook.ts`
+ * records that the hook's payload is this command's plain stdout and that there is to be **no new
+ * flag on `types brief`**, so the cap is a property of the command rather than a mode a caller
+ * selects. `--json` is exempt: a script asked for a contract, not for a payload that has to fit in
+ * a session, and a truncated envelope would be a broken envelope.
  */
+
+import { Buffer } from 'node:buffer';
+import { writeFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 import { listTypes, type TypeSummary } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
 import { usageError } from '../../errors.js';
+
+/**
+ * The byte count this command refuses to exceed on its own stdout.
+ *
+ * Below every point measured **delivered** (8,990 bytes arrived whole) and below the smallest point
+ * measured **truncated** (10,495), so the cap sits inside the region the measurement covers rather
+ * than at its edge. The ceiling itself is bracketed, not located -- the bead says in as many words
+ * not to quote a figure for it -- so the ~990 bytes of headroom (11%) are a judgement, stated here
+ * as one rather than implied, and this constant is the single place to move it.
+ *
+ * The unit is BYTES because that is what the platform counts: `bd prime` at 47,381 bytes was
+ * reported in this repository's own session as "Output too large (46.3KB)", and 47,381 / 1024 =
+ * 46.3 exactly. A cap in code points would be the wrong unit by a factor that varies with the
+ * text.
+ */
+const BRIEF_CAP_BYTES = 8_000;
+
+/** The whole brief's path under the project root. Written only when the payload has to be capped. */
+const BRIEF_FILE = '.ascend/brief.txt';
 
 /**
  * Whether a type holds at least the entries its `review_after` names (asc-bli.6).
@@ -52,6 +91,36 @@ function line(summary: TypeSummary): string {
     : `${summary.name}${marker} -- ${summary.recordWhen}`;
 }
 
+/**
+ * The most whole lines that fit under `cap`, and the note that accounts for the rest.
+ *
+ * **Whole lines, never a byte slice.** Cutting mid-line would leave a `record_when` sentence that
+ * reads complete, which is a claim about the registry the project did not make; and cutting
+ * mid-character is `asc-bcv.23`'s defect, where `--table` severed a grapheme cluster and showed a
+ * plausible-looking different character. Dropping from the end is also the only truncation whose
+ * loss is one number, and it follows the order the registry already has.
+ *
+ * The note is regenerated per candidate because it names how many were dropped, so the fit is over
+ * the text that will actually be emitted rather than over the lines alone -- the same reason
+ * `budget.ts` measures its report as part of the output it reports on.
+ */
+function fitBrief(
+  lines: readonly string[],
+  note: (kept: number, total: number) => string,
+  cap: number,
+): { readonly text: string; readonly kept: number } {
+  for (let kept = lines.length; kept >= 0; kept -= 1) {
+    const text =
+      kept === lines.length
+        ? lines.join('\n')
+        : [...lines.slice(0, kept), note(kept, lines.length)].join('\n');
+    if (Buffer.byteLength(text, 'utf8') <= cap) return { text, kept };
+  }
+  // Unreachable for any cap that fits the note on its own. Returning the note alone keeps the
+  // failure bounded and named rather than unbounded and silent, which is the whole point.
+  return { text: note(0, lines.length), kept: 0 };
+}
+
 export default class TypesBrief extends BaseCommand {
   static override description = 'List the active entry types, with when to record each one.';
 
@@ -72,7 +141,7 @@ export default class TypesBrief extends BaseCommand {
       );
     }
 
-    await this.withProject(({ store }) => {
+    await this.withProject(({ store, root }) => {
       const summaries = listTypes(store.db).filter((summary) => summary.status === 'active');
 
       if (format === 'json') {
@@ -100,8 +169,50 @@ export default class TypesBrief extends BaseCommand {
         return;
       }
 
-      // One write rather than one per line, so a brief read through a pipe arrives whole.
-      if (summaries.length > 0) this.log(summaries.map(line).join('\n'));
+      if (summaries.length === 0) return;
+
+      const lines = summaries.map(line);
+      const whole = lines.join('\n');
+
+      // The pointer is named relative to the caller's working directory rather than to the project
+      // root, because a store is found by walking UP from the cwd: run from a subdirectory, the
+      // root is an ancestor and a root-relative name would point at nothing.
+      const pointer = relative(process.cwd(), join(root, BRIEF_FILE));
+      const note = (kept: number, total: number): string =>
+        `[${String(kept)} of ${String(total)} types shown; the other ${String(total - kept)} are ` +
+        `in ${pointer} -- read it before recording anything.]`;
+
+      const fit = fitBrief(lines, note, BRIEF_CAP_BYTES);
+      if (fit.kept === lines.length) {
+        // One write rather than one per line, so a brief read through a pipe arrives whole.
+        this.log(whole);
+        return;
+      }
+
+      // Over the cap, so the whole brief has to be somewhere the model can reach. Written BEFORE
+      // the line that names it: a pointer emitted first and written second is a claim about a file
+      // that a crash can leave missing, and the model would spend a turn discovering that.
+      try {
+        writeFileSync(join(root, BRIEF_FILE), whole, 'utf8');
+        this.log(fit.text);
+      } catch (cause) {
+        // Not swallowed. The payload still has to fit under the ceiling, so the fallback is the
+        // same fit with a note that claims no file -- never a pointer to one that is not there.
+        this.log(
+          fitBrief(
+            lines,
+            (kept, total) =>
+              `[${String(kept)} of ${String(total)} types shown; the other ` +
+              `${String(total - kept)} are in this project's store -- \`asc types list\` names ` +
+              `them.]`,
+            BRIEF_CAP_BYTES,
+          ).text,
+        );
+        this.warn(
+          `could not write ${pointer} (${String(cause)}) -- the brief was capped and the ` +
+            `omitted types were not written anywhere.`,
+        );
+      }
     });
   }
 }

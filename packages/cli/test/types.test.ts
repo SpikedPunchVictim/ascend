@@ -561,6 +561,96 @@ describe('asc types brief', () => {
   });
 });
 
+describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
+  /**
+   * A registry whose brief is over the cap by construction: six types, each with ~1,750 bytes of
+   * `record_when` prose.
+   *
+   * Few types with long prose rather than many types with short ones, because this fixture's cost
+   * is one subprocess per `types define` and the cap responds to bytes, not to type count.
+   */
+  function oversize(dir: string): readonly string[] {
+    return Array.from({ length: 6 }, (_, index) => {
+      const name = `bulk_${String(index)}`;
+      asc(
+        [
+          'types',
+          'define',
+          json(dir, `${name}.json`, {
+            name,
+            properties: [{ name: 'note', type: 'string' }],
+            record_when: `${name} `.repeat(250),
+          }),
+        ],
+        dir,
+      );
+      return name;
+    });
+  }
+
+  it('caps what it prints, and writes the whole brief beside the store', () => {
+    const dir = project();
+    const names = oversize(dir);
+
+    const run = asc(['types', 'brief'], dir);
+    expect(run.status).toBe(0);
+
+    const written = readFileSync(join(dir, '.ascend', 'brief.txt'), 'utf8');
+    // The guard, and it comes first on purpose: a fixture that quietly fell under the cap would
+    // make every assertion below vacuous, and a cap test that cannot fail is the false green this
+    // project treats as severity-zero.
+    expect(Buffer.byteLength(written, 'utf8')).toBeGreaterThan(8_000);
+
+    // What has to fit is stdout, because stdout is what a SessionStart hook delivers and what the
+    // platform truncates near 10 KB.
+    expect(Buffer.byteLength(run.stdout, 'utf8')).toBeLessThanOrEqual(8_000);
+    expect(run.stdout).toContain(`of ${String(names.length)} types shown`);
+    expect(run.stdout).toContain('.ascend/brief.txt');
+
+    // Every active type is in the file, including the ones stdout had to drop.
+    for (const name of names) expect(written).toContain(`${name} -- `);
+  });
+
+  it('cuts on a line boundary, so no record_when reaches the reader half-said', () => {
+    const dir = project();
+    const names = oversize(dir);
+
+    const shown = asc(['types', 'brief'], dir).stdout.trim().split('\n');
+    const note = shown[shown.length - 1] ?? '';
+    expect(note.startsWith('[')).toBe(true);
+
+    const written = readFileSync(join(dir, '.ascend', 'brief.txt'), 'utf8').split('\n');
+    const lines = shown.slice(0, -1);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.length).toBeLessThan(names.length);
+    // A byte slice would leave a partial sentence in the head; a boundary cut leaves whole lines,
+    // each of which is a line of the file verbatim.
+    for (const row of lines) expect(written).toContain(row);
+  });
+
+  it('leaves the payload whole, and writes no file, when it fits', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+
+    const run = asc(['types', 'brief'], dir);
+    expect(run.stdout.trim()).toBe(
+      'review_completed -- Record when a review of a change reaches a verdict.',
+    );
+    // Nothing was dropped, so nothing points anywhere -- and a project that never crosses the cap
+    // should never find a file appearing inside its store directory.
+    expect(existsSync(join(dir, '.ascend', 'brief.txt'))).toBe(false);
+  });
+
+  it('never caps --json, which is a contract rather than a session payload', () => {
+    const dir = project();
+    const names = oversize(dir);
+
+    const rows = envelope(asc(['types', 'brief', '--json'], dir).stdout);
+    expect(rows).toHaveLength(names.length);
+    expect(rows.map((row) => row['name']).sort()).toEqual([...names].sort());
+  });
+});
+
 describe('readiness in asc types brief and asc types list (asc-bli.6)', () => {
   const LINE = 'Record when a review of a change reaches a verdict.';
   const review = (dir: string): void => {
