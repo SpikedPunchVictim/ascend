@@ -48,7 +48,8 @@ export const MAX_REGEX_LENGTH = 300;
 export const MAX_SUBJECT_LENGTH = 100_000;
 
 const TOP_KEYS = new Set(['on', 'description', 'capture', 'where', 'each', 'window', 'emit']);
-const WINDOW_KEYS = new Set(['calls', 'until', 'first', 'count', 'absent', 'at_least']);
+const WINDOW_KEYS = new Set(['calls', 'until', 'first', 'count', 'absent', 'at_least', 'any']);
+const WATCHER_KEYS = new Set(['on', 'where']);
 const OPERATORS = new Set([
   'eq',
   'ne',
@@ -127,12 +128,18 @@ interface Each {
 
 type WindowMode = 'first' | 'count' | 'absent';
 
+/**
+ * What the window watches. One kind (`on` + `where`), or a list of per-kind watchers (`any`),
+ * each with its own `where` compiled against that kind -- "a later event mentions this path"
+ * spans kinds whose fields do not overlap (asc-6ola.8). `on` is undefined for the list form, and
+ * a template may not address the matched event's fields through it.
+ */
 interface Window {
   readonly calls: number | undefined;
   readonly until: string | undefined;
   readonly mode: WindowMode;
-  readonly on: string;
-  readonly where: Test;
+  readonly on: string | undefined;
+  readonly match: Test;
   readonly atLeast: number;
 }
 
@@ -383,15 +390,25 @@ function compileWhere(spec: unknown, kind: string, context: RefContext, where: s
         return (event, trigger) => absent(left(event, trigger)) !== arg;
       }
       case 'shares_token': {
-        if (fieldType !== 'string') return refuse(`${at}: shares_token needs a string field`);
+        if (fieldType !== 'string' && fieldType !== 'array') {
+          return refuse(`${at}: shares_token needs a string or array field`);
+        }
         const right = operand(arg, context, at);
         if (right.type !== 'string') return refuse(`${at}: shares_token takes a string`);
         return (event, trigger) => {
           const value = left(event, trigger);
           const other = right.get(trigger);
-          if (typeof value !== 'string' || typeof other !== 'string') return false;
+          if (typeof other !== 'string') return false;
           const wanted = new Set(handlerTokens(other));
-          return handlerTokens(value).some((token) => wanted.has(token));
+          const overlaps = (text: string): boolean =>
+            handlerTokens(text).some((token) => wanted.has(token));
+          if (typeof value === 'string') return overlaps(value);
+          if (Array.isArray(value)) {
+            return (value as readonly unknown[]).some(
+              (one) => typeof one === 'string' && overlaps(one),
+            );
+          }
+          return false;
         };
       }
       default:
@@ -416,7 +433,13 @@ function checkTemplateName(name: string, names: TemplateNames, where: string): v
     const mode = names.window?.mode;
     if (rest === 'count' && mode === 'count') return;
     if (rest.startsWith('first.') && mode === 'first' && names.window !== undefined) {
-      pathType(names.window.on, rest.slice('first.'.length), where);
+      const windowOn = names.window.on;
+      if (windowOn === undefined) {
+        return refuse(
+          `${where}: \${${name}} is not available from an any-window -- the watcher kinds differ`,
+        );
+      }
+      pathType(windowOn, rest.slice('first.'.length), where);
       return;
     }
     refuse(`${where}: \${${name}} is not available from this handler's window`);
@@ -491,11 +514,8 @@ function compileWindow(spec: unknown, context: RefContext): Window {
   const inner = spec[mode];
   if (!isMap(inner)) return refuse(`window.${mode}: must be a map`);
   for (const key of Object.keys(inner)) {
-    if (key !== 'on' && key !== 'where') refuse(`window.${mode}: unknown key ${key}`);
-  }
-  const on = inner['on'];
-  if (typeof on !== 'string' || !Object.hasOwn(EVENT_KINDS, on)) {
-    return refuse(`window.${mode}.on: ${JSON.stringify(on)} is not an event kind`);
+    if (key !== 'on' && key !== 'where' && key !== 'any')
+      refuse(`window.${mode}: unknown key ${key}`);
   }
   const atLeast = spec['at_least'];
   if (atLeast !== undefined && mode !== 'count') refuse('window.at_least: applies only to count');
@@ -505,12 +525,54 @@ function compileWindow(spec: unknown, context: RefContext): Window {
   ) {
     refuse('window.at_least: must be a whole number, at least 1');
   }
+
+  let on: string | undefined;
+  let match: Test;
+  if (inner['any'] !== undefined) {
+    if (inner['on'] !== undefined || inner['where'] !== undefined) {
+      return refuse(`window.${mode}: use on, or any -- not both`);
+    }
+    const list = inner['any'];
+    if (!Array.isArray(list) || list.length === 0) {
+      return refuse(`window.${mode}.any: must be a non-empty list`);
+    }
+    const watchers = list.map((one, index) => {
+      const at = `window.${mode}.any[${String(index)}]`;
+      if (!isMap(one)) return refuse(`${at}: must be a map`);
+      for (const key of Object.keys(one)) {
+        if (!WATCHER_KEYS.has(key)) refuse(`${at}: unknown key ${key}`);
+      }
+      const kind = one['on'];
+      if (typeof kind !== 'string' || !Object.hasOwn(EVENT_KINDS, kind)) {
+        return refuse(`${at}.on: ${JSON.stringify(kind)} is not an event kind`);
+      }
+      // $ references resolve against the TRIGGER here, and plain keys against this watcher's
+      // kind -- the same rule as a single window's where.
+      return { kind, test: compileWhere(one['where'], kind, context, at) };
+    });
+    on = undefined;
+    match = (event, scope) =>
+      watchers.some((one) => event.kind === one.kind && one.test(event, scope));
+  } else {
+    const kind = inner['on'];
+    if (typeof kind !== 'string' || !Object.hasOwn(EVENT_KINDS, kind)) {
+      return refuse(`window.${mode}.on: ${JSON.stringify(kind)} is not an event kind`);
+    }
+    on = kind;
+    // The kind check belongs to the match itself: a where compiled for `kind` may still be
+    // true of another kind's event (a tool.use.start carries `ts` too), and the accept loop
+    // offers every event. Found the hard way -- the edit-verified fixture replay lost
+    // `window.first.runner` to the Bash call's tool.use.start.
+    const where = compileWhere(inner['where'], kind, context, `window.${mode}.where`);
+    match = (event, scope) => event.kind === kind && where(event, scope);
+  }
+
   return {
     calls: calls as number | undefined,
     until: until as string | undefined,
     mode,
     on,
-    where: compileWhere(inner['where'], on, context, `window.${mode}.where`),
+    match,
     atLeast: (atLeast as number | undefined) ?? 1,
   };
 }
@@ -635,8 +697,10 @@ export interface HandlerRun {
   /** Events that matched `on` and `where`, whatever their window then decided. */
   readonly triggers: number;
   /**
-   * Windows still undecided when their stream ended: a `first` or `absent` with no match yet,
-   * or a `count` below `at_least`. Counted, never emitted and never silently dropped.
+   * Windows still undecided when their stream ended: a `first` with no match yet, a `count`
+   * below `at_least`, or an `absent` whose `until` never came. Counted, never emitted and never
+   * silently dropped. An `absent` whose `until` IS `session.end` is decided by that end, not
+   * unclosed.
    */
   readonly unclosed: number;
 }
@@ -703,7 +767,10 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
       return [];
     }
     if (spec.mode === 'absent') {
-      if (closedBy === 'session.end') {
+      // A window whose `until` IS session.end ends there by definition, so the end decides it:
+      // nothing matched, and that is the verdict (asc-6ola.8, read.unused). A window waiting
+      // for an until that never came is undecided, and counts as unclosed.
+      if (closedBy === 'session.end' && spec.until !== 'session.end') {
         unclosed += 1;
         return [];
       }
@@ -747,12 +814,7 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
           continue;
         }
         // Held open for a straggling call: an event past the limit is outside the window.
-        if (
-          !past &&
-          event.kind === window.on &&
-          event.seq > one.trigger.seq &&
-          window.where(event, one.scope)
-        ) {
+        if (!past && event.seq > one.trigger.seq && window.match(event, one.scope)) {
           if (window.mode === 'first') {
             const found = event;
             out.push(

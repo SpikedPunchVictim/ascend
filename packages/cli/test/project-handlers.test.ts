@@ -124,3 +124,31 @@ describe('edit-unverified and edit-verified', () => {
     );
   });
 });
+
+describe('read-unused', () => {
+  // a.ts is read and then edited (used); b.md is read and never touched again (unused); c.ts is
+  // read twice and never otherwise (still unused: a re-read is not a use, and each read is a
+  // trigger, so c.ts emits two rows).
+  const records = [
+    prompt('go'),
+    ...tool('r1', 'Read', { file_path: '/p/a.ts' }),
+    ...tool('r2', 'Read', { file_path: '/p/b.md' }),
+    ...tool('r3', 'Read', { file_path: '/p/c.ts' }),
+    ...tool('r4', 'Read', { file_path: '/p/c.ts' }),
+    ...tool('e1', 'Edit', { file_path: '/p/a.ts', old_string: 'x', new_string: 'y' }),
+  ];
+
+  it('emits the reads nothing later used, and never counts one unclosed', async () => {
+    const result = await replayHandlers(
+      [{ name: 'read-unused', handler: loadHandler(read('read-unused.yaml')) }],
+      { root: corpus(records), project: PROJECT },
+    );
+    const [unused] = result.handlers;
+    if (unused === undefined) throw new Error('missing replay');
+    expect(unused.rows.map((row) => row.fields['path'])).toEqual(['/p/b.md', '/p/c.ts', '/p/c.ts']);
+    // The window's until IS session.end, so every trigger is decided: emitted or used. Only
+    // a.ts was used, so rows + 1 = triggers.
+    expect(unused.unclosed).toBe(0);
+    expect(unused.rows.length).toBe(unused.triggers - 1);
+  });
+});

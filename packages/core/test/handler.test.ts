@@ -341,6 +341,31 @@ describe('windows', () => {
     expect(rows).toEqual([]);
   });
 
+  it('first: the window kind is part of the match, not only the where', () => {
+    // A where with no condition is true of every kind's event; the earlier tool.use.start must
+    // not be taken as the match even though it carries the same-named field.
+    const spec = {
+      on: 'file.changed',
+      window: { calls: 3, first: { on: 'check.run' } },
+      emit: { at: '${window.first.ts}' },
+    };
+    const { rows } = run(
+      spec,
+      stream(
+        () => ev('file.changed', 1, { path: 'a.ts' }),
+        () => ev('tool.use.start', 2, { ts: 'early' }),
+        () =>
+          ev('check.run', 2, {
+            ts: 'late',
+            runner: 'r',
+            verdict_state: 'measured',
+            verdict: 'passed',
+          }),
+      ),
+    );
+    expect(rows[0]?.fields['at']).toBe('late');
+  });
+
   it('never lets the trigger match its own window', () => {
     const { rows } = run(
       {
@@ -441,6 +466,170 @@ describe('windows', () => {
     );
     expect(rows).toEqual([]);
     expect(unclosed).toBe(1);
+  });
+
+  it('absent + until: session.end emits at stream end when nothing matched', () => {
+    // read.unused (asc-6ola.8): the stream's end is the window's own end, so it decides the
+    // verdict instead of leaving it unclosed.
+    const spec = {
+      on: 'file.read',
+      window: {
+        until: 'session.end',
+        absent: { on: 'file.changed', where: { path: { eq: '$path' } } },
+      },
+      emit: { path: '${path}' },
+    };
+    const { rows, unclosed } = run(
+      spec,
+      stream(
+        () => ev('file.read', 1, { path: '/a/x.ts' }),
+        () => ev('check.run', 2, { runner: 't', verdict_state: 'measured', verdict: 'passed' }),
+        () => ev('session.end', 2),
+      ),
+    );
+    expect(rows.map((row) => [row.fields['path'], row.closed_by])).toEqual([
+      ['/a/x.ts', 'session.end'],
+    ]);
+    expect(unclosed).toBe(0);
+  });
+
+  it('absent + until: session.end stays silent when a watcher matched first', () => {
+    const spec = {
+      on: 'file.read',
+      window: {
+        until: 'session.end',
+        absent: { on: 'file.changed', where: { path: { eq: '$path' } } },
+      },
+      emit: { path: '${path}' },
+    };
+    const { rows, unclosed } = run(
+      spec,
+      stream(
+        () => ev('file.read', 1, { path: '/a/x.ts' }),
+        () => ev('file.changed', 2, { path: '/a/x.ts' }),
+        () => ev('session.end', 2),
+      ),
+    );
+    expect(rows).toEqual([]);
+    expect(unclosed).toBe(0);
+  });
+
+  it('any: a list of per-kind watchers, each where checked against its own kind', () => {
+    const spec = {
+      on: 'file.read',
+      capture: { base: { field: 'path', regex: '([^/\\\\]+)$' } },
+      window: {
+        until: 'session.end',
+        absent: {
+          any: [
+            { on: 'file.changed', where: { path: { eq: '$path' } } },
+            { on: 'command.run', where: { argv: { contains: '$base' } } },
+            { on: 'search.run', where: { pattern: { shares_token: '$base' } } },
+          ],
+        },
+      },
+      emit: { path: '${path}' },
+    };
+    const { rows } = run(
+      spec,
+      stream(
+        // used: an edit to the same path.
+        () => ev('file.read', 1, { path: '/a/x.ts' }),
+        () => ev('file.changed', 2, { path: '/a/x.ts' }),
+        () => ev('session.end', 2),
+        // used: a command whose argv names the basename.
+        () => ev('file.read', 3, { path: '/a/y.test.ts' }),
+        () => ev('command.run', 4, { head: 'pnpm', argv: ['pnpm', 'test', 'y.test.ts'] }),
+        () => ev('session.end', 4),
+        // used: a search for a token of the basename.
+        () => ev('file.read', 5, { path: '/a/z-handlers.ts' }),
+        () => ev('search.run', 6, { via: 'Grep', pattern: 'z-handlers export', hits: 2 }),
+        () => ev('session.end', 6),
+        // unused: nothing later relates to it. A check.run and an edit to another file decide
+        // nothing; a RE-READ is not a use either (asc-6ola.8 PREREG).
+        () => ev('file.read', 7, { path: '/a/never-used.ts' }),
+        () => ev('check.run', 8, { runner: 't', verdict_state: 'not_measured' }),
+        () => ev('file.changed', 9, { path: '/a/other.ts' }),
+        () => ev('file.read', 10, { path: '/a/never-used.ts' }),
+        () => ev('session.end', 10),
+      ),
+    );
+    expect(rows.map((row) => row.fields['path'])).toEqual(['/a/never-used.ts', '/a/never-used.ts']);
+  });
+
+  it('shares_token matches an array field by any element', () => {
+    // A basename whose tokens are all shorter than 4 has none, so the exact-element `contains`
+    // alongside is what saves it; a longer basename matches through a shared token.
+    const spec = {
+      on: 'file.read',
+      capture: { base: { field: 'path', regex: '([^/\\\\]+)$' } },
+      window: {
+        until: 'session.end',
+        absent: {
+          any: [
+            {
+              on: 'command.run',
+              where: {
+                any: [{ argv: { contains: '$base' } }, { argv: { shares_token: '$base' } }],
+              },
+            },
+          ],
+        },
+      },
+      emit: { path: '${path}' },
+    };
+    const { rows } = run(
+      spec,
+      stream(
+        () => ev('file.read', 1, { path: '/a/handler-yaml.ts' }),
+        () =>
+          ev('command.run', 2, {
+            head: 'node',
+            argv: ['node', 'packages/cli/src/handler-yaml.ts'],
+          }),
+        () => ev('session.end', 2),
+        () => ev('file.read', 3, { path: '/p/cli.ts' }),
+        () => ev('session.end', 3),
+        () => ev('file.read', 4, { path: '/p/cli.ts' }),
+        () => ev('command.run', 5, { head: 'npx', argv: ['npx', 'tsx', 'cli.ts'] }),
+        () => ev('session.end', 5),
+      ),
+    );
+    expect(rows.map((row) => row.fields['path'])).toEqual(['/p/cli.ts']);
+  });
+
+  it('refuses window shapes that would silently match nothing', () => {
+    const base = { on: 'file.read', emit: { x: '${path}' } };
+    const absent = (inner: unknown): object => ({
+      ...base,
+      window: { until: 'session.end', absent: inner },
+    });
+    expect(refused(absent({ any: [] }))).toMatch(/non-empty list/);
+    expect(refused(absent({ any: [{ on: 'file.read' }], on: 'check.run' }))).toMatch(/either|both/);
+    expect(refused(absent({ any: [{ on: 'file.ran' }] }))).toMatch(/not an event kind/);
+    expect(refused(absent({ any: [{ on: 'file.read', pat: 'x' }] }))).toMatch(/unknown key pat/);
+    expect(refused(absent({ any: [{ on: 'file.read', where: { hed: 'x' } }] }))).toMatch(
+      /has no field "hed"/,
+    );
+    // A trigger $reference that names nothing is refused inside a watcher too.
+    expect(
+      refused(absent({ any: [{ on: 'file.read', where: { path: { eq: '$nope' } } }] })),
+    ).toMatch(/has no field "nope"/);
+    // The matched event's fields are not addressable from an any-window: the kinds differ.
+    expect(
+      refused({
+        ...base,
+        window: {
+          until: 'session.end',
+          first: { any: [{ on: 'file.changed', where: { path: { eq: '$path' } } }] },
+        },
+        emit: { at: '${window.first.ts}' },
+      }),
+    ).toMatch(/not available/);
+    // shares_token keeps refusing fields that are neither string nor array.
+    expect(refused({ ...base, where: { call: { shares_token: 'x' } } })).toMatch(
+      /string or array field/,
+    );
   });
 
   it('still emits a count that reached at_least before session end', () => {

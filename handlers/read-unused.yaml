@@ -1,0 +1,40 @@
+# asc-6ola.8: a read whose file is never used later in the same (session, agent) stream.
+#
+# "Used" was fixed in the bead's PREREG before any count: a later edit or write to the same
+# full path, a later shell segment whose argv names the basename (exactly, or through a
+# >= 4-char token -- a basename whose tokens are all shorter, like cli.ts, is caught by the
+# exact match), or a later search whose pattern shares a token with it. A re-read is not a
+# use: reading twice is still just reading. Assistant text is invisible to the event log, so
+# use that only shows in prose is a measured false positive (the hand-labelled sample in the
+# bead), not a rule gap to patch here.
+#
+# The window's `until` is session.end, which is what decides the verdict: an absent window
+# whose end IS the stream's end emits there, with closed_by session.end. A check.run or an
+# edit to another file decides nothing. The stream is one (session_id, agent_id), so a
+# subagent's read is judged within its own stream, which is what the bead scopes.
+on: file.read
+description: A read whose file was never used later in the same stream.
+where:
+  path: { exists: true }
+capture:
+  base:
+    field: path
+    regex: '([^/\\]+)$'
+window:
+  until: session.end
+  absent:
+    any:
+      - on: file.changed
+        where:
+          path: { eq: $path }
+      - on: command.run
+        where:
+          any:
+            - argv: { contains: $base }
+            - argv: { shares_token: $base }
+      - on: search.run
+        where:
+          pattern: { shares_token: $base }
+emit:
+  path: '${path}'
+  tool: '${tool}'
