@@ -103,6 +103,20 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
     tool_uses: 'number',
     duration_ms: 'number',
   },
+  /**
+   * The model and harness version serving this stream, emitted when either first appears or
+   * changes (asc-6ola.10). It is the stratification key for a holdout comparison, because
+   * compliance differed by model.
+   *
+   * Both are STRINGS, never enums -- the same `VOCABULARY_IS_NOT_OURS` argument as `agent_type`,
+   * and with a measured instance of why: one model is spelled `deepseek-v4.1-flash` here and
+   * `deepseek-v4.1-flash:cloud` on `agent.spawn.model`. Two fields naming one model differently
+   * is a reason to carry the string through, not to normalise it in the adapter.
+   *
+   * `previous_model` is present only on a model CHANGE, so its absence on the stream's first
+   * emission and its presence later mean different things and neither is a default.
+   */
+  'model.context': { model: 'string', previous_model: 'string', harness_version: 'string' },
   /** Synthetic: the stream ended. What closes every window still open. */
   'session.end': {},
 };

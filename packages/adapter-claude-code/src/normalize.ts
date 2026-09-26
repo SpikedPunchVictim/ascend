@@ -30,8 +30,10 @@ import type { TranscriptFile } from './transcript-file.js';
  * count that moves between two replays can be attributed to the normalizer or to the handler.
  *
  * 2: `check.run` no longer fires for `prettier --write` (asc-6ola.15).
+ * 3: `model.context` is emitted once per stream and again on a model or harness-version change
+ *    (asc-6ola.10) -- one more event per stream, and a count that moves with no handler changed.
  */
-export const EVENT_DERIVE_VERSION = 2;
+export const EVENT_DERIVE_VERSION = 3;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -43,6 +45,8 @@ export interface NormalizeCounters {
   unfinishedCalls: number;
   /** A `<task-notification>` naming a task this stream did not spawn as an agent. */
   unmatchedNotifications: number;
+  /** An assistant record whose model is `<synthetic>` -- harness-injected, not model output. */
+  syntheticModelRecords: number;
 }
 
 export interface Normalizer {
@@ -55,6 +59,9 @@ export interface Normalizer {
 
 const str = (value: unknown): string | undefined =>
   typeof value === 'string' && value.length > 0 ? value : undefined;
+
+/** What the harness writes as `message.model` on a record it injected rather than one a model wrote. */
+const SYNTHETIC_MODEL = '<synthetic>';
 
 /** A string field's text, or `''` when the transcript carried something else or nothing. */
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -185,6 +192,7 @@ export function createNormalizer(): Normalizer {
     unpairedResults: 0,
     unfinishedCalls: 0,
     unmatchedNotifications: 0,
+    syntheticModelRecords: 0,
   };
 
   let path: string | undefined;
@@ -198,6 +206,9 @@ export function createNormalizer(): Normalizer {
   let pending = new Map<string, Pending>();
   /** child agent id -> nothing; which notifications belong to an agent this stream spawned. */
   let spawned = new Set<string>();
+  /** The model and harness version last put into a `model.context` event on this stream. */
+  let lastModel: string | undefined;
+  let lastVersion: string | undefined;
 
   const emit = (
     out: NormalizedEvent[],
@@ -242,6 +253,8 @@ export function createNormalizer(): Normalizer {
     lastTs = undefined;
     pending = new Map();
     spawned = new Set();
+    lastModel = undefined;
+    lastVersion = undefined;
   };
 
   const results = (
@@ -397,6 +410,48 @@ export function createNormalizer(): Normalizer {
     }
   };
 
+  /**
+   * The model and harness version serving this stream, as CONTEXT rather than as a call.
+   *
+   * The three-state model has `measured`, `not_applicable` and `not_measured`, and an event can
+   * only express the first. A stream with no assistant record emits NOTHING -- it does not emit a
+   * `model.context` with every field absent, because `not_applicable` is not expressible here and
+   * absence already means `not_measured` (state.ts). Inventing a row to say "nothing to say" is
+   * the same defect as emitting a fabricated `0`.
+   *
+   * A record that carried no `message.model` did not change the model: the last one seen is
+   * carried forward, so a missing field is never read as a change to nothing.
+   */
+  const modelContext = (
+    out: NormalizedEvent[],
+    record: TranscriptRecord,
+    message: Record<string, unknown> | undefined,
+    ts: string | undefined,
+  ): void => {
+    const raw = str(message?.['model']);
+    if (raw === SYNTHETIC_MODEL) {
+      // Harness-injected, not model output. Skipped AND counted: a silent `continue` is how a
+      // filter becomes invisible, and this one would otherwise poison the stratification key.
+      counters.syntheticModelRecords += 1;
+      return;
+    }
+    const version = str(record['version']);
+    const modelChanged = raw !== undefined && raw !== lastModel;
+    const versionChanged = version !== undefined && version !== lastVersion;
+    const model = raw ?? lastModel;
+    if (model !== undefined && (modelChanged || versionChanged)) {
+      emit(out, 'model.context', calls, ts, {
+        model,
+        // Present only on a model change, and only when there was a model before: absent on the
+        // stream's first emission and on a version-only change, which are different facts.
+        previous_model: modelChanged ? lastModel : undefined,
+        harness_version: version,
+      });
+    }
+    if (modelChanged) lastModel = raw;
+    if (versionChanged) lastVersion = version;
+  };
+
   const accept = (record: TranscriptRecord, file: TranscriptFile): readonly NormalizedEvent[] => {
     const out: NormalizedEvent[] = [];
     if (path !== file.path) {
@@ -441,6 +496,8 @@ export function createNormalizer(): Normalizer {
     }
 
     if (record['type'] === 'assistant') {
+      modelContext(out, record, message, ts);
+
       const uses = blocksIn.filter((block) => block['type'] === 'tool_use');
       if (uses.length > 0) {
         // Claude Code writes one API message as several records, one per block, all carrying

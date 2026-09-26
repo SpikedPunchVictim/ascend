@@ -24,15 +24,24 @@ const SUB: TranscriptFile = {
 
 const TS = '2026-09-24T10:00:00.000Z';
 
+/**
+ * `model` and `version` are ABSENT by default, which is the point: a record that carried neither
+ * emits no `model.context`, so every test written before that kind existed keeps the event list
+ * it asserted.
+ */
 const assistant = (
   uses: readonly { id: string; name: string; input?: Record<string, unknown> }[],
   messageId = `msg-${uses.map((use) => use.id).join('-')}`,
+  model?: string,
+  version?: string,
 ): TranscriptRecord => ({
   type: 'assistant',
   sessionId: 'sess-1',
   timestamp: TS,
+  ...(version === undefined ? {} : { version }),
   message: {
     id: messageId,
+    ...(model === undefined ? {} : { model }),
     content: uses.map((use) => ({
       type: 'tool_use',
       id: use.id,
@@ -354,16 +363,180 @@ describe('createNormalizer', () => {
   it('emits only fields its kind declares', () => {
     const events = normalize([
       prompt('go'),
-      assistant([{ id: 't1', name: 'Bash', input: { command: 'rg x | head; pnpm test' } }]),
+      assistant(
+        [{ id: 't1', name: 'Bash', input: { command: 'rg x | head; pnpm test' } }],
+        undefined,
+        'claude-opus-5',
+        '2.1.283',
+      ),
       toolResult('t1', false),
       assistant([{ id: 't2', name: 'Agent', input: {} }]),
       toolResult('t2', false, { toolUseResult: { agentId: 'z', isAsync: true } }),
     ]);
+    // The `model.context` above is in this list on purpose: a kind whose fields are not checked
+    // here is a kind a typo can be introduced into without a test noticing.
+    expect(kinds(events)).toContain('model.context');
     for (const event of events) {
       expect(Object.hasOwn(EVENT_KINDS, event.kind), event.kind).toBe(true);
       for (const field of Object.keys(event)) {
         expect(eventFieldType(event.kind, field), `${event.kind}.${field}`).toBeDefined();
       }
+    }
+  });
+});
+
+/**
+ * `model.context` (asc-6ola.10) -- which model served a stream, under which harness, as the
+ * stratification key a holdout comparison needs. The comparison this project wanted is NOT
+ * reachable from this data (EV-26), but the key has to be right before anything can rest on it.
+ */
+describe('model.context', () => {
+  const contexts = (events: readonly NormalizedEvent[]): NormalizedEvent[] =>
+    events.filter((event) => event.kind === 'model.context');
+
+  it('emits the stream model and harness version once, before the calls it accounts for', () => {
+    const events = normalize([
+      assistant([{ id: 't1', name: 'Read' }], 'm1', 'claude-opus-5', '2.1.283'),
+    ]);
+    // toStrictEqual, not toEqual: `previous_model` must be ABSENT rather than present-and-
+    // undefined, and `toEqual` cannot tell those two apart. A stream's first emission has no
+    // previous model, and a fabricated empty string would be indistinguishable from a model the
+    // harness spelled "".
+    expect(contexts(events)).toStrictEqual([
+      {
+        kind: 'model.context',
+        session_id: 'sess-1',
+        agent_id: 'main',
+        seq: 0,
+        call: 0,
+        ts: TS,
+        derive_version: EVENT_DERIVE_VERSION,
+        model: 'claude-opus-5',
+        harness_version: '2.1.283',
+      },
+    ]);
+    expect(kinds(events)).toEqual(['model.context', 'tool.use.start', 'session.end']);
+  });
+
+  it('emits again on a model change, naming the model it left', () => {
+    const events = normalize([
+      assistant([{ id: 't1', name: 'Read' }], 'm1', 'claude-opus-5', '2.1.283'),
+      assistant([{ id: 't2', name: 'Read' }], 'm2', 'claude-sonnet-5', '2.1.283'),
+    ]);
+    expect(contexts(events).map((event) => [event['model'], event['previous_model']])).toEqual([
+      ['claude-opus-5', undefined],
+      ['claude-sonnet-5', 'claude-opus-5'],
+    ]);
+  });
+
+  it('does not emit again while the same model repeats', () => {
+    const events = normalize([
+      assistant([{ id: 't1', name: 'Read' }], 'm1', 'claude-opus-5', '2.1.283'),
+      assistant([{ id: 't2', name: 'Read' }], 'm2', 'claude-opus-5', '2.1.283'),
+      assistant([{ id: 't3', name: 'Read' }], 'm3', 'claude-opus-5', '2.1.283'),
+    ]);
+    expect(contexts(events)).toHaveLength(1);
+  });
+
+  it('emits on a harness version change, with no previous_model, which did not change', () => {
+    const events = normalize([
+      assistant([{ id: 't1', name: 'Read' }], 'm1', 'claude-opus-5', '2.1.283'),
+      assistant([{ id: 't2', name: 'Read' }], 'm2', 'claude-opus-5', '2.1.284'),
+    ]);
+    const seen = contexts(events);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]?.['harness_version']).toBe('2.1.284');
+    // Absent, because the only thing that changed is which harness was running. Rendering
+    // `previous_model` here would make a version change read as a model change.
+    expect(Object.hasOwn(seen[1] as NormalizedEvent, 'previous_model')).toBe(false);
+  });
+
+  it('never emits <synthetic> as a model, and counts what it skipped', () => {
+    const normalizer = createNormalizer();
+    const events = [
+      ...normalizer.accept(
+        assistant([{ id: 't1', name: 'Read' }], 'm0', '<synthetic>', '2.1.283'),
+        MAIN,
+      ),
+      ...normalizer.accept(
+        assistant([{ id: 't2', name: 'Read' }], 'm1', 'claude-opus-5', '2.1.283'),
+        MAIN,
+      ),
+      ...normalizer.drain(),
+    ];
+    // The synthetic record comes FIRST, so a skip that still advanced the state would leave the
+    // real model looking like a change from a model that was never serving anything.
+    expect(contexts(events).map((event) => event['model'])).toEqual(['claude-opus-5']);
+    expect(normalizer.counters.syntheticModelRecords).toBe(1);
+  });
+
+  it('emits nothing for a stream with no assistant record', () => {
+    // `not_applicable` is not expressible as an event and absence already means `not_measured`,
+    // so a row here would be a fabricated value rather than a measurement -- the same defect as
+    // a defaulted cost, in the other direction.
+    expect(contexts(normalize([prompt('hello')]))).toEqual([]);
+  });
+
+  it('does not read a record that carried no model as a change to nothing', () => {
+    const events = normalize([
+      assistant([{ id: 't1', name: 'Read' }], 'm1', 'claude-opus-5', '2.1.283'),
+      assistant([{ id: 't2', name: 'Read' }], 'm2'),
+      assistant([{ id: 't3', name: 'Read' }], 'm3', 'claude-opus-5', '2.1.283'),
+    ]);
+    expect(contexts(events)).toHaveLength(1);
+  });
+
+  it('carries the last model forward when a version change arrives on a record with no model', () => {
+    const events = normalize([
+      assistant([{ id: 't1', name: 'Read' }], 'm1', 'claude-opus-5', '2.1.283'),
+      assistant([{ id: 't2', name: 'Read' }], 'm2', undefined, '2.1.284'),
+    ]);
+    const seen = contexts(events);
+    expect(seen).toHaveLength(2);
+    // The model is the one still serving the stream. Dropping it would emit a row with no model
+    // under a kind named for the model -- a row a stratification query cannot use.
+    expect(seen[1]?.['model']).toBe('claude-opus-5');
+    expect(seen[1]?.['harness_version']).toBe('2.1.284');
+  });
+
+  it('emits nothing at all when no record in the stream carries a model', () => {
+    const events = normalize([
+      assistant([{ id: 't1', name: 'Read' }], 'm1', undefined, '2.1.283'),
+      assistant([{ id: 't2', name: 'Read' }], 'm2', undefined, '2.1.284'),
+    ]);
+    expect(contexts(events)).toEqual([]);
+  });
+
+  it('starts over at a new stream, so the second stream gets its own context', () => {
+    const normalizer = createNormalizer();
+    const events = [
+      ...normalizer.accept(
+        assistant([{ id: 't1', name: 'Read' }], 'm1', 'claude-opus-5', '2.1.283'),
+        MAIN,
+      ),
+      ...normalizer.accept(
+        assistant([{ id: 't1', name: 'Read' }], 'm1', 'claude-opus-5', '2.1.283'),
+        SUB,
+      ),
+      ...normalizer.drain(),
+    ];
+    // Without the reset in `begin`, a subagent stream inheriting the main stream's model would
+    // emit no context at all -- silently, and only for the second stream onward.
+    expect(contexts(events).map((event) => event['agent_id'])).toEqual(['main', 'abc123']);
+  });
+
+  it('carries a model name through unchanged, because the vocabulary is not ours', () => {
+    const events = normalize([
+      assistant([{ id: 't1', name: 'Read' }], 'm1', 'deepseek-v4.1-flash:cloud', '2.1.283'),
+    ]);
+    // `agent.spawn.model` spells this same model `deepseek-v4.1-flash`. Two fields spelling one
+    // model differently is why the field is a string and not an enum (derived-types.ts:153).
+    expect(contexts(events)[0]?.['model']).toBe('deepseek-v4.1-flash:cloud');
+  });
+
+  it('declares all three fields as strings', () => {
+    for (const field of ['model', 'previous_model', 'harness_version']) {
+      expect(eventFieldType('model.context', field)).toBe('string');
     }
   });
 });

@@ -35,6 +35,7 @@ interface Sweep {
   readonly deriverMasked: number;
   readonly deriverUnverdictable: number;
   readonly streams: number;
+  readonly contexts: readonly NormalizedEvent[];
 }
 
 async function sweep(): Promise<Sweep> {
@@ -49,9 +50,11 @@ async function sweep(): Promise<Sweep> {
   let nonMonotonic = 0;
   let streams = 0;
   let lastSeq = -1;
+  const contexts: NormalizedEvent[] = [];
 
   const take = (event: NormalizedEvent): void => {
     byKind[event.kind] = (byKind[event.kind] ?? 0) + 1;
+    if (event.kind === 'model.context') contexts.push(event);
     if (!Object.hasOwn(EVENT_KINDS, event.kind)) undeclared.add(event.kind);
     for (const field of Object.keys(event)) {
       if (eventFieldType(event.kind, field) === undefined) undeclared.add(`${event.kind}.${field}`);
@@ -92,6 +95,7 @@ async function sweep(): Promise<Sweep> {
     deriverMasked: deriver.counters.masked,
     deriverUnverdictable: deriver.counters.unverdictable,
     streams,
+    contexts,
   };
 }
 
@@ -113,8 +117,31 @@ describe.skipIf(!available)('the normalizer against the real corpus', () => {
       'file.changed',
       'check.run',
       'agent.spawn',
+      'model.context',
     ]) {
       expect(result.byKind[kind] ?? 0, kind).toBeGreaterThan(10);
+    }
+  }, 180_000);
+
+  /**
+   * The end-to-end half of `model.context` (asc-6ola.10). `normalize.test.ts` drives the semantics
+   * against object literals, which cannot show that `message.model` and the top-level `version`
+   * survive `decode.ts` and the reader on the way in -- a field dropped there would leave every
+   * literal test passing and the real key empty.
+   */
+  it('reads a real model and harness version, and never carries a synthetic one', async () => {
+    const result = await once();
+    // Measured 2026-09-26: 1,226 context events over 1,231 streams, 93 synthetic assistant
+    // records skipped. The count itself is not asserted -- the corpus is live -- so what is
+    // asserted is that each guard has observations rather than passing on an empty set.
+    expect(result.contexts.length).toBeGreaterThan(100);
+    expect(result.counters.syntheticModelRecords).toBeGreaterThan(0);
+    for (const event of result.contexts) {
+      expect(event['model'], 'a context event with no model').toBeDefined();
+      expect(event['model']).not.toBe('<synthetic>');
+      // Half the key. A harness that stops writing `version` should fail this rather than let
+      // the stratification quietly lose its other dimension.
+      expect(event['harness_version'], String(event['model'])).toBeDefined();
     }
   }, 180_000);
 
