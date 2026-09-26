@@ -1383,3 +1383,199 @@ describe('asc record -- the review_after advisory (asc-bli.5)', () => {
     }
   });
 });
+
+describe('asc record --scaffold', () => {
+  /**
+   * A project holding the starter types plus one type whose properties are all OPTIONAL.
+   *
+   * Optional on purpose: a skeleton made only of required properties would fail on `required` alone,
+   * and the claim under test is about the placeholder, which has to hold for a property that a
+   * recorder could legitimately leave out. Five property types, so "null is refused" is five
+   * refusals rather than one.
+   */
+  function defined(): string {
+    const dir = project();
+    const file = join(dir, 'probe.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        name: 'probe',
+        properties: [
+          { name: 'note', type: 'string' },
+          { name: 'rounds', type: 'number' },
+          { name: 'done', type: 'boolean' },
+          { name: 'at', type: 'timestamp' },
+          { name: 'detail', type: 'json' },
+        ],
+      }),
+    );
+    expect(asc(['types', 'define', file], dir).status).toBe(0);
+    return dir;
+  }
+
+  const scaffold = (dir: string, ...rest: readonly string[]): Run =>
+    asc(['record', 'probe', '--scaffold', ...rest], dir);
+
+  it('emits every declared property, set to null, and writes nothing', () => {
+    const dir = defined();
+    const run = scaffold(dir);
+
+    expect(run.status).toBe(0);
+    // Sorted by name rather than in the order the definition wrote them, because that is the order
+    // the store keeps (`core/spec.ts` sorts before hashing, so two runs that define one shape with
+    // the fields listed differently hash equal rather than reporting as drift).
+    expect(JSON.parse(run.stdout)).toEqual({
+      properties: { at: null, detail: null, done: null, note: null, rounds: null },
+    });
+    // Nothing was written, and not merely nothing reported: the table is empty.
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('cannot be recorded unedited', () => {
+    // THE design claim, and the whole reason the placeholder is `null` rather than `""`. A skeleton
+    // whose placeholder is recordable is one that fabricates an entry when nobody edits it.
+    const dir = defined();
+    const file = join(dir, 'skeleton.json');
+    writeFileSync(file, scaffold(dir).stdout);
+
+    const run = asc(['record', 'probe', file], dir);
+
+    expect(run.status).toBe(1);
+    expect(stored(dir)).toEqual([]);
+    // Every property, named. A refusal naming one would leave the other four to be found one failed
+    // submission at a time, which is the cost the scaffold exists to remove.
+    for (const name of ['at', 'detail', 'done', 'note', 'rounds']) {
+      expect(flatten(run.stderr)).toContain(name);
+    }
+  });
+
+  it('would have been recorded with `""` instead, which is why the placeholder is not `""`', () => {
+    // The check that the test above could fail. Measured before the placeholder was chosen: the
+    // document path ACCEPTS `""` for a string and writes it, so a skeleton emitting `""` would
+    // record a value nobody chose -- a placeholder indistinguishable from a measurement, which is
+    // the one thing this store exists not to do.
+    const dir = defined();
+    const file = join(dir, 'blank.json');
+    writeFileSync(file, JSON.stringify({ properties: { note: '' } }));
+
+    expect(asc(['record', 'probe', file], dir).status).toBe(0);
+    expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({ note: '' });
+  });
+
+  it('writes the skeleton to stdout and the shape to stderr, so a redirect needs no cleanup', () => {
+    const dir = defined();
+    const run = scaffold(dir);
+
+    // The contract `asc record probe --scaffold > entry.json` depends on: the file holds a document
+    // and nothing else, because a caller who had to delete guidance from it first would be paying
+    // back the edit step the scaffold removes.
+    expect(run.stdout).not.toContain('Note:');
+    expect(flatten(run.stderr)).toContain('Note:');
+    // The label is not a severity. Nothing has gone wrong, and `Warning` would say otherwise.
+    expect(run.stderr).not.toContain('Warning:');
+    expect(run.stderr).not.toContain('Error:');
+  });
+
+  it('carries the enum members and which properties are required', () => {
+    // What the 101 `asc types show <TYPE>` invocations in the transcript corpus were asking for:
+    // 120 of 138 successful recordings (87.0%) were preceded in the same session by one naming the
+    // same type, 54 of 54 for `decision`. A skeleton emitting field names alone would leave every
+    // one of those lookups to be made again.
+    const run = asc(['record', 'decision', '--scaffold'], project());
+
+    const legend = flatten(run.stderr);
+    expect(legend).toContain('reversibility');
+    expect(legend).toContain('[costly, irreversible, reversible]');
+    expect(legend).toContain('required');
+  });
+
+  it("carries a json property's description, which is the only place its inner shape is written", () => {
+    // `json` validates the container and says nothing about what is inside it, so the description is
+    // all a recorder has -- and the skeleton's `null` carries no hint at all.
+    const run = asc(['record', 'decision', '--scaffold'], project());
+
+    expect(flatten(run.stderr)).toContain('A JSON array, one entry per alternative');
+  });
+
+  it('refuses the flags that describe a recording, because there will not be one', () => {
+    const dir = defined();
+    const cases: readonly (readonly string[])[] = [
+      ['--prop=note=x'],
+      ['--na', 'note'],
+      ['--evidence', 'text'],
+      ['--run-id', 'r'],
+      ['--workflow', 'w'],
+      ['--actor', 'a'],
+      ['--dry-run'],
+      ['--table'],
+      ['--csv'],
+    ];
+
+    // Refused rather than quietly ignored, on `resolveFormat`'s rule: a flag dropped in silence is a
+    // caller who believes something that is not true.
+    for (const flags of cases) {
+      const spell = flags.join(' ');
+      const run = scaffold(dir, ...flags);
+      expect(run.status, spell).toBe(2);
+      expect(flatten(run.stderr), spell).toContain('records nothing');
+      // Nothing partial on stdout either: a refusal that had already printed a skeleton would be
+      // redirectable into a file that looks like a document.
+      expect(run.stdout, spell).toBe('');
+    }
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('refuses a document operand, which has nowhere to go', () => {
+    const dir = defined();
+    const run = asc(['record', 'probe', 'entry.json', '--scaffold'], dir);
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('the document operand (entry.json)');
+  });
+
+  it('accepts --json, which names exactly what the skeleton already is', () => {
+    const dir = defined();
+    const plain = scaffold(dir);
+    const asJson = scaffold(dir, '--json');
+
+    expect(asJson.status).toBe(0);
+    expect(asJson.stdout).toBe(plain.stdout);
+  });
+
+  it('scaffolds the version --type-version names, and refuses one that does not exist', () => {
+    const dir = defined();
+    expect(scaffold(dir, '--type-version', '1').stdout).toBe(scaffold(dir).stdout);
+
+    const missing = scaffold(dir, '--type-version', '9');
+    expect(missing.status).toBe(1);
+    expect(flatten(missing.stderr)).toContain('has no version 9');
+  });
+
+  it('refuses an unknown type by listing the ones that exist', () => {
+    // The same two refusals `asc types show` gives, from one place (`type-lookup.ts`), so a caller
+    // who mistypes a name gets one answer whichever of the two commands they typed.
+    const run = asc(['record', 'nope', '--scaffold'], project());
+
+    expect(run.status).toBe(1);
+    const message = flatten(run.stderr);
+    expect(message).toContain("There is no entry type named 'nope'");
+    expect(message).toContain('decision');
+  });
+
+  it('records once the nulls are replaced', () => {
+    // The round trip. A skeleton that can only fail is a refusal with extra steps; this is the half
+    // that says the document it produces is one a recorder can actually fill in and submit.
+    const dir = defined();
+    const file = join(dir, 'filled.json');
+    writeFileSync(file, JSON.stringify({ properties: { note: 'filled', rounds: 0, done: false } }));
+
+    expect(asc(['record', 'probe', file], dir).status).toBe(0);
+    // `0` and `false` survive as MEASUREMENTS rather than collapsing to "absent" -- the three-state
+    // invariant, checked on a document the scaffold produced.
+    expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      done: false,
+      note: 'filled',
+      rounds: 0,
+    });
+  });
+});

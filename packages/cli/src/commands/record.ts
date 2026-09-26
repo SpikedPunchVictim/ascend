@@ -64,12 +64,15 @@ import {
   type RecordContext,
   type RecordRequest,
   type RecordResult,
+  type TypeVersionRow,
 } from '@ascend/store';
-import { canonicalJson, reviewAfterCrossed } from '@ascend/core';
+import { canonicalJson, reviewAfterCrossed, type PropertySpec } from '@ascend/core';
 import { BaseCommand } from '../base.js';
 import { parseEntryDocuments, type EntryDocument } from '../entry-document.js';
 import { refusal, usageError } from '../errors.js';
 import { readInput, STDIN } from '../input.js';
+import { describedProperties, renderProperty } from '../property-shape.js';
+import { requireType } from '../type-lookup.js';
 
 /** One row of the report: the entry that was written, as the caller can refer to it. */
 interface RecordRow extends Record<string, unknown> {
@@ -325,11 +328,79 @@ function naFrom(naFlags: readonly string[]): readonly string[] {
   return [...new Set(names)];
 }
 
+/**
+ * The skeleton document: every declared property, set to `null`.
+ *
+ * **The order is the store's, not the definition document's** -- properties are sorted by canonical
+ * name at registration so that two runs defining one shape in two orders hash equal, and enum
+ * members are sorted with them (`core/spec.ts`, and the measurement in `property-shape.ts`). Nothing
+ * here re-sorts, so the skeleton, the legend, `asc types show` and `asc types export` all read one
+ * type's properties in one order.
+ *
+ * **`null` is the placeholder, and it was chosen by measuring rather than by taste.** It is the one
+ * value refused for every property type on the document path, so an unedited skeleton CANNOT be
+ * recorded -- and the refusal that comes back names the property and, for an enum, its members. The
+ * two obvious alternatives are both worse, and both were measured against a real store:
+ *
+ *   `""` -- ACCEPTED for a `string` property, and on the document path it was actually written
+ *          (verified by reading `properties_json` back: `o_string: ""`). That is exactly the silent
+ *          loss this store exists to prevent -- a placeholder indistinguishable from a measurement,
+ *          and the empty string is a real value in SQLite rather than "unknown".
+ *   `"<string>"` and `0` -- `"<string>"` was ACCEPTED for a `string` and `0` for a `number`, so a
+ *          skeleton nobody edited records a fabricated entry rather than failing.
+ *
+ * A placeholder that can be recorded is not a placeholder.
+ *
+ * **Nothing is filled in for `na`, `evidence_text` or the envelope.** Those are the caller's
+ * decisions, and a skeleton that pre-filled them would be inventing an observation.
+ */
+function scaffoldDocument(properties: readonly PropertySpec[]): string {
+  const skeleton: Record<string, null> = {};
+  for (const property of properties) skeleton[property.name] = null;
+  return JSON.stringify({ properties: skeleton }, null, 2);
+}
+
+/**
+ * What each property is, as lines to read beside the skeleton.
+ *
+ * **This is the part that replaces `asc types show`, and the replacement is the whole point.**
+ * Measured across the transcript corpus: 101 `asc types show <TYPE>` invocations, with 120 of 138
+ * successful recordings (87.0%) preceded IN THE SAME SESSION by one naming the same type -- 54 of
+ * 54 for `decision`, 26 of 26 for `stage_transition`. Those lookups are made to learn a shape, so a
+ * skeleton emitting field names and nothing else would leave every one of them to be made again.
+ * The legend therefore carries what the lookups were for: type, required-ness, enum members, unit
+ * and description -- rendered by `renderProperty`, the same function `asc types show` uses, so the
+ * two cannot come to say different things about one type.
+ *
+ * **Descriptions earn their place here more than they look.** `json` validates the container and
+ * says nothing about what is inside it, so a `json` property's description is the ONLY place its
+ * inner shape is written down -- and the skeleton's `null` carries no hint at all.
+ *
+ * **stderr, because stdout is the artifact.** `asc record decision --scaffold > entry.json` has to
+ * leave a recordable document in the file, so guidance beside it cannot be on stdout: the file
+ * would have to be cleaned before it could be used.
+ */
+function scaffoldLegend(row: TypeVersionRow, properties: readonly PropertySpec[]): string {
+  // Padded to the longest name so the shape reads as a column. A ragged legend is measurably worse
+  // to scan, and the padding costs nothing for a definition whose names are all short.
+  const width = properties.reduce((max, property) => Math.max(max, property.name.length), 0);
+  return [
+    `'${row.name}' v${String(row.version)}, as the skeleton on stdout has it: every declared ` +
+      `property, sorted by name, with the placeholder null.`,
+    `null is refused by every property type, so an unedited skeleton cannot be recorded. Replace ` +
+      `the nulls you have values for; delete the rest, or name them under "na" if they do not apply.`,
+    ...properties.map(
+      (property) => `  ${property.name.padEnd(width)}  ${renderProperty(property)}`,
+    ),
+  ].join('\n');
+}
+
 export default class RecordEntry extends BaseCommand {
   static override description = 'Record one or more entries of a single entry type.';
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> decision --prop=chosen=walk-up --prop=rationale=git-does-this',
+    '<%= config.bin %> <%= command.id %> decision --scaffold > entry.json',
     'cat entry.json | <%= config.bin %> <%= command.id %> decision -',
     '<%= config.bin %> <%= command.id %> stuck_event batch.json --dry-run',
   ];
@@ -377,6 +448,11 @@ export default class RecordEntry extends BaseCommand {
     'dry-run': Flags.boolean({
       description: 'Validate everything and report what would be written, then write nothing.',
     }),
+    scaffold: Flags.boolean({
+      description:
+        'Print a skeleton entry document for this type and stop, writing nothing. The shape is ' +
+        'described on stderr; the document goes to stdout, ready to redirect.',
+    }),
     // Not plain `--version`: on a subcommand that spelling reads as "the version of asc", which is
     // the root's flag, and the value here is the version of the TYPE being recorded.
     'type-version': Flags.integer({
@@ -402,10 +478,49 @@ export default class RecordEntry extends BaseCommand {
 
   public async run(): Promise<void> {
     const { args, flags } = await this.parse(RecordEntry);
-    const format = this.resolveFormat(flags);
-    const dryRun = this.flagValue(flags['dry-run']);
     const props = flags.prop ?? [];
     const nas = flags.na ?? [];
+
+    // `--scaffold` records nothing, so it branches before any of the recording validation below --
+    // including `resolveFormat`, which would otherwise choose a rendering for output that has
+    // exactly one.
+    if (this.flagValue(flags.scaffold)) {
+      // The flags that describe a recording are REFUSED rather than ignored, on `resolveFormat`'s
+      // rule: a flag quietly dropped is a caller who believes something that is not true. Every
+      // name below asks for an entry to be written, or for a rendering a JSON skeleton cannot take.
+      //
+      // `--json` is deliberately absent. It names exactly what the scaffold already is, so there is
+      // nothing to refuse: `--table` and `--csv` ask for renderings this output cannot have, while
+      // `--json` asks for the one it has.
+      const recordingFlags: readonly (readonly [string, boolean])[] = [
+        ['--prop', props.length > 0],
+        ['--na', nas.length > 0],
+        ['--evidence', flags.evidence !== undefined],
+        ['--run-id', flags['run-id'] !== undefined],
+        ['--workflow', flags.workflow !== undefined],
+        ['--actor', flags.actor !== undefined],
+        ['--dry-run', this.flagValue(flags['dry-run'])],
+        ['--table', this.flagValue(flags.table)],
+        ['--csv', this.flagValue(flags.csv)],
+      ];
+      const conflicts = [
+        ...(args.document === undefined ? [] : [`the document operand (${args.document})`]),
+        ...recordingFlags.filter(([, given]) => given).map(([flag]) => flag),
+      ];
+      if (conflicts.length > 0) {
+        throw usageError(
+          `--scaffold prints a skeleton and records nothing, so it cannot be combined with ` +
+            `${conflicts.join(', ')}. --type-version selects which version to print a skeleton ` +
+            `for; --json is accepted because the skeleton is already JSON.`,
+        );
+      }
+
+      await this.printScaffold(args.type, this.optionalFlag(flags['type-version']));
+      return;
+    }
+
+    const format = this.resolveFormat(flags);
+    const dryRun = this.flagValue(flags['dry-run']);
 
     // Two sources for one entry is two answers to the same question, and merging them would mean
     // choosing a winner per property -- a rule nobody could predict from the command line.
@@ -646,6 +761,33 @@ export default class RecordEntry extends BaseCommand {
       }
 
       this.emit(format, { columns: ['index', 'id', 'type', 'version'], rows });
+    });
+  }
+
+  /**
+   * The skeleton on stdout, the shape legend on stderr.
+   *
+   * **The split is by whether the text is the artifact.** `--scaffold > entry.json` has to leave a
+   * recordable document in the file, so the guidance beside it cannot share stdout -- a caller would
+   * have to delete it before the file could be recorded, which is the edit step this exists to
+   * remove. stderr keeps both promises at once: the redirect is clean, and a caller who does not
+   * redirect still sees the shape.
+   *
+   * **`Note`, not `Warning`.** Nothing has gone wrong: the legend is the text a caller asked for by
+   * asking for the skeleton. `Warning` would say otherwise, and a label that cries wolf on an
+   * ordinary success is how the warnings that matter stop being read.
+   *
+   * Prose is restored before rendering for the reason `types show` restores it: `registry.ts`'s
+   * `toStorage` strips every prose field into its own column, so `row.spec.properties[].description`
+   * is always undefined on a row read back (`property-shape.ts`).
+   */
+  private async printScaffold(typeName: string, version: number | undefined): Promise<void> {
+    await this.withProject(({ store }) => {
+      const row = requireType(store, typeName, version);
+      const properties = describedProperties(row.spec.properties, row.prose);
+
+      this.emitText(scaffoldDocument(properties));
+      this.emitStderr('Note', scaffoldLegend(row, properties));
     });
   }
 }

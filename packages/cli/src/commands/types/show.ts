@@ -12,29 +12,15 @@
  * changes_requested] -- What the review concluded.` is not a format anything should parse; the
  * `type`, `required`, `enum_values`, `unit` and `description` keys on the same row are.
  *
- * **An unknown name is not the same failure as an unknown version.** The first means the caller
- * is in the wrong project or misspelled a name, so the message lists the names that exist; the
- * second means the name is right and the version is not, so the message says where versions
- * start and points at the command that shows them.
+ * **Not finding the type is `type-lookup.ts`'s answer to give**, so this command names a type and
+ * gets a row or a refusal rather than spelling out either for itself.
  */
 
 import { Args, Flags } from '@oclif/core';
-import type { PropertySpec } from '@ascend/core';
-import { findType, type TypeVersionRow } from '@ascend/store';
+import { type TypeVersionRow } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
-import { refusal } from '../../errors.js';
-import { knownNames } from '../../register-document.js';
-
-/** One property as a person reads it, for the table. Not a format -- see the file comment. */
-function renderProperty(property: PropertySpec): string {
-  const parts: string[] = [property.type];
-  if (property.required === true) parts.push('required');
-  if (property.enum_values !== undefined) parts.push(`[${property.enum_values.join(', ')}]`);
-  if (property.unit !== undefined) parts.push(`in ${property.unit}`);
-  return property.description === undefined
-    ? parts.join(' ')
-    : `${parts.join(' ')} -- ${property.description}`;
-}
+import { describedProperties, renderProperty } from '../../property-shape.js';
+import { requireType } from '../../type-lookup.js';
 
 /**
  * The envelope, as rows.
@@ -109,49 +95,40 @@ export default class TypesShow extends BaseCommand {
     const version = this.optionalFlag(flags.version);
 
     await this.withProject(({ store }) => {
-      // `findType` omitted-version means "the latest", a decision the store makes once
-      // (`registry.ts`) rather than one this command re-derives with its own ORDER BY.
-      const row = findType(store.db, args.name, version);
+      // An omitted version means "the latest", a decision the store makes once (`registry.ts`)
+      // rather than one this command re-derives with its own ORDER BY. The two refusals for not
+      // finding a type live in `type-lookup.ts` now that `asc record --scaffold` performs the same
+      // lookup and has to answer the same way; the distinction between them is documented there.
+      const row = requireType(store, args.name, version);
 
-      if (row === undefined) {
-        throw refusal(
-          version === undefined
-            ? `There is no entry type named '${args.name}' in this project. ${knownNames(store)}`
-            : `Entry type '${args.name}' has no version ${String(version)}. ` +
-                `Versions are numbered from 1 without gaps; ` +
-                `run 'asc types show ${args.name}' to see the latest.`,
-        );
-      }
+      // Per-property prose is put back before rendering, and it is a real fix rather than
+      // tidiness. `registry.ts`'s `toStorage` strips every prose field into its own column
+      // before the spec is hashed and stored, so `row.spec.properties[].description` is
+      // ALWAYS undefined on a row read back -- measured on a real registration: the description
+      // round-trips through `asc types export` under `prose`, while `asc types show` printed
+      // `json` with no description at all, because the branch below it was unreachable.
+      //
+      // That mattered enough to fix here rather than note, because a property's description is
+      // the only place the shape of a `json` property is written down -- `json` validates the
+      // container and says nothing about what is inside it, so the guidance a recorder needs
+      // lives in the prose this command was silently dropping.
+      //
+      // The rule itself now lives in `property-shape.ts`, because `asc record --scaffold`
+      // renders the same lines and two implementations would agree until one of them moved.
+      const described = describedProperties(row.spec.properties, row.prose);
 
       this.emit(format, {
         columns: ['field', 'value'],
         rows: [
           ...scalarRows(row),
-          ...row.spec.properties.map((property) => {
-            // Per-property prose is put back before rendering, and it is a real fix rather than
-            // tidiness. `registry.ts`'s `toStorage` strips every prose field into its own column
-            // before the spec is hashed and stored, so `row.spec.properties[].description` is
-            // ALWAYS undefined -- measured on a real registration: the description round-trips
-            // through `asc types export` under `prose`, while `asc types show` printed
-            // `json` with no description at all, because the branch below it was unreachable.
-            //
-            // That mattered enough to fix here rather than note, because a property's
-            // description is the only place the shape of a `json` property is written down --
-            // `json` validates the container and says nothing about what is inside it, so the
-            // guidance a recorder needs lives in the prose this command was silently dropping.
-            const prose = row.prose[property.name];
-            const described: PropertySpec =
-              prose === undefined ? property : { ...property, description: prose };
-
-            return {
-              field: `property.${described.name}`,
-              value: renderProperty(described),
-              // Structured, so `--json` needs no parsing of the line above it. Absent keys stay
-              // absent: a `required: false` this command invented would be indistinguishable
-              // from one the definition actually stated.
-              ...described,
-            };
-          }),
+          ...described.map((property) => ({
+            field: `property.${property.name}`,
+            value: renderProperty(property),
+            // Structured, so `--json` needs no parsing of the line above it. Absent keys stay
+            // absent: a `required: false` this command invented would be indistinguishable
+            // from one the definition actually stated.
+            ...property,
+          })),
         ],
       });
     });

@@ -228,8 +228,8 @@ export function usageError(message: string): Errors.CLIError {
   return new Errors.CLIError(message, { exit: 2 });
 }
 
-/** Which of the two labels a message on stderr carries. */
-export type StderrLabel = 'Error' | 'Warning';
+/** Which of the three labels a message on stderr carries. */
+export type StderrLabel = 'Error' | 'Warning' | 'Note';
 
 /**
  * Where a message written to stderr is wrapped.
@@ -273,7 +273,14 @@ export const MESSAGE_WIDTH = 80;
  *
  * **No gutter**, for the reason above: this text is read by a person who may copy from it and by a
  * model that has to parse it, and both do better without an ornament that is not part of the
- * message. `Error: ` / `Warning: ` at column 0 is what is left, and it is greppable.
+ * message. `Error: ` / `Warning: ` / `Note: ` at column 0 is what is left, and it is greppable.
+ *
+ * **`Note` is not a severity between the other two.** A legend written beside a skeleton is
+ * neither a failure nor advice that something is off: it is text the reader asked for by asking for
+ * the skeleton. Labelling it `Warning` would say something is wrong when nothing is, and that is
+ * worth a third label in an enum that otherwise reads as a severity scale -- see `emitStderr`'s
+ * callers, where the label is chosen by what the reader is meant to DO about the message, not by
+ * how loudly it should be spoken.
  *
  * The message's own newlines are kept and each line is wrapped independently, so the paragraph
  * structure survives: the store's refusals are written context -> problem -> fix, and `--debug`'s
