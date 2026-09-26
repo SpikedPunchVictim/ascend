@@ -1,0 +1,26 @@
+project -Users-spikedpunchvictim-projects-ascend
+files 90 events 114268 streams 90 (83 subagent, 7 main) sessions 7
+sessions holding more than one stream 4 of 7 
+read paths: absolute 2142 relative 0
+
+pair = one (stream, distinct path read). aBackward = an edit exists in the same stream
+strictly before the earliest read of that path; bBackward is the same for the main stream.
+scope                      pairs      a   a<--   a-->      b   b<--      c   c<--      d shares
+subagent / exact path        831    154     16    138    353      1    130     17    194 a  18.5%  bc  58.1%  d  23.3% 
+subagent / basename          831    154     16    138    356      1    141     17    180 a  18.5%  bc  59.8%  d  21.7% 
+main (control) / exact       257    158    132     26      0      0      1      1     98 a  61.5%  bc   0.4%  d  38.1% 
+main (control) / basename     257    159    132     27      0      0      1      1     97 a  61.9%  bc   0.4%  d  37.7% 
+
+--- concentration: is one stream producing all the pairs? ---
+subagent streams that read anything 69 of 83
+pairs 831 largest single stream 44 (5.3%) top 5 44,33,30,28,26 streams with 1 pair 3
+
+--- field sets, read off the events, not quoted from source ---
+   2150 file.read      agent_id batch call derive_version id path seq session_id tool ts
+   3259 file.changed   after agent_id batch before call derive_version id path seq session_id tool ts
+   1495 check.run      agent_id batch call derive_version id runner seq session_id ts verdict verdict_source verdict_state
+     88 agent.spawn    agent_id agent_type async batch call child_agent_id derive_version description id model seq session_id ts
+     59 agent.return   agent_id call child_agent_id derive_version duration_ms id seq session_id status tokens tool_uses ts
+
+normalizer counters {"records":88407,"events":114268,"unpairedResults":0,"unfinishedCalls":1,"unmatchedNotifications":55,"syntheticModelRecords":12}
+kinds {"command.run":68939,"tool.use.start":18172,"tool.use.end":18171,"file.changed":3259,"file.read":2150,"check.run":1495,"search.run":1346,"prompt.submit":409,"model.context":90,"session.end":90,"agent.spawn":88,"agent.return":59}
