@@ -7,10 +7,16 @@ import {
   validateEntry,
   type PropertySpec,
 } from '@ascend/core';
-import { DERIVED_SOURCE, DERIVED_TYPES, derivationVersion, derivedType } from '../src/index.js';
+import {
+  DERIVED_SOURCE,
+  DERIVED_TYPES,
+  FINDING_LENSES,
+  derivationVersion,
+  derivedType,
+} from '../src/index.js';
 
 /**
- * Invariants the five derived type definitions must hold, checked against core's own rules
+ * Invariants the six derived type definitions must hold, checked against core's own rules
  * rather than against a copy of them.
  *
  * These are definitions registered through the ordinary `registerType` path, so every rule
@@ -26,10 +32,11 @@ import { DERIVED_SOURCE, DERIVED_TYPES, derivationVersion, derivedType } from '.
 
 const byName = (a: { name: string }, b: { name: string }): number => a.name.localeCompare(b.name);
 
-describe('the five derived types', () => {
-  it('ships exactly five, named for the events they are', () => {
+describe('the six derived types', () => {
+  it('ships exactly six, named for the events they are', () => {
     expect(DERIVED_TYPES.map((spec) => spec.name).sort()).toEqual([
       'context_compaction',
+      'review_finding',
       'skill_activation',
       'tool_denial',
       'user_correction',
@@ -136,9 +143,14 @@ describe('record_when is inverted, which is the point of it', () => {
   );
 
   it('keeps the whole brief cheap, because it is a tax on every session', () => {
-    // Roughly 90 tokens for all five, cheaper than the four starter types.
+    // 73 characters each. The total went 365 -> 438 when `review_finding` was added, and the
+    // cap moved 400 -> 450 to hold it -- a raise that is the point of the test rather than a
+    // nuisance: the tax is per session and per TYPE, so the cap has to be an absolute number,
+    // and a seventh type takes the total to 511 and trips this. A cap expressed as a multiple
+    // of `DERIVED_TYPES.length` would be the false-green class `purity-enforcement.test.ts`
+    // codifies: it could never fail, so it would go silent on a runaway.
     const chars = DERIVED_TYPES.reduce((total, spec) => total + (spec.record_when?.length ?? 0), 0);
-    expect(chars).toBeLessThan(400);
+    expect(chars).toBeLessThan(450);
   });
 });
 
@@ -230,6 +242,135 @@ describe('vocabularies we do not own are strings, not enums', () => {
   });
 });
 
+describe('the one vocabulary we close, and the one we do not', () => {
+  const spec = (): ReturnType<typeof derivedType> => derivedType('review_finding');
+
+  it('is the ONLY enum over a vocabulary we did not invent', () => {
+    // Every other vocabulary in this file is a string by `VOCABULARY_IS_NOT_OURS`. This is the
+    // exception, and a test that names the exception is what stops the rule quietly becoming
+    // "enums are fine when convenient" one type later. The three others are all ascend's own
+    // concepts -- passed/failed, a prior verdict, and whether a verdict came from the check's
+    // exit status or its output -- so closing them costs nothing when the harness changes.
+    const enums = DERIVED_TYPES.flatMap((one) =>
+      one.properties.filter((p) => p.type === 'enum').map((p) => `${one.name}.${p.name}`),
+    );
+    expect(enums.sort()).toEqual([
+      'review_finding.class',
+      'verification_run.previous_verdict',
+      'verification_run.verdict',
+      'verification_run.verdict_source',
+    ]);
+  });
+
+  it('closes `class` on exactly the nine lenses, in the skill’s own order', () => {
+    const property = spec()?.properties.find((one) => one.name === 'class');
+    expect(property?.type).toBe('enum');
+    expect(property?.required).toBe(true);
+    // Declared in lens order, so the skill's numbering survives in the source even though
+    // canonicalization SORTS enum_values before anything is registered or hashed.
+    expect(property?.enum_values).toEqual(FINDING_LENSES.map((one) => one.slug));
+  });
+
+  it('pins the nine slugs as LITERALS, so this test is the freeze', () => {
+    // Without this, every other assertion here compares `FINDING_LENSES` against itself -- the
+    // enum is built from that table -- so renaming a lens would pass all of them while silently
+    // making every finding recorded before the rename incomparable with every one after it. The
+    // literals are the freeze, and editing them is the deliberate act a rename requires.
+    //
+    // A RENAME IS NOT FORBIDDEN, it is costly, and the cost is not visible in this file: a
+    // changed `enum_values` changes the definition shape, so a rename mints a new type version
+    // and splits the counts across the boundary. Anyone editing this list is choosing that.
+    expect(FINDING_LENSES.map((one) => one.slug)).toEqual([
+      'assumption_audit',
+      'state_machine',
+      'boundary_conditions',
+      'data_lifecycle',
+      'error_paths',
+      'time_concurrency',
+      'environment_divergence',
+      'cross_implementation_divergence',
+      'write_read_asymmetry',
+    ]);
+  });
+
+  it('carries the provenance table, so the mapping is checkable rather than remembered', () => {
+    // The nine headings are copied from `~/.claude/skills/bug-hunt/SKILL.md` v1.0.0, which is
+    // outside this repository and will drift. Holding both the heading and the skill's own lens
+    // number makes a later diff against the skill a comparison rather than a re-derivation.
+    expect(FINDING_LENSES.map((one) => one.lens)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(new Set(FINDING_LENSES.map((one) => one.slug)).size).toBe(9);
+    for (const one of FINDING_LENSES) {
+      // A copy-paste that duplicated a heading or a number would otherwise pass every other
+      // assertion here, because both are only ever compared as sets.
+      expect(one.heading.length).toBeGreaterThan(0);
+      expect(one.slug).toMatch(/^[a-z][a-z0-9]*(_[a-z0-9]+)*$/);
+    }
+    expect(new Set(FINDING_LENSES.map((one) => one.heading)).size).toBe(9);
+  });
+
+  it('says WHY it is closed, where a reader will hit it', () => {
+    // The mirror of `says WHY it is open`. The reason has to travel with the definition, or the
+    // next person sees an inconsistency with the rule three constants above and reopens it --
+    // which would silently make nine spellings of one lens countable as nine classes.
+    const description = spec()?.properties.find((one) => one.name === 'class')?.description ?? '';
+    expect(description).toMatch(/enum on purpose/i);
+    expect(description).toMatch(/version bump/i);
+    expect(description).toMatch(/review_completed/);
+  });
+
+  it('REFUSES a class outside the nine, naming the values it will take', () => {
+    // The behaviour the vocabulary is closed FOR, and the reason the normalizer has to count
+    // off-vocabulary values separately (normalize.ts): a refusal is a drop, and a drop is
+    // invisible. Nothing here can make the store accept a tenth lens; what the log does about
+    // it is Stage 2's.
+    const result = validateEntry(spec()!, {
+      properties: {
+        class: 'lens_ten',
+        file: 'a.ts',
+        summary: 's',
+        tool_use_id: 't1',
+        session_id: 'sess-1',
+        project: '-Users-me-app',
+      },
+    });
+    expect(result.errors.length).toBeGreaterThan(0);
+    const problem = result.errors.map((one) => one.problem).join(' ');
+    expect(problem).toMatch(/invalid enum value/i);
+    expect(problem).toContain('boundary_conditions');
+  });
+
+  it('keeps `verdict` a STRING, because that vocabulary is the harness’s', () => {
+    // The plan sketched this as an enum over `CONFIRMED`/`PLAUSIBLE`. It is not one, and the
+    // rule above is why: those two values come from the harness's report format, so closing the
+    // list would turn a third verdict into a rejected entry the day it ships. Same treatment as
+    // `denial_kind`, including naming the measured values in the prose.
+    const property = spec()?.properties.find((one) => one.name === 'verdict');
+    expect(property?.type).toBe('string');
+    expect(property?.enum_values).toBeUndefined();
+    expect(property?.description).toContain('CONFIRMED');
+    expect(property?.description).toContain('PLAUSIBLE');
+    expect(property?.description).toMatch(/belongs to the harness/i);
+  });
+
+  it('declares `catchable_by` and says it is never filled', () => {
+    // Absent on every entry, because nothing in the harness report carries it. Declaring it is
+    // what makes its absence `not_measured` on an expected field rather than an oversight -- and
+    // the prose has to say so, or a reader sees an empty column and assumes the deriver is broken.
+    const property = spec()?.properties.find((one) => one.name === 'catchable_by');
+    expect(property?.type).toBe('string');
+    expect(property?.required).toBeUndefined();
+    expect(property?.description).toMatch(/always absent/i);
+    expect(property?.description).toMatch(/not_measured/);
+  });
+
+  it('says in its own description that it has no producer yet', () => {
+    // Zero entries is a measurement, not a gap in the file, and the type is where a reader
+    // looks. Measured 2026-09-26: `ReportFindings` called 0 times across 1,236 files.
+    expect(spec()?.description).toMatch(/ZERO entries/);
+    expect(spec()?.description).toMatch(/0 times/);
+  });
+});
+
 describe('absent and zero stay distinguishable', () => {
   it('does not require discovered_tools, so absence is representable', () => {
     const property = derivedType('context_compaction')?.properties.find(
@@ -315,6 +456,12 @@ describe('the definitions accept what the deriver produces', () => {
       verification_run: { runner: 'pnpm test', verdict: 'failed', verdict_source: 'output' },
       skill_activation: { skill: 'bug-hunt' },
       user_correction: {},
+      review_finding: {
+        class: 'boundary_conditions',
+        file: 'packages/core/src/state.ts',
+        summary: 'an empty enum_values list is legal to define and impossible to satisfy',
+        tool_use_id: 'toolu_01',
+      },
     };
 
     for (const spec of DERIVED_TYPES) {

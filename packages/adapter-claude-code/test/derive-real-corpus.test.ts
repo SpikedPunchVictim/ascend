@@ -64,6 +64,15 @@ const MIN_PER_TYPE: Readonly<Record<string, number>> = {
   // than below it, because this is the type whose viability was in question: if it drops, the
   // type should be re-examined rather than silently tolerated.
   user_correction: 5,
+  // `review_finding` is deliberately ABSENT, and its absence is a measurement rather than an
+  // oversight. It is the sixth declared type and the corpus derives zero of it -- no
+  // `ReportFindings` call exists in 1,236 transcript files (`asc-gtnu`, re-measured
+  // 2026-09-26). A floor here would have to be 0, and a floor of zero is exactly the vacuous
+  // assertion the note above this map was written to refuse: it stays green over a deriver
+  // that emitted nothing. Adding it at 1 would make this file red on every machine until the
+  // first reviewer reports, which is a gate that teaches people to ignore gates. The honest
+  // place for "the count is zero on purpose" is `derived-types.ts`'s count table; the honest
+  // place for "and here is the day it moves" is `asc-gtnu.3`'s fixture test.
 };
 
 interface Sweep {
@@ -278,8 +287,10 @@ describe.skipIf(!available)('the deriver against the real corpus', () => {
     // direction, for the obvious reason: the corpus grew.
     //
     // The entries-only figures are smaller and are what the assertions below use, because the
-    // five types key off TRIGGER records, not off every record: 1,607 entries, 0 without a cwd,
-    // 0 without a branch, over 14 projects and 84 real working directories (6.0:1).
+    // five types that derive today key off TRIGGER records, not off every record: 1,607
+    // entries, 0 without a cwd, 0 without a branch, over 14 projects and 84 real working
+    // directories (6.0:1). Still five and still 1,607: the sixth type derives nothing, so it
+    // neither adds an entry nor moves this denominator.
     const result = await once();
 
     expect(result.withoutCwd.slice(0, 20)).toEqual([]);

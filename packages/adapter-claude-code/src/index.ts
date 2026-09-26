@@ -41,7 +41,13 @@ export {
   type TranscriptRecord,
 } from './decode.js';
 
-export { DERIVED_SOURCE, DERIVED_TYPES, derivationVersion, derivedType } from './derived-types.js';
+export {
+  DERIVED_SOURCE,
+  DERIVED_TYPES,
+  FINDING_LENSES,
+  derivationVersion,
+  derivedType,
+} from './derived-types.js';
 
 export { EPHEMERAL_ROOTS, isEphemeralProject } from './ephemeral.js';
 

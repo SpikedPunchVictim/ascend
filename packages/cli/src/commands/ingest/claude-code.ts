@@ -350,9 +350,12 @@ export default class IngestClaudeCode extends BaseCommand {
 
       // Definitions first, because `recordEntry` refuses an entry whose type is not registered --
       // and because the entries below carry no `version`, so they resolve to this run's
-      // registration. `registerDocument` is the same path `asc types define` takes, so these five
+      // registration. `registerDocument` is the same path `asc types define` takes, so these six
       // are ordinary types: they version, export and diff like anything a user writes, and a
-      // second run reports `unchanged` rather than rewriting them.
+      // second run reports `unchanged` rather than rewriting them. All six register even though
+      // the sixth (`review_finding`) derives nothing from any corpus measured so far -- a type
+      // that exists and has no rows is a readable fact, and registering it only once it had a
+      // row would make the day it appears depend on the corpus rather than on the code.
       for (const spec of DERIVED_TYPES) {
         const registration = registerDocument(project.store, spec, {
           registeredAt: this.now(),

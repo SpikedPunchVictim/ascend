@@ -1,5 +1,5 @@
 /**
- * The five entry types `asc ingest claude-code` derives from transcripts.
+ * The six entry types `asc ingest claude-code` derives from transcripts.
  *
  * These are ordinary definitions -- registered through the ordinary `registerType` path, so
  * they version, diff and export exactly like anything a user defines. Nothing about them is
@@ -36,10 +36,19 @@
  *   context_compaction       438   session + record uuid         EVENT
  *   skill_activation          87   session + first record uuid   EVENT
  *   user_correction           20   session + record uuid         EVENT
+ *   review_finding             0   session + report id + index   EVENT
+ *
+ * `review_finding` IS THE FIRST ROW HERE THAT IS ZERO, and it is a measurement rather than a
+ * missing one. Re-measured 2026-09-26: `ReportFindings` -- the harness tool a reviewer reports
+ * through -- was called 0 times across 1,236 transcript files and 637,258 records. So the rule
+ * is written and the producer has never run. A zero in this column means "this type has no
+ * entries", never "nobody looked", and the two are the distinction the whole three-state model
+ * exists to keep apart.
  *
  * Those are counts produced by driving the deriver over the whole corpus and validating every
  * entry against the spec below: 1,488 entries, 0 rejected, 0 warnings, 0 duplicate keys, 0
- * unkeyable, 0 unverdictable, 6 key collisions. The
+ * unkeyable, 0 unverdictable, 6 key collisions. The total is unchanged by `review_finding`
+ * because that type's own count is zero -- see its row above. The
  * check is `derive-real-corpus.test.ts`, and it is the reason these definitions can be trusted
  * to match what the transcript actually contains. The counts are a live corpus, not a fixture:
  * this session's own transcript is in there, which is why `tool_denial` rose by one between
@@ -133,15 +142,20 @@ export function derivationVersion(type: string): number {
 
 /**
  * The sentence a model reads in `asc types brief`, and it must stay short: the brief is a
- * context tax on EVERY session in the project. Five of these cost roughly 350 characters,
- * about 90 tokens -- cheaper than the four starter types, and for a fact the model needs,
- * which is "do not record these".
+ * context tax on EVERY session in the project. These cost 73 characters each -- 438 across the
+ * six -- which is cheaper than the four starter types, and for a fact the model needs, which
+ * is "do not record these".
+ *
+ * The count is IN the sentence because it is the reason the budget test's cap has moved twice:
+ * the tax is per session and per type, so the cap is an absolute number rather than a multiple
+ * of the type count, and a seventh type takes it to 511 and trips it. `derived-types.test.ts`
+ * owns the number; this comment says where it came from.
  */
 const NEVER_BY_HAND = 'Never by hand -- asc ingest claude-code derives one from each transcript.';
 
 /**
  * Why a machine-emitted vocabulary is a `string` and not an `enum`, stated once because it is
- * the same decision in three places (`denial_kind`, `trigger`).
+ * the same decision in three places (`denial_kind`, `trigger`, `review_finding.verdict`).
  *
  * The vocabulary of denial kinds and compaction triggers belongs to Claude Code, not to
  * ascend. An `enum` here would be a closed list of the values that happened to exist on
@@ -153,6 +167,57 @@ const NEVER_BY_HAND = 'Never by hand -- asc ingest claude-code derives one from 
 const VOCABULARY_IS_NOT_OURS =
   'Deliberately a string rather than an enum: this vocabulary belongs to Claude Code, so a ' +
   'closed list would turn the next new value into a rejected entry rather than a recorded one.';
+
+/**
+ * The nine analysis lenses a reviewer reports under, as SLUGS, and this is the ONE place in
+ * ascend where a vocabulary we do not own is deliberately closed.
+ *
+ * Provenance, because this list is copied from outside the repository and will drift:
+ * `~/.claude/skills/bug-hunt/SKILL.md`, frontmatter `version: 1.0.0`, read 2026-09-26. The
+ * skill names its lenses in nine `### Lens N: <Display Name>` headings and gives them NO
+ * SLUGS, so the snake_case names below are ascend's own rendering of those headings -- not a
+ * quotation. `heading` carries the skill's words and `lens` its number, so the mapping is
+ * checkable rather than remembered, and a later reader can diff this list against the skill
+ * without re-deriving it.
+ *
+ * WHY IT IS CLOSED, against `VOCABULARY_IS_NOT_OURS` directly above. The point of `asc-gtnu`
+ * is to ask WHICH CLASSES of error reviewers find that implementers did not, and a class
+ * vocabulary with nine spellings of one lens cannot answer that -- an open string gives
+ * `boundary_conditions`, `boundary`, and `Boundary Conditions` as three classes. Comparability
+ * is the whole product here, and it is worth a maintenance cost.
+ *
+ * THE COST, stated rather than discovered later: a tenth lens needs a TYPE VERSION BUMP (the
+ * store supports it -- `verification_run` is at 3), because adding an `enum` value changes the
+ * definition shape. Every finding recorded before the bump keeps its old version and the counts
+ * split across a version boundary until they are read together. That is the accepted price.
+ *
+ * THE OTHER COST IS A REFUSAL, and the log compensates for it. A `class` outside these nine is
+ * REFUSED at record time, with the allowed values printed -- which is the behaviour this
+ * vocabulary is closed FOR. But a refusal is a drop, and a drop is invisible, so the normalizer
+ * counts off-vocabulary values separately (`offVocabularyFindings`, `normalize.ts`) and the
+ * event still carries the raw string. The store refusing a bad class is the point; the LOG
+ * still records that it happened, which is the difference between a closed vocabulary and a
+ * silent one.
+ *
+ * NOT TO BE CONFUSED WITH `review_completed.findings[].category` (`starters.ts`), which is a
+ * different axis entirely: that one is WHAT KIND of problem was found (`bug`, `security`,
+ * `design`, ...), and this one is HOW THE REVIEWER LOOKED (an assumption audit, a boundary
+ * sweep, ...). One finding has both, and neither implies the other.
+ */
+export const FINDING_LENSES: readonly { slug: string; heading: string; lens: number }[] = [
+  { slug: 'assumption_audit', heading: 'Assumption Audit', lens: 1 },
+  { slug: 'state_machine', heading: 'State Machine Analysis', lens: 2 },
+  { slug: 'boundary_conditions', heading: 'Boundary Conditions', lens: 3 },
+  { slug: 'data_lifecycle', heading: 'Data Lifecycle Tracing', lens: 4 },
+  { slug: 'error_paths', heading: 'Error Path Exerciser', lens: 5 },
+  { slug: 'time_concurrency', heading: 'Time & Concurrency', lens: 6 },
+  { slug: 'environment_divergence', heading: 'Environment Divergence', lens: 7 },
+  { slug: 'cross_implementation_divergence', heading: 'Cross-Implementation Divergence', lens: 8 },
+  { slug: 'write_read_asymmetry', heading: 'Write/Read Path Asymmetry', lens: 9 },
+];
+
+/** The slugs alone, which is what the `class` enum takes. */
+const FINDING_CLASS: readonly string[] = FINDING_LENSES.map((one) => one.slug);
 
 /**
  * `user_correction` SHIPS, WITH THE LIMITATION STATED IN THE TYPE'S OWN PROSE -- and the
@@ -182,7 +247,7 @@ const USER_CORRECTION_LIMITATION =
   'corroborated by a count over denials, because they are the same events. It is kept for ' +
   '`evidence_text`, which holds what the user actually said and which no other type records.';
 
-/** Shared by all five: these three are on every derived entry. */
+/** Shared by all six: these three are on every derived entry. */
 const PROVENANCE: readonly TypeSpec['properties'][number][] = [
   {
     name: 'session_id',
@@ -418,6 +483,135 @@ export const DERIVED_TYPES: readonly TypeSpec[] = [
         description:
           'The tool being called when the correction arrived, resolved like `tool_denial`’s. ' +
           'Measured: resolvable on all 20 corrections.',
+      },
+      ...PROVENANCE,
+    ],
+  },
+
+  // ---------------------------------------------------------------------------
+  {
+    name: 'review_finding',
+    description:
+      'One finding an adversarial reviewer reported, derived from the reviewer’s own ' +
+      'report rather than from anything it chose to run. MEASURED 2026-09-26: this type has ' +
+      'ZERO entries, and that is the state it ships in -- the tool it derives from ' +
+      '(`ReportFindings`) exists in the harness and was called 0 times across 1,236 transcript ' +
+      'files and 637,258 records. A derived type with no producer is not a broken one, but it ' +
+      'is not a useful one either, and the honest place to say so is here rather than in a ' +
+      'report that shows a clean zero. When the first reviewer reports, this fills with no ' +
+      'change to this file. ' +
+      'THE ONE CLOSED VOCABULARY WE DO NOT OWN is `class` -- see `FINDING_LENSES` for the ' +
+      'provenance, the reason, and the version-bump cost of a tenth lens. ' +
+      '`catchable_by` IS DECLARED AND NEVER FILLED: nothing in the harness report carries it, ' +
+      'so it is absent on every entry rather than empty on some, and an absent judgment field is ' +
+      '`not_measured` -- the default, needing no encoding at all. It is declared because its ' +
+      'absence is then a stated expectation instead of an oversight, and because the handler ' +
+      'that asks the question names it under `judged` (asc-6ola.9).',
+    record_when: NEVER_BY_HAND,
+    properties: [
+      {
+        name: 'class',
+        type: 'enum',
+        enum_values: FINDING_CLASS,
+        required: true,
+        description:
+          'Which lens found this, as one of the nine slugs in `FINDING_LENSES`. THIS IS AN ' +
+          'ENUM ON PURPOSE, and it is the only place in ascend where a vocabulary we do not own ' +
+          'is closed -- the reason is that comparable counts by class are the entire product of ' +
+          'this type, and an open string gives nine spellings of one lens. A tenth lens needs a ' +
+          'type version bump, and a value outside the nine is REFUSED here with the allowed ' +
+          'values printed; the normalizer counts that refusal so the fact is not lost with the ' +
+          'entry. Deliberately NOT the same axis as `review_completed.findings[].category`, ' +
+          'which is what KIND of problem this is rather than how the reviewer looked.',
+      },
+      {
+        name: 'file',
+        type: 'string',
+        required: true,
+        description:
+          'The file the finding is in, as the reviewer’s report gives it -- repo-relative, not ' +
+          'resolved against anything here. Required: a finding with no file is a finding about ' +
+          'the design rather than the code, and it would join nothing, which is the one thing ' +
+          'this type exists to do. Measured on the corpus: this path is the JOIN KEY between a ' +
+          'reviewer’s finding and the implementer’s `file.changed` events for the same file, ' +
+          'and a measured 58.1% of that join crosses streams within one session ' +
+          '(spike/review-join/FINDINGS.md).',
+      },
+      {
+        name: 'line',
+        type: 'integer',
+        description:
+          'The line the finding is anchored to. OMITTED when the reviewer’s report carries no ' +
+          'line, which is an ordinary state -- a finding about a missing guard or an unhandled ' +
+          'error path often has no single line. Omitted rather than `0`, because line 0 is not ' +
+          'a place in a file and a reader who sees it would have to guess which was meant.',
+      },
+      {
+        name: 'summary',
+        type: 'text',
+        required: true,
+        description:
+          'The finding in the reviewer’s own words, one sentence. Required because it is the ' +
+          'only field that says what is actually wrong: the class says where to look next and ' +
+          'the file says where, and neither says what.',
+      },
+      {
+        name: 'failure_scenario',
+        type: 'text',
+        description:
+          'Concrete inputs or state leading to a wrong outcome, in the reviewer’s words. This ' +
+          'is the field that separates a real finding from a suspicion, and it is the one a ' +
+          'later reader needs in order to check the claim rather than trust it -- so it is ' +
+          'carried verbatim as the reviewer wrote it, never summarized.',
+      },
+      {
+        name: 'verdict',
+        type: 'string',
+        description:
+          'The reviewer’s own confidence in the finding. Measured values: `CONFIRMED`, ' +
+          '`PLAUSIBLE`. A string and NOT an enum, and that is the rule above applied rather ' +
+          'than an exception to it: this vocabulary belongs to the harness’s report format, ' +
+          'not to ascend, so closing it would turn a third verdict value into a rejected entry ' +
+          'the day the harness adds one. ' +
+          VOCABULARY_IS_NOT_OURS,
+      },
+      {
+        name: 'reviewer_model',
+        type: 'string',
+        description:
+          'The model that produced the finding, from the stream’s own `model.context`. ' +
+          'NOT an enum, for the reason measured there: one model is spelled ' +
+          '`deepseek-v4.1-flash` on one field and `deepseek-v4.1-flash:cloud` on another, so a ' +
+          'closed list would be wrong before it was written. It is what makes "which model’s ' +
+          'findings survive review" a stratified question rather than a pooled one. OMITTED ' +
+          'when the transcript names no model for the stream.',
+      },
+      {
+        name: 'catchable_by',
+        type: 'string',
+        description:
+          'What would have caught this before it shipped -- a test, a check, a type. ' +
+          'ALWAYS ABSENT TODAY, and that is not an oversight: nothing in the reviewer’s report ' +
+          'carries it, so the deriver never sets it and no entry has ever had a value. It is ' +
+          'declared so that an absent `catchable_by` reads as `not_measured` on a field the ' +
+          'type expects, which is a different fact from a field nobody thought of. It exists ' +
+          'for the question `asc-gtnu` is actually asking -- whether the implementer later ran ' +
+          'a check that would have caught it -- and that question is unanswerable in both ' +
+          'directions until this has values. Note that the SAME gap exists on the other side ' +
+          'of the join: `check.run` carries no path, so "did a check run on THIS file" is not ' +
+          'derivable either (spike/review-join/FINDINGS.md).',
+      },
+      {
+        name: 'tool_use_id',
+        type: 'ref',
+        required: true,
+        description:
+          'The reviewer’s report call this finding came from -- a `ReportFindings` tool_use id ' +
+          'from the transcript. Required, and it is the identity: one report call carries an ' +
+          'ARRAY of findings, so the key is this id plus the finding’s position in that array, ' +
+          'and a re-derivation finds the same entries rather than appending duplicates. The ' +
+          'position is not a property because the key already carries it, the way ' +
+          '`context_compaction` keeps its record uuid in the key rather than in a field.',
       },
       ...PROVENANCE,
     ],

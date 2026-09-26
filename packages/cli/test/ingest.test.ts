@@ -301,8 +301,10 @@ describe('asc ingest claude-code', () => {
     expect(db.ids).toContain(`derived:claude-code:verification_run@3:s-1:toolu-bash`);
     expect(db.ids).toContain(`derived:claude-code:context_compaction:s-1:u-4`);
 
-    // Five definitions registered, through the ordinary registry path.
-    expect(db.types).toBe(5);
+    // Six definitions registered, through the ordinary registry path. The sixth derives nothing
+    // yet, which is why `byType` above has five keys: it counts ENTRIES, and a registered type
+    // with no entries is a type, not a row.
+    expect(db.types).toBe(6);
   });
 
   it('writes what the transcripts carry into the properties, and omits what they do not', () => {
@@ -709,12 +711,20 @@ describe('asc ingest claude-code', () => {
     };
 
     expect(envelope.ascend_output).toBe(OUTPUT_CONTRACT_VERSION);
-    // Five definitions and five types' worth of entries -- the same run the table describes.
-    expect(envelope.row_count).toBe(10);
-    expect(envelope.rows.filter((row) => row.action === 'type')).toHaveLength(5);
+    // Six definitions and one entry row per type -- twelve, not eleven, because the entry rows
+    // are emitted per TYPE rather than per entry-that-existed. `review_finding` gets a row
+    // reporting `none` (`describe` of an all-zero outcome), which is the point of it: absent,
+    // not hidden. The same run the table describes.
+    expect(envelope.row_count).toBe(12);
+    expect(envelope.rows.filter((row) => row.action === 'type')).toHaveLength(6);
+    // Five, not six: a row reporting `none` is not a row reporting `1 new`. Asserted as two
+    // separate numbers so the sixth type cannot hide behind the fifth's count.
     expect(
       envelope.rows.filter((row) => row.action === 'entry' && row.outcome === '1 new'),
     ).toHaveLength(5);
+    expect(
+      envelope.rows.filter((row) => row.target === 'review_finding' && row.action === 'entry'),
+    ).toEqual([{ action: 'entry', target: 'review_finding', outcome: 'none' }]);
   });
 
   it('advertises the command and its flags in --help', () => {

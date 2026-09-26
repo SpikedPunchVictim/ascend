@@ -1126,10 +1126,17 @@ describe('keys and counters', () => {
 describe('the real cwd and branch, which the project label cannot express', () => {
   const AT = { cwd: '/Users/me/app/packages/core', gitBranch: 'feat/locality' };
 
-  it('carries both on every one of the five types', () => {
-    // All five, so "each type's emit path passes it" is one assertion rather than five. The
-    // ids are distinct per record because a compaction, a skill run and a correction all key
-    // on their record's uuid -- sharing one would collide them into a single key.
+  it('carries both on every type this fixture can derive', () => {
+    // Five of the six types, not five of five: `review_finding` is declared
+    // (`derived-types.ts`) and has no derivation rule yet -- `asc-gtnu.3` adds one, keyed off a
+    // `ReportFindings` tool call the corpus has never made. Named as a count because "every
+    // type" would be a false green over the one type that cannot appear here; the sixth is
+    // covered the day there is a record shape to cover it with.
+    //
+    // All five in one fixture, so "each type's emit path passes it" is one assertion rather
+    // than five. The ids are distinct per record because a compaction, a skill run and a
+    // correction all key on their record's uuid -- sharing one would collide them into a
+    // single key.
     const entries = derive([
       record(
         [{ type: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'pnpm test' } }],

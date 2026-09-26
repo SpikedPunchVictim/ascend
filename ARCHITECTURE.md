@@ -239,7 +239,9 @@ Ships as self-reported types (drawn from patterns already in the user's `CLAUDE.
 Explicitly **not** shipped as self-reported — derived by the adapter in Stage 2 instead:
 `skill-activation` (transcripts carry `attributionSkill`), `verification-run` (Bash tool results),
 `user-correction` (`userFeedback`), `tool-denial` (`toolDenialKind`), `context-compaction`
-(`compactMetadata`).
+(`compactMetadata`), and `review-finding` (the harness's `ReportFindings` tool call — declared, and
+so far derived zero times: the tool has been called 0 times across the entire corpus, so the rule
+exists and no data has exercised it).
 
 ### Recall — how the LLM learns it should record
 

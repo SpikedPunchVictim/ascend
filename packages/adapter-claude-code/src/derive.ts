@@ -10,7 +10,7 @@
  * proportional to it.
  *
  * THE IDENTITY RULE, which is the whole of `asc-dh0.1`'s finding and the reason four of these
- * five types exist at all:
+ * types exist at all:
  *
  *     A derived type's N is its count of DISTINCT PER-EVENT IDENTITIES, never its line count.
  *
@@ -253,7 +253,9 @@ function blocks(record: TranscriptRecord): readonly Record<string, unknown>[] {
  * `attributionAgent` 69,698/69,698, i.e. every record that can trigger a derived event carries
  * both. The claim was re-checked at the ENTRIES level on 2026-09-16 rather than guessed forward:
  * 1,607 derived entries, 0 without a `cwd`, 0 without a `branch`. So for these five types this
- * is a copy, not a lookup.
+ * is a copy, not a lookup. The sixth type `review_finding` reaches the store through this same
+ * `emit`, so it inherits the copy -- but it has 0 entries, so this measurement does not cover it
+ * and nothing here should be read as having observed it.
  *
  * The 21.4% that carry neither are CONTROL records -- `mode`, `permission-mode`, `last-prompt`,
  * `ai-title`, `agent-name`, `bridge-session`. None of them triggers a derived event today, so
