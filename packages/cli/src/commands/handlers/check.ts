@@ -8,8 +8,9 @@
  *
  * Then the project's transcripts are replayed once through the normalizer and every handler, and
  * each handler reports what it would have emitted: its count, the triggers behind it, the windows
- * the log ended inside, and a few rows to read. The log's horizon is reported with them, because a
- * count means nothing without the amount of history it was counted over.
+ * the log ended inside, the judgment fields it declares (`judged`, asc-6ola.9), and a few rows to
+ * read. The log's horizon is reported with them, because a count means nothing without the amount
+ * of history it was counted over.
  *
  * Read-only: nothing is written to the store or to the transcripts.
  */
@@ -138,6 +139,16 @@ export default class HandlersCheck extends BaseCommand {
       add('rows', replay.rows.length);
       add('triggers', replay.triggers);
       add('unclosed', replay.unclosed);
+      // One row per judged name, in document order, following `analysis_questions[i]` in
+      // `types show`: the table elides at 60 characters, so a joined list would lose every name
+      // after the first, and `--json` gets each as a plain string.
+      //
+      // Reported next to `rows` deliberately. These fields appear on every row this handler
+      // emits and carry no value on any of them -- which is the whole point of the key and is
+      // exactly what would otherwise read as a broken handler.
+      handler.judged.forEach((name, index) => {
+        add(`judged[${String(index)}]`, name);
+      });
       spreadSample(replay.rows, flags.samples).forEach((row, index) => {
         add(`sample[${String(index)}]`, row);
       });

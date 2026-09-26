@@ -683,3 +683,181 @@ describe('windows', () => {
     expect(rows.map((row) => row.fields['path'])).toEqual(['a.ts']);
   });
 });
+
+/**
+ * `judged` -- the declaration that a field is deliberately not measured (asc-6ola.9).
+ *
+ * The store's third state is the default one: `not_measured` needs no encoding (`state.ts`), so a
+ * judgment field's value is simply ABSENT from `fields`, and the handler's whole job is to say the
+ * absence was intended rather than forgotten. Both halves are pinned here -- that nothing is
+ * invented for a judged name, and that a handler without the key is untouched by any of this.
+ */
+describe('judged declares a field the handler deliberately does not measure', () => {
+  const base = { on: 'command.run', emit: { head: '${head}' } };
+
+  it('carries the declared names on every row it emits', () => {
+    const { rows } = run(
+      { ...base, judged: ['outcome', 'usable'] },
+      stream(() => ev('command.run', 1, { head: 'bd' })),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.judged).toEqual(['outcome', 'usable']);
+  });
+
+  it('invents no value for a judged name', () => {
+    const { rows } = run(
+      { ...base, judged: ['outcome'] },
+      stream(() => ev('command.run', 1, { head: 'bd' })),
+    );
+    // Declared and absent at the same time, which is the point: the row says the field exists and
+    // that no one measured it, rather than saying the handler never heard of it.
+    expect(rows[0]?.judged).toEqual(['outcome']);
+    expect(rows[0]?.fields).toEqual({ head: 'bd' });
+    expect(Object.hasOwn(rows[0]?.fields ?? {}, 'outcome')).toBe(false);
+  });
+
+  it('leaves a handler that declares none byte-identical', () => {
+    const { rows } = run(
+      base,
+      stream(() => ev('command.run', 1, { head: 'bd' })),
+    );
+    expect(rows[0]?.judged).toBeUndefined();
+    expect('judged' in (rows[0] as object)).toBe(false);
+  });
+
+  it('rides on a window row, which is the shape asc-6ola.9 uses', () => {
+    // `until: session.end`, NOT `until: agent.return`. An until equal to the kind the window
+    // watches closes it on the very event it waits for and emits nothing (handler.ts:808-815),
+    // so this test fails with an empty `rows` under that shape -- which is the defect that was
+    // in the first draft of this plan, pinned here so it cannot come back.
+    const { rows, unclosed } = run(
+      {
+        on: 'agent.spawn',
+        window: {
+          until: 'session.end',
+          first: {
+            on: 'agent.return',
+            where: { child_agent_id: { eq: '$child_agent_id' } },
+          },
+        },
+        emit: { child: '${child_agent_id}', status: '${window.first.status}' },
+        judged: ['outcome'],
+      },
+      stream(
+        () => ev('agent.spawn', 1, { id: 't1', child_agent_id: 'a1', agent_type: 'Explore' }),
+        () => ev('agent.return', 2, { id: 't1', child_agent_id: 'a1', status: 'completed' }),
+      ),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.closed_by).toBe('match');
+    expect(rows[0]?.fields).toEqual({ child: 'a1', status: 'completed' });
+    expect(rows[0]?.judged).toEqual(['outcome']);
+    expect(unclosed).toBe(0);
+  });
+
+  it('counts a spawn whose return never came as unclosed, not as a row', () => {
+    // The absent-trigger-field case: `child_agent_id` is absent on a launch failure, `eq` needs
+    // both sides present (handler.ts:302), so nothing can match. The window must end up unclosed
+    // rather than emitting a row claiming a return that never happened.
+    const { rows, unclosed } = run(
+      {
+        on: 'agent.spawn',
+        window: {
+          until: 'session.end',
+          first: {
+            on: 'agent.return',
+            where: { child_agent_id: { eq: '$child_agent_id' } },
+          },
+        },
+        emit: { child: '${child_agent_id}' },
+        judged: ['outcome'],
+      },
+      stream(
+        () => ev('agent.spawn', 1, { id: 't1' }),
+        () => ev('agent.return', 2, { id: 't1', child_agent_id: 'a1', status: 'completed' }),
+        () => ev('session.end', 2),
+      ),
+    );
+    expect(rows).toEqual([]);
+    expect(unclosed).toBe(1);
+  });
+
+  it('changes the hash, so declaring a judgment is a different handler', () => {
+    expect(compileHandler({ ...base, judged: ['outcome'] }).hash).not.toBe(
+      compileHandler(base).hash,
+    );
+  });
+
+  it.each([
+    ['an empty list', [], /judged: must be a non-empty list of names/],
+    ['a string instead of a list', 'outcome', /judged: must be a non-empty list of names/],
+    ['a name that is not a name', ['Outcome'], /judged\[0\]: "Outcome" is not a name/],
+    ['a duplicate name', ['outcome', 'outcome'], /judged: outcome appears twice/],
+    [
+      'a name that is also emitted',
+      ['head'],
+      /judged: head is also emitted -- a field is either measured or it is not/,
+    ],
+  ])('refuses %s', (_name, judged, message) => {
+    expect(refused({ ...base, judged })).toMatch(message);
+  });
+});
+
+/**
+ * An `until` that is a kind the window itself watches can never decide anything, and the shape
+ * that does it -- `until: agent.return` with `first: {on: agent.return}` -- was the first draft
+ * of asc-6ola.9's handler. It loaded, ran, and reported `rows: []` with `unclosed: 0`: a handler
+ * green over its entire signal. Refused at compile time so it cannot be written down at all.
+ */
+describe('compileWindow refuses an until that is a kind the window watches', () => {
+  const emit = { x: 'a' };
+  it.each([
+    [
+      'first',
+      {
+        on: 'agent.spawn',
+        window: { until: 'agent.return', first: { on: 'agent.return' } },
+        emit,
+      },
+    ],
+    [
+      'count',
+      {
+        on: 'agent.spawn',
+        window: { until: 'agent.return', count: { on: 'agent.return' } },
+        emit,
+      },
+    ],
+    [
+      'absent',
+      {
+        on: 'agent.spawn',
+        window: { until: 'agent.return', absent: { on: 'agent.return' } },
+        emit,
+      },
+    ],
+    [
+      'an any-form alternative',
+      {
+        on: 'agent.spawn',
+        window: {
+          until: 'agent.return',
+          absent: { any: [{ on: 'check.run' }, { on: 'agent.return' }] },
+        },
+        emit,
+      },
+    ],
+  ])('refuses %s', (_name, spec) => {
+    expect(refused(spec)).toMatch(/window\.until: agent\.return is a kind this window watches/);
+  });
+
+  it('allows an until that is a different kind from the watched one', () => {
+    expect(
+      refused({
+        on: 'agent.spawn',
+        window: { until: 'session.end', first: { on: 'agent.return' } },
+        emit,
+      }),
+    ).toBe('ACCEPTED');
+  });
+});

@@ -108,3 +108,35 @@ on: "command.run"
     expect(changed.hash).not.toBe(original.hash);
   });
 });
+
+/**
+ * `judged` through the strict YAML front end (asc-6ola.9).
+ *
+ * The core compiler owns the refusals (`packages/core/test/handler.test.ts`); what this file has
+ * to show is that the key survives the loader at all. A top-level key the front end dropped would
+ * make every one of those refusals unreachable from a real handler file -- the loader is the only
+ * way a project handler is ever parsed.
+ */
+describe('judged survives the strict YAML front end', () => {
+  const HEAD = 'on: command.run\nemit: { head: bd }\n';
+
+  it('parses the list in document order', () => {
+    expect(loadHandler(`${HEAD}judged: [outcome, usable]\n`).judged).toEqual(['outcome', 'usable']);
+  });
+
+  it('is an empty list when the key is absent', () => {
+    expect(loadHandler(HEAD).judged).toEqual([]);
+  });
+
+  it('refuses a judged name that is also emitted', () => {
+    expect(refusal(`${HEAD}judged: [head]\n`)).toMatch(/judged: head is also emitted/);
+  });
+
+  it('refuses an empty list', () => {
+    expect(refusal(`${HEAD}judged: []\n`)).toMatch(/judged: must be a non-empty list of names/);
+  });
+
+  it('hashes a declared judgment differently from no declaration', () => {
+    expect(loadHandler(`${HEAD}judged: [outcome]\n`).hash).not.toBe(loadHandler(HEAD).hash);
+  });
+});

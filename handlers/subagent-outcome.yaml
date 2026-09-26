@@ -1,0 +1,48 @@
+# asc-6ola.9: what a delegated subagent task returned, and what it cost.
+#
+# The bead's question is "do delegated tasks return usable results". The measured half is here:
+# the return's own status and the counts Claude Code attaches to it. The judgement -- usable /
+# partial / failed / ignored by the parent -- needs a rubric and a reader, so it is declared
+# under `judged` and carried on every row with NO value. That is the candidate mechanism this
+# bead exists to settle: `not_measured` is the store's default state and needs no encoding
+# (state.ts), so the field is simply absent from `fields`, and the declaration is the one thing
+# that says the absence was intended rather than forgotten. Confirming a candidate is an ordinary
+# later record against the same row, not a new mechanism.
+#
+# The window's `until` is session.end, and NOT agent.return. An until equal to the kind the
+# window watches closes the window on the very event it is waiting for: no row, and `unclosed`
+# stays 0, so the handler looks clean over the entire signal. Measured rather than reasoned --
+# with `until: agent.return` the fixture in packages/core/test/handler.test.ts yields rows [] and
+# unclosed 0, and no committed handler used until on the kind its window watched, so nothing
+# would have caught it.
+#
+# The join is on child_agent_id, not on the spawn's tool-use id. Both kinds carry the SAME value
+# (normalize.ts bridges the notification's <task-id> and the tool result's agentId through one
+# `spawned` set, so a return is not emitted at all unless its child matched a spawn in this
+# stream), and on the return side child_agent_id is the more complete of the two: <task-id> is
+# present on 1,243 of 1,244 notifications, <tool-use-id> on 984. An id join would report one
+# return in five as never having come back.
+#
+# A spawn whose return never came is UNCLOSED, never a row with empty costs. That is the launch
+# failure case: with no toolUseResult the spawn carries no child_agent_id at all, `eq` needs both
+# sides present (handler.ts:302), so nothing can match it. Every spawn in this project's corpus
+# is async (`async_launched`, 1,041 of 1,041 carrying a tool result), so a return arrives by
+# notification or not at all -- the synchronous branch in normalize.ts is unobserved.
+on: agent.spawn
+description: A delegated task's return and what it cost, with the outcome left to a reader.
+window:
+  until: session.end
+  first:
+    on: agent.return
+    where:
+      child_agent_id: { eq: $child_agent_id }
+emit:
+  child_agent_id: '${child_agent_id}'
+  agent_type: '${agent_type}'
+  model: '${model}'
+  async: '${async}'
+  status: '${window.first.status}'
+  tokens: '${window.first.tokens}'
+  tool_uses: '${window.first.tool_uses}'
+  duration_ms: '${window.first.duration_ms}'
+judged: [outcome]

@@ -56,9 +56,14 @@ context; the depth lives in the numbered files.
 | [0013](0013-2026-09-23-ingest-undoes-the-scrub.md) | ~~every ingest since the store scrub has written the real identity back~~ **corrected:** by design (asc-hqr); the real residue is the hand scrub splitting one project label into two spellings (288 / 105) | `asc-o3tn` (P2; `asc-i2kw` closed) | a dry run's collisions on types whose rule had not changed — nobody was looking; the first reading missed a closed ruling because `bd search` hides closed issues |
 | [0014](0014-2026-09-23-scrub-collisions-blamed-on-transcripts.md) | a full re-ingest blames 1,135 scrub-caused collisions on reused transcript identities | `asc-o3tn` (P2) | the same dry run: collisions where the plan predicted none — nobody was looking |
 | [0015](0015-2026-09-24-prettier-write-counted-as-a-check.md) | `prettier --write` is recorded as a verification run: 44 of the 83 prettier `verification_run` rows came from a `--write` segment | `asc-6ola.15` (P1, fixed) | grouping the runners a new handler emitted (asc-6ola.7) — nobody was looking |
+| [0016](0016-2026-09-24-single-form-window-kind-false-green.md) | a refactor of the window match dropped the kind check, so a `tool.use.start` satisfied a `check.run` window | none filed (fixed in-flight under `asc-6ola.8`) | the acceptance fixture replay of `edit-verified` after refactoring the window match |
+| [0017](0017-2026-09-26-task-notifications-arrive-in-records-the-parser-never-reads.md) | a task notification arrives as a record shape the parser never reads, and the counter that exists measures a disjoint population, so 36 of 80 returns were dropped uncounted | `asc-ggd4` (P1) | a pre-registered count taken before it was measured, then asking the data rather than the handler why it came out short (`asc-6ola.9`) |
 
-Ten findings, each with its own mechanism. The mechanism is the part that repeats even when
+Seventeen findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
+
+> Rows 0016 and 0017 were added 2026-09-26; 0016 had been written but never indexed, and the
+> count here said "Ten" while the table listed fifteen.
 
 ## The convention
 

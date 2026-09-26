@@ -47,7 +47,16 @@ export const MAX_REGEX_LENGTH = 300;
 /** A regex is tested against at most this many characters of a field. */
 export const MAX_SUBJECT_LENGTH = 100_000;
 
-const TOP_KEYS = new Set(['on', 'description', 'capture', 'where', 'each', 'window', 'emit']);
+const TOP_KEYS = new Set([
+  'on',
+  'description',
+  'capture',
+  'where',
+  'each',
+  'window',
+  'emit',
+  'judged',
+]);
 const WINDOW_KEYS = new Set(['calls', 'until', 'first', 'count', 'absent', 'at_least', 'any']);
 const WATCHER_KEYS = new Set(['on', 'where']);
 const OPERATORS = new Set([
@@ -107,6 +116,21 @@ export interface HandlerRow {
   /** Present when the handler has a window. */
   readonly closed_by?: ClosedBy;
   readonly fields: Readonly<Record<string, string>>;
+  /**
+   * Fields this handler reports as a judgment rather than a measurement -- names only, no values.
+   *
+   * **Present ONLY when the handler declares a `judged` key**, so a handler written before that
+   * key existed produces rows byte-identical to the ones it produced then.
+   *
+   * **What this is for (asc-6ola.9).** The store's three states are `measured`,
+   * `not_applicable` and `not_measured`, and `not_measured` is the default that needs no
+   * encoding at all (`state.ts`). A candidate entry is therefore one whose judgment fields are
+   * simply ABSENT, and the only thing a handler has to supply is the DECLARATION of which
+   * absences are deliberate. Without it a reader cannot tell a field the handler chose not to
+   * measure from one it forgot -- which is the difference between a candidate awaiting
+   * confirmation and a handler with a hole in it.
+   */
+  readonly judged?: readonly string[];
 }
 
 type Scope = (name: string) => unknown;
@@ -156,6 +180,12 @@ export interface CompiledHandler {
   readonly each: Each | undefined;
   readonly window: Window | undefined;
   readonly emit: readonly (readonly [string, Template])[];
+  /**
+   * The names declared under `judged`, in document order. Empty when none are declared, never
+   * `undefined` -- so `handler.judged.length === 0` is the whole test a caller needs, and no
+   * caller has to tell "declares none" apart from "has no such key".
+   */
+  readonly judged: readonly string[];
 }
 
 const isMap = (value: unknown): value is Record<string, unknown> =>
@@ -499,7 +529,7 @@ function compileWindow(spec: unknown, context: RefContext): Window {
   }
   const until = spec['until'];
   if (until !== undefined && (typeof until !== 'string' || !Object.hasOwn(EVENT_KINDS, until))) {
-    refuse(`window.until: ${JSON.stringify(until)} is not an event kind`);
+    return refuse(`window.until: ${JSON.stringify(until)} is not an event kind`);
   }
   if (calls === undefined && until === undefined) {
     refuse('window: needs calls, until, or both -- a window with no end is never decided');
@@ -527,6 +557,8 @@ function compileWindow(spec: unknown, context: RefContext): Window {
   }
 
   let on: string | undefined;
+  /** The kinds this window watches -- one for a single form, each alternative for `any`. */
+  let watched: readonly string[];
   let match: Test;
   if (inner['any'] !== undefined) {
     if (inner['on'] !== undefined || inner['where'] !== undefined) {
@@ -551,6 +583,7 @@ function compileWindow(spec: unknown, context: RefContext): Window {
       return { kind, test: compileWhere(one['where'], kind, context, at) };
     });
     on = undefined;
+    watched = watchers.map((one) => one.kind);
     match = (event, scope) =>
       watchers.some((one) => event.kind === one.kind && one.test(event, scope));
   } else {
@@ -559,6 +592,7 @@ function compileWindow(spec: unknown, context: RefContext): Window {
       return refuse(`window.${mode}.on: ${JSON.stringify(kind)} is not an event kind`);
     }
     on = kind;
+    watched = [kind];
     // The kind check belongs to the match itself: a where compiled for `kind` may still be
     // true of another kind's event (a tool.use.start carries `ts` too), and the accept loop
     // offers every event. Found the hard way -- the edit-verified fixture replay lost
@@ -567,9 +601,35 @@ function compileWindow(spec: unknown, context: RefContext): Window {
     match = (event, scope) => event.kind === kind && where(event, scope);
   }
 
+  // A window whose `until` is a kind it is itself watching can never decide anything, in any of
+  // the three modes. The accept loop checks `until` BEFORE the window's own match and closes
+  // there, so the very event the window waits for closes it instead: `first` emits nothing and
+  // reports `unclosed: 0` (a handler green over its whole signal), `count` never reaches its
+  // `at_least`, and `absent` emits its "nothing matched" verdict about an event that DID match.
+  //
+  // All three are the project's severity-zero class -- a wrong verdict reported as a result --
+  // and all three are invisible to the unit suite, because the handler loads and runs cleanly.
+  // Measured, not reasoned: `until: agent.return` with `first: {on: agent.return}` yields rows []
+  // and unclosed 0 on the fixture in packages/core/test/handler.test.ts. Refused at compile time
+  // so the class cannot be written down at all; asc-6ola.9's own handler was first drafted with
+  // this shape and the draft was a silent zero.
+  //
+  // The any-form is covered too: an `until` equal to ANY alternative has the same effect for
+  // that alternative, which is why `watched` is the whole list rather than `on`.
+  const clash = until === undefined ? undefined : watched.find((kind) => kind === until);
+  if (clash !== undefined) {
+    return refuse(
+      `window.until: ${clash} is a kind this window watches, and until is checked before the ` +
+        `match -- the window would close on the event it is waiting for and could never decide ` +
+        `anything. Use a different until, or session.end to let the stream end decide it.`,
+    );
+  }
+
   return {
     calls: calls as number | undefined,
-    until: until as string | undefined,
+    // No assertion: the `until` refusal above returns, which narrows `until` to `string | undefined`
+    // here. It read as `unknown` when that refusal was a bare statement.
+    until,
     mode,
     on,
     match,
@@ -669,6 +729,10 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     ([key, value]) => [key, compileTemplate(value, names, `emit.${key}`)] as const,
   );
 
+  // `judged` is parsed AFTER `emit`, because one of its refusals is about the two together and
+  // the check is a set intersection rather than something derivable from the source order.
+  const judged = compileJudged(parsed['judged'], new Set(Object.keys(emitSpec)));
+
   return {
     spec: parsed as Json,
     hash: sha256Hex(canonicalJson(parsed)),
@@ -679,7 +743,51 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     each,
     window,
     emit,
+    judged,
   };
+}
+
+/**
+ * The `judged` key: names a handler reports as a judgment, not a measurement.
+ *
+ * **Names only, and that is what keeps this construct small.** A judged field has no value, so
+ * `HandlerRow.fields` stays `Record<string, string>`, no template or operand type changes, and
+ * the emitted-value refusal (`an emitted value is a string template`) is untouched. The whole
+ * cost of this feature is one list of strings.
+ *
+ * **Why a field cannot be both.** A name in `judged` says "this field is deliberately absent,
+ * and a later confirmation may fill it in"; a name in `emit` says "here is the value". Both at
+ * once would be a handler asserting a value and disclaiming it in the same row, and every reader
+ * downstream would have to pick which half to believe. The refusal resolves that at load time,
+ * where the handler's author is the person reading it.
+ *
+ * **Not refused: a judged name that matches nothing.** The handler does not declare an entry
+ * type, so there is no schema here to check the name against, and inventing one would mean
+ * guessing which store type the row will be recorded as. A judged name that no analyst ever
+ * confirms is a judgement that went unanswered, which is a fact about the corpus rather than a
+ * mistake in the handler.
+ */
+function compileJudged(spec: unknown, emitted: ReadonlySet<string>): readonly string[] {
+  if (spec === undefined) return [];
+  if (!Array.isArray(spec) || spec.length === 0) {
+    return refuse('judged: must be a non-empty list of names');
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const [index, name] of spec.entries()) {
+    // The same name rule as `capture.<name>` and `each.as`, so there is one answer in this file
+    // to "what is a name".
+    if (typeof name !== 'string' || !/^[a-z_][a-z0-9_]*$/.test(name)) {
+      return refuse(`judged[${String(index)}]: ${JSON.stringify(name)} is not a name`);
+    }
+    if (seen.has(name)) return refuse(`judged: ${name} appears twice`);
+    if (emitted.has(name)) {
+      return refuse(`judged: ${name} is also emitted -- a field is either measured or it is not`);
+    }
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
 }
 
 /** A window waiting for the events that decide it. */
@@ -739,6 +847,11 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
       ...(trigger.ts === undefined ? {} : { ts: trigger.ts }),
       ...(closedBy === undefined ? {} : { closed_by: closedBy }),
       fields,
+      // Spread like the envelope fields above, not set to `[]`: a handler that declares no
+      // `judged` produces the same object literal it produced before this key existed, so
+      // nothing downstream has to learn that `judged: []` and `judged: undefined` mean the same
+      // thing. There is one row builder in this file, which is what makes this a one-line change.
+      ...(handler.judged.length === 0 ? {} : { judged: handler.judged }),
     };
   };
 
