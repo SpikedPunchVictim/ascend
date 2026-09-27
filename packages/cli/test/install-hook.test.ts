@@ -780,3 +780,144 @@ describe('asc install-hook: the report', () => {
     expect(run.stdout).toContain('hook');
   });
 });
+
+describe('asc install-hook: lifecycle stages for say: handlers (asc-tuur.4)', () => {
+  const NUDGE = [
+    'on: tool.use.start',
+    'where:',
+    '  tool: Skill',
+    '  skill: {in: [bug-hunt]}',
+    "say: 'Report each finding with ReportFindings.'",
+    '',
+  ].join('\n');
+
+  function withHandler(dir: string, name: string, text: string): void {
+    mkdirSync(join(dir, 'handlers'), { recursive: true });
+    writeFileSync(join(dir, 'handlers', name), text);
+  }
+
+  /** The groups under one event, as written. */
+  const groups = (dir: string, event: string): readonly Record<string, unknown>[] =>
+    ((settings(dir)['hooks'] as Record<string, unknown>)[event] ?? []) as readonly Record<
+      string,
+      unknown
+    >[];
+
+  const rowsOf = (run: Run) =>
+    (JSON.parse(run.stdout) as { rows: { action: string; outcome: string; command: string }[] })
+      .rows;
+
+  it('installs nothing beyond SessionStart when no handler says anything', () => {
+    const dir = project();
+    const run = asc(['install-hook', '--yes', '--json'], dir);
+    expect(rowsOf(run)).toHaveLength(1);
+    expect(groups(dir, 'PostToolUse')).toEqual([]);
+  });
+
+  it('installs a PostToolUse hook matched to the tools the handler names', () => {
+    const dir = project();
+    withHandler(dir, 'nudge.yaml', NUDGE);
+    const run = asc(['install-hook', '--yes', '--json'], dir);
+    expect(rowsOf(run)[1]).toMatchObject({ action: 'PostToolUse', outcome: 'installed' });
+    expect(groups(dir, 'PostToolUse')).toEqual([
+      {
+        matcher: 'Skill',
+        hooks: [
+          {
+            type: 'command',
+            command:
+              '[ ! -f "$CLAUDE_PROJECT_DIR/.claude/ascend-hook.sh" ] || ' +
+              'sh "$CLAUDE_PROJECT_DIR/.claude/ascend-hook.sh" post-tool-use',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('matches every tool when a handler does not narrow where.tool to literals', () => {
+    const dir = project();
+    withHandler(dir, 'nudge.yaml', NUDGE);
+    withHandler(dir, 'any.yaml', "on: file.changed\nsay: 'changed ${path}'\n");
+    asc(['install-hook', '--yes'], dir);
+    expect(groups(dir, 'PostToolUse')[0]?.['matcher']).toBe('');
+  });
+
+  it('is idempotent with a stage installed', () => {
+    const dir = project();
+    withHandler(dir, 'nudge.yaml', NUDGE);
+    asc(['install-hook', '--yes'], dir);
+    const before = readFileSync(settingsPath(dir), 'utf8');
+    const again = asc(['install-hook', '--yes', '--json'], dir);
+    expect(rowsOf(again).map((row) => row.outcome)).toEqual([
+      'already installed',
+      'already installed',
+    ]);
+    expect(readFileSync(settingsPath(dir), 'utf8')).toBe(before);
+  });
+
+  it('upgrades the matcher in place when the handlers name another tool', () => {
+    const dir = project();
+    withHandler(dir, 'nudge.yaml', NUDGE);
+    asc(['install-hook', '--yes'], dir);
+    withHandler(dir, 'nudge.yaml', NUDGE.replace('tool: Skill', 'tool: {in: [Skill, Write]}'));
+    const run = asc(['install-hook', '--yes', '--json'], dir);
+    expect(rowsOf(run)[1]?.outcome).toBe('upgraded');
+    expect(groups(dir, 'PostToolUse').map((group) => group['matcher'])).toEqual(['Skill|Write']);
+  });
+
+  it("removes its own stage hook when no handler uses the stage, and never another tool's", () => {
+    const dir = project();
+    mkdirSync(join(dir, '.claude'), { recursive: true });
+    const other = { matcher: 'Bash', hooks: [{ type: 'command', command: 'lint-on-bash' }] };
+    writeFileSync(settingsPath(dir), JSON.stringify({ hooks: { PostToolUse: [other] } }));
+    withHandler(dir, 'nudge.yaml', NUDGE);
+    asc(['install-hook', '--yes'], dir);
+    expect(groups(dir, 'PostToolUse')).toHaveLength(2);
+
+    rmSync(join(dir, 'handlers', 'nudge.yaml'));
+    const run = asc(['install-hook', '--yes', '--json'], dir);
+    expect(rowsOf(run)[1]).toMatchObject({ action: 'PostToolUse', outcome: 'removed' });
+    expect(groups(dir, 'PostToolUse')).toEqual([other]);
+  });
+
+  it('--dry-run reports "would install" for a stage and writes nothing', () => {
+    const dir = project();
+    withHandler(dir, 'nudge.yaml', NUDGE);
+    const run = asc(['install-hook', '--dry-run', '--json'], dir);
+    expect(rowsOf(run)[1]?.outcome).toBe('would install');
+    expect(run.stderr.replace(/\s+/g, ' ')).toMatch(
+      /would install a PostToolUse hook .* Skill call/,
+    );
+    expect(existsSync(settingsPath(dir))).toBe(false);
+  });
+
+  it('writes a script that hands a stage call to asc hook, with the input on stdin', () => {
+    const dir = project();
+    withHandler(dir, 'nudge.yaml', NUDGE);
+    asc(['install-hook', '--yes'], dir);
+    const command = (groups(dir, 'PostToolUse')[0]?.['hooks'] as { command: string }[])[0]?.command;
+    const input = {
+      session_id: 's-1',
+      cwd: dir,
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Skill',
+      tool_input: { skill: 'bug-hunt' },
+      tool_response: { success: true },
+      tool_use_id: 'toolu_1',
+    };
+    const live = spawnSync('sh', ['-c', command ?? ''], {
+      cwd: dir,
+      input: JSON.stringify(input),
+      encoding: 'utf8',
+      env: { ...process.env, HOME: dir, CLAUDE_PROJECT_DIR: dir, ASCEND_BIN: bin },
+    });
+    expect(live.status).toBe(0);
+    expect(JSON.parse(live.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: 'Report each finding with ReportFindings.',
+      },
+    });
+    expect(live.stderr).toBe('');
+  });
+});

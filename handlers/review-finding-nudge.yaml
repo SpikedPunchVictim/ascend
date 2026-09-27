@@ -1,0 +1,27 @@
+# asc-tuur.4: route B for review_finding -- a sentence to the reviewer at the moment it loads bug-hunt.
+#
+# The table handler beside this one (review-finding-table.yaml) reads findings out of the report the
+# reviewer already writes, and leaves behind every row whose Finding cell names no file. This handler
+# asks for the one thing that closes that gap, at the one moment it can land: right after the Skill
+# call, as PostToolUse `additionalContext`, which reached the model 2/2 in spike/exposure and fires
+# inside a subagent too (spike/capture-hooks, 2/2). Nothing about the user's workflow changes -- the
+# skill is theirs, unedited, and the sentence arrives only when it is loaded.
+#
+# A reviewer that follows it is recorded by the reported route (captured_by: reported), and the table
+# rows of that session are then left to it, so a finding is never counted twice.
+#
+# `asc install-hook` installs the PostToolUse hook with matcher `Skill` because of this file. The
+# lens slugs below are FINDING_LENSES; project-handlers.test.ts fails if the two drift.
+on: tool.use.start
+description: Ask a bug-hunt reviewer to report its findings with ReportFindings.
+where:
+  tool: Skill
+  skill:
+    in: [bug-hunt]
+say: >-
+  ascend records review findings. When this review has findings, call the ReportFindings tool
+  once with all of them, in addition to the report you write: each with file, line, summary,
+  failure_scenario, verdict, and category set to the slug of the lens that found it --
+  assumption_audit, state_machine, boundary_conditions, data_lifecycle, error_paths,
+  time_concurrency, environment_divergence, cross_implementation_divergence or
+  write_read_asymmetry.

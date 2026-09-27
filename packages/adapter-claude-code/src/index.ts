@@ -100,3 +100,11 @@ export {
   type TranscriptFailure,
   type Visit,
 } from './reader.js';
+
+export {
+  HOOK_STAGES,
+  hookEvents,
+  stageForKind,
+  type HookStage,
+  type HookStageSpec,
+} from './hook-input.js';

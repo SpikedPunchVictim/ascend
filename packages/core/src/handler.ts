@@ -67,7 +67,16 @@ const TOP_KEYS = new Set([
   'judged',
   'type',
   'maps',
+  'say',
 ]);
+
+/**
+ * The keys a `say:` handler cannot carry (asc-tuur.4). A say handler runs inside one lifecycle
+ * hook call, which sees ONE event and remembers nothing between calls: a window, a fan-out, a
+ * backward reference or a session scope would each need events the call does not have, and would
+ * be silently never satisfied rather than refused.
+ */
+const SAY_EXCLUDES = ['emit', 'window', 'each', 'before', 'type', 'judged', 'scope'] as const;
 const WINDOW_KEYS = new Set(['calls', 'until', 'first', 'count', 'absent', 'at_least', 'any']);
 const WATCHER_KEYS = new Set(['on', 'where']);
 const BEFORE_KEYS = new Set(['on', 'where']);
@@ -330,6 +339,13 @@ export interface CompiledHandler {
    * caller has to tell "declares none" apart from "has no such key".
    */
   readonly judged: readonly string[];
+  /**
+   * True for a `say:` handler (asc-tuur.4): its rows carry one field, `say`, a sentence a lifecycle
+   * hook hands the model at the moment the trigger happens. Such a handler writes no entry and is
+   * run live, one event per call, by whatever front end owns the hook -- core does not know which
+   * harness stages exist.
+   */
+  readonly say: boolean;
 }
 
 const isMap = (value: unknown): value is Record<string, unknown> =>
@@ -926,6 +942,17 @@ export function compileHandler(parsed: unknown): CompiledHandler {
   if (typeof on !== 'string' || !Object.hasOwn(EVENT_KINDS, on)) {
     return refuse(`on: ${JSON.stringify(on)} is not an event kind`);
   }
+  const saySpec = parsed['say'];
+  if (saySpec !== undefined) {
+    if (typeof saySpec !== 'string' || saySpec.trim() === '') {
+      refuse('say: must be a non-empty string');
+    }
+    for (const key of SAY_EXCLUDES) {
+      if (parsed[key] !== undefined) {
+        refuse(`say: a say handler runs on one event at a time, so it cannot also have ${key}`);
+      }
+    }
+  }
   const description = parsed['description'];
   if (description !== undefined && typeof description !== 'string')
     refuse('description: must be a string');
@@ -1029,7 +1056,8 @@ export function compileHandler(parsed: unknown): CompiledHandler {
   const window =
     parsed['window'] === undefined ? undefined : compileWindow(parsed['window'], context, scope);
 
-  const emitSpec = parsed['emit'];
+  // A say handler is an emit of one field, `say`, so it compiles and runs through the same code.
+  const emitSpec = saySpec === undefined ? parsed['emit'] : { say: saySpec };
   if (!isMap(emitSpec) || Object.keys(emitSpec).length === 0)
     return refuse('emit: is required, a non-empty map');
   const names: TemplateNames = {
@@ -1041,7 +1069,8 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     before: before?.on,
   };
   const emit = Object.entries(emitSpec).map(
-    ([key, value]) => [key, compileTemplate(value, names, `emit.${key}`)] as const,
+    ([key, value]) =>
+      [key, compileTemplate(value, names, saySpec === undefined ? `emit.${key}` : 'say')] as const,
   );
 
   // `judged` is parsed AFTER `emit`, because one of its refusals is about the two together and
@@ -1063,6 +1092,7 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     window,
     emit,
     judged,
+    say: saySpec !== undefined,
   };
 }
 

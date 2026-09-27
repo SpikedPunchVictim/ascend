@@ -23,7 +23,10 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   DERIVED_SOURCE,
+  HOOK_STAGES,
   createNormalizer,
+  stageForKind,
+  type HookStage,
   projectRelativeCwd,
   type DerivedEntry,
   type TranscriptFile,
@@ -53,13 +56,47 @@ export interface HandlerLoadFailure {
   readonly message: string;
 }
 
-export interface LoadedHandlers {
+/** A handler that loaded from `handlers/`, named by its file. */
+export interface ProjectHandler {
+  readonly name: string;
+  readonly handler: CompiledHandler;
+}
+
+/** A `say:` handler, with the lifecycle stage that delivers its trigger (asc-tuur.4). */
+export interface SayHandler extends ProjectHandler {
+  readonly stage: HookStage;
+}
+
+export interface ProjectHandlers {
   readonly typed: readonly TypedHandler[];
+  readonly say: readonly SayHandler[];
   readonly failures: readonly HandlerLoadFailure[];
 }
 
-/** Load every typed handler in `<projectRoot>/handlers`; untyped handlers are left to `check`. */
-export function loadTypedHandlers(projectRoot: string): LoadedHandlers {
+/**
+ * The stage a say handler runs at, or a `HandlerError` naming why none can. Core accepts `say:` on
+ * any kind, because core does not know which stages a harness has; this is where "a hook that
+ * would never fire" is refused, for `asc handlers check` and for the loader alike.
+ */
+export function sayStage(handler: CompiledHandler): HookStage {
+  const stage = stageForKind(handler.on);
+  if (stage === undefined) {
+    throw new HandlerError(
+      `say: no lifecycle hook delivers ${handler.on}, so this handler would never run. ` +
+        `A say handler triggers on one of: ${Object.values(HOOK_STAGES)
+          .flatMap((one) => one.kinds)
+          .join(', ')}`,
+    );
+  }
+  return stage;
+}
+
+/**
+ * Load every handler in `<projectRoot>/handlers`. Typed and say handlers are returned by role;
+ * the rest only report, and are `asc handlers check`'s. A handler that does not load is a failure,
+ * never a throw -- see the module doc.
+ */
+export function loadProjectHandlers(projectRoot: string): ProjectHandlers {
   const dir = join(projectRoot, HANDLERS_DIR);
   let files: string[];
   try {
@@ -68,26 +105,29 @@ export function loadTypedHandlers(projectRoot: string): LoadedHandlers {
       .sort();
   } catch (error) {
     // No handlers directory is the ordinary state of a project that never wrote one.
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { typed: [], failures: [] };
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { typed: [], say: [], failures: [] };
+    }
     throw error;
   }
   const typed: TypedHandler[] = [];
+  const say: SayHandler[] = [];
   const failures: HandlerLoadFailure[] = [];
   for (const file of files) {
     const path = join(dir, file);
+    const name = basename(file).replace(/\.ya?ml$/, '');
     try {
       const handler = loadHandler(readFileSync(path, 'utf8'));
-      if (handler.type === undefined) continue;
-      typed.push({
-        name: basename(file).replace(/\.ya?ml$/, ''),
-        handler: { ...handler, type: handler.type },
-      });
+      if (handler.say) say.push({ name, handler, stage: sayStage(handler) });
+      else if (handler.type !== undefined) {
+        typed.push({ name, handler: { ...handler, type: handler.type } });
+      }
     } catch (error) {
       if (!(error instanceof HandlerError)) throw error;
       failures.push({ path: join(HANDLERS_DIR, file), message: error.message });
     }
   }
-  return { typed, failures };
+  return { typed, say, failures };
 }
 
 /** What one typed handler did over the sweep. */

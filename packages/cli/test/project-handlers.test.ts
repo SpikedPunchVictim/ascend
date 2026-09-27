@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { replayHandlers } from '../src/handler-replay.js';
+import { FINDING_LENSES, hookEvents } from '@ascend/adapter-claude-code';
+import { runHandler } from '@ascend/core';
 import { loadHandler } from '../src/handler-yaml.js';
+import { sayStage } from '../src/typed-handlers.js';
 
 /**
  * The handlers this project keeps in `handlers/` (asc-6ola.7).
@@ -150,5 +153,35 @@ describe('read-unused', () => {
     // a.ts was used, so rows + 1 = triggers.
     expect(unused.unclosed).toBe(0);
     expect(unused.rows.length).toBe(unused.triggers - 1);
+  });
+});
+
+describe('review-finding-nudge', () => {
+  const handler = loadHandler(read('review-finding-nudge.yaml'));
+  const said = (skill: string): string[] => {
+    const run = runHandler(handler);
+    const events =
+      hookEvents('post-tool-use', {
+        session_id: 's',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Skill',
+        tool_input: { skill },
+        tool_use_id: 'toolu_1',
+      }) ?? [];
+    return events.flatMap((event) => run.accept(event).map((row) => row.fields['say'] ?? ''));
+  };
+
+  it('runs at post-tool-use', () => {
+    expect(sayStage(handler)).toBe('post-tool-use');
+  });
+
+  it('speaks when bug-hunt loads, and not for another skill', () => {
+    expect(said('bug-hunt')).toHaveLength(1);
+    expect(said('commit')).toEqual([]);
+  });
+
+  it('names every lens slug the type accepts, so the sentence cannot drift from FINDING_LENSES', () => {
+    const [sentence = ''] = said('bug-hunt');
+    for (const { slug } of FINDING_LENSES) expect(sentence).toContain(slug);
   });
 });

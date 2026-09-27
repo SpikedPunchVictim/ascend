@@ -94,11 +94,13 @@ import {
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Flags } from '@oclif/core';
+import { HOOK_STAGES, type HookStage } from '@ascend/adapter-claude-code';
 import { STORE_DIR } from '@ascend/store';
 import { BaseCommand } from '../base.js';
 import { refusal, usageError } from '../errors.js';
 import { findProjectRoot } from '../project.js';
 import { shellQuote, symlinkTarget } from '../symlink.js';
+import { loadProjectHandlers, type SayHandler } from '../typed-handlers.js';
 
 /** The hook event recall rides on. The only event whose stdout is injected on a session boundary. */
 const HOOK_EVENT = 'SessionStart';
@@ -310,14 +312,22 @@ ${resolution}
 case "$bin" in
   *.js)
     command -v node >/dev/null 2>&1 || exit 0
-    node "$bin" ingest claude-code >/dev/null 2>&1
-    node "$bin" types brief
+    run() { node "$bin" "$@"; }
     ;;
   *)
-    "$bin" ingest claude-code >/dev/null 2>&1
-    "$bin" types brief
+    run() { "$bin" "$@"; }
     ;;
 esac
+
+# With a stage (\`sh ascend-hook.sh post-tool-use\`), this is a lifecycle hook for the project's
+# say: handlers: the hook's JSON input is on stdin, and \`asc hook\` reads it from there.
+if [ -n "$1" ]; then
+  run hook "$1"
+  exit 0
+fi
+
+run ingest claude-code >/dev/null 2>&1
+run types brief
 `;
 }
 
@@ -481,6 +491,171 @@ function withHook(settings: Record<string, unknown>, command: string, target: st
   };
 }
 
+/**
+ * The settings command for one lifecycle stage (asc-tuur.4): the same script, given the stage.
+ * Portable for the reason `SETTINGS_COMMAND` is -- the stage name is the only thing added.
+ */
+const stageCommand = (stage: HookStage): string => `${SETTINGS_COMMAND} ${stage}`;
+
+/** What one stage's managed entry should be, or `undefined` when no say handler uses the stage. */
+interface StageWant {
+  readonly stage: HookStage;
+  readonly event: string;
+  readonly want: { readonly command: string; readonly matcher: string } | undefined;
+}
+
+/**
+ * The PostToolUse matcher that covers `handlers`: the tools their `where.tool` names, or `''`
+ * (every tool) as soon as one handler does not narrow it to literals. Read off the parsed spec,
+ * because a compiled `where` is a function. Narrowing matters: an unmatched PostToolUse hook is a
+ * process started on every tool call of every session.
+ */
+export function stageMatcher(handlers: readonly SayHandler[]): string {
+  const tools = new Set<string>();
+  for (const { handler } of handlers) {
+    const spec = handler.spec as { where?: { tool?: unknown } };
+    const tool = spec.where?.tool;
+    const literals =
+      typeof tool === 'string'
+        ? [tool]
+        : isRecord(tool) && typeof tool['eq'] === 'string'
+          ? [tool['eq']]
+          : isRecord(tool) &&
+              isArray(tool['in']) &&
+              tool['in'].every((one) => typeof one === 'string')
+            ? tool['in']
+            : undefined;
+    // A tool name is letters, digits, `_` and `-` (MCP tools included); anything else would be a
+    // regex the matcher reads differently than the handler does.
+    if (literals === undefined || literals.some((one) => !/^[A-Za-z0-9_-]+$/.test(one))) return '';
+    for (const one of literals) tools.add(one);
+  }
+  return [...tools].sort().join('|');
+}
+
+/** Which stages to install, from the project's say handlers. */
+function stageWants(say: readonly SayHandler[]): StageWant[] {
+  return (Object.keys(HOOK_STAGES) as HookStage[]).map((stage) => {
+    const using = say.filter((one) => one.stage === stage);
+    const event = HOOK_STAGES[stage].event;
+    return {
+      stage,
+      event,
+      want:
+        using.length === 0
+          ? undefined
+          : {
+              command: stageCommand(stage),
+              // UserPromptSubmit takes no matcher; `''` is what "every source" is written as.
+              matcher: stage === 'post-tool-use' ? stageMatcher(using) : '',
+            },
+    };
+  });
+}
+
+type StageOutcome = 'installed' | 'already installed' | 'upgraded' | 'removed' | 'absent';
+
+/**
+ * `settings` with one stage's managed entry appended, brought current, removed, or left alone.
+ *
+ * Ownership is `SCRIPT_MARKER`, exactly as in `withHook`: in a lifecycle event's array only a
+ * command ascend wrote names the script, so a command without it is never touched. REMOVAL is new
+ * here and is the same act as an upgrade, applied to ascend's own entry for a stage no handler uses
+ * any more -- leaving it would start a process on every matching call to print nothing.
+ */
+function withStageHook(
+  settings: Record<string, unknown>,
+  { event, want }: StageWant,
+  target: string,
+): { readonly next: Record<string, unknown>; readonly outcome: StageOutcome } {
+  const hooks = settings['hooks'];
+  if (hooks !== undefined && !isRecord(hooks)) {
+    throw refusal(
+      `${target} has a "hooks" key that is ${isArray(hooks) ? 'an array' : typeof hooks} ` +
+        `rather than an object, so ascend cannot tell where a hook entry belongs. ` +
+        `Fix that key by hand, or install the hook somewhere else.`,
+    );
+  }
+  const array = isRecord(hooks) ? hooks[event] : undefined;
+  if (array !== undefined && !isArray(array)) {
+    throw refusal(
+      `${target} has "hooks.${event}" as ${typeof array} rather than an array. ` +
+        `Claude Code expects an array of matchers there, and ascend will not replace it. ` +
+        `Make it an array, or remove the key, and run this again.`,
+    );
+  }
+  const current = isArray(array) ? array : [];
+  const located = locateAscendHook(current);
+  const withArray = (next: readonly unknown[]): Record<string, unknown> => {
+    // The key goes when ascend's entry was its last, rather than being left as an empty array.
+    // An existing key keeps its place in the file, and a new one is appended.
+    const entries = Object.entries(isRecord(hooks) ? hooks : {});
+    const kept = entries.flatMap(([key, value]): [string, unknown][] =>
+      key !== event ? [[key, value]] : next.length === 0 ? [] : [[key, next]],
+    );
+    const placed = entries.some(([key]) => key === event) || next.length === 0;
+    const nextHooks = Object.fromEntries(placed ? kept : [...kept, [event, next]]);
+    return { ...settings, hooks: nextHooks };
+  };
+
+  if (want === undefined) {
+    if (located === undefined) return { next: settings, outcome: 'absent' };
+    const next = current.flatMap((group, index) => {
+      if (index !== located.matcherIndex) return [group];
+      const record = group as Record<string, unknown>;
+      const entries = (record['hooks'] as readonly unknown[]).filter(
+        (_entry, entryIndex) => entryIndex !== located.entryIndex,
+      );
+      return entries.length === 0 ? [] : [{ ...record, hooks: entries }];
+    });
+    return { next: withArray(next), outcome: 'removed' };
+  }
+
+  if (located === undefined) {
+    const entry = { matcher: want.matcher, hooks: [{ type: 'command', command: want.command }] };
+    return { next: withArray([...current, entry]), outcome: 'installed' };
+  }
+  const group = current[located.matcherIndex] as Record<string, unknown>;
+  if (located.command === want.command && group['matcher'] === want.matcher) {
+    return { next: settings, outcome: 'already installed' };
+  }
+  const next = current.map((one, index) => {
+    if (index !== located.matcherIndex) return one;
+    const entries = (group['hooks'] as readonly unknown[]).map((entry, entryIndex) =>
+      entryIndex === located.entryIndex
+        ? { ...(entry as Record<string, unknown>), command: want.command }
+        : entry,
+    );
+    return { ...group, matcher: want.matcher, hooks: entries };
+  });
+  return { next: withArray(next), outcome: 'upgraded' };
+}
+
+/** The verb for a changed stage outcome, as a dry run says it. */
+const verbOf = (outcome: StageOutcome): string =>
+  outcome === 'installed' ? 'install' : outcome === 'upgraded' ? 'upgrade' : 'remove';
+
+/** One sentence disclosing a stage change, for consent and for a dry run alike. */
+function stageLine(
+  { event, want, outcome }: StageWant & { readonly outcome: StageOutcome },
+  dryRun: boolean,
+): string {
+  const verb = dryRun ? `would ${verbOf(outcome)}` : `will ${verbOf(outcome)}`;
+  if (want === undefined) {
+    return `ascend ${verb} its ${event} hook: no say: handler in handlers/ uses that stage now.`;
+  }
+  const scope =
+    event === 'PostToolUse'
+      ? want.matcher === ''
+        ? ' after every tool call'
+        : ` after each ${want.matcher.split('|').join(', ')} call`
+      : ' on every prompt';
+  return (
+    `ascend ${verb} a ${event} hook that runs this project's say: handlers${scope}, reading ` +
+    `the hook's input and adding what they say to the model's context: ${want.command}`
+  );
+}
+
 export default class InstallHook extends BaseCommand {
   static override description =
     'Add a SessionStart hook to this project’s .claude/settings.json, so every session ' +
@@ -526,6 +701,22 @@ export default class InstallHook extends BaseCommand {
     const target = this.writablePath(requested);
     const merged = withHook(this.readSettings(target), SETTINGS_COMMAND, requested);
 
+    // One managed entry per lifecycle stage this project's say: handlers use (asc-tuur.4), applied
+    // on top of the SessionStart merge so the file is written once, with both.
+    const loaded = loadProjectHandlers(root);
+    for (const failure of loaded.failures) {
+      this.warn(`handler ${failure.path} is not installed: ${failure.message}`);
+    }
+    let next = merged.next;
+    const stages = stageWants(loaded.say).map((want) => {
+      const applied = withStageHook(next, want, requested);
+      next = applied.next;
+      return { ...want, outcome: applied.outcome };
+    });
+    const stageChanges = stages.filter(
+      ({ outcome }) => outcome === 'installed' || outcome === 'upgraded' || outcome === 'removed',
+    );
+
     const scriptPath = join(root, ...SCRIPT_RELATIVE_PATH.split('/'));
     const scriptContent = hookScript(ownBinaryRelativePath(root, binary));
     const scriptCurrent = isScriptCurrent(scriptPath, scriptContent);
@@ -535,7 +726,8 @@ export default class InstallHook extends BaseCommand {
     // on generation 3 that string can never again distinguish a current script from a stale one --
     // reading the script itself is the only way left to answer "is this current".
     const alreadyInstalled = merged.alreadyInstalled && scriptCurrent;
-    const settingsNeedsWrite = !merged.alreadyInstalled;
+    const settingsNeedsWrite = !merged.alreadyInstalled || stageChanges.length > 0;
+    const nothingToDo = alreadyInstalled && stageChanges.length === 0;
     const scriptNeedsWrite = !scriptCurrent;
     // "Fresh" means `locateAscendHook` found nothing at all -- neither a stale command nor a current
     // one. Whenever that is NOT the case and the combined result is still not current, this is an
@@ -557,10 +749,19 @@ export default class InstallHook extends BaseCommand {
     // Nothing is written unless it is both asked for and consented to. The order matters: a dry run
     // and an already-installed hook are both *reports*, and prompting for either would ask the user
     // to approve something that is not about to happen.
-    if (!alreadyInstalled && !dryRun) {
-      await this.consent(yes, requested, scriptPath, merged.command, settingsNeedsWrite, upgraded);
+    const stageLines = stageChanges.map((one) => stageLine(one, dryRun));
+    if (!nothingToDo && !dryRun) {
+      await this.consent(
+        yes,
+        requested,
+        scriptPath,
+        merged.command,
+        !merged.alreadyInstalled,
+        upgraded,
+        stageLines,
+      );
       if (settingsNeedsWrite) {
-        this.writeAtomically(target, `${JSON.stringify(merged.next, null, 2)}\n`);
+        this.writeAtomically(target, `${JSON.stringify(next, null, 2)}\n`);
       }
       if (scriptNeedsWrite) {
         this.writeAtomically(scriptPath, scriptContent);
@@ -573,15 +774,16 @@ export default class InstallHook extends BaseCommand {
     // belongs, rather than widening the table with a string three times its width.
     if (dryRun) {
       this.warn('dry run: nothing was written.');
+      for (const line of stageLines) this.warn(line);
       if (!alreadyInstalled) {
-        if (settingsNeedsWrite) {
+        if (!merged.alreadyInstalled) {
           this.warn(
             upgraded
               ? `the hook that would replace ascend's existing one in ${requested} is:`
               : `the hook that would be appended to ${requested} is:`,
           );
           this.warn(`  ${merged.command}`);
-        } else {
+        } else if (stageChanges.length === 0) {
           this.warn(`${requested} already names ${scriptPath}; only that script would change.`);
         }
         this.warn(
@@ -593,6 +795,17 @@ export default class InstallHook extends BaseCommand {
 
     const rows: HookRow[] = [
       { action: 'hook', target: requested, outcome, command: merged.command, dry_run: dryRun },
+      // A stage row only where there is, or was, an entry: a project with no say handlers
+      // reports exactly what it reported before stages existed.
+      ...stages
+        .filter(({ outcome: one }) => one !== 'absent')
+        .map(({ event, stage, outcome: one }) => ({
+          action: event,
+          target: requested,
+          outcome: dryRun && one !== 'already installed' ? `would ${verbOf(one)}` : one,
+          command: stageCommand(stage),
+          dry_run: dryRun,
+        })),
     ];
     this.emit(format, { columns: ['action', 'target', 'outcome'], rows });
 
@@ -738,6 +951,7 @@ export default class InstallHook extends BaseCommand {
     command: string,
     settingsNeedsWrite: boolean,
     upgraded: boolean,
+    stageLines: readonly string[],
   ): Promise<void> {
     if (yes) return;
 
@@ -767,9 +981,10 @@ export default class InstallHook extends BaseCommand {
           : `ascend will append this hook to ${target}:`,
       );
       this.warn(`  ${command}`);
-    } else {
+    } else if (stageLines.length === 0) {
       this.warn(`${target} already names ${scriptPath}; that script is the only thing changing.`);
     }
+    for (const line of stageLines) this.warn(line);
     if (!(await this.ask('Install it? [y/N] '))) {
       throw refusal(
         `Not installed: consent was not given, so neither ${target} nor ${scriptPath} was ` +

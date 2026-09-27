@@ -31,6 +31,7 @@ import {
 } from '../../handler-replay.js';
 import { loadHandler } from '../../handler-yaml.js';
 import { findGitRoot, findProjectRoot } from '../../project.js';
+import { sayStage } from '../../typed-handlers.js';
 
 const HANDLER = 'handler';
 const FIELD = 'field';
@@ -50,6 +51,8 @@ function load(path: string): NamedHandler {
   let handler: CompiledHandler;
   try {
     handler = loadHandler(source);
+    // A say handler on a kind no lifecycle hook delivers would never run (asc-tuur.4).
+    if (handler.say) sayStage(handler);
   } catch (error) {
     if (error instanceof HandlerError) throw refusal(`${path}: ${error.message}`);
     throw error;
@@ -136,6 +139,8 @@ export default class HandlersCheck extends BaseCommand {
       // A typed handler's rows become entries of this type at ingest (asc-tuur.3), so the check
       // names it: the count below is then a count of entries, not only of rows.
       if (handler.type !== undefined) add('type', handler.type);
+      // A say handler's rows are what `asc hook <stage>` would have printed at each trigger.
+      if (handler.say) add('stage', sayStage(handler));
       add('on', handler.on);
       // Always, including the default. A count is only meaningful over a named partition, and
       // `scope` is the whole difference between "this stream" and "this session" (asc-gtnu.4), so

@@ -126,7 +126,7 @@ import { registerDocument } from '../../register-document.js';
 import { identityVocabularyOf, type Disclosing } from '../../redact.js';
 import {
   createHandlerProducer,
-  loadTypedHandlers,
+  loadProjectHandlers,
   type TypedHandler,
   type TypedHandlerOutcome,
 } from '../../typed-handlers.js';
@@ -382,7 +382,7 @@ export default class IngestClaudeCode extends BaseCommand {
       // files were never read through -- new, or changed, so its hash is new -- forces a full read
       // on its first run: the cursor would otherwise withhold every transcript it already knows
       // from the one reader that has never seen them, and a new handler would fill forward only.
-      const loaded = loadTypedHandlers(project.root);
+      const loaded = loadProjectHandlers(project.root);
       for (const failure of loaded.failures) {
         this.warn(`handler ${failure.path} was not run: ${failure.message}`);
       }
