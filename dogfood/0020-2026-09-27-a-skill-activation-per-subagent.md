@@ -7,7 +7,7 @@
 | **Surfaced by** | the user rejecting "15 of 19 bug-hunt sessions produced no report" as impossible |
 | **Entry type(s)** | `skill_activation` (derived) |
 | **Severity** | P2 |
-| **Status** | fixed in the `asc-gtnu.17` commit (`skill_activation` rule 2); live store not yet re-derived |
+| **Status** | fixed in `b468a92` (`skill_activation` rule 2); live store re-derived and rule 1 retired 2026-09-27 |
 
 ## What was found
 
@@ -179,10 +179,40 @@ Across all skills, main-stream activations went from 43 (rule 1, live) to 35 (ru
 Every other per-session difference is one skill whose name the live store holds redacted and the
 scratch store does not. That is the same activation, not a rule difference.
 
-**The live store is not yet migrated.** Rule-2 entries get new ids (`skill_activation@2:...`), so
-the next `asc ingest claude-code` writes them beside the rule-1 rows. As in `dogfood/0015`, the
-rule-1 rows are then retired by invalidation annotation, never deleted. The ones whose transcript
-is gone are not invalidated, because they are the only record of those activations.
+**The live store was migrated on 2026-09-27, through `asc` commands only.** First,
+`asc ingest claude-code --full` (exact line):
+
+```
+entry   skill_activation    119 new
+```
+
+Then `spike/skill-activation/retire-v1.mjs` classified every open rule-1 row by what rule 2
+derives from the same transcript. It ran as `asc invalidate --dry-run` first, then with `--write`:
+
+```
+rule-1 open 107, rule-2 119 {"superseded_same":14,"superseded_by_call":25,"inherited":52,"transcript_gone":16,"unexpected":0}
+wrote 91 of 91 invalidation(s)
+```
+
+The 52 inherited rows match the 52 inherited (stream, skill) pairs in the cross-tab above, which
+was measured separately. The 16 rows whose transcript is gone stay open, because they are the only
+record of those activations. The final state:
+
+```
+r      inv          n
+-----  -----------  ---
+rule1               16
+rule1  superseded   39
+rule1  wrong_value  52
+rule2               119
+requests  sessions  activations
+--------  --------  -----------
+8         7         20
+```
+
+The request count is the grouping above: main-stream activations, plus sessions whose only
+activations are in subagents. It gives **8 bug-hunt requests across 7 sessions** straight from
+the store, the figure this record first estimated by hand.
 
 ## Links
 
