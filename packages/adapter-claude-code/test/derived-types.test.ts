@@ -568,4 +568,49 @@ describe('the reviewer instruction, which is the only thing that makes a finding
     expect(text).toContain('ReportFindings');
     expect(text).toMatch(/do not run `asc record`/i);
   });
+
+  it('sends a reviewer to the project review skill, not to a skill that never names the tool', () => {
+    // asc-gtnu.14 (dogfood/0019): CLAUDE.md once sent reviewers to the user-level bug-hunt skill,
+    // which never names `ReportFindings`, so a review that followed the route wrote prose.
+    expect(instruction()).toContain('.claude/skills/lens-review/SKILL.md');
+  });
+});
+
+describe('the project review skill, which is the route a counted review takes', () => {
+  /**
+   * The skill is a third copy of the vocabulary (enum, CLAUDE.md, skill), and the one a reviewer
+   * actually reads while reviewing -- the `ReportFindings` tool's own description says to use it
+   * only when "the active code-review instructions" say so. Each assertion here is one of the
+   * properties whose absence from bug-hunt was asc-gtnu.14.
+   */
+  const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+  const skill = (): string =>
+    readFileSync(join(repoRoot, '.claude', 'skills', 'lens-review', 'SKILL.md'), 'utf8');
+  const frontmatter = (): string => /^---\n([\s\S]*?)\n---\n/.exec(skill())?.[1] ?? '';
+
+  it('lists exactly the nine slugs the enum has, as the categories it reports under', () => {
+    // Each lens is a bullet that opens with its slug in backticks, under the lenses heading. The
+    // set is read from that section only: the reporting section lists the tool's fields (`file`,
+    // `line`, ...) in the same bullet shape, and a slug in prose is neither required nor counted.
+    const section = /^## The nine lenses\n([\s\S]*?)^## /m.exec(skill())?.[1] ?? '';
+    const listed = [...section.matchAll(/^- `([a-z_]+)` -- /gm)].map((m) => m[1]);
+    expect([...listed].sort()).toEqual(FINDING_LENSES.map((one) => one.slug).sort());
+  });
+
+  it('tells the reviewer to report through ReportFindings, and says prose is not counted', () => {
+    const text = skill();
+    expect(text).toContain('ReportFindings');
+    expect(text).toMatch(/not counted/);
+  });
+
+  it('allows ReportFindings and not AskUserQuestion, so it can run with nobody to answer', () => {
+    // bug-hunt allows AskUserQuestion and calls it at five points; a headless reviewer blocks there.
+    const allowed = /^allowed-tools:(.*)$/m.exec(frontmatter())?.[1] ?? '';
+    expect(allowed).toContain('ReportFindings');
+    expect(skill()).not.toContain('AskUserQuestion');
+  });
+
+  it('tells the reviewer not to run `asc record`', () => {
+    expect(skill()).toMatch(/do not run `asc record`/i);
+  });
 });

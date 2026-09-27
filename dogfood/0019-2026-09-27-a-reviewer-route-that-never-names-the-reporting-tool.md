@@ -7,7 +7,7 @@
 | **Surfaced by** | building the reviewer brief for `asc-gtnu.8`, and a headless probe of whether a reviewer can reach `ReportFindings` at all |
 | **Entry type(s)** | `review_finding` (derived) |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | fixed by `.claude/skills/lens-review/` (`asc-gtnu.14`) |
 
 ## What was found
 
@@ -82,6 +82,40 @@ The skill lives in `~/.claude/skills/`, outside this repository, so fixing it th
 this repo can make or test. `asc-gtnu.8` works around the gap on purpose: its brief is its own file
 (`spike/recall/brief.md`) and names the tool. So the recall it measures is recall **given a brief
 that names the tool**, not recall of the route `CLAUDE.md` describes.
+
+## The fix, and its measurement
+
+Recorded 2026-09-27. The fix is a project skill, `.claude/skills/lens-review/SKILL.md`. It holds the
+nine slugs, names `ReportFindings`, and allows it in `allowed-tools`. It never asks a question.
+`CLAUDE.md` now sends reviewers to that skill and keeps bug-hunt only as the source of the lens
+definitions. `derived-types.test.ts` pins the properties that bug-hunt lacks.
+
+`spike/lens-review/probe.mjs` tests it. Each run is one headless `claude -p` session
+(`claude-sonnet-5`) in a fresh tree, with the default toolset and Write/Edit denied. The prompt is
+written in ordinary words and never names the tool. `before` is the tree with `CLAUDE.md` as of
+`e7cc416` and no project skill. `after` is the tree with the fix.
+
+```
+run            skills                     RF calls  findings  stored  asked  denials  $
+before-hunt    ["bug-hunt"]                      0         0       0      0        2  0.7461
+after-hunt     ["lens-review"]                   1         2       2      0        1  0.6594
+before-review  []                                2         4       4      0        0  0.6201
+after-review   ["lens-review"]                   1         2       2      0        0  0.6157
+total spent $2.6413
+```
+
+**One session per cell, so four sessions in all: an anecdote, under `MIN_N` = 20.**
+
+- **`before-hunt` reproduces the bug.** "Hunt for bugs" loaded bug-hunt. The session made 0
+  `ReportFindings` calls, and its one `Write` call (the Markdown report) was denied.
+- **`after-hunt` takes the new route** for the same prompt: it loaded `lens-review` and its
+  findings reached the store.
+- **"Review" was never broken.** `before-review` loaded no skill and followed `CLAUDE.md`'s own
+  instruction to use the tool. So the defect was specific to the bug-hunt route, which is the one
+  the old `CLAUDE.md` named.
+- **Not measured: thoroughness.** The two `after` sessions reported 2 findings each, against 4
+  for `before-review`. That is n=1 per cell, so it is not a finding. But it is the next thing to
+  watch, because a route that reports fewer findings would fix the counting and lose recall.
 
 ## Links
 
