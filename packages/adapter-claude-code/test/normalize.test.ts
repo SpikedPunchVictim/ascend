@@ -540,3 +540,145 @@ describe('model.context', () => {
     }
   });
 });
+
+/**
+ * `review.finding` (asc-gtnu): the harness's own `ReportFindings` call, one event per finding.
+ *
+ * Every test here is exercised by a FIXTURE and by nothing else. That is not a caveat in the
+ * usual sense -- it is the state of the world: re-measured 2026-09-26, `ReportFindings` has been
+ * called 0 times across 1,236 transcript files and 637,258 records, so no real corpus can produce
+ * one of these events. `normalize-real-corpus.test.ts` asserts the opposite direction and says so.
+ */
+describe('review.finding, from a ReportFindings call', () => {
+  const REPORT = (findings: readonly Record<string, unknown>[], level = 'medium') => ({
+    id: 't-report',
+    name: 'ReportFindings',
+    input: { findings, level },
+  });
+
+  const FINDING = (over: Record<string, unknown> = {}) => ({
+    file: 'packages/core/src/state.ts',
+    line: 412,
+    summary: 'The writer accepts a trailing separator the reader rejects.',
+    failure_scenario: 'state.ts:412 writes "a/" and line 88 splits without filtering the tail.',
+    category: 'write_read_asymmetry',
+    verdict: 'CONFIRMED',
+    ...over,
+  });
+
+  const findings = (events: readonly NormalizedEvent[]): NormalizedEvent[] =>
+    events.filter((event) => event.kind === 'review.finding');
+
+  it('emits one event per element, sharing the call id and numbered by position', () => {
+    const events = findings(
+      normalize([assistant([REPORT([FINDING(), FINDING({ file: 'packages/cli/src/bin.ts' })])])]),
+    );
+    // Two findings, two events -- not one event carrying an array. Per element so a handler can
+    // `first` on a single finding without an `each` fan-out around it.
+    expect(events).toHaveLength(2);
+    // `id` names the CALL and is therefore the same on both, exactly as `command.run` shares
+    // one. `index` is what makes an event addressable, and `(id, index)` is the entry's key.
+    expect(events.map((event) => event['id'])).toEqual(['t-report', 't-report']);
+    expect(events.map((event) => event['index'])).toEqual([0, 1]);
+    expect(events.map((event) => event['file'])).toEqual([
+      'packages/core/src/state.ts',
+      'packages/cli/src/bin.ts',
+    ]);
+  });
+
+  it('orders the findings after the call, on the call it belongs to', () => {
+    const events = normalize([assistant([REPORT([FINDING()])])]);
+    expect(kinds(events)).toEqual(['tool.use.start', 'review.finding', 'session.end']);
+    // Same `call` and the same `batch` as the `tool.use.start`, because they are the same call.
+    expect(events.slice(0, 2).map((event) => event.call)).toEqual([1, 1]);
+    expect(events.slice(0, 2).map((event) => event.batch)).toEqual([1, 1]);
+  });
+
+  it('carries the call level on every finding, and all eight fields the kind declares', () => {
+    const [event] = findings(normalize([assistant([REPORT([FINDING()], 'high')])]));
+    expect(event).toMatchObject({
+      id: 't-report',
+      index: 0,
+      category: 'write_read_asymmetry',
+      file: 'packages/core/src/state.ts',
+      line: 412,
+      summary: 'The writer accepts a trailing separator the reader rejects.',
+      failure_scenario: 'state.ts:412 writes "a/" and line 88 splits without filtering the tail.',
+      verdict: 'CONFIRMED',
+      level: 'high',
+    });
+    // The declared field set, checked against the kind rather than against this literal: a field
+    // added here without being declared would be invisible to every handler's `where`.
+    for (const field of Object.keys(event ?? {})) {
+      if (field === 'kind' || field === 'session_id' || field === 'agent_id') continue;
+      if (field === 'seq' || field === 'call' || field === 'batch' || field === 'ts') continue;
+      if (field === 'derive_version') continue;
+      expect(eventFieldType('review.finding', field), field).toBeDefined();
+    }
+  });
+
+  it('OMITS line when the finding was not line-anchored, rather than writing 0', () => {
+    const [event] = findings(normalize([assistant([REPORT([FINDING({ line: undefined })])])]));
+    // `0` is a line number a reader would believe, and a finding about a whole file has none.
+    expect(event).not.toHaveProperty('line');
+  });
+
+  it('carries a category outside the nine VERBATIM, and counts it rather than dropping it', () => {
+    const normalizer = createNormalizer();
+    const events = [
+      ...normalizer.accept(
+        assistant([REPORT([FINDING({ category: 'off_by_one' }), FINDING()])]),
+        MAIN,
+      ),
+      ...normalizer.drain(),
+    ];
+    // Both events exist. A `continue` on the unknown value is the silent filter this project
+    // counts instead of writing: the log would show a review that reported two findings and
+    // hold one, with nothing saying which went.
+    expect(findings(events)).toHaveLength(2);
+    expect(findings(events)[0]?.['category']).toBe('off_by_one');
+    expect(normalizer.counters.offVocabularyFindings).toBe(1);
+  });
+
+  it('emits nothing, and counts nothing, when the call carries no findings array', () => {
+    const normalizer = createNormalizer();
+    const events = [
+      ...normalizer.accept(assistant([{ id: 't-report', name: 'ReportFindings' }]), MAIN),
+      ...normalizer.drain(),
+    ];
+    expect(findings(events)).toEqual([]);
+    // Not a drop: there was no finding to lose. The tool call itself is still an event, which is
+    // what makes "a review ran and reported nothing" distinguishable from "no review ran".
+    expect(kinds(events)).toEqual(['tool.use.start', 'session.end']);
+    expect(normalizer.counters.offVocabularyFindings).toBe(0);
+  });
+
+  it('leaves a call to any other tool alone, even one named like a report', () => {
+    const events = normalize([assistant([{ id: 't1', name: 'ReportFindings2' }])]);
+    expect(kinds(events)).toEqual(['tool.use.start', 'session.end']);
+  });
+
+  it('declares index and line as numbers, and the rest as strings', () => {
+    expect(eventFieldType('review.finding', 'index')).toBe('number');
+    expect(eventFieldType('review.finding', 'line')).toBe('number');
+    for (const field of [
+      'id',
+      'category',
+      'file',
+      'summary',
+      'failure_scenario',
+      'verdict',
+      'level',
+    ]) {
+      expect(eventFieldType('review.finding', field), field).toBe('string');
+    }
+  });
+
+  it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 4: `review.finding`. Asserted as a number rather than against the constant, which would be
+    // tautological. The version exists so a count that moves between two replays can be
+    // attributed to the normalizer rather than to a handler, and that only works if changing it
+    // is a decision someone makes on purpose.
+    expect(EVENT_DERIVE_VERSION).toBe(4);
+  });
+});

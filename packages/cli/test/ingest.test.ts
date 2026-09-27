@@ -1298,6 +1298,137 @@ describe('asc ingest claude-code: identity vocabulary disclosure', () => {
   });
 });
 
+/**
+ * `asc-gtnu`: a reviewer's findings, end to end -- from the harness's `ReportFindings` call to
+ * rows in the store, through the real command.
+ *
+ * The unit tests in `packages/adapter-claude-code` drive the deriver against records. This is the
+ * only place the whole path runs: the type registered by `asc ingest claude-code`, the entry
+ * validated against it, and the warnings a human actually reads. Nothing in the corpus can reach
+ * this branch -- `ReportFindings` has been called 0 times across 1,236 transcript files -- so a
+ * fixture is the entire evidence, and the file says so rather than implying observation.
+ */
+describe('asc ingest claude-code: review findings (asc-gtnu)', () => {
+  const REPORT_RECORD: Record<string, unknown> = {
+    sessionId: 's-1',
+    uuid: 'u-7',
+    timestamp: '2026-01-02T03:04:11.000Z',
+    ...RECORD_AT,
+    message: {
+      model: 'deepseek-v4.1-flash:cloud',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu-report',
+          name: 'ReportFindings',
+          input: {
+            level: 'high',
+            findings: [
+              {
+                file: 'packages/core/src/state.ts',
+                line: 412,
+                summary: 'The writer accepts a trailing separator the reader rejects.',
+                failure_scenario: 'state.ts:412 writes "a/", line 88 splits without filtering.',
+                category: 'write_read_asymmetry',
+                verdict: 'CONFIRMED',
+              },
+              {
+                file: 'packages/cli/src/bin.ts',
+                summary: 'No exit code is set on the refusal path.',
+                category: 'error_paths',
+                verdict: 'PLAUSIBLE',
+              },
+              {
+                file: 'packages/core/src/store.ts',
+                line: 9,
+                summary: 'A lens outside the nine.',
+                category: 'off_by_one',
+                verdict: 'CONFIRMED',
+              },
+              {
+                file: 'packages/core/src/other.ts',
+                summary: undefined,
+                category: 'data_lifecycle',
+              },
+            ],
+          },
+        },
+      ],
+    },
+  };
+
+  it('writes one entry per ACCEPTED finding, and says aloud what it did not write', () => {
+    const dir = project();
+    transcripts(dir, [REPORT_RECORD]);
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    expect(run.status).toBe(0);
+    // Two of the four: one off-vocabulary category and one missing summary are refused.
+    expect(stored(dir).byType['review_finding']).toBe(2);
+    // BOTH refusals are reported, with their counts. A silent drop here is the failure this
+    // whole type is built to avoid: a review that reported four findings and left two rows looks
+    // exactly like a review that reported two.
+    expect(run.stderr).toContain('1 reported finding(s) used a lens outside the nine');
+    expect(run.stderr).toContain('1 reported finding(s) were missing a file or a summary');
+    // And the warning says where the refused finding still IS, which is the point of the log
+    // carrying the raw string rather than only the store's opinion of it.
+    expect(run.stderr).toContain('replay log');
+  });
+
+  it('stores the class, the file, the verdict and the reviewer model, omitting the absent line', () => {
+    const dir = project();
+    transcripts(dir, [REPORT_RECORD]);
+    asc(['ingest', 'claude-code'], dir);
+
+    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    try {
+      const rows = db
+        .prepare(
+          'SELECT properties_json AS p FROM entries WHERE type_name = ? ORDER BY properties_json',
+        )
+        .all('review_finding') as { p: string }[];
+      const properties = rows.map((row) => JSON.parse(row.p) as Record<string, unknown>);
+      expect(properties).toHaveLength(2);
+      const asymmetry = properties.find((one) => one['class'] === 'write_read_asymmetry');
+      const errorPath = properties.find((one) => one['class'] === 'error_paths');
+      expect(asymmetry).toMatchObject({
+        file: 'packages/core/src/state.ts',
+        line: 412,
+        verdict: 'CONFIRMED',
+        reviewer_model: 'deepseek-v4.1-flash:cloud',
+        tool_use_id: 'toolu-report',
+      });
+      // ABSENT, never `0`: the second finding is not line-anchored, and a `0` here is a line
+      // number a reader would believe.
+      expect(errorPath).not.toHaveProperty('line');
+      expect(errorPath?.['file']).toBe('packages/cli/src/bin.ts');
+      // The CALL's id is shared by both findings, so the position is what separates them.
+      expect(errorPath?.['tool_use_id']).toBe('toolu-report');
+      // `level` is the call's declared thoroughness, not the finding's, so it is not on the row.
+      for (const one of properties) expect(one).not.toHaveProperty('level');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is idempotent: a second run over the same transcript writes nothing new', () => {
+    const dir = project();
+    transcripts(dir, [REPORT_RECORD]);
+    asc(['ingest', 'claude-code'], dir);
+
+    const second = asc(['ingest', 'claude-code', '--full'], dir);
+
+    expect(second.status).toBe(0);
+    // `--full` ignores the cursor, so every entry is re-proposed rather than skipped -- and the
+    // id is a pure function of the session, the call and the position, so they all report as
+    // already present instead of being written twice.
+    expect(stored(dir).byType['review_finding']).toBe(2);
+    expect(second.stdout).toContain('review_finding');
+    expect(second.stdout).toContain('2 already present');
+  });
+});
+
 describe('derived source', () => {
   it('is one the store will accept', () => {
     expect(ENTRY_SOURCES).toContain(DERIVED_SOURCE);

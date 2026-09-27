@@ -23,6 +23,7 @@
 import { MAIN_AGENT, type EventRole, type EventValue, type NormalizedEvent } from '@ascend/core';
 import type { TranscriptRecord } from './decode.js';
 import { checkRun, execSegments, readVerdict } from './derive.js';
+import { isFindingLens } from './derived-types.js';
 import type { TranscriptFile } from './transcript-file.js';
 
 /**
@@ -32,8 +33,12 @@ import type { TranscriptFile } from './transcript-file.js';
  * 2: `check.run` no longer fires for `prettier --write` (asc-6ola.15).
  * 3: `model.context` is emitted once per stream and again on a model or harness-version change
  *    (asc-6ola.10) -- one more event per stream, and a count that moves with no handler changed.
+ * 4: `review.finding`, one event per element of a `ReportFindings` call's `findings[]`
+ *    (asc-gtnu). Zero events on every corpus measured so far, because the tool has been called 0
+ *    times -- so unlike 3, this one moves nothing today. It is the version that says the FIRST
+ *    finding will not be mistaken for a handler bug.
  */
-export const EVENT_DERIVE_VERSION = 3;
+export const EVENT_DERIVE_VERSION = 4;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -47,6 +52,21 @@ export interface NormalizeCounters {
   unmatchedNotifications: number;
   /** An assistant record whose model is `<synthetic>` -- harness-injected, not model output. */
   syntheticModelRecords: number;
+  /**
+   * `ReportFindings` findings whose `category` is not one of the nine lens slugs
+   * (`FINDING_LENSES`, `derived-types.ts`).
+   *
+   * COUNTED AND CARRIED, never dropped. The event still holds the raw string under the
+   * harness's own field name -- see `review.finding` in `EVENT_KINDS` -- because the log's job
+   * is to record what the reviewer said, and the store's job is to decide what it will accept.
+   * `derive.ts` counts the same value under `offVocabularyFindings` and refuses to write an
+   * entry for it, so the two counters disagreeing is the signal that a reviewer used a word
+   * outside the nine; a silent `continue` here would leave nothing to disagree about.
+   *
+   * Should be zero. MEASURED 2026-09-26: 0 -- on an EMPTY population, since the tool has been
+   * called 0 times, so this is not evidence that the vocabulary holds.
+   */
+  offVocabularyFindings: number;
 }
 
 export interface Normalizer {
@@ -62,6 +82,16 @@ const str = (value: unknown): string | undefined =>
 
 /** What the harness writes as `message.model` on a record it injected rather than one a model wrote. */
 const SYNTHETIC_MODEL = '<synthetic>';
+
+/**
+ * The harness's typed findings tool, which is what a `review.finding` event comes from.
+ *
+ * Carried from reconnaissance of the tool's schema on 2026-09-26, NOT from an observed call:
+ * re-measured the same day, `ReportFindings` has been called 0 times across 1,236 transcript
+ * files. The string and the `findings[]` shape below are therefore untested against reality, and
+ * the fixture in `normalize.test.ts` is the only thing that has ever exercised this branch.
+ */
+const REPORT_FINDINGS_TOOL = 'ReportFindings';
 
 /** A string field's text, or `''` when the transcript carried something else or nothing. */
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -193,6 +223,7 @@ export function createNormalizer(): Normalizer {
     unfinishedCalls: 0,
     unmatchedNotifications: 0,
     syntheticModelRecords: 0,
+    offVocabularyFindings: 0,
   };
 
   let path: string | undefined;
@@ -240,6 +271,62 @@ export function createNormalizer(): Normalizer {
     if (path === undefined) return;
     counters.unfinishedCalls += pending.size;
     emit(out, 'session.end', calls, lastTs, {});
+  };
+
+  /**
+   * ONE EVENT PER ELEMENT of a `ReportFindings` call's `findings[]` (asc-gtnu).
+   *
+   * Per ELEMENT rather than per call, so a handler can `first` on a single finding and an `emit`
+   * can name its fields directly: a call carrying an array would force every consumer through an
+   * `each` fan-out to reach one finding, and the position of a finding inside its call is
+   * exactly the `index` this emits.
+   *
+   * `category` is carried VERBATIM even when it is not one of the nine lens slugs, and the count
+   * is beside it rather than in place of it -- see `offVocabularyFindings`. The alternative, a
+   * `continue` on the unknown value, is the silent filter that `syntheticModelRecords` exists to
+   * warn about: the log would show a review that reported eight findings and hold nine, with
+   * nothing saying which was dropped or why.
+   */
+  const reviewFindings = (
+    out: NormalizedEvent[],
+    call: number,
+    batch: number,
+    ts: string | undefined,
+    id: string,
+    input: Record<string, unknown> | undefined,
+  ): void => {
+    const raw = input === undefined ? undefined : input['findings'];
+    if (!Array.isArray(raw)) return;
+    const level = input === undefined ? undefined : str(input['level']);
+    for (const [index, element] of (raw as readonly unknown[]).entries()) {
+      const finding = rec(element);
+      if (finding === undefined) continue;
+      const category = str(finding['category']);
+      if (!isFindingLens(category)) counters.offVocabularyFindings += 1;
+      emit(
+        out,
+        'review.finding',
+        call,
+        ts,
+        {
+          // The CALL's id, shared by every finding in it, exactly as `command.run` shares one.
+          // `index` is what makes the event addressable, and `(id, index)` is what the entry's
+          // key is built from in `derive.ts`.
+          id,
+          index,
+          category,
+          file: str(finding['file']),
+          // Absent stays absent, never `0`: a finding is not always line-anchored, and `0` is a
+          // line number a reader would believe.
+          line: num(finding['line']),
+          summary: str(finding['summary']),
+          failure_scenario: str(finding['failure_scenario']),
+          verdict: str(finding['verdict']),
+          level,
+        },
+        batch,
+      );
+    }
   };
 
   const begin = (file: TranscriptFile, record: TranscriptRecord): void => {
@@ -513,6 +600,9 @@ export function createNormalizer(): Normalizer {
         calls += 1;
         pending.set(id, { tool, input: rec(block['input']) ?? {}, call: calls, batch: batches });
         emit(out, 'tool.use.start', calls, ts, { tool, id, role: ROLES[tool] ?? 'other' }, batches);
+        if (tool === REPORT_FINDINGS_TOOL) {
+          reviewFindings(out, calls, batches, ts, id, rec(block['input']));
+        }
       }
     }
 

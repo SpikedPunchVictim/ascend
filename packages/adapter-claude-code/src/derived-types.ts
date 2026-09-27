@@ -220,6 +220,20 @@ export const FINDING_LENSES: readonly { slug: string; heading: string; lens: num
 const FINDING_CLASS: readonly string[] = FINDING_LENSES.map((one) => one.slug);
 
 /**
+ * Is this string one of the nine lens slugs?
+ *
+ * Exported because the vocabulary is checked in TWO places and must be checked from ONE list.
+ * `normalize.ts` counts a `category` outside it without refusing it (the event log carries what
+ * the harness said), and `derive.ts` refuses to write an entry for one, because an entry whose
+ * `class` is not in the enum cannot satisfy its own definition and would be rejected downstream.
+ * Both read this function rather than their own copy of the list, which is the difference
+ * between a vocabulary and a coincidence.
+ */
+export function isFindingLens(value: unknown): boolean {
+  return typeof value === 'string' && FINDING_CLASS.includes(value);
+}
+
+/**
  * `user_correction` SHIPS, WITH THE LIMITATION STATED IN THE TYPE'S OWN PROSE -- and the
  * limitation is not rarity, it is dependence.
  *

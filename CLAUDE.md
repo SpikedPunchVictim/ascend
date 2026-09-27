@@ -103,6 +103,32 @@ both.
 
 Index and full convention: `dogfood/README.md`.
 
+### Reviewers report findings with `ReportFindings`, and `category` is a lens slug
+
+A finding is recorded by the harness, not by hand. A reviewer — a subagent running the bug-hunt
+lenses, or any agent asked to review — reports each finding with the **`ReportFindings`** tool:
+`findings[]` of `{file, line, summary, failure_scenario, category, verdict}`, plus `level`. Every
+element of that array becomes one `review_finding` entry when `asc ingest claude-code` next runs.
+
+**`category` must be one of these nine slugs.** They are frozen in the repo
+(`FINDING_LENSES`, `packages/adapter-claude-code/src/derived-types.ts`), and a value outside the
+nine is refused at record time — the counts this type exists for are counts per lens, and an open
+string gives nine spellings of one lens:
+
+```
+assumption_audit, state_machine, boundary_conditions, data_lifecycle, error_paths,
+time_concurrency, environment_divergence, cross_implementation_divergence, write_read_asymmetry
+```
+
+The lenses themselves are the nine headings in `~/.claude/skills/bug-hunt/SKILL.md`, which has no
+slugs of its own; the slug spelling above is ascend's. **A tenth lens needs a type version bump**,
+and `derived-types.test.ts` asserts this list matches the enum exactly, so edit both or neither.
+
+**Do not run `asc record` for a finding.** The type says `Never by hand` for a measured reason:
+`EV-16` found 0 of 15 sessions invoking `asc` in any form, so a design that depends on a reviewer
+choosing to run a CLI depends on the mechanism measured not to fire. A review that reports this way
+is counted; a review that only writes prose is not.
+
 <!-- align:start -->
 ## align — architecture conformance
 

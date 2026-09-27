@@ -34,7 +34,7 @@
  */
 
 import type { TranscriptRecord } from './decode.js';
-import { DERIVED_SOURCE } from './derived-types.js';
+import { DERIVED_SOURCE, isFindingLens } from './derived-types.js';
 import { outputVerdict } from './output-verdict.js';
 import { projectRelativeCwd } from './transcript-file.js';
 import type { TranscriptFile } from './transcript-file.js';
@@ -190,6 +190,42 @@ export interface DeriveCounters {
    * MEASURED 2026-09-18: 10 of 19 `user_correction`-triggering records on the local corpus.
    */
   unquotable: number;
+  /**
+   * `ReportFindings` findings whose `category` is not one of the nine lens slugs
+   * (`FINDING_LENSES`, `derived-types.ts`). An ABSENT `category` is counted here too rather than
+   * under `unreportableFindings`: "not a value we accept" is one condition, and splitting it by
+   * absent-versus-wrong would make this counter incomparable with the normalizer's
+   * `offVocabularyFindings`, which sees the same two cases and has one number for both.
+   *
+   * NO ENTRY IS WRITTEN for these, for the reason `context_compaction`'s required-fields branch
+   * gives above: the `class` property is an `enum`, so an entry carrying a tenth value fails
+   * validation downstream and is rejected at write time -- which is a rejected write rather than
+   * a record. Emitting it anyway would trade a count for a crash report.
+   *
+   * The value is NOT lost, and that is the point of counting it here rather than filtering it
+   * here: `normalize.ts` puts the raw `category` on the `review.finding` EVENT unconditionally,
+   * so the replay log shows the reviewer used a word outside the nine whether or not the store
+   * would take it. The store and the log answer different questions, and this counter is the
+   * one that says how often they disagree.
+   *
+   * Should be zero for as long as the reviewer instruction is the only thing naming a category.
+   * MEASURED 2026-09-26: 0, because `ReportFindings` has been called 0 times -- so this is the
+   * counter's value on an EMPTY population, not evidence that the vocabulary holds.
+   */
+  offVocabularyFindings: number;
+  /**
+   * `ReportFindings` findings missing a field their own type requires -- `file` or `summary`,
+   * both of which the tool's schema declares. Counted here rather than emitted, for the same
+   * reason as `offVocabularyFindings`, and named in the same `-able` family as `unkeyable` and
+   * `unverdictable`: the finding cannot be reported.
+   *
+   * `line` is deliberately NOT in this set. It is optional in the type because a finding is not
+   * always line-anchored, so an absent one is the transcript saying nothing -- omitted, never
+   * `0`. Only a field the type REQUIRES can make a finding unreportable.
+   *
+   * Should be zero. MEASURED 2026-09-26: 0, on the same empty population as the counter above.
+   */
+  unreportableFindings: number;
 }
 
 export interface Deriver {
@@ -621,6 +657,22 @@ export function resultText(content: unknown): string {
 // prose -- a `startsWith` test on this literal alone has 0 false positives on that corpus.
 const CLARIFICATION_PREAMBLE = 'The user wants to clarify these questions.';
 
+/**
+ * The harness's typed findings tool, which is where a review finding comes from (asc-gtnu).
+ *
+ * The COMPETING source was a reviewer running `asc record` by hand, and it is the mechanism
+ * `EV-16` already measured at 0 of 15 sessions -- "not one invoked `asc` in any form". A design
+ * that depends on a model choosing to run a CLI is a design whose mechanism is known not to
+ * fire, so the finding is derived from the tool call the harness already hands a reviewer.
+ *
+ * The NAME and the `findings[]` shape are carried from reconnaissance of the harness's tool
+ * schema on 2026-09-26 and NOT from an event anyone has seen: measured the same day, the tool
+ * has been called 0 times across 1,236 transcript files. This string is therefore an untested
+ * assumption with a test below it -- the fixture is the only thing that has ever exercised the
+ * branch, and if the real tool is spelled differently the derivation reports 0 rows and says so.
+ */
+const REPORT_FINDINGS_TOOL = 'ReportFindings';
+
 // ---------------------------------------------------------------------------
 
 /** A skill that has been active without interruption, from its first record to now. */
@@ -701,6 +753,8 @@ export function createDeriver(): Deriver {
     unverdictable: 0,
     masked: 0,
     unquotable: 0,
+    offVocabularyFindings: 0,
+    unreportableFindings: 0,
   };
 
   const key = (raw: string): string => {
@@ -1021,6 +1075,86 @@ export function createDeriver(): Deriver {
           locality,
           { ...(name === undefined ? {} : { tool_name: name }) },
           quotable ? feedback : undefined,
+        );
+      }
+    }
+
+    // ---- review_finding ---------------------------------------------------
+    // ONE ENTRY PER ELEMENT of `findings[]`, and the identity is `(tool_use id, index)`: a
+    // report is one call carrying N findings, so the id names the CALL and the index names the
+    // finding within it. `context_compaction`'s precedent, one level down -- there the record
+    // uuid was the identity and the position was implicit; here it cannot be, because N
+    // findings share both the record and the tool_use id.
+    //
+    // Read from THIS record's own tool_use block. No join is needed, which is why this rule
+    // sits here rather than in the pending-result machinery: the findings are an ARGUMENT to
+    // the call, not a result of it, so they are on the same record that names the call.
+    for (const block of blocksIn) {
+      if (block['type'] !== 'tool_use' || str(block['name']) !== REPORT_FINDINGS_TOOL) continue;
+      const reportId = str(block['id']);
+      const input = rec(block['input']);
+      const findings = input === undefined ? undefined : list(input['findings']);
+      const model = str(rec(record['message'])?.['model']);
+      // `input['level']` is deliberately NOT read here, and the linter's `no-unused-vars` is what
+      // said so rather than a review: it is the CALL's declared thoroughness, not the finding's,
+      // so it is not a property of this entry at all. `normalize.ts` carries it on each
+      // `review.finding` event, which is where the handler reads it from.
+
+      // A `ReportFindings` call with no id, no findings array, or no session has nothing to key
+      // against. Counted, never guessed.
+      if (sessionId === undefined || reportId === undefined || findings === undefined) {
+        counters.unkeyable += 1;
+        continue;
+      }
+
+      for (const [index, raw] of findings.entries()) {
+        const finding = rec(raw);
+        const category = finding === undefined ? undefined : str(finding['category']);
+        const filePath = finding === undefined ? undefined : str(finding['file']);
+        const summary = finding === undefined ? undefined : str(finding['summary']);
+
+        // Two DIFFERENT refusals, kept apart because conflating them would blur which one
+        // fired: a value outside our closed vocabulary, and a field the tool's own schema
+        // requires. See the counters for why neither emits.
+        if (!isFindingLens(category)) {
+          counters.offVocabularyFindings += 1;
+          continue;
+        }
+        if (filePath === undefined || summary === undefined) {
+          counters.unreportableFindings += 1;
+          continue;
+        }
+
+        const line = finding === undefined ? undefined : num(finding['line']);
+        const scenario = finding === undefined ? undefined : str(finding['failure_scenario']);
+        const verdict = finding === undefined ? undefined : str(finding['verdict']);
+        emit(
+          out,
+          'review_finding',
+          `${sessionId}:${reportId}:${String(index)}`,
+          sessionId,
+          file.project,
+          occurredAt,
+          locality,
+          {
+            class: category,
+            file: filePath,
+            summary,
+            tool_use_id: reportId,
+            // ABSENT, never 0: a finding is not always line-anchored, and `0` is a line number
+            // a reader would believe.
+            ...(line === undefined ? {} : { line }),
+            ...(scenario === undefined ? {} : { failure_scenario: scenario }),
+            ...(verdict === undefined ? {} : { verdict }),
+            // The model that produced the RECORD, which is the reviewer's own stream. Absent
+            // when the transcript named none -- and NOT special-cased for `<synthetic>` the way
+            // `normalize.ts`'s `model.context` is, because that interaction is unmeasurable
+            // here: 0 `ReportFindings` calls exist, so whether a synthetic record can carry one
+            // has no data. Writing the branch blind would be a guess dressed as a guard. The
+            // failure mode if it ever happens is a visible `reviewer_model: '<synthetic>'`,
+            // which is a wrong value someone can see rather than a drop nobody can.
+            ...(model === undefined ? {} : { reviewer_model: model }),
+          },
         );
       }
     }

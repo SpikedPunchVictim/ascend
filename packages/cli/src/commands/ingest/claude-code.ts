@@ -728,7 +728,7 @@ export default class IngestClaudeCode extends BaseCommand {
       );
     }
 
-    // All four counters exist so a dropped event -- or a withheld part of one -- cannot be a
+    // Every counter below exists so a dropped event -- or a withheld part of one -- cannot be a
     // silence. `unquotable` is the odd one out and is worded to say so: its entries WERE written.
     if (counters.unkeyable > 0) {
       this.warn(
@@ -759,6 +759,25 @@ export default class IngestClaudeCode extends BaseCommand {
           `preamble and the questions Claude asked, and none of the user's own words. The ` +
           `entries are real and are counted in these totals; only their prose is absent, and ` +
           `re-running cannot recover it because the transcript never held it.`,
+      );
+    }
+    // `asc-gtnu`. Both of these are findings a reviewer DID report and that produced no entry,
+    // which is why neither can be a silence: a review that reported nine findings and left eight
+    // rows looks exactly like a review that reported eight. The count is the difference.
+    if (counters.offVocabularyFindings > 0) {
+      this.warn(
+        `${String(counters.offVocabularyFindings)} reported finding(s) used a lens outside the ` +
+          `nine this type accepts and were not written. The report is still in the replay log ` +
+          `with the reviewer's own word on it -- 'asc handlers check' shows it -- because a ` +
+          `category we will not store is not the same fact as a category nobody used.`,
+      );
+    }
+    if (counters.unreportableFindings > 0) {
+      this.warn(
+        `${String(counters.unreportableFindings)} reported finding(s) were missing a file or a ` +
+          `summary, which the harness's own findings schema requires, and were not written. ` +
+          `Re-running will not recover them unless the source transcript is regenerated: the ` +
+          `transcript never held the field.`,
       );
     }
     if (counters.keyCollisions > 0) {

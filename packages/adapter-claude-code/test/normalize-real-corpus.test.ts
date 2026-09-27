@@ -165,4 +165,19 @@ describe.skipIf(!available)('the normalizer against the real corpus', () => {
     expect(result.notMeasured).toBe(result.deriverMasked + result.deriverUnverdictable);
     expect(result.measured).toBeGreaterThan(result.derived.length);
   }, 180_000);
+
+  it('has NEVER seen a review finding, which is the only thing it can say', async () => {
+    const result = await once();
+    // The zero is the assertion, and it is deliberately the SHAPE of the zero that is checked:
+    // both counters are asserted, so the day either is non-zero this goes red and names which.
+    //
+    // What this does NOT establish, and the distinction is the whole reason this test is worded
+    // this way: it is not evidence that the `review.finding` branch works. Measured 2026-09-26,
+    // `ReportFindings` has been called 0 times across 1,236 transcript files and 637,258
+    // records, so this branch has never been reached by a real corpus at all -- the fixtures in
+    // `normalize.test.ts` are its entire evidence, and a green run here means the corpus had
+    // nothing to say rather than that the code agrees with it.
+    expect(result.byKind['review.finding'] ?? 0).toBe(0);
+    expect(result.counters.offVocabularyFindings).toBe(0);
+  }, 180_000);
 });

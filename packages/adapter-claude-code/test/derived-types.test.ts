@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   ENVELOPE_PROPERTY_NAMES,
@@ -515,5 +518,54 @@ describe('derivationVersion', () => {
       if (spec.name === 'verification_run') continue;
       expect(derivationVersion(spec.name), spec.name).toBe(1);
     }
+  });
+});
+
+describe('the reviewer instruction, which is the only thing that makes a finding exist', () => {
+  /**
+   * `CLAUDE.md` quotes the nine slugs so a reviewer has them without running anything -- which is
+   * the whole point, since `EV-16` measured models not invoking `asc`. Quoting them is therefore
+   * a SECOND copy of the vocabulary, and this block is what keeps it from being a second
+   * SPELLING: the copy is checked against the enum, so a partial edit fails here rather than
+   * silently splitting the vocabulary in two.
+   *
+   * Read from disk at the repo root, because the instruction is a repo file rather than a
+   * module -- there is nothing to import.
+   */
+  const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+  const instruction = (): string => readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf8');
+
+  it('names every one of the nine slugs, spelled exactly as the enum spells them', () => {
+    const text = instruction();
+    for (const lens of FINDING_LENSES) {
+      expect(text, lens.slug).toContain(lens.slug);
+    }
+  });
+
+  it('names no slug the enum does not have, so the copy cannot drift by addition', () => {
+    const text = instruction();
+    // Scoped to the fenced block that holds the list, rather than to the whole file: snake_case
+    // is how every type and property in this project is spelled, so a file-wide scan would be
+    // reading prose (`record_when`, `tool_use_id`, `stage_transition`) and asserting about it.
+    // The block is FOUND by one of its own values, which is what makes this a check on the
+    // instruction rather than on a line number that a reflow would invalidate.
+    const block = /```\n([^`]*assumption_audit[^`]*)\n```/.exec(text)?.[1];
+    expect(block, 'the nine slugs are no longer in a fenced block in CLAUDE.md').toBeDefined();
+    const listed = (block ?? '')
+      .split(/[,\s]+/)
+      .map((one) => one.trim())
+      .filter((one) => one.length > 0);
+    // Set equality both ways: a slug MISSING from the instruction and a slug ADDED to it are
+    // different failures and both are this test going red.
+    expect([...listed].sort()).toEqual(FINDING_LENSES.map((one) => one.slug).sort());
+  });
+
+  it('tells a reviewer to use the tool, and tells it NOT to run `asc record`', () => {
+    const text = instruction();
+    // Both halves matter. An instruction that only named the tool would leave the older, measured
+    // -not-to-work path looking available; one that only forbade `asc record` would leave nothing
+    // to do instead.
+    expect(text).toContain('ReportFindings');
+    expect(text).toMatch(/do not run `asc record`/i);
   });
 });

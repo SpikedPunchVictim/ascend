@@ -1239,3 +1239,215 @@ describe('the real cwd and branch, which the project label cannot express', () =
     expect(activation?.branch).toBe('feat/locality');
   });
 });
+
+/**
+ * `review_finding` (asc-gtnu): one entry per element of a `ReportFindings` call's `findings[]`.
+ *
+ * Fixtures only, and that is the measured state rather than a shortcut: `ReportFindings` has
+ * been called 0 times across 1,236 transcript files re-measured 2026-09-26, so nothing in
+ * `derive-real-corpus.test.ts` can exercise this rule and `MIN_PER_TYPE` deliberately carries no
+ * floor for the type. This block is the whole of its evidence.
+ */
+describe('review_finding, from a ReportFindings call', () => {
+  const report = (
+    findings: readonly Record<string, unknown>[],
+    extra: Record<string, unknown> = {},
+    level = 'medium',
+  ): Record<string, unknown> => ({
+    type: 'tool_use',
+    id: 't-report',
+    name: 'ReportFindings',
+    input: { findings, level },
+    ...extra,
+  });
+
+  const finding = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    file: 'packages/core/src/state.ts',
+    line: 412,
+    summary: 'The writer accepts a trailing separator the reader rejects.',
+    failure_scenario: 'state.ts:412 writes "a/" and line 88 splits without filtering the tail.',
+    category: 'write_read_asymmetry',
+    verdict: 'CONFIRMED',
+    ...over,
+  });
+
+  const withModel = (blocks: readonly Record<string, unknown>[], model: string) =>
+    record(blocks, { message: { model, content: [...blocks] } });
+
+  it('writes one entry per element, keyed by the call id AND the position', () => {
+    const entries = ofType(
+      derive([withModel([report([finding(), finding({ file: 'packages/cli/src/bin.ts' })])], 'm')]),
+      'review_finding',
+    );
+    expect(entries).toHaveLength(2);
+    // The tool_use id names the CALL; N findings share it, so the position is the rest of the
+    // identity. Both parts are in the key, and `tool_use_id` carries the first as a property.
+    expect(entries.map((entry) => entry.key)).toEqual(['sess-1:t-report:0', 'sess-1:t-report:1']);
+    expect(entries.map((entry) => entry.properties['tool_use_id'])).toEqual([
+      't-report',
+      't-report',
+    ]);
+    expect(entries.map((entry) => entry.properties['file'])).toEqual([
+      'packages/core/src/state.ts',
+      'packages/cli/src/bin.ts',
+    ]);
+  });
+
+  it('maps the harness category to class, and carries the model that produced the record', () => {
+    const [entry] = ofType(
+      derive([withModel([report([finding()])], 'deepseek-v4.1-flash:cloud')]),
+      'review_finding',
+    );
+    expect(entry?.properties).toMatchObject({
+      class: 'write_read_asymmetry',
+      file: 'packages/core/src/state.ts',
+      line: 412,
+      summary: 'The writer accepts a trailing separator the reader rejects.',
+      verdict: 'CONFIRMED',
+      reviewer_model: 'deepseek-v4.1-flash:cloud',
+      session_id: 'sess-1',
+      project: '-Users-me-app',
+      occurred_at: '2026-09-15T10:00:00.000Z',
+    });
+  });
+
+  it('OMITS line, failure_scenario, verdict and reviewer_model when the transcript is silent', () => {
+    const [entry] = ofType(
+      derive([
+        record([
+          report([
+            finding({
+              line: undefined,
+              failure_scenario: undefined,
+              verdict: undefined,
+              category: 'data_lifecycle',
+            }),
+          ]),
+        ]),
+      ]),
+      'review_finding',
+    );
+    // Every one of these is `0` or `''`-shaped if defaulted, and each default would be a claim
+    // the transcript did not make: line 0, an empty scenario, a verdict of "".
+    for (const name of ['line', 'failure_scenario', 'verdict', 'reviewer_model']) {
+      expect(entry?.properties, name).not.toHaveProperty(name);
+    }
+    // `class` IS present, because it is required and it was there.
+    expect(entry?.properties['class']).toBe('data_lifecycle');
+  });
+
+  it('carries NO level property: the level belongs to the call, not to the finding', () => {
+    const [entry] = ofType(
+      derive([withModel([report([finding()], {}, 'high')], 'm')]),
+      'review_finding',
+    );
+    // `level` is on the event, where Stage 4's handler reads it. Denormalizing it here would put
+    // one review-level value on every finding and make it look per-finding.
+    expect(entry?.properties).not.toHaveProperty('level');
+  });
+
+  it('counts a category outside the nine and writes NO entry for it', () => {
+    const deriver = createDeriver();
+    const entries = [
+      ...deriver.accept(
+        withModel([report([finding({ category: 'off_by_one' }), finding()])], 'm'),
+        FILE,
+      ),
+      ...deriver.drain(),
+    ];
+    // One entry, not two: an entry whose `class` is outside the enum cannot satisfy its own
+    // definition, so it would be rejected at write time. The count is the record instead.
+    expect(ofType(entries, 'review_finding')).toHaveLength(1);
+    expect(deriver.counters.offVocabularyFindings).toBe(1);
+    expect(deriver.counters.unreportableFindings).toBe(0);
+  });
+
+  it('counts a finding missing a required field and writes NO entry for it', () => {
+    const deriver = createDeriver();
+    const entries = [
+      ...deriver.accept(
+        withModel(
+          [
+            report([
+              finding({ summary: undefined }),
+              finding({ file: undefined }),
+              finding({
+                file: 'packages/core/src/state.ts',
+                summary: 'kept',
+                category: 'error_paths',
+                line: 1,
+              }),
+            ]),
+          ],
+          'm',
+        ),
+        FILE,
+      ),
+      ...deriver.drain(),
+    ];
+    expect(ofType(entries, 'review_finding')).toHaveLength(1);
+    expect(deriver.counters.unreportableFindings).toBe(2);
+    // Not conflated with the vocabulary counter: a missing field and a wrong value are
+    // different failures of the transcript's shape, and one number for both would blur which.
+    expect(deriver.counters.offVocabularyFindings).toBe(0);
+  });
+
+  it('counts an absent category as off-vocabulary, not as unreportable', () => {
+    const deriver = createDeriver();
+    deriver.accept(withModel([report([finding({ category: undefined })])], 'm'), FILE);
+    // "Not a value we accept" is one condition and it has one counter, which is what keeps this
+    // number comparable with the normalizer's, which sees the same two cases and holds one.
+    expect(deriver.counters.offVocabularyFindings).toBe(1);
+    expect(deriver.counters.unreportableFindings).toBe(0);
+  });
+
+  it('counts a call with no identity and emits nothing, rather than guessing one', () => {
+    const deriver = createDeriver();
+    const entries = [
+      ...deriver.accept(
+        record([report([finding()], { id: undefined })], {
+          sessionId: undefined,
+          message: { model: 'm', content: [report([finding()], { id: undefined })] },
+        }),
+        FILE,
+      ),
+      ...deriver.drain(),
+    ];
+    expect(ofType(entries, 'review_finding')).toEqual([]);
+    expect(deriver.counters.unkeyable).toBe(1);
+  });
+
+  it('ignores a ReportFindings call whose findings are not a list', () => {
+    const deriver = createDeriver();
+    const block = {
+      type: 'tool_use',
+      id: 't-report',
+      name: 'ReportFindings',
+      input: { findings: 'all of them' },
+    };
+    const entries = [
+      ...deriver.accept(record([block], { message: { model: 'm', content: [block] } }), FILE),
+      ...deriver.drain(),
+    ];
+    expect(ofType(entries, 'review_finding')).toEqual([]);
+    // Counted, because the call happened and produced nothing: a `ReportFindings` the adapter
+    // cannot read is a transcript shape that moved, not a review that found nothing.
+    expect(deriver.counters.unkeyable).toBe(1);
+  });
+
+  it('leaves a call to any other tool alone, even one named like a report', () => {
+    const entries = ofType(derive([invoke('t1', 'ReportFindings2')]), 'review_finding');
+    expect(entries).toEqual([]);
+  });
+
+  it('gives two calls in one session distinct keys, and two sessions distinct keys', () => {
+    const entries = ofType(
+      derive([
+        withModel([report([finding()])], 'm'),
+        withModel([report([finding()], { id: 't-second' })], 'm'),
+      ]),
+      'review_finding',
+    );
+    expect(new Set(entries.map((entry) => entry.key)).size).toBe(2);
+  });
+});

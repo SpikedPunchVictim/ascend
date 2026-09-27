@@ -117,6 +117,38 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
    * emission and its presence later mean different things and neither is a default.
    */
   'model.context': { model: 'string', previous_model: 'string', harness_version: 'string' },
+  /**
+   * One finding a reviewer reported, from the harness's own `ReportFindings` tool call
+   * (asc-gtnu). ONE EVENT PER ELEMENT of `findings[]`, not one per call -- so a window can
+   * `first` on a single finding and an `emit` can name its fields with no `each` fan-out.
+   *
+   * `id` is the `tool_use` id and is therefore SHARED by every finding in one call, exactly as
+   * `command.run`'s is: a finding is addressed by `(id, index)`, and `index` is its position in
+   * `findings[]`. An `id` alone would name the call, not the finding.
+   *
+   * `category` is the harness's own field name and carries its raw string, which the harness
+   * does NOT constrain -- `is_error` on `tool.use.end` is the same decision for the same reason.
+   * The nine lens slugs `review_finding.class` accepts are OUR closed vocabulary, and the
+   * mapping from this string to that enum happens in the deriver, which is the only place that
+   * can count a value outside it. Closing the vocabulary here instead would turn the day a
+   * tenth lens ships into a dropped event rather than a recorded one.
+   *
+   * UNEXERCISED, and this is a measurement rather than a caveat: `ReportFindings` has been
+   * called 0 times across 1,236 transcript files re-measured 2026-09-26, so this field set comes
+   * from the tool's declared schema and NOT from an event anyone has seen. The first reviewer to
+   * report is the first evidence that the shape above is right.
+   */
+  'review.finding': {
+    id: 'string',
+    index: 'number',
+    category: 'string',
+    file: 'string',
+    line: 'number',
+    summary: 'string',
+    failure_scenario: 'string',
+    verdict: 'string',
+    level: 'string',
+  },
   /** Synthetic: the stream ended. What closes every window still open. */
   'session.end': {},
 };
