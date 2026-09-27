@@ -861,3 +861,430 @@ describe('compileWindow refuses an until that is a kind the window watches', () 
     ).toBe('ACCEPTED');
   });
 });
+
+/**
+ * `scope` and `before`, the two constructs asc-gtnu.4 adds (Stage 0: spike/review-join).
+ *
+ * Stage 0 measured the finding-to-implementer join as 58.1% cross-stream (483 of 831 subagent read
+ * pairs), which is what `scope: session` exists for, and 23.3% unsatisfiable (194 of 831), which is
+ * what `unsatisfiedBefore` exists for -- an unsatisfiable join must be REPORTED, never emitted as a
+ * zero-valued row.
+ *
+ * Every event here is hand-built. No transcript in the corpus holds a reviewer: `ReportFindings`
+ * has been called 0 times across 1,236 files (asc-gtnu.1), so nothing in this block is evidence
+ * about reviewers -- it is evidence about the constructs.
+ */
+describe('scope: session merges a session’s streams, and scope: stream does not', () => {
+  /** An event in a named stream. `seq` is the caller's, because a merged partition is the point. */
+  const at = (
+    kind: string,
+    stream: { session: string; agent: string },
+    seq: number,
+    fields: Record<string, unknown> = {},
+  ): NormalizedEvent => ({
+    kind,
+    session_id: stream.session,
+    agent_id: stream.agent,
+    seq,
+    call: 1,
+    derive_version: 4,
+    ...fields,
+  });
+
+  const MAIN = { session: 's1', agent: 'main' };
+  const SUB = { session: 's1', agent: 'agent-x' };
+  const OTHER_SESSION = { session: 's2', agent: 'main' };
+
+  const emit = { p: '${path}', r: '${window.first.runner}' };
+  /** The finding's shape: an edit in one stream, the check that followed it in another. */
+  const crossStream = (scope?: string): unknown => ({
+    ...(scope === undefined ? {} : { scope }),
+    on: 'file.changed',
+    window: { until: 'prompt.submit', first: { on: 'check.run', where: { runner: 'pnpm' } } },
+    emit,
+  });
+
+  const CHANGED = at('file.changed', MAIN, 0, { path: '/a.ts', tool: 'Edit' });
+  const CHECKED = at('check.run', SUB, 0, { runner: 'pnpm', verdict: 'pass' });
+  const PROMPT = at('prompt.submit', MAIN, 1, { text: 'next' });
+
+  const drive = (
+    spec: unknown,
+    events: readonly NormalizedEvent[],
+  ): { rows: HandlerRow[]; noMatch: number; unclosed: number } => {
+    const handler = runHandler(compileHandler(spec));
+    const rows = events.flatMap((event) => [...handler.accept(event)]);
+    handler.finish();
+    return { rows, noMatch: handler.noMatch, unclosed: handler.unclosed };
+  };
+
+  it('matches an event of another stream in the same session', () => {
+    const { rows } = drive(crossStream('session'), [CHANGED, CHECKED, PROMPT]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.agent_id).toBe('main');
+    expect(rows[0]?.closed_by).toBe('match');
+    expect(rows[0]?.fields).toEqual({ p: '/a.ts', r: 'pnpm' });
+  });
+
+  it('does NOT match it under the default scope, and reports the decided miss instead', () => {
+    // The same three events and the same handler minus one line. Under `stream` the check.run is a
+    // different partition, so the window never sees it; `prompt.submit` closes it with no match,
+    // and that verdict is counted rather than dropped.
+    const { rows, noMatch, unclosed } = drive(crossStream(), [CHANGED, CHECKED, PROMPT]);
+    expect(rows).toEqual([]);
+    expect({ noMatch, unclosed }).toEqual({ noMatch: 1, unclosed: 0 });
+  });
+
+  it('keeps two sessions apart even at session scope', () => {
+    const other = at('check.run', OTHER_SESSION, 0, { runner: 'pnpm' });
+    const prompt = at('prompt.submit', OTHER_SESSION, 1, { text: 'next' });
+    const { rows } = drive(crossStream('session'), [CHANGED, other, PROMPT, prompt]);
+    expect(rows).toEqual([]);
+  });
+
+  it('does not let a stream’s session.end close a session-scoped window', () => {
+    // `session.end` is one event per STREAM (normalize.ts `end()` runs on every transcript file),
+    // so honoring it here would close the window on the subagent file that ended while the main
+    // stream -- which is where the check lands -- was still unread. Counted as unclosed instead.
+    const end = at('session.end', SUB, 1);
+    const { rows, noMatch, unclosed } = drive(crossStream('session'), [CHANGED, end, CHECKED]);
+    expect(rows).toHaveLength(1);
+    expect({ noMatch, unclosed }).toEqual({ noMatch: 0, unclosed: 0 });
+  });
+
+  it('counts a session-scoped window the log ended inside, at finish', () => {
+    // Without `finish()` this trigger would leave no trace at all: not emitted, not counted.
+    const { rows, unclosed } = drive(crossStream('session'), [CHANGED]);
+    expect(rows).toEqual([]);
+    expect(unclosed).toBe(1);
+  });
+
+  it('refuses a scope that is not one of the two', () => {
+    expect(refused(crossStream('global'))).toMatch(/scope: "global" -- expected stream or session/);
+  });
+
+  it.each([
+    [
+      'calls, because call numbers count within one stream',
+      'session',
+      { calls: 2, first: { on: 'check.run' } },
+      /session-scoped window cannot count calls/,
+    ],
+    [
+      'until: session.end, because it is one event per stream',
+      'session',
+      { until: 'session.end', first: { on: 'check.run' } },
+      /session\.end is one event per STREAM/,
+    ],
+    [
+      'a window with no until at all',
+      'session',
+      { first: { on: 'check.run' } },
+      /session-scoped window needs until:/,
+    ],
+  ])('refuses %s under scope: session', (_name, scope, window, message) => {
+    expect(refused({ scope, on: 'file.changed', window, emit })).toMatch(message);
+  });
+
+  it('still allows calls and until: session.end under the default scope', () => {
+    expect(
+      refused({
+        on: 'file.changed',
+        window: { calls: 2, first: { on: 'check.run' } },
+        emit: { r: '${window.first.runner}' },
+      }),
+    ).toBe('ACCEPTED');
+    expect(
+      refused({
+        on: 'file.changed',
+        window: { until: 'session.end', absent: { on: 'check.run' } },
+        emit: { p: '${path}', r: '${before.path}' },
+      }),
+    ).toMatch(/declares no before:/);
+  });
+
+  it('leaves the handler hash alone when the default scope is declared explicitly', () => {
+    // `scope: stream` and no `scope` mean the same thing at run time, and the hash is over the
+    // parsed form, so it must NOT mean the same thing there -- a handler whose partition changed
+    // has to hash differently or a stored row cannot be traced to the handler that emitted it.
+    expect(compileHandler(crossStream('stream')).hash).not.toBe(compileHandler(crossStream()).hash);
+  });
+});
+
+describe('before: the most recent match earlier in the partition', () => {
+  const emit = { runner: '${runner}', prior: '${before.path}' };
+  /** Every `check.run` carrying the path of the `file.changed` that preceded it. */
+  const spec = {
+    on: 'check.run',
+    before: { on: 'file.changed' },
+    emit,
+  };
+
+  const drive = (
+    s: unknown,
+    events: readonly NormalizedEvent[],
+  ): { rows: HandlerRow[]; unsatisfiedBefore: number } => {
+    const handler = runHandler(compileHandler(s));
+    const rows = events.flatMap((event) => [...handler.accept(event)]);
+    handler.finish();
+    return { rows, unsatisfiedBefore: handler.unsatisfiedBefore };
+  };
+
+  it('emits the earlier event’s field, not the trigger’s', () => {
+    const { rows, unsatisfiedBefore } = drive(
+      spec,
+      stream(
+        () => ev('file.changed', 1, { path: '/a.ts', tool: 'Edit' }),
+        () => ev('check.run', 2, { runner: 'pnpm', verdict: 'pass' }),
+      ),
+    );
+    expect(rows.map((one) => one.fields)).toEqual([{ runner: 'pnpm', prior: '/a.ts' }]);
+    expect(unsatisfiedBefore).toBe(0);
+  });
+
+  it('reads the MOST RECENT match, so the second edit wins', () => {
+    const { rows } = drive(
+      spec,
+      stream(
+        () => ev('file.changed', 1, { path: '/first.ts' }),
+        () => ev('file.changed', 2, { path: '/second.ts' }),
+        () => ev('check.run', 3, { verdict: 'pass' }),
+      ),
+    );
+    expect(rows[0]?.fields['prior']).toBe('/second.ts');
+  });
+
+  it('never resolves to the trigger itself', () => {
+    // `record` runs AFTER the trigger body. If it ran before, this would read `/self.ts`.
+    const { rows, unsatisfiedBefore } = drive(
+      {
+        on: 'file.changed',
+        before: { on: 'file.changed' },
+        emit: { p: '${path}', prior: '${before.path}' },
+      },
+      stream(() => ev('file.changed', 1, { path: '/self.ts' })),
+    );
+    expect(rows[0]?.fields).toEqual({ p: '/self.ts' });
+    expect(unsatisfiedBefore).toBe(1);
+  });
+
+  it('omits the field and COUNTS the trigger when nothing precedes it', () => {
+    // Stage 0's (d): 194 of 831 subagent pairs had nothing to join to, so an unsatisfiable
+    // reference is a quarter of the join. The field is ABSENT, never filled with a zero.
+    const { rows, unsatisfiedBefore } = drive(
+      spec,
+      stream(() => ev('check.run', 1, { verdict: 'pass' })),
+    );
+    expect(rows).toHaveLength(1);
+    expect(Object.hasOwn(rows[0]?.fields ?? {}, 'prior')).toBe(false);
+    expect(unsatisfiedBefore).toBe(1);
+  });
+
+  it('applies before.where while recording, so it is the most recent MATCH', () => {
+    const onlyEdits = {
+      on: 'check.run',
+      before: { on: 'file.changed', where: { tool: 'Write' } },
+      emit,
+    };
+    const { rows, unsatisfiedBefore } = drive(
+      onlyEdits,
+      stream(
+        () => ev('file.changed', 1, { path: '/written.ts', tool: 'Write' }),
+        () => ev('file.changed', 2, { path: '/edited.ts', tool: 'Edit' }),
+        () => ev('check.run', 3, { verdict: 'pass' }),
+      ),
+    );
+    // The most recent `file.changed` is the Edit, which does not match; the Write does. A
+    // reference that only filtered at resolve time would find nothing here.
+    expect(rows[0]?.fields['prior']).toBe('/written.ts');
+    expect(unsatisfiedBefore).toBe(0);
+  });
+
+  it('resolves the reference at the TRIGGER, so a window row carries the trigger’s', () => {
+    // The window opens on the first `file.changed` and is decided by the check.run. The reference
+    // on that row is that trigger's -- and nothing preceded the first edit, so it is ABSENT and
+    // counted, even though the row is emitted 2 events later, when `/late.ts` has been seen.
+    // Storing the matched event's reference instead would be a different question answered
+    // silently: "what preceded the thing that ended the window".
+    const { rows, unsatisfiedBefore } = drive(
+      {
+        on: 'file.changed',
+        before: { on: 'file.changed' },
+        window: { until: 'session.end', first: { on: 'check.run' } },
+        emit: { p: '${path}', prior: '${before.path}', r: '${window.first.runner}' },
+      },
+      stream(
+        () => ev('file.changed', 1, { path: '/early.ts' }),
+        () => ev('file.changed', 2, { path: '/late.ts' }),
+        () => ev('check.run', 3, { runner: 'pnpm' }),
+      ),
+    );
+    expect(rows[0]?.fields).toEqual({ p: '/early.ts', r: 'pnpm' });
+    expect(unsatisfiedBefore).toBe(1);
+  });
+
+  it('does not reach across streams under the default scope', () => {
+    const handler = runHandler(
+      compileHandler({ on: 'check.run', before: { on: 'file.changed' }, emit }),
+    );
+    const changed: NormalizedEvent = {
+      kind: 'file.changed',
+      session_id: 's1',
+      agent_id: 'main',
+      seq: 0,
+      call: 1,
+      derive_version: 4,
+      path: '/main.ts',
+    };
+    const check: NormalizedEvent = { ...changed, kind: 'check.run', agent_id: 'agent-x', seq: 0 };
+    expect([...handler.accept(changed)]).toEqual([]);
+    const rows = [...handler.accept(check)];
+    expect(rows[0]?.fields['prior']).toBeUndefined();
+    expect(handler.unsatisfiedBefore).toBe(1);
+  });
+
+  it.each([
+    ['a before that is not a map', 'nope', /before: must be a map/],
+    ['an unknown key', { on: 'file.changed', when: 'x' }, /before: unknown key when/],
+    ['a kind that does not exist', { on: 'file.change' }, /is not an event kind/],
+    ['a missing on', { where: { path: 'x' } }, /is not an event kind/],
+    [
+      'a field the before kind does not carry',
+      { on: 'check.run' },
+      /check\.run has no field "path"/,
+    ],
+    [
+      'a $ reference in before.where',
+      { on: 'file.changed', where: { path: { eq: '$path' } } },
+      /a \$ reference names a field of the TRIGGER/,
+    ],
+    [
+      'a $ reference on the right of before.where',
+      { on: 'file.changed', where: { path: { eq: '$tool' } } },
+      /a \$ reference names a field of the TRIGGER/,
+    ],
+  ])('refuses %s', (_name, before, message) => {
+    // `${before.path}` is on `check.run`'s own template, so a refusal here is the `before` block
+    // and not a template naming a field the kind lacks.
+    expect(refused({ on: 'check.run', before, emit: { x: '${before.path}...' } })).toMatch(message);
+  });
+
+  it('refuses a ${before.…} template on a handler that declares no before', () => {
+    expect(refused({ on: 'check.run', emit: { x: '${before.path}' } })).toMatch(
+      /declares no before:/,
+    );
+  });
+
+  it('refuses before under scope: session, and says what the order would have been', () => {
+    expect(
+      refused({
+        scope: 'session',
+        on: 'check.run',
+        before: { on: 'file.changed' },
+        emit: { x: '${before.path}' },
+      }),
+    ).toMatch(/before: is not available under scope: session/);
+  });
+
+  it('names the reference in the handler hash', () => {
+    expect(compileHandler(spec).hash).not.toBe(
+      compileHandler({ on: 'check.run', before: { on: 'file.read' }, emit }).hash,
+    );
+  });
+});
+
+/**
+ * `noMatch`: windows DECIDED with "no match" as the verdict by a bound other than the stream's end.
+ *
+ * The silence this closes predates asc-gtnu.4 and is measured, not reasoned: on
+ * `handlers/edit-verified.yaml` over this project's log, 488 of its 3,326 triggers (`rows` 2782 +
+ * `unclosed` 56 leaves 488 unaccounted) were this case and incremented nothing, so a reader could
+ * not tell them from windows that never opened.
+ */
+describe('a window decided with no match is counted, not dropped', () => {
+  const emit = { x: 'a' };
+
+  it('counts a first closed by its until', () => {
+    const handler = runHandler(
+      compileHandler({
+        on: 'agent.spawn',
+        window: { until: 'agent.return', first: { on: 'check.run' } },
+        emit,
+      }),
+    );
+    handler.accept(ev('agent.spawn', 1, { child_agent_id: 'c1' }));
+    handler.accept(ev('agent.return', 2, { child_agent_id: 'c1' }));
+    expect({ noMatch: handler.noMatch, unclosed: handler.unclosed }).toEqual({
+      noMatch: 1,
+      unclosed: 0,
+    });
+  });
+
+  it('still counts a stream’s own end as unclosed, not as a decided miss', () => {
+    const handler = runHandler(
+      compileHandler({
+        on: 'agent.spawn',
+        window: { until: 'agent.return', first: { on: 'check.run' } },
+        emit,
+      }),
+    );
+    handler.accept(ev('agent.spawn', 1, { child_agent_id: 'c1' }));
+    handler.accept(ev('session.end', 2, {}));
+    expect({ noMatch: handler.noMatch, unclosed: handler.unclosed }).toEqual({
+      noMatch: 0,
+      unclosed: 1,
+    });
+  });
+
+  it('counts a count window closed below at_least', () => {
+    const handler = runHandler(
+      compileHandler({
+        on: 'agent.spawn',
+        window: { until: 'agent.return', count: { on: 'check.run' }, at_least: 2 },
+        emit,
+      }),
+    );
+    handler.accept(ev('agent.spawn', 1, { child_agent_id: 'c1' }));
+    handler.accept(ev('check.run', 2, { runner: 'pnpm' }));
+    handler.accept(ev('agent.return', 3, { child_agent_id: 'c1' }));
+    expect({ rows: 0, noMatch: handler.noMatch, unclosed: handler.unclosed }).toEqual({
+      rows: 0,
+      noMatch: 1,
+      unclosed: 0,
+    });
+  });
+
+  it('counts an absent window as a verdict with a row, not as a miss', () => {
+    // `absent` EMITS on its until -- "nothing matched" is the row. Counting it as a miss too would
+    // count the same decision twice, once as a row and once as its absence.
+    const handler = runHandler(
+      compileHandler({
+        on: 'agent.spawn',
+        window: { until: 'agent.return', absent: { on: 'check.run' } },
+        emit,
+      }),
+    );
+    handler.accept(ev('agent.spawn', 1, { child_agent_id: 'c1' }));
+    const rows = [...handler.accept(ev('agent.return', 2, { child_agent_id: 'c1' }))];
+    expect(rows).toHaveLength(1);
+    expect({ noMatch: handler.noMatch, unclosed: handler.unclosed }).toEqual({
+      noMatch: 0,
+      unclosed: 0,
+    });
+  });
+
+  it('leaves finish() a no-op for a stream-scoped handler, whose windows a session.end decides', () => {
+    const handler = runHandler(
+      compileHandler({
+        on: 'agent.spawn',
+        window: { until: 'agent.return', first: { on: 'check.run' } },
+        emit,
+      }),
+    );
+    handler.accept(ev('agent.spawn', 1, { child_agent_id: 'c1' }));
+    handler.accept(ev('session.end', 2, {}));
+    const before = handler.unclosed;
+    handler.finish();
+    expect(handler.unclosed).toBe(before);
+  });
+});

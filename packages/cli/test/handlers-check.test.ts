@@ -201,3 +201,159 @@ describe('encodeProjectDir', () => {
     expect(encodeProjectDir('/Users/me/my.app_2/x-y')).toBe('-Users-me-my-app-2-x-y');
   });
 });
+
+/**
+ * Cross-stream scope and the backward reference, driven as the real binary (asc-gtnu.4).
+ *
+ * The fixture reproduces the corpus's measured layout -- 792 of 843 files are
+ * `<session>/subagents/agent-*.jsonl` (`transcript-file.ts`) -- and relies on `streamCorpus`'s own
+ * order: `<sess>.jsonl` sorts before `<sess>/subagents/...` (`.` 0x2E < `/` 0x2F), so a session's
+ * main stream is offered first and its subagents after. That order is the whole reason a
+ * `scope: session` window can match across streams here, and it is a property of the file layout
+ * rather than of the event data, which is why `runHandler` refuses `before:` under session scope
+ * instead of leaning on it.
+ *
+ * The two `bd close` commands and the `ls` are on purpose: a check that counted triggers as rows,
+ * or that matched within a stream when it was told to match across one, gets a different number
+ * from each of these.
+ */
+
+const XPROJECT = '-Users-me-xstream';
+
+const CROSS_HANDLER = `on: command.run
+where: { head: bd }
+scope: session
+window:
+  until: prompt.submit
+  first: { on: command.run, where: { head: ls } }
+emit: { head: '\${head}', found: '\${window.first.head}' }
+`;
+
+const NEVER_HANDLER = `on: command.run
+where: { head: bd }
+scope: session
+window:
+  until: prompt.submit
+  first: { on: command.run, where: { head: nope } }
+emit: { head: '\${head}' }
+`;
+
+const BEFORE_HANDLER = `on: command.run
+where: { head: bd }
+before: { on: command.run, where: { head: ls } }
+emit: { head: '\${head}', prior: '\${before.head}' }
+`;
+
+/** main: one `bd close`, nothing else. subagent: an `ls`, and no `prompt.submit` anywhere. */
+function crossFixture(): string {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'asc-handlers-x-')));
+  dirs.push(home);
+  const dir = join(home, '.claude', 'projects', XPROJECT);
+  mkdirSync(join(dir, 'sess-1', 'subagents'), { recursive: true });
+  writeFileSync(
+    join(dir, 'sess-1.jsonl'),
+    `${bash('t1', 'bd close asc-1', false, 1).join('\n')}\n`,
+  );
+  writeFileSync(
+    join(dir, 'sess-1', 'subagents', 'agent-abc.jsonl'),
+    `${bash('s1', 'ls', false, 2).join('\n')}\n`,
+  );
+  writeFileSync(join(home, 'cross.yaml'), CROSS_HANDLER);
+  writeFileSync(join(home, 'same-stream.yaml'), CROSS_HANDLER.replace('scope: session\n', ''));
+  writeFileSync(join(home, 'never.yaml'), NEVER_HANDLER);
+  return home;
+}
+
+/** main: `bd close`, `ls`, `bd close`. subagent: an `ls` the main stream must never see. */
+function beforeFixture(): string {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'asc-handlers-b-')));
+  dirs.push(home);
+  const dir = join(home, '.claude', 'projects', XPROJECT);
+  mkdirSync(join(dir, 'sess-1', 'subagents'), { recursive: true });
+  writeFileSync(
+    join(dir, 'sess-1.jsonl'),
+    `${[
+      ...bash('t1', 'bd close asc-1', false, 1),
+      ...bash('t2', 'ls', false, 2),
+      ...bash('t3', 'bd close asc-2', false, 3),
+    ].join('\n')}\n`,
+  );
+  writeFileSync(
+    join(dir, 'sess-1', 'subagents', 'agent-abc.jsonl'),
+    `${bash('s1', 'ls', false, 4).join('\n')}\n`,
+  );
+  writeFileSync(join(home, 'prior.yaml'), BEFORE_HANDLER);
+  return home;
+}
+
+describe('asc handlers check: scope: session and before', () => {
+  it('counts a session-scoped window the replay ended inside, rather than dropping it', () => {
+    // `session.end` is one event per STREAM, so it can never decide a session-scoped window: the
+    // stream that ends is not the session. Nothing here closes this window -- no `prompt.submit`,
+    // no match -- so it is `finish()` or it is nothing, and this is what says a window the log
+    // ended inside is counted instead of vanishing. Without it: rows 0, unclosed 0, noMatch 0, on
+    // a handler that fired once.
+    const home = crossFixture();
+    const run = asc(['never.yaml', '--project', XPROJECT, '--json'], home);
+    expect([
+      valueOf(run, 'never', 'triggers'),
+      valueOf(run, 'never', 'rows'),
+      valueOf(run, 'never', 'unclosed'),
+      valueOf(run, 'never', 'noMatch'),
+    ]).toEqual([1, 0, 1, 0]);
+  });
+
+  it('matches an event of another stream, under the trigger stream and not the watched one', () => {
+    const home = crossFixture();
+    const run = asc(['cross.yaml', '--project', XPROJECT, '--samples', '1', '--json'], home);
+    expect(run.status).toBe(0);
+    expect(valueOf(run, 'cross', 'scope')).toBe('session');
+    expect(valueOf(run, 'cross', 'rows')).toBe(1);
+    // The trigger is main's `bd close`; the match is the SUBAGENT's `ls`. That is the join.
+    expect(valueOf(run, 'cross', 'sample[0]')).toMatchObject({
+      agent_id: 'main',
+      closed_by: 'match',
+      fields: { head: 'bd', found: 'ls' },
+    });
+  });
+
+  it('finds nothing under the default scope, and counts the window the stream ended inside', () => {
+    // The same events and the same handler minus one line. `rows: 0` here is not a handler that
+    // found nothing -- it is a window nothing closed, and the report has to say which, or the two
+    // read identically to a reader with a broken handler.
+    const home = crossFixture();
+    const run = asc(['same-stream.yaml', '--project', XPROJECT, '--json'], home);
+    expect(valueOf(run, 'same-stream', 'scope')).toBe('stream');
+    expect([
+      valueOf(run, 'same-stream', 'rows'),
+      valueOf(run, 'same-stream', 'unclosed'),
+      valueOf(run, 'same-stream', 'noMatch'),
+    ]).toEqual([0, 1, 0]);
+  });
+
+  it('resolves the backward reference to the nearest match, and counts the triggers with none', () => {
+    const home = beforeFixture();
+    const run = asc(['prior.yaml', '--project', XPROJECT, '--samples', '2', '--json'], home);
+    expect(valueOf(run, 'prior', 'before')).toBe('command.run');
+    expect([
+      valueOf(run, 'prior', 'triggers'),
+      valueOf(run, 'prior', 'rows'),
+      valueOf(run, 'prior', 'unsatisfiedBefore'),
+    ]).toEqual([2, 2, 1]);
+    const fields = (index: number): unknown =>
+      (valueOf(run, 'prior', `sample[${String(index)}]`) as { fields: unknown }).fields;
+    // The first `bd close` has no earlier `ls`; the second one's is main's own. The subagent's
+    // `ls` is in another stream, so a per-stream `before:` must not reach it -- that is the second
+    // assertion, and it is the one the fixture's extra file exists for.
+    expect(fields(0)).toEqual({ head: 'bd' });
+    expect(fields(1)).toEqual({ head: 'bd', prior: 'ls' });
+  });
+
+  it('reports no before key and no scope surprise for a handler that declares neither', () => {
+    const home = fixture();
+    const run = asc(['bead-close.yaml', '--project', PROJECT_DIR, '--json'], home);
+    expect(valueOf(run, 'bead-close', 'before')).toBeUndefined();
+    expect(valueOf(run, 'bead-close', 'scope')).toBe('stream');
+    expect(valueOf(run, 'bead-close', 'noMatch')).toBe(0);
+  });
+});

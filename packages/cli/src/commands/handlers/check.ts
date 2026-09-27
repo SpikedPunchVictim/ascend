@@ -134,11 +134,25 @@ export default class HandlersCheck extends BaseCommand {
       };
       add('hash', handler.hash);
       add('on', handler.on);
+      // Always, including the default. A count is only meaningful over a named partition, and
+      // `scope` is the whole difference between "this stream" and "this session" (asc-gtnu.4), so
+      // leaving it to be inferred from the handler's absence of a key is the ambiguity this stage
+      // exists to remove.
+      add('scope', handler.scope);
       if (handler.description !== undefined) add('description', handler.description);
       add('parsed', canonicalJson(handler.spec));
       add('rows', replay.rows.length);
       add('triggers', replay.triggers);
       add('unclosed', replay.unclosed);
+      // A window DECIDED with "no match" as its verdict, by `until` or by the `calls` limit
+      // (asc-gtnu.4). Reported beside `unclosed` because the two are the whole answer to "the
+      // trigger fired and no row came out" -- and before this line existed, only one of them was
+      // printed, so a decided-no-match window was indistinguishable from one that never opened.
+      add('noMatch', replay.noMatch);
+      if (handler.before !== undefined) {
+        add('before', handler.before.on);
+        add('unsatisfiedBefore', replay.unsatisfiedBefore);
+      }
       // One row per judged name, in document order, following `analysis_questions[i]` in
       // `types show`: the table elides at 60 characters, so a joined list would lose every name
       // after the first, and `--json` gets each as a plain string.

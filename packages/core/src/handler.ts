@@ -50,8 +50,10 @@ export const MAX_SUBJECT_LENGTH = 100_000;
 const TOP_KEYS = new Set([
   'on',
   'description',
+  'scope',
   'capture',
   'where',
+  'before',
   'each',
   'window',
   'emit',
@@ -59,6 +61,7 @@ const TOP_KEYS = new Set([
 ]);
 const WINDOW_KEYS = new Set(['calls', 'until', 'first', 'count', 'absent', 'at_least', 'any']);
 const WATCHER_KEYS = new Set(['on', 'where']);
+const BEFORE_KEYS = new Set(['on', 'where']);
 const OPERATORS = new Set([
   'eq',
   'ne',
@@ -169,14 +172,46 @@ interface Window {
 
 type Template = (scope: Scope) => string | undefined;
 
+/**
+ * The partition a handler's windows and its `before` references live in (asc-gtnu.4).
+ *
+ * `stream` is the default and the only value that existed before this key, so a handler that does
+ * not declare it partitions by `(session_id, agent_id)` exactly as it always has. `session` merges
+ * a session's streams into one partition, which is what a cross-stream question needs -- Stage 0
+ * measured 58.1% of the finding-to-implementer join as cross-stream (`spike/review-join`).
+ */
+export type HandlerScope = 'stream' | 'session';
+
+/**
+ * The trigger-side backward reference: the most recent event of `on` matching `where` before this
+ * trigger, within the partition.
+ *
+ * **BOUNDED, WHICH IS THE WHOLE DESIGN.** One event is retained per partition, not the stream:
+ * `runHandler` keeps a single last-match event beside each partition's open windows. The plan's
+ * alternative, retaining the events themselves, was measured at 96,631 events for one project
+ * (`spike/replay/FINDINGS.md`) and is not what this is.
+ *
+ * **`where` filters WHILE RECORDING, not while resolving.** An event of `on` is stored only if it
+ * matches, so the reference is genuinely "the most recent MATCH" rather than "the most recent
+ * event of that kind, if it happens to match". That is the difference between a bounded map and a
+ * scan backwards, and it is why the filter is applied at the earliest possible moment.
+ */
+interface Before {
+  readonly on: string;
+  readonly match: Test;
+}
+
 /** A compiled handler. `spec` is the parsed form the hash is computed from. */
 export interface CompiledHandler {
   readonly spec: Json;
   readonly hash: string;
   readonly on: string;
   readonly description: string | undefined;
+  /** The partition this handler's windows and its `before` reference live in. */
+  readonly scope: HandlerScope;
   readonly captures: readonly Capture[];
   readonly where: Test;
+  readonly before: Before | undefined;
   readonly each: Each | undefined;
   readonly window: Window | undefined;
   readonly emit: readonly (readonly [string, Template])[];
@@ -249,9 +284,21 @@ const test = (pattern: RegExp, value: unknown): boolean =>
 interface RefContext {
   readonly triggerKind: string;
   readonly captures: ReadonlySet<string>;
+  /**
+   * When set, a `$reference` here is refused with this as the reason.
+   *
+   * `before.where` is the only place that sets it, and the mechanism is why: a window's `where` is
+   * evaluated against an event that FOLLOWS the trigger, so the trigger's fields are in hand, but
+   * a `before.where` filters events that were seen BEFORE the trigger existed, and there is no
+   * trigger to read a field off at that moment. Refusing here rather than resolving to `undefined`
+   * keeps a `$name` from becoming a silently-never-true condition -- the class this file refuses
+   * everywhere else.
+   */
+  readonly noRefs?: string;
 }
 
 function refType(name: string, context: RefContext, where: string): EventFieldType {
+  if (context.noRefs !== undefined) return refuse(`${where}: ${context.noRefs}`);
   if (context.captures.has(name)) return 'string';
   return pathType(context.triggerKind, name, where);
 }
@@ -454,10 +501,22 @@ interface TemplateNames {
   readonly captures: ReadonlySet<string>;
   readonly each: string | undefined;
   readonly window: Window | undefined;
+  /** The kind a `before:` reference reads, or `undefined` when the handler declares none. */
+  readonly before: string | undefined;
 }
 
 function checkTemplateName(name: string, names: TemplateNames, where: string): void {
   if (names.captures.has(name) || name === names.each) return;
+  if (name.startsWith('before.')) {
+    const kind = names.before;
+    if (kind === undefined) {
+      return refuse(
+        `${where}: \${${name}} is not available from this handler, which declares no before:`,
+      );
+    }
+    pathType(kind, name.slice('before.'.length), where);
+    return;
+  }
   if (name.startsWith('window.')) {
     const rest = name.slice('window.'.length);
     const mode = names.window?.mode;
@@ -518,7 +577,7 @@ function compileTemplate(value: unknown, names: TemplateNames, where: string): T
     parts.map((part) => (typeof part === 'string' ? part : (render(scope, part) ?? ''))).join('');
 }
 
-function compileWindow(spec: unknown, context: RefContext): Window {
+function compileWindow(spec: unknown, context: RefContext, scope: HandlerScope): Window {
   if (!isMap(spec)) return refuse('window: must be a map');
   for (const key of Object.keys(spec)) {
     if (!WINDOW_KEYS.has(key)) refuse(`window: unknown key ${key}`);
@@ -531,6 +590,47 @@ function compileWindow(spec: unknown, context: RefContext): Window {
   if (until !== undefined && (typeof until !== 'string' || !Object.hasOwn(EVENT_KINDS, until))) {
     return refuse(`window.until: ${JSON.stringify(until)} is not an event kind`);
   }
+
+  // Under `scope: session` the two constructs a `stream` window can be bounded by are BOTH refused,
+  // and each for a measured reason rather than for tidiness:
+  //
+  //   `calls` -- `call` counts within one stream (`event.ts`: "seq and call count within one
+  //   stream"). Merged into a session partition, two streams' call 7 are the same number, so a
+  //   `calls` limit compares a limit from one stream against a call from another: it closes
+  //   early, late, or never, and the handler reports a count with nothing saying which.
+  //
+  //   `until: session.end` -- `session.end` is emitted once per STREAM, not per session
+  //   (`normalize.ts` `end()`, called on every transcript file). Under a session partition the
+  //   first subagent stream to end would close every window in the session -- including windows
+  //   whose session still has 83 files left to read. That is a verdict delivered over a log that
+  //   was never read, which is the class this file refuses rather than reports.
+  //
+  // What is left is a window bounded by `until:` a kind, whose undecided windows are counted at
+  // `finish()` rather than dropped when the replay stops.
+  if (scope === 'session') {
+    if (calls !== undefined) {
+      return refuse(
+        'window.calls: a session-scoped window cannot count calls -- `call` numbers count within ' +
+          'one stream, so merged into a session they collide and the limit would close the window ' +
+          'on an unrelated stream. Use until:, or scope: stream.',
+      );
+    }
+    if (until === undefined) {
+      return refuse(
+        'window: a session-scoped window needs until: -- neither calls: nor session.end can bound ' +
+          'it, and a window with no end is never decided.',
+      );
+    }
+    if (until === 'session.end') {
+      return refuse(
+        'window.until: session.end is one event per STREAM, not one per session, so a ' +
+          'session-scoped window would be closed by the first stream that ended rather than at ' +
+          'the end of the session. Bound it with until: a kind, and the windows still open when ' +
+          'the replay stops are counted as unclosed.',
+      );
+    }
+  }
+
   if (calls === undefined && until === undefined) {
     refuse('window: needs calls, until, or both -- a window with no end is never decided');
   }
@@ -638,6 +738,47 @@ function compileWindow(spec: unknown, context: RefContext): Window {
 }
 
 /**
+ * The `before:` key: the most recent event of `on` matching `where` before this trigger (asc-gtnu.4).
+ *
+ * **SHIPPED AS CAPABILITY, NOT AS THE JOIN'S MECHANISM, AND THE DIFFERENCE IS MEASURED.** The join
+ * this was designed for -- a review finding to the implementer's earlier events for the same file
+ * -- is backward AND cross-stream, and Stage 0 found the corpus holds no reviewers to say which
+ * direction a reviewer's join is (`spike/review-join/FINDINGS.md`: 0 `review` subagent_type spawns
+ * of 1,063; 34 of 831 read pairs admit an edit strictly earlier, 603 only after, and those are
+ * explorers). So this construct is correct and bounded for the case it can serve -- a within-stream
+ * "what did I see last" -- and the cross-stream case is refused below rather than approximated.
+ */
+function compileBefore(spec: unknown, scope: HandlerScope): Before {
+  if (!isMap(spec)) return refuse('before: must be a map');
+  for (const key of Object.keys(spec)) {
+    if (!BEFORE_KEYS.has(key)) refuse(`before: unknown key ${key}`);
+  }
+  const kind = spec['on'];
+  if (typeof kind !== 'string' || !Object.hasOwn(EVENT_KINDS, kind)) {
+    return refuse(`before.on: ${JSON.stringify(kind)} is not an event kind`);
+  }
+  if (scope === 'session') {
+    return refuse(
+      'before: is not available under scope: session -- `seq` orders one stream, so "the event ' +
+        'before this trigger" across two streams would be decided by which file the replay read ' +
+        'first (sorted path order) rather than by which event came first in time. Use ' +
+        "scope: stream, where the order is the stream's own seq.",
+    );
+  }
+  // `triggerKind` is the before kind here, not the handler's: a plain key inside `before.where`
+  // names a field of the event being recorded. `$` names are refused outright -- see RefContext.
+  const context: RefContext = {
+    triggerKind: kind,
+    captures: new Set(),
+    noRefs:
+      'a $ reference names a field of the TRIGGER, and before.where filters events that were ' +
+      'seen before the trigger existed, so there is no trigger to read one off. To compare ' +
+      "against the trigger, put the comparison in the handler's top-level where: instead.",
+  };
+  return { on: kind, match: compileWhere(spec['where'], kind, context, 'before.where') };
+}
+
+/**
  * Compile a parsed handler, or throw `HandlerError` naming what is wrong.
  *
  * `parsed` must already be plain JSON-shaped data; the YAML loader guarantees that, and so must
@@ -655,6 +796,12 @@ export function compileHandler(parsed: unknown): CompiledHandler {
   const description = parsed['description'];
   if (description !== undefined && typeof description !== 'string')
     refuse('description: must be a string');
+
+  const scopeSpec = parsed['scope'];
+  if (scopeSpec !== undefined && scopeSpec !== 'stream' && scopeSpec !== 'session') {
+    return refuse(`scope: ${JSON.stringify(scopeSpec)} -- expected stream or session`);
+  }
+  const scope: HandlerScope = scopeSpec === 'session' ? 'session' : 'stream';
 
   const captureSpec = parsed['capture'] ?? {};
   if (!isMap(captureSpec)) return refuse('capture: must be a map');
@@ -688,6 +835,9 @@ export function compileHandler(parsed: unknown): CompiledHandler {
 
   const where = compileWhere(parsed['where'], on, context, 'where');
 
+  const before =
+    parsed['before'] === undefined ? undefined : compileBefore(parsed['before'], scope);
+
   let each: Each | undefined;
   const eachSpec = parsed['each'];
   if (eachSpec !== undefined) {
@@ -719,12 +869,18 @@ export function compileHandler(parsed: unknown): CompiledHandler {
   }
 
   const window =
-    parsed['window'] === undefined ? undefined : compileWindow(parsed['window'], context);
+    parsed['window'] === undefined ? undefined : compileWindow(parsed['window'], context, scope);
 
   const emitSpec = parsed['emit'];
   if (!isMap(emitSpec) || Object.keys(emitSpec).length === 0)
     return refuse('emit: is required, a non-empty map');
-  const names: TemplateNames = { triggerKind: on, captures: captureNames, each: each?.as, window };
+  const names: TemplateNames = {
+    triggerKind: on,
+    captures: captureNames,
+    each: each?.as,
+    window,
+    before: before?.on,
+  };
   const emit = Object.entries(emitSpec).map(
     ([key, value]) => [key, compileTemplate(value, names, `emit.${key}`)] as const,
   );
@@ -738,8 +894,10 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     hash: sha256Hex(canonicalJson(parsed)),
     on,
     description: description as string | undefined,
+    scope,
     captures,
     where,
+    before,
     each,
     window,
     emit,
@@ -802,6 +960,20 @@ interface Open {
 export interface HandlerRun {
   /** Offer one event; returns the rows it completed. */
   accept(event: NormalizedEvent): readonly HandlerRow[];
+  /**
+   * No more events will be offered: the replay is over, or the live source has stopped.
+   *
+   * **Load-bearing under `scope: session`, and the reason is the whole session-scope design.**
+   * `session.end` is one event per STREAM, so a session-scoped window is never closed by one
+   * (that would be the first stream's end deciding a session still being read) -- which means
+   * nothing else would ever decide it. Without this call those windows would vanish when the
+   * replay stopped: not emitted, not counted, invisible. Counting them as `unclosed` is the
+   * honest resting place, and `unclosed` already means exactly "the log ended inside this window".
+   *
+   * A caller that never calls it gets no `unclosed` for session-scoped windows, so `replayHandlers`
+   * calls it once after the stream and the drain.
+   */
+  finish(): void;
   /** Events that matched `on` and `where`, whatever their window then decided. */
   readonly triggers: number;
   /**
@@ -811,6 +983,31 @@ export interface HandlerRun {
    * unclosed.
    */
   readonly unclosed: number;
+  /**
+   * Windows DECIDED, with "no match" as the verdict, by a bound other than the stream ending: a
+   * `first` closed by its `until` or its `calls` limit without a match, or a `count` closed below
+   * `at_least` (asc-gtnu.4).
+   *
+   * **This counter closes a silence that predates this stage.** Before it, such a window emitted
+   * nothing and incremented nothing, so a reader with `triggers: 3326, rows: 2782, unclosed: 56`
+   * could not tell the remaining 488 windows from windows that never opened. Measured on
+   * `handlers/edit-verified.yaml` over this project's log: 488 of its 3,326 triggers are this case
+   * (14.7%), and they are the same class `asc-6ola.9` found -- a verdict reported as a result when
+   * the verdict was "nothing matched".
+   */
+  readonly noMatch: number;
+  /**
+   * Triggers whose `before:` reference found no match earlier in the partition, so the `${before.…}`
+   * fields are ABSENT on their rows rather than filled with a zero or an empty string
+   * (asc-gtnu.4).
+   *
+   * **This is the reported verdict Stage 0's (d) asked for.** 194 of 831 subagent read pairs
+   * (23.3%) and 98 of 257 main pairs (38.1%) had no event to join to anywhere in the session
+   * (`spike/review-join/FINDINGS.md`), so an unsatisfiable reference is roughly a quarter of the
+   * join rather than an edge -- it must be counted, never left to look like a field the handler
+   * forgot to write.
+   */
+  readonly unsatisfiedBefore: number;
 }
 
 /**
@@ -820,14 +1017,42 @@ export interface HandlerRun {
  * A `calls: N` window holds the trigger's later events whose `call` is at most
  * `trigger.call + N`. Calls run in parallel and finish out of order, so it closes only once an
  * event past the limit arrives AND no call within the limit is still unfinished.
+ *
+ * **`scope: session` MERGES THE PARTITION, AND THAT IS A DIFFERENT ORDERING CLAIM.** `seq` and
+ * `call` count within one stream (`event.ts`), so across two streams there is no order in the
+ * event data at all -- the only order a merged partition has is the order the replay offered the
+ * events, which is the corpus's sorted path order, not time. Two consequences, both deliberate:
+ * the `seq > trigger.seq` guard applies only WITHIN a stream (an event of another stream is
+ * neither before nor after the trigger, so `where` is the whole filter), and the constructs that
+ * would silently turn that into a verdict -- `calls`, `until: session.end`, `before:` -- are
+ * refused at compile time rather than left to mean whatever file order made them mean.
  */
 export function runHandler(handler: CompiledHandler): HandlerRun {
   const open = new Map<string, Open[]>();
   /** Calls started and not yet ended, per stream. What makes a `calls` close safe. */
   const running = new Map<string, Set<number>>();
+  /**
+   * The most recent event matching `before:`, per partition (asc-gtnu.4). One event, not a buffer.
+   *
+   * Keyed by the partition, which under `scope: session` would be the session -- unreachable,
+   * because `before:` is refused there. It follows the partition rather than hardcoding the stream
+   * so that the two keys cannot disagree about what a partition is.
+   */
+  const lastBefore = new Map<string, NormalizedEvent>();
   let triggers = 0;
   let unclosed = 0;
+  let noMatch = 0;
+  let unsatisfiedBefore = 0;
   const window = handler.window;
+  /** The handler-level scope. Named apart from the template `Scope` every row is built with. */
+  const handlerScope = handler.scope;
+
+  /**
+   * The partition an event belongs to. Under `stream` this is `(session_id, agent_id)`, exactly the
+   * key every handler used before `scope` existed.
+   */
+  const partition = (event: NormalizedEvent): string =>
+    handlerScope === 'session' ? event.session_id : `${event.session_id}\u0000${event.agent_id}`;
 
   const row = (
     trigger: NormalizedEvent,
@@ -877,6 +1102,7 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     if (spec.mode === 'count') {
       if (one.count >= spec.atLeast) return rows(one.trigger, withCount(one), closedBy);
       if (closedBy === 'session.end') unclosed += 1;
+      else noMatch += 1;
       return [];
     }
     if (spec.mode === 'absent') {
@@ -890,7 +1116,10 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
       return rows(one.trigger, one.scope, closedBy);
     }
     // `first` emits at its match; closing without one decides nothing unless the window ran out.
+    // A close by `until` or by `calls` IS a decision -- "no match before the bound" -- so it is
+    // counted rather than dropped; only the stream's own end leaves it undecided.
     if (closedBy === 'session.end') unclosed += 1;
+    else noMatch += 1;
     return [];
   };
 
@@ -899,8 +1128,24 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     (name) =>
       name === 'window.count' ? one.count : one.scope(name);
 
-  const accept = (event: NormalizedEvent): readonly HandlerRow[] => {
-    const key = `${event.session_id}\u0000${event.agent_id}`;
+  /**
+   * Wrap a trigger's scope so `${before.<field>}` reads the reference instead of the trigger.
+   *
+   * Returns `scope` ITSELF when the handler declares no `before:`, so a handler written before that
+   * key existed runs through exactly the same function it ran through then, not a wrapper that
+   * happens to be equivalent.
+   */
+  const withBefore =
+    (scope: Scope, earlier: NormalizedEvent | undefined): Scope =>
+    (name) =>
+      name.startsWith('before.')
+        ? earlier === undefined
+          ? undefined
+          : read(earlier, name.slice('before.'.length))
+        : scope(name);
+
+  const step = (event: NormalizedEvent): readonly HandlerRow[] => {
+    const key = partition(event);
     const out: HandlerRow[] = [];
 
     let calls = running.get(key);
@@ -919,7 +1164,12 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
         const limit = one.limit;
         const past = limit !== undefined && event.call > limit;
         let closedBy: ClosedBy | undefined;
-        if (event.kind === 'session.end') closedBy = 'session.end';
+        // `session.end` closes a STREAM's windows and never a session's: one is emitted per
+        // transcript file, so honoring it under `scope: session` would close every window of the
+        // session on the first subagent file that ended, with the session's other files unread.
+        // Guarding the `open.delete` below is not enough -- this is where the close happens, and a
+        // test written against the delete alone would pass while the window still closed early.
+        if (event.kind === 'session.end' && handlerScope === 'stream') closedBy = 'session.end';
         else if (window.until !== undefined && event.kind === window.until) closedBy = 'until';
         else if (past && ![...calls].some((call) => call <= limit)) closedBy = 'calls';
         if (closedBy !== undefined) {
@@ -927,7 +1177,20 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
           continue;
         }
         // Held open for a straggling call: an event past the limit is outside the window.
-        if (!past && event.seq > one.trigger.seq && window.match(event, one.scope)) {
+        //
+        // THE `seq` GUARD IS PER STREAM. Under `scope: stream` the partition IS the stream, so
+        // `event.seq > one.trigger.seq` is the whole rule and every handler that existed before
+        // `scope` reaches it unchanged. Under `scope: session` an event of ANOTHER stream is in the
+        // same partition but its `seq` is a position in a different sequence -- neither before nor
+        // after -- so the guard would drop it on a comparison that means nothing. There the
+        // stream's own events are still held to `seq`, and a cross-stream event is filtered by
+        // `where` alone. That is the honest reading of a merged partition, and it is why the
+        // constructs that could turn file order into a verdict are refused at compile time.
+        const after =
+          handlerScope === 'session' && event.agent_id !== one.trigger.agent_id
+            ? true
+            : event.seq > one.trigger.seq;
+        if (!past && after && window.match(event, one.scope)) {
           if (window.mode === 'first') {
             const found = event;
             out.push(
@@ -953,7 +1216,11 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
       open.set(key, still);
     }
 
-    if (event.kind === 'session.end') {
+    // A stream's end closes its own windows. Under `scope: session` it must NOT: `session.end` is
+    // one event per STREAM, so honoring it here would close every window of a session on the first
+    // subagent file that ended, with the session's remaining files still unread. Session-scoped
+    // windows are decided by their `until` and, failing that, counted by `finish()`.
+    if (event.kind === 'session.end' && handlerScope === 'stream') {
       open.delete(key);
       running.delete(key);
     }
@@ -973,14 +1240,26 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     if (!handler.where(event, scope)) return out;
     triggers += 1;
 
+    // The backward reference, read BEFORE this event is recorded below -- so "the most recent
+    // match before this trigger" can never mean the trigger itself.
+    let earlier: NormalizedEvent | undefined;
+    if (handler.before !== undefined) {
+      earlier = lastBefore.get(key);
+      if (earlier === undefined) unsatisfiedBefore += 1;
+    }
+    const emitScope = withBefore(scope, earlier);
+
     if (window === undefined) {
-      out.push(...rows(event, scope, undefined));
+      out.push(...rows(event, emitScope, undefined));
       return out;
     }
     const list = open.get(key) ?? [];
     list.push({
       trigger: event,
-      scope,
+      // The WRAPPED scope, so `${before.…}` reads this trigger's reference on a window row too.
+      // Storing the raw scope here would make the reference resolve against the trigger's own
+      // fields, i.e. to nothing, which is a silently absent value rather than a refusal.
+      scope: emitScope,
       limit: window.calls === undefined ? undefined : event.call + window.calls,
       count: 0,
     });
@@ -988,13 +1267,46 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     return out;
   };
 
+  /**
+   * Record the event as the partition's most recent `before:` match.
+   *
+   * AFTER the trigger body, which is what makes `before` mean strictly earlier. `before.where`
+   * cannot hold `$` references (`compileBefore`), so the trigger scope this passes is never read.
+   */
+  const record = (event: NormalizedEvent): void => {
+    const spec = handler.before;
+    if (spec === undefined || event.kind !== spec.on) return;
+    if (!spec.match(event, () => undefined)) return;
+    lastBefore.set(partition(event), event);
+  };
+
+  const accept = (event: NormalizedEvent): readonly HandlerRow[] => {
+    const out = step(event);
+    record(event);
+    return out;
+  };
+
+  const finish = (): void => {
+    for (const list of open.values()) unclosed += list.length;
+    open.clear();
+    running.clear();
+    lastBefore.clear();
+  };
+
   return {
     accept,
+    finish,
     get triggers() {
       return triggers;
     },
     get unclosed() {
       return unclosed;
+    },
+    get noMatch() {
+      return noMatch;
+    },
+    get unsatisfiedBefore() {
+      return unsatisfiedBefore;
     },
   };
 }

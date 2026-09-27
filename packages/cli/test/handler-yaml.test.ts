@@ -140,3 +140,46 @@ describe('judged survives the strict YAML front end', () => {
     expect(loadHandler(`${HEAD}judged: [outcome]\n`).hash).not.toBe(loadHandler(HEAD).hash);
   });
 });
+
+/**
+ * `scope` and `before` through the strict YAML front end (asc-gtnu.4).
+ *
+ * Same reason as `judged` above: the core compiler owns the refusals, and a top-level key the
+ * front end dropped would make every one of them unreachable from a real handler file. The loader
+ * has no key allowlist of its own -- it parses and hands over -- and this is what says so.
+ */
+describe('scope and before survive the strict YAML front end', () => {
+  const HEAD = "on: check.run\nemit: { x: '${before.path}', r: '${runner}' }\n";
+  const BEFORE = 'before: { on: file.changed }\n';
+
+  it('defaults the scope to stream and reads it when declared', () => {
+    expect(loadHandler(`${HEAD}${BEFORE}`).scope).toBe('stream');
+    expect(loadHandler(`${HEAD}${BEFORE}scope: stream\n`).scope).toBe('stream');
+  });
+
+  it('parses the before kind', () => {
+    expect(loadHandler(`${HEAD}${BEFORE}`).before?.on).toBe('file.changed');
+  });
+
+  it('has no before when the key is absent', () => {
+    expect(loadHandler('on: command.run\nemit: { x: a }\n').before).toBeUndefined();
+  });
+
+  it('hashes a declared scope differently from the default', () => {
+    expect(loadHandler(`${HEAD}${BEFORE}scope: stream\n`).hash).not.toBe(
+      loadHandler(`${HEAD}${BEFORE}`).hash,
+    );
+  });
+
+  it('hashes a declared before differently from none', () => {
+    expect(loadHandler(`${HEAD}${BEFORE}`).hash).not.toBe(
+      loadHandler('on: check.run\nemit: { x: a }\n').hash,
+    );
+  });
+
+  it('refuses before under scope: session with the core compiler’s own message', () => {
+    expect(refusal(`${HEAD}${BEFORE}scope: session\n`)).toMatch(
+      /before: is not available under scope: session/,
+    );
+  });
+});

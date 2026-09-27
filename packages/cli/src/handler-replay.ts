@@ -48,6 +48,10 @@ export interface HandlerReplay {
   readonly rows: readonly HandlerRow[];
   readonly triggers: number;
   readonly unclosed: number;
+  /** Windows DECIDED with "no match" as the verdict, by `until` or by the `calls` limit. */
+  readonly noMatch: number;
+  /** Triggers whose `before:` reference had no match, so its `${before.…}` fields are absent. */
+  readonly unsatisfiedBefore: number;
 }
 
 export interface LogHorizon {
@@ -111,6 +115,12 @@ export async function replayHandlers(
   );
   for (const event of normalizer.drain()) offer(event);
 
+  // The log is over. Without this a `scope: session` window that never met its `until` would
+  // vanish -- not emitted, not counted -- because `session.end` is one event per STREAM and so
+  // never decides a session-scoped window (asc-gtnu.4). Counting them as `unclosed` is the only
+  // honest resting place for a window the log ended inside.
+  for (const entry of runs) entry.run.finish();
+
   return {
     handlers: runs.map(({ name, handler, run, rows }) => ({
       name,
@@ -118,6 +128,8 @@ export async function replayHandlers(
       rows,
       triggers: run.triggers,
       unclosed: run.unclosed,
+      noMatch: run.noMatch,
+      unsatisfiedBefore: run.unsatisfiedBefore,
     })),
     horizon: {
       files: totals.files,
