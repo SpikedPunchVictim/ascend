@@ -15,6 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { scriptNotice } from '../src/commands/install-hook.js';
 import { flatten } from './helpers.js';
 
 /**
@@ -919,5 +920,14 @@ describe('asc install-hook: lifecycle stages for say: handlers (asc-tuur.4)', ()
       },
     });
     expect(live.stderr).toBe('');
+  });
+});
+
+describe('asc install-hook: the consent line about the script', () => {
+  it('says the script does not exist yet only when it is being created', () => {
+    expect(scriptNotice('s.sh', 'settings.json', false)).toMatch(
+      /create s\.sh, which does not exist yet/,
+    );
+    expect(scriptNotice('s.sh', 'settings.json', true)).not.toMatch(/does not exist/);
   });
 });

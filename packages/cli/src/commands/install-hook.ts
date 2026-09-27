@@ -811,9 +811,9 @@ export default class InstallHook extends BaseCommand {
 
     if (!alreadyInstalled) {
       this.warn(
-        `the hook is inert until ${STORE_DIR}/ exists in ${root}, and ${STORE_DIR}/ is gitignored ` +
-          `-- so a teammate who clones this repository gets the hook and no store, and sees ` +
-          `nothing rather than an error. That is intended, not a bug.`,
+        `${STORE_DIR}/ is gitignored, so a teammate who clones this repository gets the hook ` +
+          `and no store: the hook is inert in their checkout until they run 'asc init', and ` +
+          `they see nothing rather than an error. That is intended, not a bug.`,
       );
     }
   }
@@ -968,12 +968,7 @@ export default class InstallHook extends BaseCommand {
         `what it derives from them into this project's ${STORE_DIR}/ store on every session ` +
         `start, before printing the entry-type brief it already printed.`,
     );
-    this.warn(
-      `ascend will also ${existsSync(scriptPath) ? 'rewrite' : 'create'} ${scriptPath} -- unlike ` +
-        `${target}, which this command only edits, this file does not exist yet the first time ` +
-        `this runs. It is tracked, not local state (per .gitignore's own comment on .claude/), so ` +
-        `it is committed and shared with whoever else has this checkout, same as settings.json.`,
-    );
+    this.warn(scriptNotice(scriptPath, target, existsSync(scriptPath)));
     if (settingsNeedsWrite) {
       this.warn(
         upgraded
@@ -1023,4 +1018,20 @@ export default class InstallHook extends BaseCommand {
     writeFileSync(temporary, contents, 'utf8');
     renameSync(temporary, path);
   }
+}
+
+/**
+ * The consent line about `.claude/ascend-hook.sh`. "Does not exist yet" is said only when it is
+ * true: a user upgrading an install was once told the script did not exist in the same sentence
+ * that said it would be rewritten.
+ */
+export function scriptNotice(scriptPath: string, target: string, exists: boolean): string {
+  const verb = exists
+    ? `ascend will also rewrite ${scriptPath}`
+    : `ascend will also create ${scriptPath}, which does not exist yet -- unlike ${target}, ` +
+      `which this command only edits`;
+  return (
+    `${verb}. It is tracked, not local state (per .gitignore's own comment on .claude/), so ` +
+    `it is committed and shared with whoever else has this checkout, same as settings.json.`
+  );
 }

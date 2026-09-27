@@ -248,10 +248,32 @@ exists and no data has exercised it).
 The failure mode for this system is not bad data, it is an empty database: six weeks from now a
 review completes and nothing in context mentions ascend exists.
 
-**Hooks are not used for recording.** A hook is a shell command with no LLM in it, so it can only
-capture mechanical facts — and `adapter-claude-code` already does that strictly better: retroactively
-across every session already on disk, with richer data, and without mutating user settings. A hook capturing
-tool calls adds nothing and only works from install day forward.
+**Hooks do not record; handlers do, and a handler may speak at a hook.** A hook is a shell
+command with no LLM in it, so it can only capture mechanical facts -- and `adapter-claude-code`
+already does that strictly better: retroactively across every session already on disk, with
+richer data, and without mutating user settings. So entries are still written at ingest, never
+by a hook. What a hook adds is a *moment*: a sentence placed in the model's context right when
+the thing a type records is about to happen, without the user changing their workflow (asc-tuur).
+
+A project's `handlers/*.yaml` carry both routes, per entry type:
+
+- **Find (route A)** -- a handler that declares `type:` writes validated entries at ingest from
+  what sessions already emit (e.g. `handlers/review-finding-table.yaml` reads the table a bug-hunt
+  report already holds), with `captured_by: parsed`.
+- **Say (route B)** -- a handler with `say:` runs live at the lifecycle hook that delivers its
+  `on:` event (`asc hook <stage>`; `asc install-hook` installs only the stages some handler uses,
+  with a tool matcher derived from its `where`). Its sentence arrives as PostToolUse JSON
+  `additionalContext` or UserPromptSubmit stdout; the reviewer who follows it is recorded by the
+  reported route, and that session's parsed rows are then skipped so nothing counts twice.
+- **Proactive** -- `asc types define` looks for a new type in this project's transcripts and
+  drafts both handlers (`asc types capture <name> [--write]`), verified by replaying the draft.
+
+Measured (`spike/capture-hooks/FINDINGS.md`, n=2, an anecdote): PostToolUse with matcher `Skill`
+fires, carries `tool_input.skill`, fires inside subagents with `agent_id`, and its
+`additionalContext` reaches the model, all under `-p`; plain PostToolUse stdout does not
+(`spike/exposure`, 0/2). Delivery is not compliance: context was acted on 5/8 (haiku) and 1/3
+(sonnet) in `spike/holdout-unit`, and the review-finding nudge's before/after is in
+`spike/capture-hooks/NUDGE-FINDINGS.md` (n=2 per arm; the baseline already reported 1/2).
 
 **Hooks are used for recall.** Verified against the hooks docs:
 
@@ -282,8 +304,11 @@ Constraints on it:
 - Guarded with the `[ ! -f … ] ||` no-op pattern impeccable already uses, so a missing binary is inert.
 - **Tiny output.** It is a context tax on every session in the project; the brief must earn its lines.
 
-Ruled out: a `Stop` hook nagging "you recorded nothing this session." `Stop` is informational and its
-stdout is not shown to Claude — it could only intervene via `exit 2`, which would block the session.
+Ruled out: a `Stop` hook nagging "you recorded nothing this session." `Stop` fires under `-p`
+with `stop_hook_active` and `last_assistant_message` (`spike/capture-hooks`), but its stdout is
+not shown to Claude -- it could only intervene via `exit 2`, which would block the session. A
+handler that wants to speak does it at the moment the work starts (a Skill call, a prompt), not
+after it ends. `asc hook` accepts only `user-prompt-submit` and `post-tool-use` for that reason.
 
 ### Cross-project analysis (mitigating per-project storage)
 
@@ -460,7 +485,8 @@ asc annotate --scheme <s> --rule "<sql|fts>" [--backtest <sample>] | --ids <id,.
 asc kappa --scheme <a> --scheme <b>   inter-scheme agreement
 asc ingest claude-code [--since <date>]
 asc export|import <file.jsonl>        durability + transfer escape hatch (DB is gitignored)
-asc install-hook                      opt-in SessionStart recall hook (project .claude/settings.json)
+asc install-hook                      opt-in SessionStart recall hook, plus the stages say: handlers need
+asc types capture <name> [--write]    find a type in the transcripts; draft its handlers
 asc doctor                            dead types, near-duplicates, drift, na/unmeasured ratios
 ```
 

@@ -7,7 +7,7 @@
 | **Surfaced by** | building the reviewer brief for `asc-gtnu.8`, and a headless probe of whether a reviewer can reach `ReportFindings` at all |
 | **Entry type(s)** | `review_finding` (derived) |
 | **Severity** | P2 |
-| **Status** | fixed by `.claude/skills/lens-review/` (`asc-gtnu.14`) |
+| **Status** | fixed by `.claude/skills/lens-review/` (`asc-gtnu.14`); superseded by `handlers/review-finding-nudge.yaml` and the skill removed (`asc-tuur.6`), because sending reviewers to a project skill changed the user's workflow |
 
 ## What was found
 

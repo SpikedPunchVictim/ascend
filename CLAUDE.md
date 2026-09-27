@@ -105,11 +105,8 @@ Index and full convention: `dogfood/README.md`.
 
 ### Reviewers report findings with `ReportFindings`, and `category` is a lens slug
 
-A finding is recorded by the harness, not by hand. **Run a review in this repository with the
-project skill `.claude/skills/lens-review/SKILL.md`** (`lens-review`), not the user-level bug-hunt
-skill: bug-hunt never names the tool, asks questions a headless reviewer cannot answer, and writes
-a Markdown report that is not counted (`dogfood/0019`). A reviewer — that skill, a subagent given
-it, or any agent asked to review — reports each finding with the **`ReportFindings`** tool:
+A finding is recorded by the harness, not by hand. A reviewer — a subagent running the bug-hunt
+lenses, or any agent asked to review — reports each finding with the **`ReportFindings`** tool:
 `findings[]` of `{file, line, summary, failure_scenario, category, verdict}`, plus `level`. Every
 element of that array becomes one `review_finding` entry when `asc ingest claude-code` next runs.
 
@@ -123,10 +120,12 @@ assumption_audit, state_machine, boundary_conditions, data_lifecycle, error_path
 time_concurrency, environment_divergence, cross_implementation_divergence, write_read_asymmetry
 ```
 
-The lenses are the nine headings of `~/.claude/skills/bug-hunt/SKILL.md`, condensed into
-`lens-review` with ascend's slug spelling. **A tenth lens needs a type version bump**, and
-`derived-types.test.ts` asserts that this list AND the skill's list match the enum exactly, so edit
-all three or none.
+The lenses themselves are the nine headings in `~/.claude/skills/bug-hunt/SKILL.md`, which has no
+slugs of its own; the slug spelling above is ascend's. **A tenth lens needs a type version bump**,
+and `derived-types.test.ts` asserts this list matches the enum exactly, so edit both or neither.
+The same nine are in `handlers/review-finding-nudge.yaml`, which says this to a reviewer the
+moment it loads bug-hunt, so the user's skill stays unedited; `project-handlers.test.ts` checks
+that copy.
 
 **Do not run `asc record` for a finding.** The type says `Never by hand` for a measured reason:
 `EV-16` found 0 of 15 sessions invoking `asc` in any form, so a design that depends on a reviewer

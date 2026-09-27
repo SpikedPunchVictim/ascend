@@ -11,7 +11,9 @@
 # rows of that session are then left to it, so a finding is never counted twice.
 #
 # `asc install-hook` installs the PostToolUse hook with matcher `Skill` because of this file. The
-# lens slugs below are FINDING_LENSES; project-handlers.test.ts fails if the two drift.
+# lens slugs below are FINDING_LENSES; project-handlers.test.ts fails if the two drift. The file
+# and verdict wording is kept from the project skill lens-review, retired in asc-tuur.6 because
+# a reviewer had to be sent to it -- a change to the user's workflow this sentence does not need.
 on: tool.use.start
 description: Ask a bug-hunt reviewer to report its findings with ReportFindings.
 where:
@@ -20,8 +22,9 @@ where:
     in: [bug-hunt]
 say: >-
   ascend records review findings. When this review has findings, call the ReportFindings tool
-  once with all of them, in addition to the report you write: each with file, line, summary,
-  failure_scenario, verdict, and category set to the slug of the lens that found it --
+  once with all of them, in addition to the report you write: each with file (relative to the
+  repository root), line, summary, failure_scenario, verdict (CONFIRMED if you verified it,
+  PLAUSIBLE if not), and category set to the slug of the lens that found it --
   assumption_audit, state_machine, boundary_conditions, data_lifecycle, error_paths,
   time_concurrency, environment_divergence, cross_implementation_divergence or
   write_read_asymmetry.
