@@ -1,0 +1,1664 @@
+{
+  "subject": "packages/core/src/handler.ts",
+  "subjectSha256": "9401b4a75c3917d04e176d804582428f87d5e4fc705b342ef2172d3640a5b08c",
+  "note": "Authored 2026-09-27 against the committed handler.ts. `line` is the primary 1-indexed line in the ORIGINAL file; every edit replaces `before` with `after` on its line, and `before` must occur exactly once there. `why` is the author's claim of what the seed breaks and is NOT evidence; `breaksCommittedTest` and `failingTests` are filled by `seeds.mjs --check`, never by hand.",
+  "lenses": {
+    "boundary_conditions": "for every conditional and size-dependent operation: zero, one, maximum, negative, just past a threshold; empty collections and strings; index arithmetic; values that pass one check but fail a stricter one downstream.",
+    "error_paths": "every catch, optional chain, fallback, and async boundary: is the error surfaced or swallowed, is state consistent afterwards, can the caller retry, is the error branch dead code.",
+    "cross_implementation_divergence": "the same invariant implemented in more than one place where one implementation guards and another does not; the guarded sibling is the specification, cite it.",
+    "time_concurrency": "timezone and locale dependence, expiry without an expiry check, rapid repeats and duplicates, check-then-act races, dedupe keys that do not survive input variation, retries without idempotency."
+  },
+  "control": {
+    "id": "control",
+    "line": 2,
+    "edits": [
+      {
+        "line": 2,
+        "before": "Replay handlers: compile",
+        "after": "Replay handlers -- compile"
+      }
+    ],
+    "why": "A comment. No test can see it; its whole job is to prove the harness reports 'no test failed' with a nonzero test count."
+  },
+  "seeds": [
+    {
+      "id": "bc01",
+      "class": "boundary_conditions",
+      "line": 97,
+      "edits": [
+        {
+          "line": 97,
+          "before": "{4,}",
+          "after": "{5,}"
+        }
+      ],
+      "distinguishingToken": "handlerTokens",
+      "why": "Tokens of exactly four characters are dropped: the documented minimum is 4, the regex now demands 5.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc02",
+      "class": "boundary_conditions",
+      "line": 104,
+      "edits": [
+        {
+          "line": 104,
+          "before": "one.length > 0",
+          "after": "one.length > 1"
+        }
+      ],
+      "distinguishingToken": "basename",
+      "why": "basename skips one-character path segments, so `dir/a` renders as `dir` rather than `a`.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc03",
+      "class": "boundary_conditions",
+      "line": 237,
+      "edits": [
+        {
+          "line": 237,
+          "before": "[Number(part)]",
+          "after": "[Number(part) - 1]"
+        }
+      ],
+      "distinguishingToken": "Number(part)",
+      "why": "Array index is read one-based: `argv.1` reads argv[0], `argv.0` reads argv[-1] (undefined).",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event fans out one row per matching array element"
+      ]
+    },
+    {
+      "id": "bc04",
+      "class": "boundary_conditions",
+      "line": 252,
+      "edits": [
+        {
+          "line": 252,
+          "before": "rest.length > 0",
+          "after": "rest.length > 1"
+        }
+      ],
+      "distinguishingToken": "indexes a field",
+      "why": "A path one segment too deep (`argv.1.x`) is accepted and typed as a string element.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc05",
+      "class": "boundary_conditions",
+      "line": 262,
+      "edits": [
+        {
+          "line": 262,
+          "before": "source.length > MAX_REGEX_LENGTH",
+          "after": "source.length >= MAX_REGEX_LENGTH"
+        }
+      ],
+      "distinguishingToken": "MAX_REGEX_LENGTH",
+      "why": "A regex of exactly MAX_REGEX_LENGTH characters is refused; the limit is inclusive in its own message.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc06",
+      "class": "boundary_conditions",
+      "line": 278,
+      "edits": [
+        {
+          "line": 278,
+          "before": "value.slice(0, MAX_SUBJECT_LENGTH)",
+          "after": "value.slice(0, MAX_SUBJECT_LENGTH - 1)"
+        }
+      ],
+      "distinguishingToken": "MAX_SUBJECT_LENGTH",
+      "why": "matches tests one character fewer than the documented cap, so a match ending at the last allowed character is lost.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc07",
+      "class": "boundary_conditions",
+      "line": 327,
+      "edits": [
+        {
+          "line": 327,
+          "before": "matcher.length === 0",
+          "after": "matcher.length <= 1"
+        }
+      ],
+      "distinguishingToken": "non-empty list",
+      "why": "A one-element any/all list is refused although the message says only an empty one is.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc08",
+      "class": "boundary_conditions",
+      "line": 398,
+      "edits": [
+        {
+          "line": 398,
+          "before": "gte: (a: number, b: number) => a >= b",
+          "after": "gte: (a: number, b: number) => a > b"
+        }
+      ],
+      "distinguishingToken": "gte",
+      "why": "gte is false at equality.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc09",
+      "class": "boundary_conditions",
+      "line": 409,
+      "edits": [
+        {
+          "line": 409,
+          "before": "arg.length === 0",
+          "after": "arg.length < 0"
+        }
+      ],
+      "distinguishingToken": "in needs",
+      "why": "An empty `in:` list is accepted and the condition is silently never true.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc10",
+      "class": "boundary_conditions",
+      "line": 449,
+      "edits": [
+        {
+          "line": 449,
+          "before": "arg.length !== 2",
+          "after": "arg.length < 2"
+        }
+      ],
+      "distinguishingToken": "followed_by",
+      "why": "followed_by accepts three or more strings and silently ignores all past the second.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc11",
+      "class": "boundary_conditions",
+      "line": 460,
+      "edits": [
+        {
+          "line": 460,
+          "before": "(one, index) => one === first",
+          "after": "(one, index) => index > 0 && one === first"
+        }
+      ],
+      "distinguishingToken": "index > 0",
+      "why": "A pair at position 0 (`[a, b, ...]`) is never found.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc12",
+      "class": "boundary_conditions",
+      "line": 548,
+      "edits": [
+        {
+          "line": 548,
+          "before": "found.index > last",
+          "after": "found.index >= last"
+        }
+      ],
+      "distinguishingToken": "found.index",
+      "why": "A zero-length literal part is pushed before a reference at the start, so a single-reference template is no longer 'exactly one reference' and an absent value renders as '' instead of being omitted.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event omits a field whose single reference is absent, and renders it empty inside text",
+        "before: the most recent match earlier in the partition never resolves to the trigger itself",
+        "before: the most recent match earlier in the partition omits the field and COUNTS the trigger when nothing precedes it",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s",
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope"
+      ]
+    },
+    {
+      "id": "bc13",
+      "class": "boundary_conditions",
+      "line": 586,
+      "edits": [
+        {
+          "line": 586,
+          "before": "calls < 1",
+          "after": "calls < 0"
+        }
+      ],
+      "distinguishingToken": "window.calls",
+      "why": "`calls: 0` is accepted despite 'at least 1'.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc14",
+      "class": "boundary_conditions",
+      "line": 654,
+      "edits": [
+        {
+          "line": 654,
+          "before": "atLeast < 1",
+          "after": "atLeast < 0"
+        }
+      ],
+      "distinguishingToken": "at_least",
+      "why": "`at_least: 0` is accepted, so a count window emits with zero matches.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc15",
+      "class": "boundary_conditions",
+      "line": 736,
+      "edits": [
+        {
+          "line": 736,
+          "before": "?? 1,",
+          "after": "?? 0,"
+        }
+      ],
+      "distinguishingToken": "atLeast",
+      "why": "Default at_least becomes 0: a count window with no at_least emits even when nothing matched.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows still emits a count that reached at_least before session end"
+      ]
+    },
+    {
+      "id": "bc16",
+      "class": "boundary_conditions",
+      "line": 823,
+      "edits": [
+        {
+          "line": 823,
+          "before": "group < 0",
+          "after": "group < 1"
+        }
+      ],
+      "distinguishingToken": "group",
+      "why": "`group: 0` (the whole match) is refused.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc17",
+      "class": "boundary_conditions",
+      "line": 850,
+      "edits": [
+        {
+          "line": 850,
+          "before": "eachSpec['from'] ?? 0",
+          "after": "eachSpec['from'] ?? 1"
+        }
+      ],
+      "distinguishingToken": "each.from",
+      "why": "each without from skips the first element.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc18",
+      "class": "boundary_conditions",
+      "line": 875,
+      "edits": [
+        {
+          "line": 875,
+          "before": "Object.keys(emitSpec).length === 0",
+          "after": "Object.keys(emitSpec).length < 0"
+        }
+      ],
+      "distinguishingToken": "non-empty map",
+      "why": "An empty emit map is accepted; rows carry no fields.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc19",
+      "class": "boundary_conditions",
+      "line": 930,
+      "edits": [
+        {
+          "line": 930,
+          "before": "spec.length === 0",
+          "after": "spec.length < 0"
+        }
+      ],
+      "distinguishingToken": "judged",
+      "why": "`judged: []` is accepted and rows gain nothing, where the file promises an empty declaration is refused.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "judged declares a field the handler deliberately does not measure refuses an empty list"
+      ]
+    },
+    {
+      "id": "bc20",
+      "class": "boundary_conditions",
+      "line": 1093,
+      "edits": [
+        {
+          "line": 1093,
+          "before": ".slice(each.from)",
+          "after": ".slice(each.from + 1)"
+        }
+      ],
+      "distinguishingToken": "each.from",
+      "why": "each fan-out skips one element past `from`.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event fans out one row per matching array element"
+      ]
+    },
+    {
+      "id": "bc21",
+      "class": "boundary_conditions",
+      "line": 1103,
+      "edits": [
+        {
+          "line": 1103,
+          "before": "one.count >= spec.atLeast",
+          "after": "one.count > spec.atLeast"
+        }
+      ],
+      "distinguishingToken": "atLeast",
+      "why": "A count window at exactly at_least is a no-match.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running",
+        "windows count: emits at close only when at_least is reached",
+        "windows still emits a count that reached at_least before session end"
+      ]
+    },
+    {
+      "id": "bc22",
+      "class": "boundary_conditions",
+      "line": 1165,
+      "edits": [
+        {
+          "line": 1165,
+          "before": "event.call > limit",
+          "after": "event.call >= limit"
+        }
+      ],
+      "distinguishingToken": "past",
+      "why": "The call AT the limit is treated as past it, so a `calls: N` window holds N-1 calls.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "bc23",
+      "class": "boundary_conditions",
+      "line": 1174,
+      "edits": [
+        {
+          "line": 1174,
+          "before": "call <= limit",
+          "after": "call < limit"
+        }
+      ],
+      "distinguishingToken": "limit",
+      "why": "A straggling call exactly at the limit does not hold the window open.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "bc24",
+      "class": "boundary_conditions",
+      "line": 1234,
+      "edits": [
+        {
+          "line": 1234,
+          "before": "source.slice(0, MAX_SUBJECT_LENGTH)",
+          "after": "source.slice(0, MAX_SUBJECT_LENGTH - 1)"
+        }
+      ],
+      "distinguishingToken": "MAX_SUBJECT_LENGTH",
+      "why": "Capture tests one character fewer than the cap.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "bc25",
+      "class": "boundary_conditions",
+      "line": 1263,
+      "edits": [
+        {
+          "line": 1263,
+          "before": "event.call + window.calls",
+          "after": "event.call + window.calls - 1"
+        }
+      ],
+      "distinguishingToken": "window.calls",
+      "why": "A `calls: N` window's limit is N-1 calls past the trigger.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "ep01",
+      "class": "error_paths",
+      "line": 34,
+      "edits": [
+        {
+          "line": 34,
+          "before": "throw new HandlerError(message);",
+          "after": "throw new Error(message);"
+        }
+      ],
+      "distinguishingToken": "HandlerError",
+      "why": "Refusals throw a plain Error, so a caller catching HandlerError to report a bad handler lets them escape.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses an unknown top-level key",
+        "compileHandler refuses what would silently match nothing refuses an unknown event kind",
+        "compileHandler refuses what would silently match nothing refuses a field the kind does not carry",
+        "compileHandler refuses what would silently match nothing refuses a field of another kind",
+        "compileHandler refuses what would silently match nothing refuses a number where the field is a string",
+        "compileHandler refuses what would silently match nothing refuses a string where the field is a boolean",
+        "compileHandler refuses what would silently match nothing refuses two operators in one matcher",
+        "compileHandler refuses what would silently match nothing refuses an unknown operator",
+        "compileHandler refuses what would silently match nothing refuses gt on a string field",
+        "compileHandler refuses what would silently match nothing refuses matches on an array field",
+        "compileHandler refuses what would silently match nothing refuses contains on a string field",
+        "compileHandler refuses what would silently match nothing refuses indexing a non-array",
+        "compileHandler refuses what would silently match nothing refuses an unknown $ reference",
+        "compileHandler refuses what would silently match nothing refuses a bad regex",
+        "compileHandler refuses what would silently match nothing refuses an oversized regex",
+        "compileHandler refuses what would silently match nothing refuses a regex flag other than i, m, s",
+        "compileHandler refuses what would silently match nothing refuses flags on a non-regex operator",
+        "compileHandler refuses what would silently match nothing refuses a missing emit",
+        "compileHandler refuses what would silently match nothing refuses an emit value that is not a string",
+        "compileHandler refuses what would silently match nothing refuses a template naming an unknown field",
+        "compileHandler refuses what would silently match nothing refuses an unknown filter",
+        "compileHandler refuses what would silently match nothing refuses a capture shadowing a field",
+        "compileHandler refuses what would silently match nothing refuses each over a string field",
+        "compileHandler refuses what would silently match nothing refuses each.as shadowing a field",
+        "compileHandler refuses what would silently match nothing refuses a window with no end",
+        "compileHandler refuses what would silently match nothing refuses a window with two modes",
+        "compileHandler refuses what would silently match nothing refuses at_least outside count",
+        "compileHandler refuses what would silently match nothing refuses window.count outside a count window",
+        "compileHandler refuses what would silently match nothing refuses a window field of the wrong kind",
+        "windows refuses window shapes that would silently match nothing",
+        "judged declares a field the handler deliberately does not measure refuses an empty list",
+        "judged declares a field the handler deliberately does not measure refuses a string instead of a list",
+        "judged declares a field the handler deliberately does not measure refuses a name that is not a name",
+        "judged declares a field the handler deliberately does not measure refuses a duplicate name",
+        "judged declares a field the handler deliberately does not measure refuses a name that is also emitted",
+        "compileWindow refuses an until that is a kind the window watches refuses first",
+        "compileWindow refuses an until that is a kind the window watches refuses count",
+        "compileWindow refuses an until that is a kind the window watches refuses absent",
+        "compileWindow refuses an until that is a kind the window watches refuses an any-form alternative",
+        "scope: session merges a session’s streams, and scope: stream does not refuses a scope that is not one of the two",
+        "scope: session merges a session’s streams, and scope: stream does not refuses calls, because call numbers count within one stream under scope: session",
+        "scope: session merges a session’s streams, and scope: stream does not refuses until: session.end, because it is one event per stream under scope: session",
+        "scope: session merges a session’s streams, and scope: stream does not refuses a window with no until at all under scope: session",
+        "scope: session merges a session’s streams, and scope: stream does not still allows calls and until: session.end under the default scope",
+        "before: the most recent match earlier in the partition refuses a before that is not a map",
+        "before: the most recent match earlier in the partition refuses an unknown key",
+        "before: the most recent match earlier in the partition refuses a kind that does not exist",
+        "before: the most recent match earlier in the partition refuses a missing on",
+        "before: the most recent match earlier in the partition refuses a field the before kind does not carry",
+        "before: the most recent match earlier in the partition refuses a $ reference in before.where",
+        "before: the most recent match earlier in the partition refuses a $ reference on the right of before.where",
+        "before: the most recent match earlier in the partition refuses a ${before.…} template on a handler that declares no before",
+        "before: the most recent match earlier in the partition refuses before under scope: session, and says what the order would have been"
+      ]
+    },
+    {
+      "id": "ep02",
+      "class": "error_paths",
+      "line": 273,
+      "edits": [
+        {
+          "line": 273,
+          "before": "return refuse(`${where}: ${error instanceof Error ? error.message : String(error)}`);",
+          "after": "return new RegExp('$^');"
+        }
+      ],
+      "distinguishingToken": "RegExp",
+      "why": "An invalid regex is swallowed and replaced by one that never matches: the silent never-true condition the file exists to refuse.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses a bad regex"
+      ]
+    },
+    {
+      "id": "ep03",
+      "class": "error_paths",
+      "line": 322,
+      "edits": [
+        {
+          "line": 322,
+          "before": "return refuse(`${where}: must be a map`);",
+          "after": "return () => true;"
+        }
+      ],
+      "distinguishingToken": "must be a map",
+      "why": "A where that is not a map is accepted as always-true.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep04",
+      "class": "error_paths",
+      "line": 363,
+      "edits": [
+        {
+          "line": 363,
+          "before": "} else if (Array.isArray(matcher)) {",
+          "after": "} else if (Array.isArray(matcher) && matcher.length === 0) {"
+        }
+      ],
+      "distinguishingToken": "a list is not a value",
+      "why": "A non-empty list given as a value is no longer refused; it is compared with === and never matches.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep05",
+      "class": "error_paths",
+      "line": 371,
+      "edits": [
+        {
+          "line": 371,
+          "before": "if (right.type !== fieldType) {",
+          "after": "if (right.type !== fieldType && right.type !== 'string') {"
+        }
+      ],
+      "distinguishingToken": "eq",
+      "why": "A string compared to a number field passes the type check and is silently never equal.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses a string where the field is a boolean"
+      ]
+    },
+    {
+      "id": "ep06",
+      "class": "error_paths",
+      "line": 391,
+      "edits": [
+        {
+          "line": 391,
+          "before": "if (fieldType !== 'number' || right.type !== 'number') {",
+          "after": "if (fieldType !== 'number') {"
+        }
+      ],
+      "distinguishingToken": "compares numbers",
+      "why": "A non-number bound is accepted; the comparison is silently always false.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep07",
+      "class": "error_paths",
+      "line": 412,
+      "edits": [
+        {
+          "line": 412,
+          "before": "if (typeOf(one) !== fieldType) {",
+          "after": "if (typeOf(one) !== fieldType && typeOf(one) !== 'string') {"
+        }
+      ],
+      "distinguishingToken": "in",
+      "why": "String members of an in-list for a number field are accepted and never match.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep08",
+      "class": "error_paths",
+      "line": 422,
+      "edits": [
+        {
+          "line": 422,
+          "before": "if (fieldType !== 'string')",
+          "after": "if (fieldType === 'array')"
+        }
+      ],
+      "distinguishingToken": "matches needs a string field",
+      "why": "matches on a number or boolean field is accepted and silently never true.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep09",
+      "class": "error_paths",
+      "line": 439,
+      "edits": [
+        {
+          "line": 439,
+          "before": "if (right.type !== 'string') return refuse(`${at}: contains",
+          "after": "if (right.type === 'array') return refuse(`${at}: contains"
+        }
+      ],
+      "distinguishingToken": "contains takes a string",
+      "why": "contains with a number is accepted and never true.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep10",
+      "class": "error_paths",
+      "line": 466,
+      "edits": [
+        {
+          "line": 466,
+          "before": "if (typeof arg !== 'boolean')",
+          "after": "if (typeof arg === 'number')"
+        }
+      ],
+      "distinguishingToken": "exists takes true or false",
+      "why": "`exists: \"true\"` (a string) is accepted and the condition is always true.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep11",
+      "class": "error_paths",
+      "line": 478,
+      "edits": [
+        {
+          "line": 478,
+          "before": "if (typeof other !== 'string') return false;",
+          "after": "if (typeof other !== 'string') return true;"
+        }
+      ],
+      "distinguishingToken": "shares_token",
+      "why": "An absent right-hand reference makes shares_token true instead of false.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep12",
+      "class": "error_paths",
+      "line": 488,
+      "edits": [
+        {
+          "line": 488,
+          "before": "return false;",
+          "after": "return true;"
+        }
+      ],
+      "distinguishingToken": "shares_token",
+      "why": "An absent left field makes shares_token true.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep13",
+      "class": "error_paths",
+      "line": 534,
+      "edits": [
+        {
+          "line": 534,
+          "before": "refuse(`",
+          "after": "void (`"
+        }
+      ],
+      "distinguishingToken": "not available from this handler's window",
+      "why": "An unavailable ${window.*} name is accepted and silently renders absent.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses window.count outside a count window"
+      ]
+    },
+    {
+      "id": "ep14",
+      "class": "error_paths",
+      "line": 551,
+      "edits": [
+        {
+          "line": 551,
+          "before": "if (filter !== undefined && !Object.hasOwn(FILTERS, filter)) {",
+          "after": "if (filter !== undefined && filter.length === 0) {"
+        }
+      ],
+      "distinguishingToken": "unknown filter",
+      "why": "An unknown filter name is accepted and the value is emitted unfiltered.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses an unknown filter"
+      ]
+    },
+    {
+      "id": "ep15",
+      "class": "error_paths",
+      "line": 590,
+      "edits": [
+        {
+          "line": 590,
+          "before": "(typeof until !== 'string' || !Object.hasOwn(EVENT_KINDS, until))",
+          "after": "typeof until !== 'string'"
+        }
+      ],
+      "distinguishingToken": "is not an event kind",
+      "why": "A misspelled until kind is accepted; the window never closes by until.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep16",
+      "class": "error_paths",
+      "line": 635,
+      "edits": [
+        {
+          "line": 635,
+          "before": "refuse('window: needs calls",
+          "after": "void ('window: needs calls"
+        }
+      ],
+      "distinguishingToken": "a window with no end",
+      "why": "A window with neither calls nor until is accepted and is never decided.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses a window with no end"
+      ]
+    },
+    {
+      "id": "ep17",
+      "class": "error_paths",
+      "line": 720,
+      "edits": [
+        {
+          "line": 720,
+          "before": "if (clash !== undefined) {",
+          "after": "if (clash !== undefined && mode !== 'first') {"
+        }
+      ],
+      "distinguishingToken": "clash",
+      "why": "A first-window whose until is its own kind is accepted: the silent zero the comment above measures.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileWindow refuses an until that is a kind the window watches refuses first"
+      ]
+    },
+    {
+      "id": "ep18",
+      "class": "error_paths",
+      "line": 798,
+      "edits": [
+        {
+          "line": 798,
+          "before": "refuse('description",
+          "after": "void ('description"
+        }
+      ],
+      "distinguishingToken": "description",
+      "why": "A non-string description is accepted and flows into the compiled handler typed as a string.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep19",
+      "class": "error_paths",
+      "line": 812,
+      "edits": [
+        {
+          "line": 812,
+          "before": "if (eventFieldType(on, name) !== undefined)",
+          "after": "if (eventFieldType(on, name) === 'array')"
+        }
+      ],
+      "distinguishingToken": "shadows",
+      "why": "A capture may shadow a string field of the trigger, and the capture silently wins in the scope.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses a capture shadowing a field"
+      ]
+    },
+    {
+      "id": "ep20",
+      "class": "error_paths",
+      "line": 819,
+      "edits": [
+        {
+          "line": 819,
+          "before": "pathType(on, field, at) !== 'string'",
+          "after": "pathType(on, field, at) === 'array'"
+        }
+      ],
+      "distinguishingToken": "must name a string field",
+      "why": "A capture over a number field is accepted and is silently never set.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep21",
+      "class": "error_paths",
+      "line": 583,
+      "edits": [
+        {
+          "line": 583,
+          "before": "if (!WINDOW_KEYS.has(key))",
+          "after": "if (!WINDOW_KEYS.has(key) && key !== 'where')"
+        }
+      ],
+      "distinguishingToken": "window: unknown key",
+      "why": "A `where` placed directly under window (a natural mistake) is accepted and ignored.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep22",
+      "class": "error_paths",
+      "line": 942,
+      "edits": [
+        {
+          "line": 942,
+          "before": "if (emitted.has(name)) {",
+          "after": "if (emitted.has(name) && index === 0) {"
+        }
+      ],
+      "distinguishingToken": "is also emitted",
+      "why": "A name both judged and emitted is refused only in the first position.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep23",
+      "class": "error_paths",
+      "line": 1091,
+      "edits": [
+        {
+          "line": 1091,
+          "before": "if (!Array.isArray(list)) return [];",
+          "after": "if (!Array.isArray(list)) return [row(trigger, scope, closedBy)];"
+        }
+      ],
+      "distinguishingToken": "each",
+      "why": "When the each field is absent a row is emitted anyway, with the each name unset.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep24",
+      "class": "error_paths",
+      "line": 1236,
+      "edits": [
+        {
+          "line": 1236,
+          "before": "if (value !== undefined) captured[capture.name] = value;",
+          "after": "captured[capture.name] = value ?? '';"
+        }
+      ],
+      "distinguishingToken": "captured",
+      "why": "A capture that does not match yields '' instead of absent.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ep25",
+      "class": "error_paths",
+      "line": 1248,
+      "edits": [
+        {
+          "line": 1248,
+          "before": "unsatisfiedBefore += 1",
+          "after": "unsatisfiedBefore += 0"
+        }
+      ],
+      "distinguishingToken": "unsatisfiedBefore",
+      "why": "An unsatisfied before: reference is no longer counted, so its absent fields look like fields the handler forgot.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition never resolves to the trigger itself",
+        "before: the most recent match earlier in the partition omits the field and COUNTS the trigger when nothing precedes it",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s",
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope"
+      ]
+    },
+    {
+      "id": "ci01",
+      "class": "cross_implementation_divergence",
+      "line": 64,
+      "edits": [
+        {
+          "line": 64,
+          "before": "new Set(['on', 'where'])",
+          "after": "new Set(['on', 'where', 'any'])"
+        }
+      ],
+      "distinguishingToken": "BEFORE_KEYS",
+      "why": "before: accepts an `any` key and ignores it, where the window's key check (L647) handles `any` and its watchers (WATCHER_KEYS) refuse it.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci02",
+      "class": "cross_implementation_divergence",
+      "line": 379,
+      "edits": [
+        {
+          "line": 379,
+          "before": "return !absent(value) && value === right.get(trigger);",
+          "after": "return value === right.get(trigger);"
+        }
+      ],
+      "distinguishingToken": "absent",
+      "why": "eq drops the absent guard its sibling ne keeps (L383): an absent field eq an absent $reference is true.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci03",
+      "class": "cross_implementation_divergence",
+      "line": 590,
+      "edits": [
+        {
+          "line": 590,
+          "before": "!Object.hasOwn(EVENT_KINDS, until)",
+          "after": "!(until in EVENT_KINDS)"
+        }
+      ],
+      "distinguishingToken": "EVENT_KINDS",
+      "why": "until: accepts inherited keys (`toString`, `constructor`) as event kinds; every sibling kind check uses Object.hasOwn.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci04",
+      "class": "cross_implementation_divergence",
+      "line": 654,
+      "edits": [
+        {
+          "line": 654,
+          "before": "(typeof atLeast !== 'number' || !Number.isInteger(atLeast) || atLeast < 1)",
+          "after": "(typeof atLeast !== 'number' || atLeast < 1)"
+        }
+      ],
+      "distinguishingToken": "at_least",
+      "why": "at_least accepts 1.5; its siblings calls (L586) and from (L858) require an integer.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci05",
+      "class": "cross_implementation_divergence",
+      "line": 678,
+      "edits": [
+        {
+          "line": 678,
+          "before": "!Object.hasOwn(EVENT_KINDS, kind)",
+          "after": "!(kind in EVENT_KINDS)"
+        }
+      ],
+      "distinguishingToken": "EVENT_KINDS",
+      "why": "An any-watcher's on: accepts inherited keys; the single-kind window (L691) uses Object.hasOwn.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci06",
+      "class": "cross_implementation_divergence",
+      "line": 701,
+      "edits": [
+        {
+          "line": 701,
+          "before": "match = (event, scope) => event.kind === kind && where(event, scope);",
+          "after": "match = (event, scope) => where(event, scope);"
+        }
+      ],
+      "distinguishingToken": "event.kind === kind",
+      "why": "The single-kind window matches events of other kinds; its any-form sibling (L688) checks the kind.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows first: the window kind is part of the match, not only the where",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s"
+      ]
+    },
+    {
+      "id": "ci07",
+      "class": "cross_implementation_divergence",
+      "line": 757,
+      "edits": [
+        {
+          "line": 757,
+          "before": "!Object.hasOwn(EVENT_KINDS, kind)",
+          "after": "!(kind in EVENT_KINDS)"
+        }
+      ],
+      "distinguishingToken": "EVENT_KINDS",
+      "why": "before.on accepts inherited keys; the handler's on: (L793) uses Object.hasOwn.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci08",
+      "class": "cross_implementation_divergence",
+      "line": 810,
+      "edits": [
+        {
+          "line": 810,
+          "before": "/^[a-z_][a-z0-9_]*$/",
+          "after": "/^[a-z_][a-z0-9_-]*$/"
+        }
+      ],
+      "distinguishingToken": "capture name",
+      "why": "Capture names may contain '-', diverging from the one name rule each.as (L854) and judged (L938) share.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci09",
+      "class": "cross_implementation_divergence",
+      "line": 823,
+      "edits": [
+        {
+          "line": 823,
+          "before": "(typeof group !== 'number' || !Number.isInteger(group) || group < 0)",
+          "after": "(typeof group !== 'number' || group < 0)"
+        }
+      ],
+      "distinguishingToken": "group",
+      "why": "group accepts 1.5 (found[1.5] is undefined, a silently absent capture); from (L858) requires an integer.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci10",
+      "class": "cross_implementation_divergence",
+      "line": 855,
+      "edits": [
+        {
+          "line": 855,
+          "before": "if (captureNames.has(as as string) || eventFieldType(on, as as string) !== undefined) {",
+          "after": "if (captureNames.has(as as string)) {"
+        }
+      ],
+      "distinguishingToken": "shadows",
+      "why": "each.as may shadow a trigger field; the capture sibling (L812) refuses exactly that.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses each.as shadowing a field"
+      ]
+    },
+    {
+      "id": "ci11",
+      "class": "cross_implementation_divergence",
+      "line": 894,
+      "edits": [
+        {
+          "line": 894,
+          "before": "sha256Hex(canonicalJson(parsed))",
+          "after": "sha256Hex(JSON.stringify(parsed))"
+        }
+      ],
+      "distinguishingToken": "canonicalJson",
+      "why": "The handler hash is key-order dependent, diverging from the canonical identity the header promises and hash.ts implements.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "the handler hash ignores key order and changes with any value"
+      ]
+    },
+    {
+      "id": "ci12",
+      "class": "cross_implementation_divergence",
+      "line": 938,
+      "edits": [
+        {
+          "line": 938,
+          "before": "/^[a-z_][a-z0-9_]*$/",
+          "after": "/^[a-z_][a-zA-Z0-9_]*$/"
+        }
+      ],
+      "distinguishingToken": "is not a name",
+      "why": "judged names may contain capitals, diverging from the name rule the comment says is shared with capture (L810) and each.as (L854).",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci13",
+      "class": "cross_implementation_divergence",
+      "line": 1065,
+      "edits": [
+        {
+          "line": 1065,
+          "before": "if (value !== undefined) fields[name] = value;",
+          "after": "fields[name] = value ?? '';"
+        }
+      ],
+      "distinguishingToken": "fields[name]",
+      "why": "The row builder writes '' for an absent template value, where compileTemplate (L571-574) omits it because absent and empty are different facts.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event omits a field whose single reference is absent, and renders it empty inside text",
+        "before: the most recent match earlier in the partition never resolves to the trigger itself",
+        "before: the most recent match earlier in the partition omits the field and COUNTS the trigger when nothing precedes it",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s",
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope"
+      ]
+    },
+    {
+      "id": "ci14",
+      "class": "cross_implementation_divergence",
+      "line": 1104,
+      "edits": [
+        {
+          "line": 1104,
+          "before": "if (closedBy === 'session.end') unclosed += 1;",
+          "after": "if (closedBy !== 'match') unclosed += 1;"
+        }
+      ],
+      "distinguishingToken": "unclosed",
+      "why": "A count window closed by until or calls is counted unclosed; the first-window rule (L1121) counts it as noMatch.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "a window decided with no match is counted, not dropped counts a count window closed below at_least"
+      ]
+    },
+    {
+      "id": "ci15",
+      "class": "cross_implementation_divergence",
+      "line": 1116,
+      "edits": [
+        {
+          "line": 1116,
+          "before": "return rows(one.trigger, one.scope, closedBy);",
+          "after": "return [row(one.trigger, one.scope, closedBy)];"
+        }
+      ],
+      "distinguishingToken": "rows",
+      "why": "An absent window emits one row and ignores each:, where count (L1103) and first (L1197) fan out through rows().",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci16",
+      "class": "cross_implementation_divergence",
+      "line": 1141,
+      "edits": [
+        {
+          "line": 1141,
+          "before": "name.startsWith('before.')",
+          "after": "name.startsWith('before')"
+        }
+      ],
+      "distinguishingToken": "before.",
+      "why": "withBefore intercepts any name starting 'before' (a capture `before_x`), where checkTemplateName (L510) reserves only 'before.'.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci17",
+      "class": "cross_implementation_divergence",
+      "line": 1172,
+      "edits": [
+        {
+          "line": 1172,
+          "before": "if (event.kind === 'session.end' && handlerScope === 'stream') closedBy",
+          "after": "if (event.kind === 'session.end') closedBy"
+        }
+      ],
+      "distinguishingToken": "session.end",
+      "why": "session.end closes session-scoped windows here while the delete at L1223 still guards on stream scope.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window"
+      ]
+    },
+    {
+      "id": "ci18",
+      "class": "cross_implementation_divergence",
+      "line": 1234,
+      "edits": [
+        {
+          "line": 1234,
+          "before": "capture.regex.exec(source.slice(0, MAX_SUBJECT_LENGTH))",
+          "after": "capture.regex.exec(source)"
+        }
+      ],
+      "distinguishingToken": "MAX_SUBJECT_LENGTH",
+      "why": "Captures run on the whole field; every other regex goes through test() (L278), which caps the subject.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ci19",
+      "class": "cross_implementation_divergence",
+      "line": 1253,
+      "edits": [
+        {
+          "line": 1253,
+          "before": "out.push(...rows(event, emitScope, undefined));",
+          "after": "out.push(row(event, emitScope, undefined));"
+        }
+      ],
+      "distinguishingToken": "rows",
+      "why": "A handler without a window ignores each:, where every windowed path fans out through rows().",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event fans out one row per matching array element"
+      ]
+    },
+    {
+      "id": "ci20",
+      "class": "cross_implementation_divergence",
+      "line": 1262,
+      "edits": [
+        {
+          "line": 1262,
+          "before": "scope: emitScope,",
+          "after": "scope,"
+        }
+      ],
+      "distinguishingToken": "emitScope",
+      "why": "A window stores the unwrapped scope, so ${before.*} is absent on window rows while the no-window path (L1253) uses emitScope.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "tc01",
+      "class": "time_concurrency",
+      "line": 611,
+      "edits": [
+        {
+          "line": 611,
+          "before": "if (calls !== undefined) {",
+          "after": "if (calls !== undefined && typeof calls !== 'number') {"
+        }
+      ],
+      "distinguishingToken": "calls",
+      "why": "A calls: window is allowed under scope: session, where call numbers from concurrent streams collide.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not refuses calls, because call numbers count within one stream under scope: session"
+      ]
+    },
+    {
+      "id": "tc02",
+      "class": "time_concurrency",
+      "line": 624,
+      "edits": [
+        {
+          "line": 624,
+          "before": "if (until === 'session.end') {",
+          "after": "if (until === 'session.end' && calls !== undefined) {"
+        }
+      ],
+      "distinguishingToken": "session.end",
+      "why": "until: session.end is allowed under scope: session, where it is one event per concurrent stream.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not refuses until: session.end, because it is one event per stream under scope: session"
+      ]
+    },
+    {
+      "id": "tc03",
+      "class": "time_concurrency",
+      "line": 760,
+      "edits": [
+        {
+          "line": 760,
+          "before": "if (scope === 'session') {",
+          "after": "if (scope === 'session' && kind === 'session.end') {"
+        }
+      ],
+      "distinguishingToken": "before:",
+      "why": "before: is allowed under scope: session, where 'the event before this trigger' across interleaved streams is decided by file order, not time.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition refuses before under scope: session, and says what the order would have been"
+      ]
+    },
+    {
+      "id": "tc04",
+      "class": "time_concurrency",
+      "line": 1055,
+      "edits": [
+        {
+          "line": 1055,
+          "before": "`${event.session_id}\\u0000${event.agent_id}`",
+          "after": "event.session_id"
+        }
+      ],
+      "distinguishingToken": "partition",
+      "why": "Stream scope partitions by session only: concurrent subagent streams share windows, seq comparisons, and one stream's session.end closes the others'.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope"
+      ]
+    },
+    {
+      "id": "tc05",
+      "class": "time_concurrency",
+      "line": 1157,
+      "edits": [
+        {
+          "line": 1157,
+          "before": "calls.delete(event.call)",
+          "after": "calls.delete(event.seq)"
+        }
+      ],
+      "distinguishingToken": "running",
+      "why": "A finished call is never removed from the running set, so a calls: window is held open forever by a call that already ended.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "tc06",
+      "class": "time_concurrency",
+      "line": 1174,
+      "edits": [
+        {
+          "line": 1174,
+          "before": "else if (past && ![...calls].some((call) => call <= limit)) closedBy",
+          "after": "else if (past) closedBy"
+        }
+      ],
+      "distinguishingToken": "straggl",
+      "why": "A calls: window closes as soon as a later call starts, although a call within the limit is still running and may finish out of order.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "tc07",
+      "class": "time_concurrency",
+      "line": 1192,
+      "edits": [
+        {
+          "line": 1192,
+          "before": "event.seq > one.trigger.seq",
+          "after": "event.seq >= one.trigger.seq"
+        }
+      ],
+      "distinguishingToken": "seq",
+      "why": "A duplicate delivery of the trigger event (same seq) is counted by its own window.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "tc08",
+      "class": "time_concurrency",
+      "line": 1223,
+      "edits": [
+        {
+          "line": 1223,
+          "before": "if (event.kind === 'session.end' && handlerScope === 'stream') {",
+          "after": "if (event.kind === 'session.end') {"
+        }
+      ],
+      "distinguishingToken": "session.end",
+      "why": "Under scope: session the first concurrent stream to end deletes every open window of the session, uncounted.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window"
+      ]
+    },
+    {
+      "id": "tc09",
+      "class": "time_concurrency",
+      "line": 1250,
+      "edits": [
+        {
+          "line": 1250,
+          "before": "const emitScope = withBefore(scope, earlier);",
+          "after": "const emitScope: Scope = (name) => withBefore(scope, lastBefore.get(key))(name);"
+        }
+      ],
+      "distinguishingToken": "lastBefore",
+      "why": "Time of check vs time of use: a window row's ${before.*} is read when the window closes, so it names an event recorded after the trigger.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s"
+      ]
+    },
+    {
+      "id": "tc10",
+      "class": "time_concurrency",
+      "line": 1263,
+      "edits": [
+        {
+          "line": 1263,
+          "before": "event.call + window.calls",
+          "after": "event.seq + window.calls"
+        }
+      ],
+      "distinguishingToken": "limit",
+      "why": "The call limit is computed from seq, so with calls running in parallel the window bound is in the wrong unit.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "tc11",
+      "class": "time_concurrency",
+      "line": 1284,
+      "edits": [
+        {
+          "line": 1284,
+          "before": "const out = step(event);",
+          "after": "record(event);\n    const out = step(event);"
+        },
+        {
+          "line": 1285,
+          "before": "record(event);",
+          "after": "void 0;"
+        }
+      ],
+      "distinguishingToken": "record",
+      "why": "The event is recorded as the before: match before its own trigger body runs, so 'strictly earlier' includes the trigger itself.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition never resolves to the trigger itself",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s"
+      ]
+    }
+  ],
+  "measured": {
+    "at": "2026-09-27T04:35:40.853Z",
+    "baselineTests": 100,
+    "control": false,
+    "classes": {
+      "boundary_conditions": {
+        "n": 25,
+        "tooClose": [],
+        "togetherCompiles": true,
+        "breaking": 9,
+        "surviving": 16,
+        "unverified": 0
+      },
+      "error_paths": {
+        "n": 25,
+        "tooClose": [],
+        "togetherCompiles": true,
+        "breaking": 9,
+        "surviving": 16,
+        "unverified": 0
+      },
+      "cross_implementation_divergence": {
+        "n": 20,
+        "tooClose": [],
+        "togetherCompiles": true,
+        "breaking": 7,
+        "surviving": 13,
+        "unverified": 0
+      },
+      "time_concurrency": {
+        "n": 11,
+        "tooClose": [],
+        "togetherCompiles": true,
+        "breaking": 10,
+        "surviving": 1,
+        "unverified": 0
+      }
+    }
+  }
+}

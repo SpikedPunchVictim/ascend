@@ -27,10 +27,12 @@
  * run that reviewed nothing as a run that found nothing.
  */
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildTree, recallEnv, REPO } from './trees.mjs';
+import { buildTree, recallEnv, REPO, SUBJECT } from './trees.mjs';
+import { applyEdits } from './seeds.mjs';
 
 const OUT = join(REPO, 'spike', 'tmp', 'recall');
 const ROOT = join(OUT, 'root');
@@ -157,7 +159,7 @@ function copyTranscript(sessionId) {
   return null;
 }
 
-export async function runOne({ runId, model, arm, cls, apply, runnable, maxUsd, perRunUsd, dryRun }) {
+export async function runOne({ runId, model, arm, cls, slot = null, mutationMarker = null, apply, runnable, maxUsd, perRunUsd, dryRun }) {
   const ledger = loadLedger();
   if (ledger.runs.some((r) => r.runId === runId && r.completed)) {
     console.error(`skip ${runId}: already in the ledger`);
@@ -172,7 +174,7 @@ export async function runOne({ runId, model, arm, cls, apply, runnable, maxUsd, 
   }
   const tree = buildTree({ runnable, apply });
   const argv = argvFor(model, budget);
-  const meta = { runId, model, arm, cls, dir: tree.dir, runnable, budgetUsd: budget, invocation: ['claude', ...argv] };
+  const meta = { runId, model, arm, cls, slot, mutationMarker, dir: tree.dir, runnable, budgetUsd: budget, invocation: ['claude', ...argv] };
   if (dryRun) return { ...meta, dryRun: true };
 
   const cache = mkdtempSync(join(tmpdir(), 'rv-cache-'));
@@ -221,6 +223,54 @@ export async function runOne({ runId, model, arm, cls, apply, runnable, maxUsd, 
   return run;
 }
 
+/**
+ * The seeds are read and hashed at load, and every seeded run carries that hash as its
+ * `mutationMarker`, so a later analysis can tell a validation run from real work.
+ */
+const SEEDS_TEXT = readFileSync(join(REPO, 'spike', 'recall', 'seeds.json'), 'utf8');
+const SEEDS_DOC = JSON.parse(SEEDS_TEXT);
+export const SEEDS_SHA = createHash('sha256').update(SEEDS_TEXT).digest('hex');
+
+function seededApply(cls) {
+  const edits = SEEDS_DOC.seeds.filter((s) => s.class === cls).flatMap((s) => s.edits);
+  return (dir) => {
+    const path = join(dir, SUBJECT);
+    const source = readFileSync(path, 'utf8');
+    if (createHash('sha256').update(source).digest('hex') !== SEEDS_DOC.subjectSha256) {
+      throw new Error('tree subject is not the file the seeds were measured against');
+    }
+    writeFileSync(path, applyEdits(source, edits));
+  };
+}
+
+/**
+ * PREREG section 5, fixed before the runs: classes in this order, and within each A-sonnet,
+ * A-opus, B-sonnet, B-opus, C-sonnet, C-opus. The Sonnet pilot fills the first class's C-sonnet
+ * slot, so it is not run again.
+ */
+export const CLASS_ORDER = ['boundary_conditions', 'error_paths', 'cross_implementation_divergence', 'time_concurrency'];
+export const ORDER = CLASS_ORDER.flatMap((cls, i) =>
+  [
+    ['A', 'claude-sonnet-5'],
+    ['A', 'claude-opus-5-5'],
+    ['B', 'claude-sonnet-5'],
+    ['B', 'claude-opus-5-5'],
+    ['C', 'claude-sonnet-5'],
+    ['C', 'claude-opus-5-5'],
+  ]
+    .filter(([arm, model]) => !(i === 0 && arm === 'C' && model === 'claude-sonnet-5'))
+    .map(([arm, model]) => ({
+      runId: `${arm}-${cls}-${model}`,
+      model,
+      arm,
+      cls: arm === 'C' ? null : cls,
+      slot: cls,
+      runnable: arm !== 'B',
+      apply: arm === 'C' ? () => {} : seededApply(cls),
+      mutationMarker: arm === 'C' ? null : SEEDS_SHA,
+    })),
+);
+
 const isMain = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 if (isMain) {
   const maxUsd = Number(arg('max-usd'));
@@ -242,7 +292,16 @@ if (isMain) {
     });
     const { invocation, ...shown } = run ?? {};
     console.log(JSON.stringify({ ...shown, argv: invocation?.slice(1) }, null, 2).replaceAll(homedir(), '~'));
+  } else if (process.argv.includes('--all')) {
+    for (const cell of ORDER) {
+      const done = loadLedger().runs.some((r) => r.runId === cell.runId && r.completed);
+      if (done) continue;
+      const run = await runOne({ ...cell, maxUsd, perRunUsd, dryRun });
+      if (run === null) continue;
+      console.log(JSON.stringify({ runId: run.runId, spentUsd: run.spentUsd, findings: run.findings, dryRun }));
+    }
+    console.log(JSON.stringify({ totalSpentUsd: spentOf(loadLedger()) }));
   } else {
-    throw new Error('only --pilot is implemented until the seeds exist (Stage 1)');
+    throw new Error('pass --pilot or --all');
   }
 }
