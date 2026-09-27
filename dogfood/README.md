@@ -58,12 +58,19 @@ context; the depth lives in the numbered files.
 | [0015](0015-2026-09-24-prettier-write-counted-as-a-check.md) | `prettier --write` is recorded as a verification run: 44 of the 83 prettier `verification_run` rows came from a `--write` segment | `asc-6ola.15` (P1, fixed) | grouping the runners a new handler emitted (asc-6ola.7) — nobody was looking |
 | [0016](0016-2026-09-24-single-form-window-kind-false-green.md) | a refactor of the window match dropped the kind check, so a `tool.use.start` satisfied a `check.run` window | none filed (fixed in-flight under `asc-6ola.8`) | the acceptance fixture replay of `edit-verified` after refactoring the window match |
 | [0017](0017-2026-09-26-task-notifications-arrive-in-records-the-parser-never-reads.md) | a task notification arrives as a record shape the parser never reads, and the counter that exists measures a disjoint population, so 36 of 80 returns were dropped uncounted | `asc-ggd4` (P1) | a pre-registered count taken before it was measured, then asking the data rather than the handler why it came out short (`asc-6ola.9`) |
+| [0018](0018-2026-09-26-a-report-that-cannot-show-its-own-remainder.md) | a window decided with "no match" incremented nothing, so `asc handlers check` printed `triggers 3358, rows 2815, unclosed 55` on `edit-verified` with 488 of 3,358 triggers (14.5%) accounted for nowhere | `asc-gtnu.6` (P2, fixed in `25d4504`) | writing the honest-accounting rule for a NEW count (`noMatch`, Stage 3 of `asc-gtnu`), which put a number beside the old one that did not fit — nobody was looking for it |
 
-Seventeen findings, each with its own mechanism. The mechanism is the part that repeats even when
+Eighteen findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 > Rows 0016 and 0017 were added 2026-09-26; 0016 had been written but never indexed, and the
 > count here said "Ten" while the table listed fifteen.
+>
+> Row 0018 is the second instance of `dogfood/0016`'s class — a construct that terminates without
+> producing output, and a report that therefore reads the same whether it worked or not. Two
+> instances in two days is what turns a class from a note into something to look for, which is why
+> the record states the cheap detector: for every report, check that the headline count equals the
+> sum of the counts that decompose it.
 
 ## The convention
 
