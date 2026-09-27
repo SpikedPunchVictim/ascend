@@ -1,0 +1,59 @@
+# asc-gtnu.4: one row per review finding, over the replay log.
+#
+# IT REPORTS 0 ROWS TODAY, AND THAT IS THE MEASURED STATE RATHER THAN A BROKEN HANDLER. `ReportFindings`
+# has been called 0 times across 1,236 transcript files and 637,258 records (re-measured 2026-09-26),
+# so there is no finding in any corpus for this handler to match. The path is exercised by fixtures
+# only (packages/adapter-claude-code/test/normalize.test.ts), and a green
+# `asc handlers check handlers/review-finding.yaml` says the handler parses and the log holds nothing,
+# not that a reviewer reported anything. Same lesson as subagent-outcome.yaml's header: state the
+# unobserved branch rather than let a zero imply it fires.
+#
+# NO WINDOW, and the reason is the whole of asc-gtnu Stage 0. The question this handler would want to
+# ask next -- did the implementer touch this file before the finding -- is a BACKWARD, CROSS-STREAM
+# join: the edit precedes the finding, and 483 of 831 measured read pairs (58.1%) are in another
+# stream of the same session. Stage 3 built `scope: session` for the cross-stream half and refused to
+# let `before:` use it, because `seq` numbers count within ONE stream (packages/core/src/event.ts:15-17)
+# and "the event before this trigger" across two streams would be decided by which file the replay read
+# first rather than by which event came first in time. Filed as asc-gtnu.7 with three ways to make it
+# sound. Until then this handler emits the finding and says nothing about what it refers to.
+#
+# THE FIELD IS `category`, NOT `class`. `class` is our name for our closed nine-lens enum; the string a
+# reviewer writes is the harness's and may not be one of the nine at all. That is why the event field
+# is `category` (Stage 2) and why the row keeps that name: naming the emitted value after our
+# constraint would assert a membership the log deliberately cannot guarantee. The mapping from
+# `category` to `class` happens in the deriver (packages/adapter-claude-code/src/derive.ts), the one
+# layer that can also count a value outside the nine.
+#
+# `reviewer_model` IS NOT CARRIED, and the reason is a real asymmetry rather than an omission. The
+# STORE entry has it -- the deriver reads `message.model` off the record that carried the call -- but
+# the `review.finding` EVENT does not (packages/core/src/event.ts:141-151), so no handler can emit
+# what the log never held. Stratifying findings by reviewer model is therefore unavailable on the
+# replay side, which is the side a dry run reads. Filed as its own bead rather than patched here:
+# adding the field means a `EVENT_DERIVE_VERSION` bump, and with 0 calls there is no data to verify
+# the emission against -- including the one branch that would have to be decided blind, whether a
+# `<synthetic>` record can carry a model at all.
+#
+# EVERY REFERENCE RENDERS TO TEXT, so `line` arrives as "42" rather than 42. That is the DSL's rule
+# (packages/core/src/handler.ts:566 renders each reference through `String(raw)`), not a choice made
+# here, and it applies to the shipped handlers too (`subagent-outcome.yaml` carries `tokens` and
+# `duration_ms` the same way). A reader comparing line numbers across rows should know the value is a
+# string; the store keeps the number, because the deriver reads it with `num`.
+#
+# `catchable_by` IS DECLARED AND ALWAYS ABSENT. It is the join's own question -- "was this the kind of
+# defect a check could have caught" -- and it has no value on either side: the harness's findings
+# schema has no such field, and `check.run` carries no `path` at all (read off 1,495 events), so even
+# with the join there is no per-file check signal today. It starts as a `judged` field, the construct
+# asc-6ola.9 shipped: `not_measured` is the store's default state and needs no encoding, so the field
+# is simply absent from `fields` and the declaration is the one thing that says the absence was
+# intended. Filling it is an ordinary later record against the same row, not a new mechanism.
+on: review.finding
+description: One review finding as the harness reported it, with catchable_by left to a reader.
+emit:
+  category: '${category}'
+  file: '${file}'
+  line: '${line}'
+  summary: '${summary}'
+  failure_scenario: '${failure_scenario}'
+  verdict: '${verdict}'
+  level: '${level}'
+judged: [catchable_by]

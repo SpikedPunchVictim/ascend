@@ -357,3 +357,124 @@ describe('asc handlers check: scope: session and before', () => {
     expect(valueOf(run, 'bead-close', 'noMatch')).toBe(0);
   });
 });
+
+/**
+ * `handlers/review-finding.yaml` over a fixture that actually reports findings (asc-gtnu.5).
+ *
+ * No corpus holds a finding -- `ReportFindings` has been called 0 times across 1,236 files -- so
+ * without this the shipped handler is a green over a signal that is empty everywhere, and "parses
+ * and matches nothing" is indistinguishable from "works". The fixture's second finding names a
+ * category outside the nine lens slugs on purpose: the handler must emit it rather than filter it,
+ * and the counter must move, because a category we will not store is a different fact from a
+ * category nobody used.
+ */
+
+const REPORT_FINDINGS = 'ReportFindings';
+
+/** One assistant record carrying a `ReportFindings` call, with no tool result. */
+function reportFindings(id: string, findings: readonly unknown[], minute: number): string[] {
+  const ts = `2026-09-24T10:${String(minute).padStart(2, '0')}:00.000Z`;
+  return [
+    {
+      type: 'assistant',
+      sessionId: 'sess-1',
+      timestamp: ts,
+      message: {
+        id: `msg-${id}`,
+        model: 'claude-sonnet-5',
+        content: [
+          {
+            type: 'tool_use',
+            id,
+            name: REPORT_FINDINGS,
+            input: { level: 'standard', findings },
+          },
+        ],
+      },
+    },
+  ].map((record) => JSON.stringify(record));
+}
+
+describe('asc handlers check: handlers/review-finding.yaml', () => {
+  function reported(): string {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'asc-handlers-rf-')));
+    dirs.push(home);
+    const dir = join(home, '.claude', 'projects', PROJECT_DIR);
+    mkdirSync(dir, { recursive: true });
+    const lines = reportFindings(
+      't1',
+      [
+        {
+          category: 'boundary_conditions',
+          file: 'packages/core/src/handler.ts',
+          line: 42,
+          summary: 'the window admits an event at the boundary',
+          failure_scenario: 'seq equal to the trigger still matches',
+          verdict: 'CONFIRMED',
+        },
+        // Outside the nine, no line, no verdict. Emitted, counted, never filtered.
+        { category: 'not_a_lens', file: 'a.ts', summary: 'something else' },
+      ],
+      1,
+    );
+    writeFileSync(join(dir, 'sess-1.jsonl'), `${lines.join('\n')}\n`);
+    return home;
+  }
+
+  const handler = (): string => join(repo, 'handlers/review-finding.yaml');
+
+  it('emits one row per finding, not one per call', () => {
+    const home = reported();
+    const run = asc([handler(), '--project', PROJECT_DIR, '--json'], home);
+    expect(run.status).toBe(0);
+    expect(valueOf(run, 'review-finding', 'rows')).toBe(2);
+    expect(valueOf(run, 'review-finding', 'triggers')).toBe(2);
+  });
+
+  it('carries the finding under the log’s own name, category, not our enum name', () => {
+    const home = reported();
+    const run = asc([handler(), '--project', PROJECT_DIR, '--samples', '2', '--json'], home);
+    const fields = (index: number): Record<string, unknown> =>
+      (
+        valueOf(run, 'review-finding', `sample[${String(index)}]`) as {
+          fields: Record<string, unknown>;
+        }
+      ).fields;
+    // `line` comes back as TEXT, and that is the DSL's rule rather than this handler's choice:
+    // every reference is rendered through `String(raw)` (packages/core/src/handler.ts:566), so a
+    // numeric event field reaches a row as a string. The store keeps the number -- the deriver
+    // reads it with `num` -- so the log and the entries disagree about the type of the same fact,
+    // which is the same asymmetry `reviewer_model` has, one field over. Asserted as text so the
+    // rule is pinned where a reader will find it.
+    expect(fields(0)).toEqual({
+      category: 'boundary_conditions',
+      file: 'packages/core/src/handler.ts',
+      line: '42',
+      summary: 'the window admits an event at the boundary',
+      failure_scenario: 'seq equal to the trigger still matches',
+      verdict: 'CONFIRMED',
+      level: 'standard',
+    });
+    // Absent, not zero and not empty: a finding is not always line-anchored, and an empty string
+    // is what an omitted reference would look like if the field were defaulted.
+    expect(fields(1)).toEqual({
+      category: 'not_a_lens',
+      file: 'a.ts',
+      summary: 'something else',
+      level: 'standard',
+    });
+  });
+
+  it('declares catchable_by without carrying it, and moves the off-vocabulary counter', () => {
+    const home = reported();
+    const run = asc([handler(), '--project', PROJECT_DIR, '--samples', '2', '--json'], home);
+    expect(valueOf(run, 'review-finding', 'judged[0]')).toBe('catchable_by');
+    const fields = (
+      valueOf(run, 'review-finding', 'sample[0]') as { fields: Record<string, unknown> }
+    ).fields;
+    expect('catchable_by' in fields).toBe(false);
+    // The one finding outside the nine reaches the log AND the counter: the handler emitting it is
+    // not the same fact as the deriver refusing to store it, and both have to be visible.
+    expect(valueOf(run, '(log)', 'normalizer.offVocabularyFindings')).toBe(1);
+  });
+});
