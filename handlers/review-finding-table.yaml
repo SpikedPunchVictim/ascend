@@ -1,0 +1,107 @@
+# asc-tuur.3: review findings read out of the findings table a reviewer already writes.
+#
+# THE POINT IS THAT NOTHING ABOUT THE REVIEWER CHANGES. The user-level bug-hunt skill writes its report
+# to a markdown file with an "Issue Rating Table" (`# | Finding | Lens | Confidence | ...`), and never
+# calls `ReportFindings`. Rather than asking the workflow to report differently, this handler reads the
+# report it already writes. An anecdote, under MIN_N (20): 4 sessions.
+#
+# MEASURED 2026-09-27, `asc ingest claude-code` over ~/.claude/projects into a scratch store:
+#
+#   entry    review_finding        47 new, 29 rejected
+#   handler  review-finding-table  76 row(s) as review_finding
+#
+# 76 rows from 5 report Writes in 4 sessions -- every one a bug-hunt report, reconciled per Write
+# against an independent header count (12+5, 17, 11, 31). 28 of the 29 refusals are rows whose Finding
+# cell names no file: two reports keep each finding's `file:line` in a per-finding section keyed by the
+# row's `#`, not in the table. One row's lens cell maps to nothing. Filed as a follow-up rather than
+# guessed at here.
+#
+# `type: review_finding` makes this a TYPED handler: `asc ingest claude-code` writes each row as a
+# `review_finding` entry with `captured_by: parsed`, keyed on the Write's tool_use id and the row's
+# position, and validated against the type like any derived entry. A row the type refuses -- no `class`
+# because the lens did not map, no `file` because the Finding cell names none -- is counted and not
+# written. `asc handlers check` replays it the same way and writes nothing.
+#
+# KEYED ON THE HEADER, NOT ON THE PATH. Any Write holding a table whose header has Finding and Lens
+# columns qualifies, so a user's own report template does too. Cells are read by header name, which is
+# what copes with the column order drifting between reports (it does, in the measured five). Writes
+# only: an Edit's `after` is a fragment, and re-reading a table row by row as it is edited would count
+# one finding once per edit.
+#
+# THE LENS MAP. Reports name a lens by heading ("Boundary", "Write/Read"), by number (bug-hunt's Lens 1-9),
+# or several at once ("Error Paths, Cross-Impl", "9/5"). `map.lens` takes the whole cell, then its first
+# `,` piece, then that piece's first `/` piece, and the first entry it finds wins (the class the finding
+# was found by first). A cell nothing maps leaves `class` absent, and the type then refuses the row --
+# an unmapped lens is never written under its own spelling. The numbers follow the `### Lens N` headings
+# in ~/.claude/skills/bug-hunt/SKILL.md, the same provenance as FINDING_LENSES.
+type: review_finding
+on: file.changed
+description: One finding per row of a findings table in a report the reviewer wrote.
+where:
+  tool: Write
+each:
+  table: after
+  header: [finding, lens]
+  as: row
+capture:
+  file:
+    field: row.finding
+    regex: '^[`*]*([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)'
+  line:
+    field: row.finding
+    regex: '^[`*]*[A-Za-z0-9_./-]+\.[A-Za-z0-9]+:(\d+)'
+before:
+  on: model.context
+maps:
+  lens:
+    '1': assumption_audit
+    '2': state_machine
+    '3': boundary_conditions
+    '4': data_lifecycle
+    '5': error_paths
+    '6': time_concurrency
+    '7': environment_divergence
+    '8': cross_implementation_divergence
+    '9': write_read_asymmetry
+    assumption_audit: assumption_audit
+    assumption audit: assumption_audit
+    assumptions: assumption_audit
+    assumption: assumption_audit
+    state_machine: state_machine
+    state machine: state_machine
+    state machine analysis: state_machine
+    boundary_conditions: boundary_conditions
+    boundary conditions: boundary_conditions
+    boundary: boundary_conditions
+    boundaries: boundary_conditions
+    data_lifecycle: data_lifecycle
+    data lifecycle: data_lifecycle
+    data lifecycle tracing: data_lifecycle
+    error_paths: error_paths
+    error paths: error_paths
+    error path: error_paths
+    error path exerciser: error_paths
+    time_concurrency: time_concurrency
+    time & concurrency: time_concurrency
+    time and concurrency: time_concurrency
+    concurrency: time_concurrency
+    environment_divergence: environment_divergence
+    environment divergence: environment_divergence
+    environment: environment_divergence
+    cross_implementation_divergence: cross_implementation_divergence
+    cross-implementation divergence: cross_implementation_divergence
+    cross-implementation: cross_implementation_divergence
+    cross-impl: cross_implementation_divergence
+    write_read_asymmetry: write_read_asymmetry
+    write/read path asymmetry: write_read_asymmetry
+    write/read asymmetry: write_read_asymmetry
+    write/read: write_read_asymmetry
+emit:
+  class: '${row.lens|map.lens}'
+  file: '${file}'
+  line: '${line}'
+  summary: '${row.finding}'
+  verdict: '${row.confidence}'
+  reviewer_model: '${before.model}'
+  tool_use_id: '${id}'
+  captured_by: parsed

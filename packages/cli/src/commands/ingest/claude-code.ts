@@ -105,11 +105,14 @@ import {
   type FileStat,
   type SkippedEntry,
 } from '@ascend/adapter-claude-code';
-import { canonicalJson, validateEntry } from '@ascend/core';
+import { canonicalJson, validateEntry, type TypeSpec } from '@ascend/core';
 import {
   DuplicateEntryError,
+  appliedHandlerHashes,
   findEntry,
+  findType,
   ingestCursorRows,
+  recordAppliedHandlers,
   recordEntry,
   recordIngestCursor,
   withRollback,
@@ -121,6 +124,12 @@ import { BaseCommand } from '../../base.js';
 import { refusal } from '../../errors.js';
 import { registerDocument } from '../../register-document.js';
 import { identityVocabularyOf, type Disclosing } from '../../redact.js';
+import {
+  createHandlerProducer,
+  loadTypedHandlers,
+  type TypedHandler,
+  type TypedHandlerOutcome,
+} from '../../typed-handlers.js';
 
 const ACTION = 'action';
 const TARGET = 'target';
@@ -224,6 +233,8 @@ interface Sweep {
   readonly counters: DeriveCounters;
   /** Every file this sweep actually streamed to completion -- the cursor rows to persist. */
   readonly readFiles: readonly CursorUpdate[];
+  /** One per typed handler (asc-tuur.3), in load order. */
+  readonly handlers: readonly TypedHandlerOutcome[];
 }
 
 /** The writes, or what they would have been. */
@@ -367,24 +378,57 @@ export default class IngestClaudeCode extends BaseCommand {
       // `--full` (asc-4dm.4) ignores the cursor outright, by never building the map `streamCorpus`
       // would otherwise consult -- the same "absence costs time, never correctness" contract as a
       // store that predates migration 4, or one whose cursor rows were deleted by hand.
-      const knownFiles = full
-        ? undefined
-        : new Map(
-            ingestCursorRows(project.store.db).map((row): [string, FileStat] => [
-              row.path,
-              { mtimeMs: row.mtimeMs, size: row.size },
-            ]),
-          );
+      // Typed handlers (asc-tuur.3), read from this project's `handlers/`. A handler the cursor's
+      // files were never read through -- new, or changed, so its hash is new -- forces a full read
+      // on its first run: the cursor would otherwise withhold every transcript it already knows
+      // from the one reader that has never seen them, and a new handler would fill forward only.
+      const loaded = loadTypedHandlers(project.root);
+      for (const failure of loaded.failures) {
+        this.warn(`handler ${failure.path} was not run: ${failure.message}`);
+      }
+      const applied = appliedHandlerHashes(project.store.db);
+      const unapplied = loaded.typed.filter(({ handler }) => !applied.has(handler.hash));
+      if (!full && unapplied.length > 0) {
+        this.logToStderr(
+          `reading every transcript: ${unapplied.map(({ name }) => name).join(', ')} ` +
+            `has not been run over the files already ingested`,
+        );
+      }
+      const specFor = (type: string): TypeSpec | undefined =>
+        derivedType(type) ?? findType(project.store.db, type)?.spec;
 
-      const sweep = await this.sweep(root, includeEphemeral, knownFiles);
-      const writes = this.write(project.store, sweep.entries, dryRun, sweep.readFiles);
+      const knownFiles =
+        full || unapplied.length > 0
+          ? undefined
+          : new Map(
+              ingestCursorRows(project.store.db).map((row): [string, FileStat] => [
+                row.path,
+                { mtimeMs: row.mtimeMs, size: row.size },
+              ]),
+            );
 
-      for (const spec of DERIVED_TYPES) {
+      const sweep = await this.sweep(root, includeEphemeral, knownFiles, loaded.typed, specFor);
+      const writes = this.write(project.store, sweep.entries, dryRun, sweep.readFiles, {
+        specFor,
+        // The union, not the current set: a handler removed from `handlers/` and later restored
+        // was still run over these files, and its entries are still in the store.
+        applied: [...applied, ...loaded.typed.map(({ handler }) => handler.hash)],
+        types: new Set(loaded.typed.map(({ handler }) => handler.type)),
+      });
+
+      const derivedNames = new Set(DERIVED_TYPES.map((spec) => spec.name));
+      const handlerTypes = [...new Set(loaded.typed.map(({ handler }) => handler.type))].filter(
+        (type) => !derivedNames.has(type),
+      );
+      for (const type of [...derivedNames, ...handlerTypes]) {
         rows.push({
           [ACTION]: 'entry',
-          [TARGET]: spec.name,
-          [OUTCOME]: describe(writes.counts.get(spec.name) ?? ZERO_OUTCOME),
+          [TARGET]: type,
+          [OUTCOME]: describe(writes.counts.get(type) ?? ZERO_OUTCOME),
         });
+      }
+      for (const one of sweep.handlers) {
+        rows.push({ [ACTION]: 'handler', [TARGET]: one.name, [OUTCOME]: handlerOutcome(one) });
       }
 
       this.emit(format, { columns: [ACTION, TARGET, OUTCOME], rows });
@@ -408,14 +452,20 @@ export default class IngestClaudeCode extends BaseCommand {
     root: string,
     includeEphemeral: boolean,
     knownFiles: ReadonlyMap<string, FileStat> | undefined,
+    handlers: readonly TypedHandler[],
+    specFor: (type: string) => TypeSpec | undefined,
   ): Promise<Sweep> {
     const deriver = createDeriver();
     const entries: DerivedEntry[] = [];
     const readFiles: CursorUpdate[] = [];
+    // No normalizer at all when there is no typed handler, so a project without one reads the
+    // corpus exactly as it did before typed handlers existed.
+    const producer = handlers.length === 0 ? undefined : createHandlerProducer(handlers, specFor);
 
     const totals = await streamCorpus(
       (record, file) => {
         for (const entry of deriver.accept(record, file)) entries.push(entry);
+        producer?.accept(record, file);
       },
       {
         root,
@@ -430,6 +480,19 @@ export default class IngestClaudeCode extends BaseCommand {
     // Flushed after the walk, never during: the deriver holds one run open until a different
     // skill or session appears, so draining early would drop the last event of every file.
     for (const entry of deriver.drain()) entries.push(entry);
+
+    // After the deriver has drained, because which sessions the reported route already covered is
+    // only known once every derived entry exists.
+    const reported = new Map<string, Set<string>>();
+    for (const entry of entries) {
+      const session = entry.properties['session_id'];
+      if (typeof session !== 'string') continue;
+      const sessions = reported.get(entry.type) ?? new Set<string>();
+      sessions.add(session);
+      reported.set(entry.type, sessions);
+    }
+    const produced = producer?.finish(reported);
+    if (produced !== undefined) entries.push(...produced.entries);
 
     if (totals.files === 0) {
       const ephemeral = ephemeralSkips(totals.skipped);
@@ -455,7 +518,13 @@ export default class IngestClaudeCode extends BaseCommand {
       );
     }
 
-    return { entries, totals, counters: deriver.counters, readFiles };
+    return {
+      entries,
+      totals,
+      counters: deriver.counters,
+      readFiles,
+      handlers: produced?.outcomes ?? [],
+    };
   }
 
   /**
@@ -479,6 +548,12 @@ export default class IngestClaudeCode extends BaseCommand {
     entries: readonly DerivedEntry[],
     dryRun: boolean,
     readFiles: readonly CursorUpdate[],
+    handlers: {
+      readonly specFor: (type: string) => TypeSpec | undefined;
+      readonly applied: readonly string[];
+      /** The types the typed handlers write, to name the handler in a refusal. */
+      readonly types: ReadonlySet<string>;
+    },
   ): Writes {
     const counts = new Map<string, TypeOutcome>();
     const warnings: string[] = [];
@@ -522,14 +597,19 @@ export default class IngestClaudeCode extends BaseCommand {
     const collisions: string[] = [];
     const valid: DerivedEntry[] = [];
     for (const entry of entries) {
-      const spec = derivedType(entry.type);
+      const spec = handlers.specFor(entry.type);
       if (spec === undefined) {
-        // Not a transcript problem: every `entry.type` the deriver emits names one of the five
-        // types declared in `derived-types.ts`, so this would mean the two had drifted apart.
+        // Not a transcript problem. From the deriver it would mean `derived-types.ts` and
+        // `derive.ts` had drifted apart; from a typed handler (asc-tuur.3), that the handler names
+        // a type this project never defined -- the two are told apart by who wrote the entry.
         tally(entry.type, 'rejected');
         rejections.push(
-          `${entry.type} ${idFor(entry)}: type: no definition named '${entry.type}' is ` +
-            `registered by this adapter -- this is an adapter bug, not a transcript problem.`,
+          handlers.types.has(entry.type)
+            ? `${entry.type} ${idFor(entry)}: type: a handler in handlers/ writes '${entry.type}', ` +
+                `which this project has not defined. Define it with asc types define, or fix ` +
+                `the handler's type:.`
+            : `${entry.type} ${idFor(entry)}: type: no definition named '${entry.type}' is ` +
+                `registered by this adapter -- this is an adapter bug, not a transcript problem.`,
         );
         continue;
       }
@@ -562,6 +642,8 @@ export default class IngestClaudeCode extends BaseCommand {
       for (const file of readFiles) {
         recordIngestCursor(store.db, file.path, file.mtimeMs, file.size, recordedAt);
       }
+      // Beside the cursor rows it vouches for, so a dry run's rollback discards both.
+      recordAppliedHandlers(store.db, handlers.applied);
 
       if (dryRun) {
         for (const entry of valid) {
@@ -906,6 +988,16 @@ export default class IngestClaudeCode extends BaseCommand {
  * than folded into one of them, because neither is written AND neither is ordinary idempotency --
  * each is a real event the store refused, for a different reason.
  */
+/** A typed handler's own line: what it read, beyond what its entries' outcome already says. */
+function handlerOutcome(one: TypedHandlerOutcome): string {
+  const parts = [`${String(one.rows)} row(s) as ${one.type}`];
+  if (one.malformedItems > 0) parts.push(`${String(one.malformedItems)} malformed table row(s)`);
+  if (one.superseded > 0) {
+    parts.push(`${String(one.superseded)} left to the reported route in the same session`);
+  }
+  return parts.join(', ');
+}
+
 function describe(counts: TypeOutcome): string {
   const parts: string[] = [];
   if (counts.written > 0) parts.push(`${String(counts.written)} new`);

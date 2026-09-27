@@ -133,6 +133,9 @@ export default class HandlersCheck extends BaseCommand {
         rows.push({ [HANDLER]: name, [FIELD]: field, [VALUE]: value });
       };
       add('hash', handler.hash);
+      // A typed handler's rows become entries of this type at ingest (asc-tuur.3), so the check
+      // names it: the count below is then a count of entries, not only of rows.
+      if (handler.type !== undefined) add('type', handler.type);
       add('on', handler.on);
       // Always, including the default. A count is only meaningful over a named partition, and
       // `scope` is the whole difference between "this stream" and "this session" (asc-gtnu.4), so
@@ -149,6 +152,9 @@ export default class HandlersCheck extends BaseCommand {
       // trigger fired and no row came out" -- and before this line existed, only one of them was
       // printed, so a decided-no-match window was indistinguishable from one that never opened.
       add('noMatch', replay.noMatch);
+      // Beside `rows` for the same reason as `noMatch`: a table row that could not be read is a
+      // finding the report holds and the handler did not emit.
+      if (handler.each?.mode === 'table') add('malformedItems', replay.malformedItems);
       if (handler.before !== undefined) {
         add('before', handler.before.on);
         add('unsatisfiedBefore', replay.unsatisfiedBefore);

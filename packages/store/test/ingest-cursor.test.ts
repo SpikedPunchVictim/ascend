@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ingestCursorRows, openStore, recordIngestCursor } from '../src/index.js';
+import {
+  appliedHandlerHashes,
+  ingestCursorRows,
+  openStore,
+  recordAppliedHandlers,
+  recordIngestCursor,
+} from '../src/index.js';
 
 /**
  * `ingest_cursor` (schema.ts migration 4, asc-4dm.4), tested against a real file-backed store --
@@ -120,6 +126,40 @@ describe('ingest_cursor: schema constraints (no empty-string sentinels)', () => 
       expect(() => {
         recordIngestCursor(store.db, '/a/b.jsonl', 1, -1, '2026-09-22T00:00:00.000Z');
       }).toThrow(/CHECK constraint failed/);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('the typed handlers the cursor has been read through (asc-tuur.3)', () => {
+  it('is empty on a store that never recorded any, which means read every file', () => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      expect([...appliedHandlerHashes(store.db)]).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('round-trips the set, replacing rather than appending, deduplicated and sorted', () => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      recordAppliedHandlers(store.db, ['b', 'a']);
+      recordAppliedHandlers(store.db, ['c', 'a', 'c']);
+      expect([...appliedHandlerHashes(store.db)]).toEqual(['a', 'c']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('refuses a value that is not a list of hashes, rather than reading it as empty', () => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      store.db
+        .prepare('INSERT INTO meta (key, value) VALUES (?, ?)')
+        .run('ingest.applied_handlers', '{"a":1}');
+      expect(() => appliedHandlerHashes(store.db)).toThrow(/not a list of handler hashes/);
     } finally {
       store.close();
     }

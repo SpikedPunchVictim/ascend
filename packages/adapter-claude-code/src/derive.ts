@@ -1214,6 +1214,7 @@ export function createDeriver(): Deriver {
             file: filePath,
             summary,
             tool_use_id: reportId,
+            captured_by: 'reported',
             // ABSENT, never 0: a finding is not always line-anchored, and `0` is a line number
             // a reader would believe.
             ...(line === undefined ? {} : { line }),

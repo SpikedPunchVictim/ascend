@@ -52,6 +52,8 @@ export interface HandlerReplay {
   readonly noMatch: number;
   /** Triggers whose `before:` reference had no match, so its `${before.…}` fields are absent. */
   readonly unsatisfiedBefore: number;
+  /** Table rows skipped because their cells did not match their header (asc-tuur.3). */
+  readonly malformedItems: number;
 }
 
 export interface LogHorizon {
@@ -130,6 +132,7 @@ export async function replayHandlers(
       unclosed: run.unclosed,
       noMatch: run.noMatch,
       unsatisfiedBefore: run.unsatisfiedBefore,
+      malformedItems: run.malformedItems,
     })),
     horizon: {
       files: totals.files,

@@ -75,3 +75,40 @@ export function recordIngestCursor(
          ingested_at = excluded.ingested_at`,
   ).run(path, mtimeMs, size, ingestedAt);
 }
+
+/** The `meta` key holding the typed handlers every cursor row has already been read through. */
+const APPLIED_HANDLERS = 'ingest.applied_handlers';
+
+/**
+ * The hashes of the typed handlers (asc-tuur.3) the cursor's files have been read through.
+ *
+ * The cursor says a file was READ, and a file read before a handler existed was never offered to
+ * it -- so a skip that is correct for the deriver would silently withhold every old transcript
+ * from a new handler. The caller compares its handlers' hashes against this set and reads every
+ * file when one is new, which is the same "absence costs time, never correctness" contract the
+ * cursor already keeps: an empty set means a full read, never a missed one.
+ */
+export function appliedHandlerHashes(db: DatabaseSync): ReadonlySet<string> {
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(APPLIED_HANDLERS) as
+    { value: string } | undefined;
+  if (row === undefined) return new Set();
+  const parsed: unknown = JSON.parse(row.value);
+  if (!Array.isArray(parsed) || !parsed.every((one) => typeof one === 'string')) {
+    throw new Error(
+      `meta ${APPLIED_HANDLERS} is ${row.value}, not a list of handler hashes -- the store was ` +
+        'edited by something other than asc ingest claude-code.',
+    );
+  }
+  return new Set(parsed);
+}
+
+/**
+ * Replace the applied set. Call it inside the same transaction as the cursor rows it vouches
+ * for, so a dry run's rollback discards both together.
+ */
+export function recordAppliedHandlers(db: DatabaseSync, hashes: Iterable<string>): void {
+  db.prepare(
+    `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+  ).run(APPLIED_HANDLERS, JSON.stringify([...new Set(hashes)].sort()));
+}

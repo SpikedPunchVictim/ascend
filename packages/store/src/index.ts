@@ -73,7 +73,13 @@ export {
 
 export { indexName, refreshTypeViews, viewName, type RefreshReport } from './views.js';
 
-export { ingestCursorRows, recordIngestCursor, type IngestCursorRow } from './ingest-cursor.js';
+export {
+  appliedHandlerHashes,
+  ingestCursorRows,
+  recordAppliedHandlers,
+  recordIngestCursor,
+  type IngestCursorRow,
+} from './ingest-cursor.js';
 
 export {
   DuplicateEntryError,

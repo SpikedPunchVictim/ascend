@@ -18,6 +18,13 @@
  * each completes. A replay is the same calls in a loop, so a dry-run count is the count the live
  * path would have produced over the same events.
  *
+ * TYPED HANDLERS (asc-tuur.3). A handler that declares `type:` names the entry type its rows
+ * become, and each row then carries the trigger's `event_id` to key the entry on. Writing them is
+ * the caller's job: this module still writes nothing, and a typed handler replays exactly like an
+ * untyped one. `each: {table: <field>}` fans out over the rows of the markdown tables in a string
+ * field, and `maps:` normalises a cell onto a closed vocabulary -- together, what it takes to read
+ * a report a workflow already writes instead of asking the workflow to change.
+ *
  * IDENTITY is the sha256 of the canonical parsed form: comments and formatting do not change it,
  * and any change of meaning does.
  */
@@ -58,6 +65,8 @@ const TOP_KEYS = new Set([
   'window',
   'emit',
   'judged',
+  'type',
+  'maps',
 ]);
 const WINDOW_KEYS = new Set(['calls', 'until', 'first', 'count', 'absent', 'at_least', 'any']);
 const WATCHER_KEYS = new Set(['on', 'where']);
@@ -106,6 +115,78 @@ const FILTERS: Readonly<Record<string, (value: string) => string>> = {
   snake: (value) => value.toLowerCase().replace(/\s+/g, '_'),
 };
 
+/** A handler-level name: lowercase letters, digits and `_`, starting with a letter or `_`. */
+const NAME = /^[a-z_][a-z0-9_]*$/;
+
+/** A table header cell as a name: `Risk: Fix` is `risk_fix`, `#` is `''` and not addressable. */
+const columnName = (cell: string): string =>
+  cell
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+/** A markdown table: its header as column names, and each body row's cells. */
+interface MarkdownTable {
+  readonly header: readonly string[];
+  readonly rows: readonly (readonly string[])[];
+}
+
+const SEPARATOR = /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/;
+
+/** A table line's cells: outer pipes dropped, split on unescaped `|`, `\|` kept as `|`. */
+const cells = (line: string): string[] =>
+  line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/(?<!\\)\|$/, '')
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim().replace(/\\\|/g, '|'));
+
+/**
+ * Every markdown table in `text`, in order: a `|` line, a separator line, then `|` lines.
+ *
+ * Deliberately the plain GitHub shape and nothing cleverer. A table this does not recognise
+ * yields no rows, and a typed handler reports its triggers next to its rows, so a report written
+ * in some other shape reads as "triggered, emitted nothing" rather than as a parse guessed at.
+ */
+function markdownTables(text: string): MarkdownTable[] {
+  const lines = text.slice(0, MAX_SUBJECT_LENGTH).split('\n');
+  const tables: MarkdownTable[] = [];
+  for (let at = 0; at + 1 < lines.length; at += 1) {
+    const head = (lines[at] ?? '').trim();
+    if (!head.startsWith('|') || !SEPARATOR.test((lines[at + 1] ?? '').trim())) continue;
+    const rows: string[][] = [];
+    let next = at + 2;
+    for (; next < lines.length && (lines[next] ?? '').trim().startsWith('|'); next += 1) {
+      rows.push(cells(lines[next] ?? ''));
+    }
+    tables.push({ header: cells(head).map(columnName), rows });
+    at = next - 1;
+  }
+  return tables;
+}
+
+/**
+ * Look a cell up in a `maps:` vocabulary: the whole value, then its first `,` piece, then that
+ * piece's first `/` piece -- the first that the map knows.
+ *
+ * The order is what lets one rule cover the shapes a report actually uses: `Write/Read` is a
+ * whole name holding a slash, `Error Paths, Cross-Impl` names two lenses, and `9/5` names two by
+ * number. The FIRST lens is taken because an entry has one class, and a cell listing several
+ * lists the one it was found by first. A value none of the three finds is ABSENT, never the raw
+ * cell, so an unmapped value cannot enter a closed vocabulary under its own spelling.
+ */
+function lookup(map: ReadonlyMap<string, string>, value: string): string | undefined {
+  const whole = value.trim().toLowerCase();
+  const first = (whole.split(',')[0] ?? '').trim();
+  const firstOfFirst = (first.split('/')[0] ?? '').trim();
+  for (const candidate of [whole, first, firstOfFirst]) {
+    const found = map.get(candidate);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 /** Why a window closed: its first match, its call limit, its `until` kind, or the stream's end. */
 export type ClosedBy = 'match' | 'calls' | 'until' | 'session.end';
 
@@ -118,6 +199,13 @@ export interface HandlerRow {
   readonly ts?: string;
   /** Present when the handler has a window. */
   readonly closed_by?: ClosedBy;
+  /**
+   * The trigger event's own `id`, present ONLY on a handler that declares `type:` (asc-tuur.3).
+   * An entry made from this row is keyed on it, so it must name the event, not a position.
+   */
+  readonly event_id?: string;
+  /** The body row's position among the matching tables, present ONLY on an `each: table` row. */
+  readonly item?: number;
   readonly fields: Readonly<Record<string, string>>;
   /**
    * Fields this handler reports as a judgment rather than a measurement -- names only, no values.
@@ -146,12 +234,26 @@ interface Capture {
   readonly group: number;
 }
 
-interface Each {
+interface ArrayEach {
+  readonly mode: 'array';
   readonly field: string;
   readonly from: number;
   readonly regex: RegExp | undefined;
   readonly as: string;
 }
+
+/**
+ * One iteration per body row of every markdown table in a string field whose header holds all of
+ * `header` (asc-tuur.3). `${as.<column>}` reads a cell by its snake-cased header name.
+ */
+interface TableEach {
+  readonly mode: 'table';
+  readonly field: string;
+  readonly header: readonly string[];
+  readonly as: string;
+}
+
+type Each = ArrayEach | TableEach;
 
 type WindowMode = 'first' | 'count' | 'absent';
 
@@ -205,11 +307,18 @@ interface Before {
 export interface CompiledHandler {
   readonly spec: Json;
   readonly hash: string;
+  /**
+   * The entry type this handler's rows become, or `undefined` for a handler that only reports.
+   * Core does not know the registry: the caller that writes the entries checks it names one.
+   */
+  readonly type: string | undefined;
   readonly on: string;
   readonly description: string | undefined;
   /** The partition this handler's windows and its `before` reference live in. */
   readonly scope: HandlerScope;
   readonly captures: readonly Capture[];
+  /** Captures read off a table row's cells, evaluated per row after the fan-out. */
+  readonly itemCaptures: readonly Capture[];
   readonly where: Test;
   readonly before: Before | undefined;
   readonly each: Each | undefined;
@@ -499,14 +608,30 @@ function compileWhere(spec: unknown, kind: string, context: RefContext, where: s
 interface TemplateNames {
   readonly triggerKind: string;
   readonly captures: ReadonlySet<string>;
-  readonly each: string | undefined;
+  readonly each: Each | undefined;
+  readonly maps: ReadonlyMap<string, ReadonlyMap<string, string>>;
   readonly window: Window | undefined;
   /** The kind a `before:` reference reads, or `undefined` when the handler declares none. */
   readonly before: string | undefined;
 }
 
 function checkTemplateName(name: string, names: TemplateNames, where: string): void {
-  if (names.captures.has(name) || name === names.each) return;
+  if (names.captures.has(name)) return;
+  const each = names.each;
+  if (each?.mode === 'array' && name === each.as) return;
+  if (each?.mode === 'table') {
+    if (name === each.as) {
+      return refuse(
+        `${where}: \${${name}} is a whole table row -- name a column, \${${name}.<column>}`,
+      );
+    }
+    if (name.startsWith(`${each.as}.`)) {
+      if (!NAME.test(name.slice(each.as.length + 1))) {
+        return refuse(`${where}: \${${name}} -- a column is its snake-cased header name`);
+      }
+      return;
+    }
+  }
   if (name.startsWith('before.')) {
     const kind = names.before;
     if (kind === undefined) {
@@ -542,13 +667,17 @@ function compileTemplate(value: unknown, names: TemplateNames, where: string): T
     return refuse(`${where}: an emitted value is a string template, got ${JSON.stringify(value)}`);
   }
   const parts: (string | { name: string; filter: string | undefined })[] = [];
-  const reference = /\$\{([^}|]+)(?:\|([a-z_]+))?\}/g;
+  const reference = /\$\{([^}|]+)(?:\|([a-z_]+(?:\.[a-z0-9_]+)?))?\}/g;
   let last = 0;
   for (let found = reference.exec(value); found !== null; found = reference.exec(value)) {
     if (found.index > last) parts.push(value.slice(last, found.index));
     const name = (found[1] ?? '').trim();
     const filter = found[2];
-    if (filter !== undefined && !Object.hasOwn(FILTERS, filter)) {
+    if (filter?.startsWith('map.') === true) {
+      if (!names.maps.has(filter.slice('map.'.length))) {
+        return refuse(`${where}: ${filter} names no map this handler declares under maps:`);
+      }
+    } else if (filter !== undefined && !Object.hasOwn(FILTERS, filter)) {
       return refuse(`${where}: unknown filter ${filter}`);
     }
     checkTemplateName(name, names, where);
@@ -564,6 +693,10 @@ function compileTemplate(value: unknown, names: TemplateNames, where: string): T
     const raw = scope(part.name);
     if (absent(raw)) return undefined;
     const text = Array.isArray(raw) ? (raw as readonly unknown[]).join(' ') : String(raw);
+    if (part.filter?.startsWith('map.') === true) {
+      const map = names.maps.get(part.filter.slice('map.'.length));
+      return map === undefined ? undefined : lookup(map, text);
+    }
     const filter = part.filter === undefined ? undefined : FILTERS[part.filter];
     return filter === undefined ? text : filter(text);
   };
@@ -803,12 +936,22 @@ export function compileHandler(parsed: unknown): CompiledHandler {
   }
   const scope: HandlerScope = scopeSpec === 'session' ? 'session' : 'stream';
 
+  const type = compileType(parsed['type'], on);
+  const maps = compileMaps(parsed['maps']);
+
+  // Read ahead for a table's row name: a capture whose field is `<row>.<column>` is evaluated per
+  // row, and which captures those are has to be known before any capture is compiled.
+  const eachSpec = parsed['each'];
+  const tableAs =
+    isMap(eachSpec) && eachSpec['table'] !== undefined && typeof eachSpec['as'] === 'string'
+      ? eachSpec['as']
+      : undefined;
+
   const captureSpec = parsed['capture'] ?? {};
   if (!isMap(captureSpec)) return refuse('capture: must be a map');
-  const captures = Object.entries(captureSpec).map(([name, spec]): Capture => {
+  const allCaptures = Object.entries(captureSpec).map(([name, spec]): [Capture, boolean] => {
     const at = `capture.${name}`;
-    if (!/^[a-z_][a-z0-9_]*$/.test(name))
-      refuse(`${at}: a capture name is lowercase letters, digits and _`);
+    if (!NAME.test(name)) refuse(`${at}: a capture name is lowercase letters, digits and _`);
     if (eventFieldType(on, name) !== undefined)
       refuse(`${at}: shadows the trigger's own field ${name}`);
     if (!isMap(spec)) return refuse(`${at}: must be a map`);
@@ -816,21 +959,34 @@ export function compileHandler(parsed: unknown): CompiledHandler {
       if (!['field', 'regex', 'group', 'flags'].includes(key)) refuse(`${at}: unknown key ${key}`);
     }
     const field = spec['field'];
-    if (typeof field !== 'string' || pathType(on, field, at) !== 'string') {
+    const perRow =
+      tableAs !== undefined && typeof field === 'string' && field.startsWith(`${tableAs}.`);
+    if (perRow) {
+      if (!NAME.test(field.slice(tableAs.length + 1))) {
+        refuse(`${at}.field: ${field} -- a column is its snake-cased header name`);
+      }
+    } else if (typeof field !== 'string' || pathType(on, field, at) !== 'string') {
       refuse(`${at}.field: must name a string field of ${on}`);
     }
     const group = spec['group'] ?? 1;
     if (typeof group !== 'number' || !Number.isInteger(group) || group < 0) {
       refuse(`${at}.group: must be a whole number`);
     }
-    return {
-      name,
-      field: field as string,
-      regex: regex(spec['regex'], spec['flags'], at),
-      group: group as number,
-    };
+    return [
+      {
+        name,
+        field: field as string,
+        regex: regex(spec['regex'], spec['flags'], at),
+        group: group as number,
+      },
+      perRow,
+    ];
   });
+  const captures = allCaptures.filter(([, perRow]) => !perRow).map(([one]) => one);
+  const itemCaptures = allCaptures.filter(([, perRow]) => perRow).map(([one]) => one);
   const captureNames = new Set(captures.map((one) => one.name));
+  // Per-row captures are NOT in the `where` context: `where` decides the trigger, before any row
+  // exists, so a condition on one would be silently never true.
   const context: RefContext = { triggerKind: on, captures: captureNames };
 
   const where = compileWhere(parsed['where'], on, context, 'where');
@@ -839,8 +995,9 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     parsed['before'] === undefined ? undefined : compileBefore(parsed['before'], scope);
 
   let each: Each | undefined;
-  const eachSpec = parsed['each'];
-  if (eachSpec !== undefined) {
+  if (eachSpec !== undefined && isMap(eachSpec) && eachSpec['table'] !== undefined) {
+    each = compileTableEach(eachSpec, on, captureNames, itemCaptures);
+  } else if (eachSpec !== undefined) {
     if (!isMap(eachSpec)) return refuse('each: must be a map');
     for (const key of Object.keys(eachSpec)) {
       if (!['field', 'from', 'matches', 'as'].includes(key)) refuse(`each: unknown key ${key}`);
@@ -858,6 +1015,7 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     if (typeof from !== 'number' || !Number.isInteger(from) || from < 0)
       refuse('each.from: must be a whole number');
     each = {
+      mode: 'array',
       field: field as string,
       from: from as number,
       regex:
@@ -876,8 +1034,9 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     return refuse('emit: is required, a non-empty map');
   const names: TemplateNames = {
     triggerKind: on,
-    captures: captureNames,
-    each: each?.as,
+    captures: new Set([...captureNames, ...itemCaptures.map((one) => one.name)]),
+    each,
+    maps,
     window,
     before: before?.on,
   };
@@ -892,10 +1051,12 @@ export function compileHandler(parsed: unknown): CompiledHandler {
   return {
     spec: parsed as Json,
     hash: sha256Hex(canonicalJson(parsed)),
+    type,
     on,
     description: description as string | undefined,
     scope,
     captures,
+    itemCaptures,
     where,
     before,
     each,
@@ -903,6 +1064,86 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     emit,
     judged,
   };
+}
+
+/**
+ * The `type:` key: the entry type this handler's rows become (asc-tuur.3).
+ *
+ * Refused on a trigger kind with no `id`, because an entry's identity is the event it came from
+ * and a re-ingest must propose the same id again. A kind that carries none (a prompt, a stream's
+ * end) could only be keyed by position, and a position moves when the normalizer does.
+ */
+function compileType(spec: unknown, on: string): string | undefined {
+  if (spec === undefined) return undefined;
+  if (typeof spec !== 'string' || !NAME.test(spec)) {
+    return refuse(`type: ${JSON.stringify(spec)} is not a type name`);
+  }
+  if (eventFieldType(on, 'id') !== 'string') {
+    return refuse(`type: ${on} carries no id, so an entry made from it could not be keyed`);
+  }
+  return spec;
+}
+
+/**
+ * The `maps:` key: named vocabularies a `${value|map.<name>}` filter looks a value up in.
+ * Keys are matched case-insensitively, so they are lowercased here, once.
+ */
+function compileMaps(spec: unknown): ReadonlyMap<string, ReadonlyMap<string, string>> {
+  const out = new Map<string, ReadonlyMap<string, string>>();
+  if (spec === undefined) return out;
+  if (!isMap(spec)) return refuse('maps: must be a map of maps');
+  for (const [name, entries] of Object.entries(spec)) {
+    if (!NAME.test(name)) refuse(`maps.${name}: a map name is lowercase letters, digits and _`);
+    if (!isMap(entries) || Object.keys(entries).length === 0) {
+      return refuse(`maps.${name}: must be a non-empty map of value to value`);
+    }
+    const map = new Map<string, string>();
+    for (const [from, to] of Object.entries(entries)) {
+      if (typeof to !== 'string') {
+        return refuse(`maps.${name}.${from}: maps to ${JSON.stringify(to)}, not a string`);
+      }
+      map.set(from.trim().toLowerCase(), to);
+    }
+    out.set(name, map);
+  }
+  return out;
+}
+
+function compileTableEach(
+  spec: Readonly<Record<string, unknown>>,
+  on: string,
+  captureNames: ReadonlySet<string>,
+  itemCaptures: readonly Capture[],
+): TableEach {
+  for (const key of Object.keys(spec)) {
+    if (key === 'field') refuse('each: table and field are two different fan-outs -- pick one');
+    if (!['table', 'header', 'as'].includes(key)) refuse(`each: unknown key ${key}`);
+  }
+  const field = spec['table'];
+  if (typeof field !== 'string' || pathType(on, field, 'each.table') !== 'string') {
+    return refuse(`each.table: must name a string field of ${on}`);
+  }
+  const header = spec['header'];
+  if (!Array.isArray(header) || header.length === 0) {
+    return refuse('each.header: must be a non-empty list of column names');
+  }
+  const columns = (header as readonly unknown[]).map((one, index) => {
+    const name = typeof one === 'string' ? columnName(one) : '';
+    if (name.length === 0) {
+      refuse(`each.header[${String(index)}]: ${JSON.stringify(one)} is not a column name`);
+    }
+    return name;
+  });
+  const as = spec['as'];
+  if (typeof as !== 'string' || !NAME.test(as)) return refuse('each.as: must be a name');
+  if (
+    captureNames.has(as) ||
+    itemCaptures.some((one) => one.name === as) ||
+    eventFieldType(on, as) !== undefined
+  ) {
+    refuse(`each.as: ${as} shadows a field or capture`);
+  }
+  return { mode: 'table', field, header: columns, as };
 }
 
 /**
@@ -919,9 +1160,9 @@ export function compileHandler(parsed: unknown): CompiledHandler {
  * downstream would have to pick which half to believe. The refusal resolves that at load time,
  * where the handler's author is the person reading it.
  *
- * **Not refused: a judged name that matches nothing.** The handler does not declare an entry
- * type, so there is no schema here to check the name against, and inventing one would mean
- * guessing which store type the row will be recorded as. A judged name that no analyst ever
+ * **Not refused: a judged name that matches nothing.** Core has no registry, so even a handler
+ * that declares `type:` has no schema HERE to check the name against -- the caller that writes
+ * the entries is the one holding the type's spec. A judged name that no analyst ever
  * confirms is a judgement that went unanswered, which is a fact about the corpus rather than a
  * mistake in the handler.
  */
@@ -1008,6 +1249,11 @@ export interface HandlerRun {
    * forgot to write.
    */
   readonly unsatisfiedBefore: number;
+  /**
+   * Table rows skipped because their cell count differs from their header (asc-tuur.3). Counted,
+   * because a report with a malformed row otherwise reads as a report with one finding fewer.
+   */
+  readonly malformedItems: number;
 }
 
 /**
@@ -1043,6 +1289,7 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
   let unclosed = 0;
   let noMatch = 0;
   let unsatisfiedBefore = 0;
+  let malformedItems = 0;
   const window = handler.window;
   /** The handler-level scope. Named apart from the template `Scope` every row is built with. */
   const handlerScope = handler.scope;
@@ -1058,6 +1305,7 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     trigger: NormalizedEvent,
     scope: Scope,
     closedBy: ClosedBy | undefined,
+    item?: number,
   ): HandlerRow => {
     const fields: Record<string, string> = {};
     for (const [name, template] of handler.emit) {
@@ -1071,6 +1319,12 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
       call: trigger.call,
       ...(trigger.ts === undefined ? {} : { ts: trigger.ts }),
       ...(closedBy === undefined ? {} : { closed_by: closedBy }),
+      // Both spread, so a handler that declares neither `type:` nor a table produces the row it
+      // produced before either existed. `compileType` guarantees the trigger kind has an `id`.
+      ...(handler.type === undefined || typeof trigger['id'] !== 'string'
+        ? {}
+        : { event_id: trigger['id'] }),
+      ...(item === undefined ? {} : { item }),
       fields,
       // Spread like the envelope fields above, not set to `[]`: a handler that declares no
       // `judged` produces the same object literal it produced before this key existed, so
@@ -1087,12 +1341,68 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
   ): HandlerRow[] => {
     const each = handler.each;
     if (each === undefined) return [row(trigger, scope, closedBy)];
+    if (each.mode === 'table') return tableRows(each, trigger, scope, closedBy);
     const list = read(trigger, each.field);
     if (!Array.isArray(list)) return [];
     const out: HandlerRow[] = [];
     for (const item of (list as readonly unknown[]).slice(each.from)) {
       if (each.regex !== undefined && !test(each.regex, item)) continue;
       out.push(row(trigger, (name) => (name === each.as ? item : scope(name)), closedBy));
+    }
+    return out;
+  };
+
+  /**
+   * One row per body row of every table in the field whose header holds `each.header`.
+   *
+   * `item` counts every body row of those tables, malformed ones included, so a row's index does
+   * not move when a malformed row above it is fixed -- an entry keyed on it keeps its id. A row
+   * whose cell count differs from its header is counted in `malformedItems` and skipped: its
+   * cells cannot be assigned to columns without guessing which one is missing.
+   */
+  const tableRows = (
+    each: TableEach,
+    trigger: NormalizedEvent,
+    scope: Scope,
+    closedBy: ClosedBy | undefined,
+  ): HandlerRow[] => {
+    const text = read(trigger, each.field);
+    if (typeof text !== 'string') return [];
+    const out: HandlerRow[] = [];
+    let item = 0;
+    for (const table of markdownTables(text)) {
+      if (!each.header.every((column) => table.header.includes(column))) continue;
+      for (const cellsOfRow of table.rows) {
+        const index = item;
+        item += 1;
+        if (cellsOfRow.length !== table.header.length) {
+          malformedItems += 1;
+          continue;
+        }
+        const cellsByName = new Map<string, string>();
+        table.header.forEach((column, at) => {
+          if (column.length > 0 && !cellsByName.has(column)) {
+            cellsByName.set(column, cellsOfRow[at] ?? '');
+          }
+        });
+        const captured = new Map<string, string>();
+        for (const capture of handler.itemCaptures) {
+          const cell = cellsByName.get(capture.field.slice(each.as.length + 1));
+          const value = cell === undefined ? undefined : capture.regex.exec(cell)?.[capture.group];
+          if (value !== undefined) captured.set(capture.name, value);
+        }
+        const prefix = `${each.as}.`;
+        const rowScope: Scope = (name) => {
+          if (captured.has(name)) return captured.get(name);
+          if (name.startsWith(prefix)) {
+            const cell = cellsByName.get(name.slice(prefix.length));
+            // An empty cell is absent: a report that leaves Line blank has not said "".
+            return cell === undefined || cell.length === 0 ? undefined : cell;
+          }
+          return scope(name);
+        };
+        out.push(row(trigger, rowScope, closedBy, index));
+      }
     }
     return out;
   };
@@ -1307,6 +1617,9 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     },
     get unsatisfiedBefore() {
       return unsatisfiedBefore;
+    },
+    get malformedItems() {
+      return malformedItems;
     },
   };
 }

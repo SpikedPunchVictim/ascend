@@ -252,17 +252,27 @@ describe('the one vocabulary we close, and the one we do not', () => {
     // Every other vocabulary in this file is a string by `VOCABULARY_IS_NOT_OURS`. This is the
     // exception, and a test that names the exception is what stops the rule quietly becoming
     // "enums are fine when convenient" one type later. The three others are all ascend's own
-    // concepts -- passed/failed, a prior verdict, and whether a verdict came from the check's
-    // exit status or its output -- so closing them costs nothing when the harness changes.
+    // concepts -- passed/failed, a prior verdict, whether a verdict came from the check's exit
+    // status or its output, and which route captured a finding -- so closing them costs nothing
+    // when the harness changes.
     const enums = DERIVED_TYPES.flatMap((one) =>
       one.properties.filter((p) => p.type === 'enum').map((p) => `${one.name}.${p.name}`),
     );
     expect(enums.sort()).toEqual([
+      'review_finding.captured_by',
       'review_finding.class',
       'verification_run.previous_verdict',
       'verification_run.verdict',
       'verification_run.verdict_source',
     ]);
+  });
+
+  it('records which route captured a finding, as an optional closed pair (asc-tuur.3)', () => {
+    const property = spec()?.properties.find((one) => one.name === 'captured_by');
+    expect(property?.type).toBe('enum');
+    expect(property?.enum_values).toEqual(['reported', 'parsed']);
+    // Optional, so an entry from before the route existed still validates.
+    expect(property?.required).toBeUndefined();
   });
 
   it('closes `class` on exactly the nine lenses, in the skill’s own order', () => {

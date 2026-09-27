@@ -1415,6 +1415,13 @@ describe('review_finding, from a ReportFindings call', () => {
     ]);
   });
 
+  it('says it was REPORTED, so a count can be split from the rows parsed out of a report', () => {
+    // asc-tuur.3: the same type is also filled by a typed handler reading a report's table,
+    // which writes `parsed`. The route is a property because it is a fact about the entry.
+    const [entry] = ofType(derive([withModel([report([finding()])], 'm')]), 'review_finding');
+    expect(entry?.properties['captured_by']).toBe('reported');
+  });
+
   it('maps the harness category to class, and carries the model that produced the record', () => {
     const [entry] = ofType(
       derive([withModel([report([finding()])], 'deepseek-v4.1-flash:cloud')]),

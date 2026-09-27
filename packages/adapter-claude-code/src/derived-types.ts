@@ -635,7 +635,21 @@ export const DERIVED_TYPES: readonly TypeSpec[] = [
           'ARRAY of findings, so the key is this id plus the finding’s position in that array, ' +
           'and a re-derivation finds the same entries rather than appending duplicates. The ' +
           'position is not a property because the key already carries it, the way ' +
-          '`context_compaction` keeps its record uuid in the key rather than in a field.',
+          '`context_compaction` keeps its record uuid in the key rather than in a field. On a ' +
+          '`parsed` entry it is the id of the Write that saved the report.',
+      },
+      {
+        name: 'captured_by',
+        type: 'enum',
+        enum_values: ['reported', 'parsed'],
+        description:
+          'Which route captured this finding (asc-tuur.3). `reported`: the reviewer called ' +
+          '`ReportFindings` and this is one element of that call. `parsed`: the reviewer wrote a ' +
+          'report with a findings table, and a typed handler (`handlers/*.yaml` declaring ' +
+          '`type: review_finding`) read this row out of it -- so the user’s workflow did not ' +
+          'have to change for the finding to be counted. The two differ in what the reviewer ' +
+          'chose to structure, so a count by class should be split by this before it is ' +
+          'compared across routes. ABSENT only on an entry written before the field existed.',
       },
       ...PROVENANCE,
     ],
