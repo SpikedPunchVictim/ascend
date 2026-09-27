@@ -105,9 +105,11 @@ export {
   MAX_SUBJECT_LENGTH,
   compileHandler,
   handlerTokens,
+  markdownTables,
   runHandler,
   type ClosedBy,
   type CompiledHandler,
+  type MarkdownTable,
   type HandlerRow,
   type HandlerRun,
 } from './handler.js';

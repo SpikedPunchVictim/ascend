@@ -13,12 +13,24 @@
  * dropped in silence. The third refusal -- an already-registered shape whose *prose* changed
  * must update rather than report `unchanged` -- lives in `register-document.ts`, because
  * `asc types import` needs exactly the same one.
+ *
+ * **Then it looks for where the type's data already is** (asc-tuur.5). A newly registered shape is
+ * followed by a capture plan over this project's transcripts, and one line on stderr says whether
+ * ascend can fill the type from what sessions already write -- so a user learns how the type
+ * will be captured without having to ask, and without their workflow changing. The plan only
+ * reads; `asc types capture` shows it and `--write` saves it. `--no-capture` skips it, and a
+ * failure to read the transcripts never fails the define.
  */
 
 import { Args, Flags } from '@oclif/core';
+import type { TypeSpec } from '@ascend/core';
 import { BaseCommand } from '../../base.js';
 import { parseDocument, verifyDocumentHash } from '../../document.js';
+import { defaultTranscriptRoot } from '@ascend/adapter-claude-code';
+import { sessionsNote, sweepCapture } from '../../capture-sweep.js';
+import { encodeProjectDir } from '../../handler-replay.js';
 import { readInput } from '../../input.js';
+import { describedProperties } from '../../property-shape.js';
 import { registerDocument } from '../../register-document.js';
 
 export default class TypesDefine extends BaseCommand {
@@ -50,6 +62,13 @@ export default class TypesDefine extends BaseCommand {
     'dry-run': Flags.boolean({
       description: 'Report exactly what would happen, then write nothing.',
     }),
+    capture: Flags.boolean({
+      description:
+        'After registering a new shape, look in this project’s transcripts for where its data ' +
+        'already appears. On by default; --no-capture skips it.',
+      default: true,
+      allowNo: true,
+    }),
   };
 
   public async run(): Promise<void> {
@@ -65,7 +84,7 @@ export default class TypesDefine extends BaseCommand {
     // reach it at all.
     verifyDocumentHash(document, source);
 
-    await this.withProject(({ store }) => {
+    await this.withProject(async ({ store, root }) => {
       const result = registerDocument(store, document, { registeredAt: this.now(), dryRun });
 
       for (const rename of result.renames) this.warn(`renamed '${rename.from}' -> '${rename.to}'`);
@@ -93,6 +112,53 @@ export default class TypesDefine extends BaseCommand {
           },
         ],
       });
+
+      if (result.outcome === 'created' && flags.capture) {
+        // Descriptions may sit in the document's prose rather than on the property; matching reads
+        // them, so the overlay `types show` uses is applied first.
+        await this.adviseCapture(
+          {
+            name: document.name,
+            properties: describedProperties(document.properties, document.prose ?? {}),
+          },
+          root,
+        );
+      }
     });
+  }
+
+  /** One line on how the type would be captured; never a failure of the define itself. */
+  private async adviseCapture(spec: TypeSpec, root: string): Promise<void> {
+    let sweep: Awaited<ReturnType<typeof sweepCapture>>;
+    try {
+      sweep = await sweepCapture(spec, {
+        root: defaultTranscriptRoot(),
+        projects: new Set([encodeProjectDir(root)]),
+        includeEphemeral: true,
+      });
+    } catch (error) {
+      this.warn(
+        `could not look for ${spec.name} in this project's transcripts ` +
+          `(${error instanceof Error ? error.message : String(error)}).`,
+      );
+      return;
+    }
+    if (sweep.files === 0) return;
+    const best = sweep.plan.tables[0];
+    if (best === undefined || sweep.verified === undefined) {
+      this.warn(
+        `nothing in this project's transcripts reads as ${spec.name} yet; ` +
+          `'asc types capture ${spec.name}' looks again whenever it is run.`,
+      );
+      return;
+    }
+    const { valid, refused } = sweep.verified;
+    this.warn(
+      `ascend can capture ${spec.name} from what sessions already write: a table with columns ` +
+        `${best.columns.map((one) => one.column).join(', ')} in ${sessionsNote(best.sessions)}. ` +
+        `A drafted handler would write ${String(valid)} entr${valid === 1 ? 'y' : 'ies'} and ` +
+        `the type would refuse ${String(refused)}. Run 'asc types capture ${spec.name}' to ` +
+        `read the draft, and add --write to save it.`,
+    );
   }
 }

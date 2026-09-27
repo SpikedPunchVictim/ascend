@@ -135,7 +135,7 @@ const columnName = (cell: string): string =>
     .replace(/^_+|_+$/g, '');
 
 /** A markdown table: its header as column names, and each body row's cells. */
-interface MarkdownTable {
+export interface MarkdownTable {
   readonly header: readonly string[];
   readonly rows: readonly (readonly string[])[];
 }
@@ -157,8 +157,12 @@ const cells = (line: string): string[] =>
  * Deliberately the plain GitHub shape and nothing cleverer. A table this does not recognise
  * yields no rows, and a typed handler reports its triggers next to its rows, so a report written
  * in some other shape reads as "triggered, emitted nothing" rather than as a parse guessed at.
+ *
+ * Exported for `asc types capture` (asc-tuur.5), which proposes a table handler from the tables a
+ * corpus holds: a proposal read with a different parser than the one that would run it could
+ * propose a header this parser never produces.
  */
-function markdownTables(text: string): MarkdownTable[] {
+export function markdownTables(text: string): MarkdownTable[] {
   const lines = text.slice(0, MAX_SUBJECT_LENGTH).split('\n');
   const tables: MarkdownTable[] = [];
   for (let at = 0; at + 1 < lines.length; at += 1) {
