@@ -132,8 +132,18 @@ export const DERIVED_SOURCE = 'derived:claude-code';
  * `verification_run` went to 2 because its verdict was read from `is_error` even when a pipe or a
  * later command owned that status (asc-6ola.6, dogfood/0012), and to 3 because `prettier --write`
  * counted as a check (asc-6ola.15, dogfood/0015).
+ *
+ * `skill_activation` went to 2 because it counted one activation per STREAM rather than per
+ * request. A subagent inherits its parent's `attributionSkill`, so one run fanned out into 1 + N
+ * activations, and a subagent's own `Skill` call, which is almost never attributed, produced none
+ * (asc-gtnu.17, dogfood/0020). Under rule 2 a `Skill` call is an activation, the attributed run it
+ * starts is the same activation, and an inherited run is counted (`inheritedSkillRuns`) but not
+ * written.
  */
-const DERIVATION_VERSIONS: Readonly<Record<string, number>> = { verification_run: 3 };
+const DERIVATION_VERSIONS: Readonly<Record<string, number>> = {
+  verification_run: 3,
+  skill_activation: 2,
+};
 
 /** The derivation rule's version for a derived type; 1 when the rule has never changed. */
 export function derivationVersion(type: string): number {

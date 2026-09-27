@@ -509,13 +509,17 @@ describe('the definitions accept what the deriver produces', () => {
 });
 
 describe('derivationVersion', () => {
+  it('is 2 for skill_activation, which counted streams rather than requests (asc-gtnu.17)', () => {
+    expect(derivationVersion('skill_activation')).toBe(2);
+  });
+
   it('is 2 for verification_run, whose verdict rule changed (asc-6ola.6)', () => {
     expect(derivationVersion('verification_run')).toBe(3);
   });
 
   it('is 1 for every type whose rule never changed', () => {
     for (const spec of DERIVED_TYPES) {
-      if (spec.name === 'verification_run') continue;
+      if (spec.name === 'verification_run' || spec.name === 'skill_activation') continue;
       expect(derivationVersion(spec.name), spec.name).toBe(1);
     }
   });

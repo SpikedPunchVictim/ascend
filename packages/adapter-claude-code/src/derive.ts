@@ -226,6 +226,17 @@ export interface DeriveCounters {
    * Should be zero. MEASURED 2026-09-26: 0, on the same empty population as the counter above.
    */
   unreportableFindings: number;
+  /**
+   * Attributed runs in a SUBAGENT stream that invoked no skill of its own: the subagent was
+   * spawned while its parent's skill was active and inherited the parent's `attributionSkill`.
+   * NO ENTRY IS WRITTEN, because the activation is the parent's and is already counted there
+   * (`asc-gtnu.17`, dogfood/0020).
+   *
+   * NOT expected to be zero. It is the number of streams a skill fanned out into. MEASURED
+   * 2026-09-27, per (stream, skill) on the live corpus: 52. Under the first rule each of these
+   * was an activation, which is how 24 bug-hunt "activations" came from 7 requests.
+   */
+  inheritedSkillRuns: number;
 }
 
 export interface Deriver {
@@ -673,6 +684,13 @@ const CLARIFICATION_PREAMBLE = 'The user wants to clarify these questions.';
  */
 const REPORT_FINDINGS_TOOL = 'ReportFindings';
 
+/**
+ * The harness tool that loads a skill, `input.skill` naming it. A call to it is an activation
+ * whether or not the records after it carry `attributionSkill`: inside a subagent they almost
+ * never do (77 of 84 measured calls, `asc-gtnu.17`).
+ */
+const SKILL_TOOL = 'Skill';
+
 // ---------------------------------------------------------------------------
 
 /** A skill that has been active without interruption, from its first record to now. */
@@ -686,6 +704,12 @@ interface SkillRun {
   readonly locality: Locality;
   /** The FIRST record's uuid. The run's identity, and stable across a re-ingest. */
   readonly uuid: string;
+  /**
+   * False when the run is not an activation of its own: it was claimed by the `Skill` call
+   * that started it, or it was inherited by a subagent. The run is still TRACKED either way,
+   * so that its continuation records do not each start another run.
+   */
+  readonly emits: boolean;
 }
 
 /**
@@ -738,6 +762,15 @@ export function createDeriver(): Deriver {
   const issued = new Set<string>();
   let run: SkillRun | undefined;
   /**
+   * skill name -> `Skill` calls in THIS file not yet matched to the attributed run they start.
+   *
+   * A main-stream `Skill` call is followed by records carrying `attributionSkill` (31 of the
+   * measured invocations). Both are the same activation, so the call writes the entry and the
+   * run it starts is claimed rather than written again. One call claims ONE run. A later run of
+   * the same skill with nothing left to claim is a new activation, as it always was.
+   */
+  let claims = new Map<string, number>();
+  /**
    * The last check verdict in this file, which is what "a verdict change" is measured
    * against. Deliberately advanced by EVERY check run, including the ones that produce no
    * entry: a filter that only remembered the emitted runs would compare each green against
@@ -755,6 +788,7 @@ export function createDeriver(): Deriver {
     unquotable: 0,
     offVocabularyFindings: 0,
     unreportableFindings: 0,
+    inheritedSkillRuns: 0,
   };
 
   const key = (raw: string): string => {
@@ -816,7 +850,7 @@ export function createDeriver(): Deriver {
   const flushRun = (out: DerivedEntry[]): void => {
     const pending = run;
     run = undefined;
-    if (pending === undefined) return;
+    if (pending === undefined || !pending.emits) return;
     emit(
       out,
       'skill_activation',
@@ -844,6 +878,7 @@ export function createDeriver(): Deriver {
    */
   const begin = (): void => {
     invocations = new Map();
+    claims = new Map();
     lastVerdict = undefined;
   };
 
@@ -876,6 +911,37 @@ export function createDeriver(): Deriver {
       const input = rec(block['input']);
       const command = input === undefined ? undefined : str(input['command']);
       invocations.set(id, { name, command });
+
+      // ---- skill_activation, by invocation -------------------------------
+      // The call IS the activation, in any stream. Written here, at the call, rather than at
+      // its result: the attributed run it starts can begin on the result's own record, and
+      // that run must find its claim already registered. MEASURED 2026-09-27: 105 of 105
+      // `Skill` results on the live corpus were not errors, so waiting for the result would
+      // buy nothing it has ever been asked for.
+      if (name === SKILL_TOOL) {
+        const invoked = input === undefined ? undefined : str(input['skill']);
+        if (sessionId === undefined || invoked === undefined) {
+          counters.unkeyable += 1;
+        } else {
+          // A call made while the same skill's run is already open continues that run, so it
+          // leaves no claim behind: an unconsumed claim would swallow the NEXT real run.
+          if (run?.skill !== invoked) claims.set(invoked, (claims.get(invoked) ?? 0) + 1);
+          const agent = str(record['attributionAgent']);
+          emit(
+            out,
+            'skill_activation',
+            `${sessionId}:${id}`,
+            sessionId,
+            file.project,
+            occurredAt,
+            locality,
+            {
+              skill: invoked,
+              ...(agent === undefined ? {} : { agent }),
+            },
+          );
+        }
+      }
     }
 
     // ---- tool_denial ------------------------------------------------------
@@ -959,10 +1025,17 @@ export function createDeriver(): Deriver {
         // Same activation, still running. The FIRST record's facts stand.
       } else {
         flushRun(out);
+        const claimed = claims.get(skill) ?? 0;
+        if (claimed > 0) claims.set(skill, claimed - 1);
+        const inherited = claimed === 0 && file.kind === 'subagent';
+        if (inherited) counters.inheritedSkillRuns += 1;
         if (sessionId === undefined || uuid === undefined) {
-          counters.unkeyable += 1;
+          // Only a run that would have been WRITTEN is a lost entry. A claimed or inherited one
+          // is already counted elsewhere, so an unkeyable record there loses nothing.
+          if (claimed === 0 && !inherited) counters.unkeyable += 1;
         } else {
           run = {
+            emits: claimed === 0 && !inherited,
             skill,
             agent: str(record['attributionAgent']),
             sessionId,

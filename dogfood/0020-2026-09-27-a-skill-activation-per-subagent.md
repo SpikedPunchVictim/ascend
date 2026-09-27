@@ -7,7 +7,7 @@
 | **Surfaced by** | the user rejecting "15 of 19 bug-hunt sessions produced no report" as impossible |
 | **Entry type(s)** | `skill_activation` (derived) |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | fixed in the `asc-gtnu.17` commit (`skill_activation` rule 2); live store not yet re-derived |
 
 ## What was found
 
@@ -102,6 +102,87 @@ their own usage.
 - Existing entries are immutable. The fix goes where they are written (derive a parent/child
   relation, or a separate per-request type), or it is an invalidation annotation. It is never a
   cleanup of the store.
+
+## Resolution
+
+`skill_activation` is at derivation 2 (`derivationVersion`). The type's properties are unchanged,
+and `EVENT_DERIVE_VERSION` is unchanged because no event reads `attributionSkill`. The new rule:
+
+- **A `Skill` tool call is an activation** in any stream, keyed on its tool_use id.
+- **The attributed run a call starts is the same activation.** The call claims it, and one call
+  claims one run.
+- **A subagent run with no call of its own is inherited.** It is counted as `inheritedSkillRuns`
+  and not written.
+- **A main-stream run with no call is still an activation.** That is how a slash-invoked skill
+  arrives.
+
+Before the change, the signals were cross-tabulated per (stream, skill) over the live corpus,
+excluding OS-temp projects:
+
+```
+31 main invoked attributed-after
+37 main invoked never-attributed
+2 sub attributed no-invocation-in-stream from-first-record
+50 sub attributed no-invocation-in-stream later
+7 sub invoked attributed-after
+77 sub invoked never-attributed
+```
+
+34 of the 37 untagged main-stream "invocations" are built-in commands (`/exit` 23, `/compact` 10,
+`/config` 1, `/login` 1), not skills. The only main-stream skill calls that went untagged are
+`empirical-planning` ×2. A `Skill` result was an error 0 of 105 times, so the rule writes at the
+call, not at the result.
+
+The whole corpus was re-derived into a scratch store under rule 2 (`asc ingest claude-code`, fresh
+`asc init` under the OS temp root) and compared with the live store, which is still on rule 1.
+
+For bug-hunt:
+
+```
+s         agent            n
+--------  ---------------  -
+08e77eaa  general-purpose  5
+2563912b  (main)           2
+96a5a5d3  (main)           1
+96a5a5d3  general-purpose  1
+b286a945  (main)           1
+b286a945  general-purpose  3
+df503f84  (main)           1
+f5717795  (main)           1
+f5717795  general-purpose  4
+```
+
+- `df503f84`'s 5 inherited streams are gone.
+- `08e77eaa`'s 5 subagent calls, which were invisible, are present.
+- The remaining subagent rows are subagents that called `Skill(bug-hunt)` themselves. Each one
+  is a real load of the skill, and none is a separate request.
+
+A request is a main-stream activation, or a session whose only activations are in subagents:
+
+```
+requests  sessions
+--------  --------
+7         6
+```
+
+The two stores reach 7 requests from different rows. The live store has `09054587`, whose
+transcript is gone. The scratch store has `08e77eaa`, which rule 1 never saw. **Their union is 8
+requests across 7 sessions**, the figure this record estimated by hand.
+
+Across all skills, main-stream activations went from 43 (rule 1, live) to 35 (rule 2, scratch):
+
+- 11 rule-1 main rows belong to sessions whose transcript is gone, so a scratch store cannot
+  re-derive them;
+- 3 rows are main-stream `Skill` calls that were never tagged, which rule 2 now writes;
+- 43 − 11 + 3 = 35.
+
+Every other per-session difference is one skill whose name the live store holds redacted and the
+scratch store does not. That is the same activation, not a rule difference.
+
+**The live store is not yet migrated.** Rule-2 entries get new ids (`skill_activation@2:...`), so
+the next `asc ingest claude-code` writes them beside the rule-1 rows. As in `dogfood/0015`, the
+rule-1 rows are then retired by invalidation annotation, never deleted. The ones whose transcript
+is gone are not invalidated, because they are the only record of those activations.
 
 ## Links
 

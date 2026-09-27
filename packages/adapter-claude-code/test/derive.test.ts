@@ -580,6 +580,128 @@ describe('skill_activation', () => {
   });
 });
 
+describe('skill_activation, one per REQUEST rather than one per stream (asc-gtnu.17)', () => {
+  // dogfood/0020. Measured 2026-09-27 over the live corpus, per (stream, skill): subagent
+  // streams carried an INHERITED attribution with no invocation of their own 52 times, and a
+  // subagent's own `Skill` call went untagged 77 of 84 times. The first inflated the count (24
+  // bug-hunt activations over 6 sessions, 17 of them subagents); the second hid a review
+  // completely.
+  const SUBAGENT: TranscriptFile = {
+    path: '/root/-Users-me-app/sess-1/subagents/agent-a1.jsonl',
+    project: '-Users-me-app',
+    session: 'sess-1',
+    kind: 'subagent',
+  };
+  const skill = (name: string, extra: Record<string, unknown> = {}): TranscriptRecord =>
+    record([], { attributionSkill: name, ...extra });
+  const callSkill = (
+    id: string,
+    name: string,
+    extra: Record<string, unknown> = {},
+  ): TranscriptRecord =>
+    record([{ type: 'tool_use', id, name: 'Skill', input: { skill: name } }], extra);
+
+  it('writes NO activation for a subagent run it inherited from its parent, and counts it', () => {
+    const deriver = createDeriver();
+    const out = [
+      ...deriver.accept(
+        skill('bug-hunt', { uuid: 's1', attributionAgent: 'general-purpose' }),
+        SUBAGENT,
+      ),
+      ...deriver.accept(
+        skill('bug-hunt', { uuid: 's2', attributionAgent: 'general-purpose' }),
+        SUBAGENT,
+      ),
+      ...deriver.drain(),
+    ];
+    expect(ofType(out, 'skill_activation')).toEqual([]);
+    expect(deriver.counters.inheritedSkillRuns).toBe(1);
+  });
+
+  it('writes one activation for a subagent that calls the skill itself, with no attribution', () => {
+    const entries = ofType(
+      derive([callSkill('toolu_1', 'bug-hunt', { attributionAgent: 'general-purpose' })], SUBAGENT),
+      'skill_activation',
+    );
+    expect(entries.map((entry) => entry.key)).toEqual(['sess-1:toolu_1']);
+    expect(entries[0]?.properties['skill']).toBe('bug-hunt');
+    expect(entries[0]?.properties['agent']).toBe('general-purpose');
+  });
+
+  it('counts a Skill call and the attributed run that follows it as ONE activation', () => {
+    // Main stream, measured: 31 invocations were followed by an attributed run of the same skill.
+    const entries = ofType(
+      derive([
+        callSkill('toolu_1', 'bug-hunt', { uuid: 'c1' }),
+        skill('bug-hunt', { uuid: 'u1' }),
+        skill('bug-hunt', { uuid: 'u2' }),
+      ]),
+      'skill_activation',
+    );
+    expect(entries.map((entry) => entry.key)).toEqual(['sess-1:toolu_1']);
+  });
+
+  it('lets one Skill call claim only ONE later run, so a second run is its own activation', () => {
+    const entries = ofType(
+      derive([
+        callSkill('toolu_1', 'bug-hunt', { uuid: 'c1' }),
+        skill('bug-hunt', { uuid: 'u1' }),
+        skill('empirical-planning', { uuid: 'u2' }),
+        skill('bug-hunt', { uuid: 'u3' }),
+      ]),
+      'skill_activation',
+    );
+    expect(entries.map((entry) => entry.key)).toEqual(['sess-1:toolu_1', 'sess-1:u2', 'sess-1:u3']);
+  });
+
+  it('still writes a main-stream run with no Skill call, which is how a slash command arrives', () => {
+    const entries = ofType(derive([skill('bug-hunt', { uuid: 'u1' })]), 'skill_activation');
+    expect(entries.map((entry) => entry.key)).toEqual(['sess-1:u1']);
+  });
+
+  it('leaves no claim behind for a call made while its own skill is still running', () => {
+    // Otherwise the stale claim would swallow the next real run of that skill.
+    const entries = ofType(
+      derive([
+        skill('bug-hunt', { uuid: 'u1' }),
+        callSkill('toolu_1', 'bug-hunt', { uuid: 'c1', attributionSkill: 'bug-hunt' }),
+        skill('empirical-planning', { uuid: 'u2' }),
+        skill('bug-hunt', { uuid: 'u3' }),
+      ]),
+      'skill_activation',
+    );
+    expect(entries.map((entry) => entry.key).sort()).toEqual(
+      ['sess-1:toolu_1', 'sess-1:u1', 'sess-1:u2', 'sess-1:u3'].sort(),
+    );
+  });
+
+  it('does not let a claim cross into the next file', () => {
+    const deriver = createDeriver();
+    const out = [
+      ...deriver.accept(callSkill('toolu_1', 'bug-hunt', { uuid: 'c1' }), FILE),
+      ...deriver.accept(skill('bug-hunt', { uuid: 'u1' }), fileAt('bbb')),
+      ...deriver.drain(),
+    ];
+    expect(ofType(out, 'skill_activation').map((entry) => entry.key)).toEqual([
+      'sess-1:toolu_1',
+      'sess-1:u1',
+    ]);
+  });
+
+  it('counts a Skill call with no skill name as unkeyable rather than guessing one', () => {
+    const deriver = createDeriver();
+    const out = [
+      ...deriver.accept(
+        record([{ type: 'tool_use', id: 'toolu_1', name: 'Skill', input: {} }]),
+        FILE,
+      ),
+      ...deriver.drain(),
+    ];
+    expect(ofType(out, 'skill_activation')).toEqual([]);
+    expect(deriver.counters.unkeyable).toBe(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 
 describe('verification_run', () => {
