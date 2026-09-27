@@ -675,10 +675,45 @@ describe('review.finding, from a ReportFindings call', () => {
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
-    // 4: `review.finding`. Asserted as a number rather than against the constant, which would be
+    // 5: `tool.use.start` names the skill a `Skill` call loads (asc-tuur.2). 4: `review.finding`. Asserted as a number rather than against the constant, which would be
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(4);
+    expect(EVENT_DERIVE_VERSION).toBe(5);
+  });
+});
+
+describe('tool.use.start, for a Skill call (asc-tuur.2)', () => {
+  const starts = (events: readonly NormalizedEvent[]): NormalizedEvent[] =>
+    events.filter((event) => event.kind === 'tool.use.start');
+
+  it('names the skill the call loads', () => {
+    const [start] = starts(
+      normalize([assistant([{ id: 't1', name: 'Skill', input: { skill: 'bug-hunt' } }])]),
+    );
+    expect(start).toMatchObject({ tool: 'Skill', id: 't1', skill: 'bug-hunt' });
+  });
+
+  it('names it inside a subagent too, where a review is often run', () => {
+    const [start] = starts(
+      normalize([assistant([{ id: 't1', name: 'Skill', input: { skill: 'bug-hunt' } }])], SUB),
+    );
+    expect(start?.['skill']).toBe('bug-hunt');
+  });
+
+  it('leaves skill ABSENT when the call carries no skill name, rather than writing ""', () => {
+    const [start] = starts(normalize([assistant([{ id: 't1', name: 'Skill', input: {} }])]));
+    expect(start).not.toHaveProperty('skill');
+  });
+
+  it('gives no other tool a skill field', () => {
+    const [start] = starts(
+      normalize([assistant([{ id: 't1', name: 'Bash', input: { skill: 'bug-hunt' } }])]),
+    );
+    expect(start).not.toHaveProperty('skill');
+  });
+
+  it('declares skill as a string, so a handler can match on it', () => {
+    expect(eventFieldType('tool.use.start', 'skill')).toBe('string');
   });
 });

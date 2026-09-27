@@ -37,8 +37,10 @@ import type { TranscriptFile } from './transcript-file.js';
  *    (asc-gtnu). Zero events on every corpus measured so far, because the tool has been called 0
  *    times -- so unlike 3, this one moves nothing today. It is the version that says the FIRST
  *    finding will not be mistaken for a handler bug.
+ * 5: `tool.use.start` carries `skill` on a `Skill` call (asc-tuur.2), so a handler can tell which
+ *    skill a request loaded. A new field, not a new event: no count moves.
  */
-export const EVENT_DERIVE_VERSION = 4;
+export const EVENT_DERIVE_VERSION = 5;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -92,6 +94,9 @@ const SYNTHETIC_MODEL = '<synthetic>';
  * the fixture in `normalize.test.ts` is the only thing that has ever exercised this branch.
  */
 const REPORT_FINDINGS_TOOL = 'ReportFindings';
+
+/** The harness's skill-loading tool. Its input names the skill in `skill` (spike/capture-hooks). */
+const SKILL_TOOL = 'Skill';
 
 /** A string field's text, or `''` when the transcript carried something else or nothing. */
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -599,7 +604,15 @@ export function createNormalizer(): Normalizer {
         if (id === undefined || tool === undefined) continue;
         calls += 1;
         pending.set(id, { tool, input: rec(block['input']) ?? {}, call: calls, batch: batches });
-        emit(out, 'tool.use.start', calls, ts, { tool, id, role: ROLES[tool] ?? 'other' }, batches);
+        const skill = tool === SKILL_TOOL ? str(rec(block['input'])?.['skill']) : undefined;
+        emit(
+          out,
+          'tool.use.start',
+          calls,
+          ts,
+          { tool, id, role: ROLES[tool] ?? 'other', ...(skill === undefined ? {} : { skill }) },
+          batches,
+        );
         if (tool === REPORT_FINDINGS_TOOL) {
           reviewFindings(out, calls, batches, ts, id, rec(block['input']));
         }

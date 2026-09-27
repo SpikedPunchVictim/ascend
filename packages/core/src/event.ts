@@ -53,7 +53,8 @@ export const ENVELOPE_FIELDS: Readonly<Record<string, EventFieldType>> = {
 export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventFieldType>>>> = {
   /** The user's own message. */
   'prompt.submit': { text: 'string' },
-  'tool.use.start': { tool: 'string', id: 'string', role: 'string' },
+  /** `skill` is the skill a skill-loading call names, and is absent on every other call. */
+  'tool.use.start': { tool: 'string', id: 'string', role: 'string', skill: 'string' },
   /** `is_error` is the harness's flag, kept under the harness's name. It is not an exit status. */
   'tool.use.end': { tool: 'string', id: 'string', role: 'string', is_error: 'boolean' },
   /** One per executed segment of a shell call. `is_error` belongs to the whole call. */
