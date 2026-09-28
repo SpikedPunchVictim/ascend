@@ -228,6 +228,71 @@ describe('execSegments and checkRunner', () => {
     expect(execSegments(command).length).toBe(1); // just the `cat`
   });
 
+  // -------------------------------------------------------------------------
+  // Quoted program text (asc-7gz2, dogfood/0010). A newline or an operator inside quotes is
+  // part of an argument, not a command boundary -- `node -e '...'` over twenty lines is ONE
+  // command, and a line of it that reads `pnpm test` is text, not a run.
+
+  it('does NOT split a multi-line single-quoted argument into commands', () => {
+    const command = ["node -e '", 'const a = 1;', 'pnpm test', "'"].join('\n');
+    expect(execSegments(command)).toEqual([
+      ['node', '-e', "'", 'const', 'a', '=', '1;', 'pnpm', 'test', "'"],
+    ]);
+    expect(checkRunner(command)).toBeUndefined();
+  });
+
+  it('does NOT split a multi-line double-quoted argument, honouring its escapes', () => {
+    const command = ['python3 -c "', 'print(\\"x\\")', 'cargo test', '"', 'pnpm lint'].join('\n');
+    expect(execSegments(command).map((segment) => segment[0])).toEqual(['python3', 'pnpm']);
+    expect(checkRunner(command)).toBe('pnpm lint');
+  });
+
+  it('does NOT split on an operator inside quotes', () => {
+    expect(execSegments("node -e 'a && b; c | d'")).toHaveLength(1);
+    expect(checkRun('echo "x; y" && pnpm test')).toEqual({
+      runner: 'pnpm test',
+      exitStatusIsCheck: true,
+    });
+  });
+
+  it('reads an apostrophe in a comment as prose, not the start of a quote', () => {
+    const command = ["# it's the suite", 'pnpm test'].join('\n');
+    expect(checkRun(command)).toEqual({ runner: 'pnpm test', exitStatusIsCheck: true });
+  });
+
+  it('does NOT split a comment on the operators it mentions', () => {
+    expect(execSegments('pnpm build # then && pnpm test')).toEqual([['pnpm', 'build']]);
+  });
+
+  it('keeps `#` inside a word, which is not a comment', () => {
+    expect(execSegments('echo a#b')).toEqual([['echo', 'a#b']]);
+  });
+
+  it('does not let an apostrophe in a heredoc BODY open a quote', () => {
+    const command = ["cat > x <<'EOF'", "don't", 'EOF', 'pnpm test'].join('\n');
+    expect(checkRunner(command)).toBe('pnpm test');
+  });
+
+  it('reads the script of `sh -c` as the commands it runs', () => {
+    // Six of the 55 checks quote-awareness removed on the frozen corpus were runs like these.
+    expect(checkRun('env -i PATH=/bin sh -c "cd $PWD && npm test > /tmp/x.log 2>&1"')).toEqual({
+      runner: 'npm test',
+      exitStatusIsCheck: true,
+    });
+    expect(checkRun("bash -lc 'pnpm build; pnpm test'")?.runner).toBe('pnpm build');
+  });
+
+  it('carries the operator after `sh -c` onto its script, so a background run is not owned', () => {
+    expect(
+      checkRun("nohup sh -c 'S=1; npm test > log 2>&1' > /dev/null 2>&1 & echo started"),
+    ).toEqual({ runner: 'npm test', exitStatusIsCheck: false });
+  });
+
+  it('LIMITATION: an unterminated quote makes the rest of the command one argument', () => {
+    // The same direction of error as an unterminated heredoc: a missed run, never an invented one.
+    expect(checkRunner("echo 'oops\npnpm test")).toBeUndefined();
+  });
+
   it('LIMITATION: an unterminated heredoc swallows the checks after it', () => {
     // The measured cost of the rule, pinned here so it cannot change silently.
     // 5 of the real corpus's 12,818 openers are in this state.

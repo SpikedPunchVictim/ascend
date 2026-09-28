@@ -489,9 +489,92 @@ interface ExecStep {
   readonly next: string | undefined;
 }
 
+type Quote = "'" | '"' | undefined;
+
+/**
+ * One physical line with its quoted text MASKED -- every character inside quotes, and every
+ * character a backslash escapes, becomes `_` -- so a newline or an operator in an argument cannot
+ * be read as a boundary (asc-7gz2). The mask has the line's length, so a position found in it is
+ * a position in the line. A comment is CUT, not masked: `#` at the start of a word ends the line,
+ * which keeps an apostrophe in `# it's` from opening a quote. `quote` is the state the line opens
+ * in and the state it leaves; a quote still open at the line's end continues onto the next.
+ *
+ * Not a shell parser, and deliberately so: no `$'...'`, backticks or `$(...)`. The measured
+ * damage was quoted program text (`node -e`, `python3 -c`), and quotes are what this reads.
+ */
+function maskLine(line: string, quote: Quote): { text: string; mask: string; quote: Quote } {
+  let mask = '';
+  for (let at = 0; at < line.length; at += 1) {
+    const char = line[at] ?? '';
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+      mask += char === "'" ? char : '_';
+    } else if (char === '\\' && quote === '"') {
+      mask += '__';
+      at += 1;
+    } else if (quote === '"') {
+      if (char === '"') quote = undefined;
+      mask += char === '"' ? char : '_';
+    } else if (char === '\\') {
+      mask += '__';
+      at += 1;
+    } else if (char === '#' && (at === 0 || /\s/.test(line[at - 1] ?? ''))) {
+      return { text: line.slice(0, at), mask, quote };
+    } else {
+      if (char === "'" || char === '"') quote = char;
+      mask += char;
+    }
+  }
+  return { text: line, mask: mask.slice(0, line.length), quote };
+}
+
+/** `text` cut at each operator the MASK shows, as alternating parts and operators. */
+function splitOperators(text: string, mask: string): string[] {
+  const parts: string[] = [];
+  const operators = new RegExp(OPERATOR.source, 'g');
+  let from = 0;
+  for (const found of mask.matchAll(operators)) {
+    parts.push(text.slice(from, found.index), found[0]);
+    from = found.index + found[0].length;
+  }
+  parts.push(text.slice(from));
+  return parts;
+}
+
+/** `sh -c`, `bash -lc`, `zsh -ec`...: a shell handed a script, and the quote the script opens with. */
+const SHELL_SCRIPT = /(?:^|\s)(?:\S*\/)?(?:ba|z)?sh\s+-[A-Za-z]*c[A-Za-z]*\s+(['"])/;
+
+/**
+ * The script a step hands to `sh -c`, unquoted, or `undefined`.
+ *
+ * Masking quotes (asc-7gz2) makes a quoted argument opaque, and the script of `sh -c` is the one
+ * quoted argument that IS commands: measured on the frozen corpus, 6 of the 55 checks that
+ * quote-awareness removed were real runs inside one, from 148 commands that use the form.
+ */
+function shellScript(raw: string): string | undefined {
+  const found = SHELL_SCRIPT.exec(raw);
+  if (found === null) return undefined;
+  const quote = found[1];
+  const from = found.index + found[0].length;
+  if (quote === "'") {
+    const to = raw.indexOf("'", from);
+    return to === -1 ? undefined : raw.slice(from, to);
+  }
+  for (let at = from; at < raw.length; at += 1) {
+    if (raw[at] === '\\') at += 1;
+    else if (raw[at] === '"') return raw.slice(from, at).replace(/\\(["\\$`])/g, '$1');
+  }
+  return undefined;
+}
+
 function execSteps(command: string): readonly ExecStep[] {
   const steps: { segment: readonly string[] | undefined; next: string | undefined }[] = [];
   let heredoc: string | undefined;
+  let quote: Quote;
+  // A logical line: physical lines joined while a quote is open across them.
+  let text = '';
+  let mask = '';
+  let open = false;
 
   for (const line of command.split('\n')) {
     if (heredoc !== undefined) {
@@ -499,18 +582,40 @@ function execSteps(command: string): readonly ExecStep[] {
       if (line.trim() === heredoc) heredoc = undefined;
       continue;
     }
-    const opened = HEREDOC.exec(line);
+    const read = maskLine(line, quote);
+    // The newline joining two physical lines is inside a quote, so the mask hides it too.
+    text = open ? `${text}\n${read.text}` : read.text;
+    mask = open ? `${mask}_${read.mask}` : read.mask;
+    quote = read.quote;
+    open = quote !== undefined;
+    if (open) continue;
 
-    const parts = line.split(OPERATOR);
+    // The opener is found in the mask, so `<<` inside quotes opens nothing; its tag is read from
+    // the text, because a quoted tag (`<<'EOF'`) is masked.
+    const opener = mask.indexOf('<<');
+    const opened = opener === -1 ? null : HEREDOC.exec(text.slice(opener));
+    const parts = splitOperators(text, mask);
     for (let at = 0; at < parts.length; at += 2) {
       const raw = parts[at] ?? '';
       if (raw.trim().length === 0) continue;
-      steps.push({ segment: stripSegment(raw), next: parts[at + 1] ?? '\n' });
+      const next = parts[at + 1] ?? '\n';
+      const script = shellScript(raw);
+      const inner = script === undefined ? [] : execSteps(script).map((step) => ({ ...step }));
+      const last = inner.at(-1);
+      if (last === undefined) {
+        steps.push({ segment: stripSegment(raw), next });
+      } else {
+        // The shell's status is its script's last step's, so that step inherits what follows.
+        last.next = next;
+        steps.push(...inner);
+      }
     }
 
     // After the line's own segments: the body starts on the NEXT line.
     if (opened !== null) heredoc = opened[1];
   }
+  // A quote never closed: what was read is one argument, as the shell would refuse to run it.
+  if (open && text.trim().length > 0) steps.push({ segment: stripSegment(text), next: '\n' });
 
   // A trailing `;` or line end is no operator: nothing follows it. A trailing `&` still is --
   // it backgrounds the step, and the command's status becomes 0 at once.

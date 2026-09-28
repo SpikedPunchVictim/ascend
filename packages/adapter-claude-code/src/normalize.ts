@@ -51,8 +51,12 @@ import type { TranscriptFile } from './transcript-file.js';
  *    task id and fields, at its FIRST sighting: a return already emitted at 5 now carries the
  *    enqueue's timestamp rather than the delivery's. On this project, 2026-09-28: 89 of 95
  *    spawns close, up from 45.
+ * 7: `check.run` and the `exec` segments behind shell events read quotes (asc-7gz2): a newline or
+ *    operator inside a quoted argument is no boundary, a comment is not a command, and the script
+ *    of `sh -c` is. Over 99,553 frozen Bash commands: 49 checks that were text are gone, 6 runs
+ *    inside `sh -c` are kept, and 5 checks now own their exit status.
  */
-export const EVENT_DERIVE_VERSION = 6;
+export const EVENT_DERIVE_VERSION = 7;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {

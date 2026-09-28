@@ -760,12 +760,13 @@ describe('review.finding, from a ReportFindings call', () => {
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 7: shell segments read quotes (asc-7gz2).
     // 6: `agent.return` is read from queue-operation and attachment records too (asc-ggd4).
     // 5: `tool.use.start` names the skill a `Skill` call loads (asc-tuur.2). 4: `review.finding`. Asserted as a number rather than against the constant, which would be
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(6);
+    expect(EVENT_DERIVE_VERSION).toBe(7);
   });
 });
 

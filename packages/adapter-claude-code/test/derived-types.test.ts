@@ -524,7 +524,7 @@ describe('derivationVersion', () => {
   });
 
   it('is 2 for verification_run, whose verdict rule changed (asc-6ola.6)', () => {
-    expect(derivationVersion('verification_run')).toBe(3);
+    expect(derivationVersion('verification_run')).toBe(4);
   });
 
   it('is 1 for every type whose rule never changed', () => {

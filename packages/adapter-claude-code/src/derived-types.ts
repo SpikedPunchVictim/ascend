@@ -131,7 +131,9 @@ export const DERIVED_SOURCE = 'derived:claude-code';
  *
  * `verification_run` went to 2 because its verdict was read from `is_error` even when a pipe or a
  * later command owned that status (asc-6ola.6, dogfood/0012), and to 3 because `prettier --write`
- * counted as a check (asc-6ola.15, dogfood/0015).
+ * counted as a check (asc-6ola.15, dogfood/0015), and to 4 because text inside quotes -- a
+`node -e` script, a `bd create` description -- was read as commands, while the script of `sh -c`
+was not (asc-7gz2, dogfood/0010).
  *
  * `skill_activation` went to 2 because it counted one activation per STREAM rather than per
  * request. A subagent inherits its parent's `attributionSkill`, so one run fanned out into 1 + N
@@ -141,7 +143,7 @@ export const DERIVED_SOURCE = 'derived:claude-code';
  * written.
  */
 const DERIVATION_VERSIONS: Readonly<Record<string, number>> = {
-  verification_run: 3,
+  verification_run: 4,
   skill_activation: 2,
 };
 
