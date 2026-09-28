@@ -7,7 +7,7 @@
 | **Surfaced by** | `asc types capture review_finding --json` on this repository's own transcripts, run to check Stage 4's success criterion |
 | **Entry type(s)** | `review_finding` (derived) |
 | **Severity** | P2 |
-| **Status** | fixed in `9792efb`; the lens-number gap is open as `asc-tuur.8` |
+| **Status** | fixed in `9792efb`; the lens-number gap closed under `asc-tuur.8` |
 
 ## What was found
 
@@ -64,6 +64,32 @@ hand-written handler, ingested into a scratch store from a copy of that one tran
 `17 rejected`, all for `file`. So on the same scope, the draft and the hand-written handler both
 write 0. The draft's extra failure is `class`: this report's Lens cells are numbers ("6", "1, 8"),
 and the draft cannot map them yet (`asc-tuur.8`).
+
+## A third, found fixing it (asc-tuur.8)
+
+The first fix for the numeric Lens cells mapped a number to the enum value at that **position**. On
+the same report it drafted this, exact output:
+
+```
+    "3": cross_implementation_divergence
+    "6": error_paths
+```
+
+bug-hunt's Lens 3 is Boundary Conditions and Lens 6 is Time & Concurrency: `review_finding`'s enum
+is alphabetical, not in the skill's order. The draft's own verification could not catch it,
+because a wrong enum value is still a valid one (`would_write 12`). What caught it was reading the
+drafted `maps:` block. Numbers are now read through the numbered headings (`### Lens 6: Time &
+Concurrency`) of the skill loaded before the table, whose text the load puts in the transcript.
+After that change, the draft and the hand-written handler, ingested together into a scratch store
+over this one transcript, agree on every row either writes:
+
+```
+rows with both 12 identical 12
+```
+
+**Pattern:** a check that validates against the type proves the value is *allowed*, not that it
+is *right*. Only a second, independent reading of the same row (here, the hand-written handler)
+tells the two apart.
 
 ## The pattern
 

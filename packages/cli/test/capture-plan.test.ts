@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { TranscriptFile } from '@ascend/adapter-claude-code';
-import type { TypeSpec } from '@ascend/core';
+import { runHandler, type NormalizedEvent, type TypeSpec } from '@ascend/core';
 import {
   createCapturePlanner,
   draftSayHandler,
   draftTableHandler,
   matchColumns,
+  numberedHeadings,
 } from '../src/capture-plan.js';
 import { loadHandler } from '../src/handler-yaml.js';
 
@@ -73,9 +74,25 @@ function write(content: string, session = 's-1') {
   ];
 }
 
-function skill(name: string, session = 's-1') {
+function skill(name: string, session = 's-1', text?: string) {
   n += 1;
   const id = `toolu_s${String(n)}`;
+  // A skill's load puts its text in the transcript as a meta user record, after the tool result.
+  const loaded =
+    text === undefined
+      ? []
+      : [
+          {
+            type: 'user',
+            isMeta: true,
+            sessionId: session,
+            message: {
+              content: [
+                { type: 'text', text: `Base directory for this skill: /s/${name}\n\n${text}` },
+              ],
+            },
+          },
+        ];
   return [
     {
       type: 'assistant',
@@ -90,11 +107,12 @@ function skill(name: string, session = 's-1') {
       sessionId: session,
       message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
     },
+    ...loaded,
   ];
 }
 
-function plan(records: readonly Record<string, unknown>[]) {
-  const planner = createCapturePlanner(SPEC);
+function plan(records: readonly Record<string, unknown>[], spec: TypeSpec = SPEC) {
+  const planner = createCapturePlanner(spec);
   for (const record of records) planner.accept(record, FILE);
   return planner.finish();
 }
@@ -148,8 +166,8 @@ describe('createCapturePlanner', () => {
   it('maps an enum cell by folding case and separators, and leaves the rest unmapped', () => {
     const [table] = plan(write(TABLE)).tables;
     expect([...(table?.values.get('severity') ?? [])]).toEqual([
-      ['SEV1', 'sev1'],
-      ['Sev 2', 'sev2'],
+      ['SEV1', { key: 'sev1', value: 'sev1', by: 'name' }],
+      ['Sev 2', { key: 'sev 2', value: 'sev2', by: 'name' }],
       ['P0', undefined],
     ]);
   });
@@ -214,5 +232,121 @@ describe('drafts', () => {
 
   it('drafts no say handler when nothing is missing', () => {
     expect(draftSayHandler(SPEC, { ...table, missing: ['tool_use_id'] })).toBeUndefined();
+  });
+});
+
+describe('reading a real report: a file in a section, a lens by number (asc-tuur.8)', () => {
+  // The enum is alphabetical, as review_finding's is, and the skill numbers its lenses in another
+  // order -- so a number read as a position in the enum would map every one of these wrongly.
+  const FINDING: TypeSpec = {
+    name: 'finding',
+    properties: [
+      { name: 'file', type: 'string', required: true, description: 'The file the finding is in.' },
+      { name: 'line', type: 'integer', description: 'The line it is anchored to.' },
+      { name: 'summary', type: 'text', required: true, description: 'The finding in its words.' },
+      {
+        name: 'class',
+        type: 'enum',
+        enum_values: ['boundary_conditions', 'error_paths', 'time_concurrency'],
+        required: true,
+        description: 'Which lens found this.',
+      },
+    ],
+  };
+  const SKILL = [
+    '### Lens 1: Time & Concurrency',
+    '### Lens 2: Boundary Conditions *(new)*',
+    '### Lens 3: Error Path Exerciser',
+    '### Step 4: Boundary Conditions',
+  ].join('\n');
+  const REPORT = [
+    '| # | Finding | Lens |',
+    '|---|---|---|',
+    '| 1 | `src/a.ts:3` — the cell names the file | 2 |',
+    '| 2 | the cell names none | 1 |',
+    '| 3 | nothing anywhere | 3, 1 |',
+    '',
+    '### 2. The section names it',
+    '',
+    'At src/b.ts:9, the value is read twice.',
+  ].join('\n');
+  const [table] = plan([...skill('hunt', 's-1', SKILL), ...write(REPORT)], FINDING).tables;
+  if (table === undefined) throw new Error('fixture has a table');
+
+  it('maps a number through the numbered headings of the skill loaded before the table', () => {
+    const values = table.values.get('class');
+    expect(values?.get('2')).toEqual({
+      key: '2',
+      value: 'boundary_conditions',
+      by: 'skill',
+      skill: 'hunt',
+    });
+    expect(values?.get('3, 1')?.value).toBe('error_paths');
+  });
+
+  it('leaves a number unmapped when no loaded skill numbers the column', () => {
+    const [bare] = plan(write(REPORT), FINDING).tables;
+    expect(bare?.values.get('class')?.get('2')).toBeUndefined();
+  });
+
+  it('reads only headings led by the column name, each fitting exactly one value', () => {
+    const numbered = numberedHeadings(
+      `${SKILL}\n### Lens 4: Boundary Time Concurrency Conditions`,
+      'lens',
+      ['boundary_conditions', 'time_concurrency'],
+    );
+    expect([...numbered]).toEqual([
+      ['1', 'time_concurrency'],
+      ['2', 'boundary_conditions'],
+    ]);
+  });
+
+  it('finds the file at the start of a cell, and else in the row’s own section', () => {
+    expect(table.paths).toEqual([
+      { property: 'file', line: 'line', column: 'finding', fromCell: 1, fromSection: 1, rows: 3 },
+    ]);
+  });
+
+  it('drafts a handler that reads both, and writes the rows that have a file', () => {
+    const text = draftTableHandler(FINDING, table, '1 session');
+    expect(text).toContain('section: section');
+    const run = runHandler(loadHandler(text));
+    const event: NormalizedEvent = {
+      kind: 'file.changed',
+      session_id: 's-1',
+      agent_id: 'main',
+      seq: 1,
+      call: 1,
+      derive_version: 5,
+      id: 'toolu_w',
+      tool: 'Write',
+      path: 'r.md',
+      before: '',
+      after: REPORT,
+    };
+    const rows = run.accept(event).map((row) => row.fields);
+    expect(rows.map((row) => [row['file'], row['line'], row['class']])).toEqual([
+      ['src/a.ts', '3', 'boundary_conditions'],
+      ['src/b.ts', '9', 'time_concurrency'],
+      [undefined, undefined, 'error_paths'],
+    ]);
+  });
+
+  it('asks for no column the draft already fills', () => {
+    expect(draftSayHandler(FINDING, table)).toBeUndefined();
+  });
+
+  it('names a capture so it never shadows a field of the trigger', () => {
+    const spec: TypeSpec = {
+      ...FINDING,
+      properties: FINDING.properties.map((one) =>
+        one.name === 'file' ? { ...one, name: 'path' } : one,
+      ),
+    };
+    const [withPath] = plan(write(REPORT), spec).tables;
+    if (withPath === undefined) throw new Error('fixture has a table');
+    const text = draftTableHandler(spec, withPath, '1 session');
+    expect(text).toContain('path: "${path_found}"');
+    expect(loadHandler(text).type).toBe('finding');
   });
 });
