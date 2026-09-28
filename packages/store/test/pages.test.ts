@@ -532,4 +532,24 @@ describe('paging: a filter joins the scope (asc-56k)', () => {
       ).toThrow(PredicateError);
     });
   });
+
+  it('quotes the caller’s own fragment in the refusal, not the projection it was wrapped in', () => {
+    withStore((store) => {
+      seed(store, 3);
+      const fragment = "cwd = 'x'; DROP TABLE entries; --";
+
+      let message = '';
+      try {
+        pageEntries(store.db, { type: SPEC.name, limit: 5, filter: fragment });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      // asc-jtc: the generated bare-column SELECT ran to over a thousand characters of text the
+      // caller never wrote and could not act on.
+      expect([message.includes(JSON.stringify(fragment)), message.includes('SELECT')]).toEqual([
+        true,
+        false,
+      ]);
+    });
+  });
 });

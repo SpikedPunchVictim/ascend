@@ -208,12 +208,16 @@ export class PredicateError extends Error {
  * file is built on: two copies of "what does 'more than one statement' mean" could disagree about
  * the exact wording a caller matches on, or about which state the refusal even is.
  */
-function assertSingleStatement(statement: string): void {
+function assertSingleStatement(statement: string, fragment: string): void {
   const count = statementCount(statement);
   if (count !== 1) {
+    // Quotes the caller's FRAGMENT, not the statement: over a projection the statement is a
+    // generated SELECT of every bare column, measured at 1,253 characters for one refusal
+    // (asc-jtc) -- text the caller never wrote and cannot act on. The count is still the wrapped
+    // statement's, because that is what decides.
     throw new PredicateError(
       `a predicate must be a single condition, and this one makes ${String(count)} statements ` +
-        `once wrapped as a WHERE clause: ${JSON.stringify(statement)}. A ';' outside a string ` +
+        `once wrapped as a WHERE clause: ${JSON.stringify(fragment)}. A ';' outside a string ` +
         `literal in the predicate is the usual cause. Refused rather than run, because SQLite runs ` +
         `the first statement and discards the rest in silence -- a match count from a truncated ` +
         `predicate would describe a rule that was never applied.`,
@@ -237,7 +241,7 @@ function assertSingleStatement(statement: string): void {
  */
 export function wrapPredicate(table: string, fragment: string): string {
   const statement = `SELECT id FROM ${table} WHERE (${fragment})`;
-  assertSingleStatement(statement);
+  assertSingleStatement(statement, fragment);
   return statement;
 }
 
@@ -248,6 +252,6 @@ export function wrapPredicate(table: string, fragment: string): string {
  */
 export function wrapPredicateOverQuery(projection: string, fragment: string): string {
   const statement = `SELECT id FROM (${projection}) WHERE (${fragment})`;
-  assertSingleStatement(statement);
+  assertSingleStatement(statement, fragment);
   return statement;
 }
