@@ -123,6 +123,7 @@ import {
   type Store,
 } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
+import { entryDifference, type EntryDifference } from '../../entry-difference.js';
 import { refusal } from '../../errors.js';
 import { registerDocument } from '../../register-document.js';
 import { identityVocabularyOf, type Disclosing } from '../../redact.js';
@@ -251,6 +252,23 @@ interface Writes {
   readonly rejections: readonly string[];
   /** One line per cross-file id collision. See `asc-90h`. */
   readonly collisions: readonly string[];
+  /** How many of those differ ONLY where the stored copy holds a redaction placeholder. */
+  readonly redactedCollisions: number;
+}
+
+/**
+ * One collision's line: the fields that differ, never a guessed cause (asc-o3tn, asc-j0vh).
+ * A difference that is only redaction is named as such, because it is the one case measured --
+ * 994 of 994 refusals on 2026-09-27 -- and the one no re-derive can ever reconcile.
+ */
+function collisionLine(id: string, type: string, difference: EntryDifference): string {
+  const fields = difference.fields.join(', ');
+  return difference.redacted
+    ? `${type} ${id}: already recorded with redacted ${fields} -- placeholders such as ` +
+        `<user> where the transcript holds the real value. A redacted row is never re-derived, ` +
+        `so this one was refused; the stored entry is unchanged.`
+    : `${type} ${id}: this id already holds a DIFFERENT entry, differing in ${fields}. This ` +
+        `one was refused rather than silently dropped; the stored entry is unchanged.`;
 }
 
 /**
@@ -629,6 +647,13 @@ export default class IngestClaudeCode extends BaseCommand {
      */
     const rejections: string[] = [];
     const collisions: string[] = [];
+    let redactedCollisions = 0;
+    const collide = (entry: DerivedEntry, existing: RecordedEntry): void => {
+      tally(entry.type, 'collided');
+      const difference = entryDifference(existing, entry);
+      if (difference.redacted) redactedCollisions += 1;
+      collisions.push(collisionLine(idFor(entry), entry.type, difference));
+    };
     const valid: DerivedEntry[] = [];
     for (const entry of entries) {
       const spec = handlers.specFor(entry.type);
@@ -699,12 +724,7 @@ export default class IngestClaudeCode extends BaseCommand {
           } else if (fingerprint(existing) === fingerprint(entry)) {
             tally(entry.type, 'present');
           } else {
-            tally(entry.type, 'collided');
-            collisions.push(
-              `${entry.type} ${idFor(entry)}: this id already holds a DIFFERENT entry. Two ` +
-                `transcript files reused the same (session, record) identity for different ` +
-                `content, so the second one would be refused rather than silently dropped.`,
-            );
+            collide(entry, existing);
           }
         }
         return;
@@ -749,24 +769,18 @@ export default class IngestClaudeCode extends BaseCommand {
           if (error instanceof DuplicateEntryError) {
             // `asc-90h`: a duplicate id is ordinary idempotency ONLY when it is a re-proposal of
             // the SAME content. `derive.ts`'s id has no file component, so an id already in the
-            // store can be re-proposed carrying something else -- today that means a transcript
-            // edited in place between two ingests, since `asc-iq6` made the deriver resolve the
-            // within-sweep case itself. Reading the existing row back and comparing content is
-            // what tells the two cases apart; skipping the comparison is exactly how this bug
-            // stayed invisible.
+            // store can be re-proposed carrying something else. Which fields differ is reported,
+            // not a guessed cause: the guess was "a transcript edited in place", and 994 of 994
+            // measured were rows stored redacted (asc-o3tn). Reading the existing row back and
+            // comparing content is what tells the two cases apart; skipping the comparison is
+            // exactly how this bug stayed invisible. A duplicate with no row to read is not a
+            // collision at all, so it is rethrown.
             const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
-            const sameContent =
-              existing !== undefined && fingerprint(existing) === fingerprint(entry);
-            if (sameContent) {
+            if (existing === undefined) throw error;
+            if (fingerprint(existing) === fingerprint(entry)) {
               tally(entry.type, 'present');
             } else {
-              tally(entry.type, 'collided');
-              collisions.push(
-                `${entry.type} ${idFor(entry)}: this id already holds a DIFFERENT entry. The ` +
-                  `same (session, record) identity was seen carrying different content -- most ` +
-                  `often a transcript edited after it was ingested -- so this one was refused ` +
-                  `rather than silently dropped. What is already recorded is unchanged.`,
-              );
+              collide(entry, existing);
             }
             continue;
           }
@@ -775,7 +789,7 @@ export default class IngestClaudeCode extends BaseCommand {
       }
     });
 
-    return { counts, warnings, rejections, collisions };
+    return { counts, warnings, rejections, collisions, redactedCollisions };
   }
 
   /**
@@ -942,9 +956,13 @@ export default class IngestClaudeCode extends BaseCommand {
       this.warn(
         `${String(collided)} derived entr${collided === 1 ? 'y' : 'ies'} collided with a ` +
           `DIFFERENT entry already recorded under the same id, and ` +
-          `${collided === 1 ? 'was' : 'were'} not written. See the line(s) below. The entry ` +
-          `already in the store stands: entries are immutable, so the newer content cannot ` +
-          `replace it under this id.`,
+          `${collided === 1 ? 'was' : 'were'} not written` +
+          (writes.redactedCollisions > 0
+            ? ` -- ${String(writes.redactedCollisions)} of them only where the stored copy ` +
+              `holds a redaction placeholder`
+            : '') +
+          `. See the line(s) below. The entry already in the store stands: entries are ` +
+          `immutable, so the newer content cannot replace it under this id.`,
       );
     }
     for (const collision of writes.collisions) this.warn(collision);

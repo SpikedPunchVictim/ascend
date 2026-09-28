@@ -933,6 +933,10 @@ describe('asc ingest claude-code', () => {
     expect(second.status).toBe(0);
     expect(outcomes(second.stdout)['user_correction']).toBe('1 collided');
     expect(second.stderr).toContain('1 derived entry collided with a DIFFERENT entry');
+    // asc-j0vh: the line names what differs and asserts no cause it never checked.
+    const unwrapped = second.stderr.replace(/\s+/g, ' ');
+    expect(unwrapped).toContain('differing in evidenceText');
+    expect(unwrapped).not.toContain('edited after it was ingested');
 
     // Immutability, read back: the edit did not overwrite what was already recorded.
     const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
@@ -944,6 +948,38 @@ describe('asc ingest claude-code', () => {
     } finally {
       db.close();
     }
+  });
+
+  /**
+   * asc-o3tn: every refusal measured on the live store was a row stored with a redaction
+   * placeholder where the transcript holds the real value. That is named as redaction, and
+   * counted in the summary, rather than reported as an edited transcript.
+   */
+  it('names a collision whose only difference is a stored placeholder as redaction', () => {
+    const dir = project();
+    const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
+    mkdirSync(corpus, { recursive: true });
+
+    const file = join(corpus, 'sess-redacted.jsonl');
+    const feedbackRecord = (feedback: string): Record<string, unknown> => ({
+      sessionId: 'sess-redacted',
+      uuid: 'shared-uuid-3',
+      timestamp: '2026-01-02T03:07:00.000Z',
+      ...RECORD_AT,
+      userFeedback: feedback,
+    });
+
+    writeFileSync(file, `${JSON.stringify(feedbackRecord('look in /home/<user>/work'))}\n`);
+    expect(asc(['ingest', 'claude-code'], dir).status).toBe(0);
+
+    writeFileSync(file, `${JSON.stringify(feedbackRecord('look in /home/alex/work'))}\n`);
+    const second = asc(['ingest', 'claude-code'], dir);
+
+    expect(second.status).toBe(0);
+    // Warnings wrap at the terminal width, so the words are read with the wrapping undone.
+    const stderr = second.stderr.replace(/\s+/g, ' ');
+    expect(stderr).toContain('1 of them only where the stored copy holds a redaction');
+    expect(stderr).toContain('already recorded with redacted evidenceText');
   });
 });
 
