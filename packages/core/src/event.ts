@@ -85,6 +85,12 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
     verdict: 'string',
     verdict_state: 'string',
     verdict_source: 'string',
+    /**
+     * The files the check named as its targets (`vitest run a.test.ts`), absent when it named
+     * none and so ran over its whole config (asc-gtnu.10). As written in the command: relative
+     * to where the check ran, unlike `file.changed`'s absolute `path`.
+     */
+    paths: 'array',
   },
   /** A subagent was started. `child_agent_id` is the `agent_id` of its own stream. */
   'agent.spawn': {

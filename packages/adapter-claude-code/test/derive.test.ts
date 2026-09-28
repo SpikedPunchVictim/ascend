@@ -139,6 +139,7 @@ describe('execSegments and checkRunner', () => {
       expect(checkRun('npx prettier --write . && pnpm test')).toEqual({
         runner: 'pnpm test',
         exitStatusIsCheck: true,
+        paths: [],
       });
     });
   });
@@ -252,12 +253,13 @@ describe('execSegments and checkRunner', () => {
     expect(checkRun('echo "x; y" && pnpm test')).toEqual({
       runner: 'pnpm test',
       exitStatusIsCheck: true,
+      paths: [],
     });
   });
 
   it('reads an apostrophe in a comment as prose, not the start of a quote', () => {
     const command = ["# it's the suite", 'pnpm test'].join('\n');
-    expect(checkRun(command)).toEqual({ runner: 'pnpm test', exitStatusIsCheck: true });
+    expect(checkRun(command)).toEqual({ runner: 'pnpm test', exitStatusIsCheck: true, paths: [] });
   });
 
   it('does NOT split a comment on the operators it mentions', () => {
@@ -278,6 +280,7 @@ describe('execSegments and checkRunner', () => {
     expect(checkRun('env -i PATH=/bin sh -c "cd $PWD && npm test > /tmp/x.log 2>&1"')).toEqual({
       runner: 'npm test',
       exitStatusIsCheck: true,
+      paths: [],
     });
     expect(checkRun("bash -lc 'pnpm build; pnpm test'")?.runner).toBe('pnpm build');
   });
@@ -285,7 +288,7 @@ describe('execSegments and checkRunner', () => {
   it('carries the operator after `sh -c` onto its script, so a background run is not owned', () => {
     expect(
       checkRun("nohup sh -c 'S=1; npm test > log 2>&1' > /dev/null 2>&1 & echo started"),
-    ).toEqual({ runner: 'npm test', exitStatusIsCheck: false });
+    ).toEqual({ runner: 'npm test', exitStatusIsCheck: false, paths: [] });
   });
 
   it('LIMITATION: an unterminated quote makes the rest of the command one argument', () => {
@@ -314,7 +317,11 @@ describe("checkRun: is the exit status the check's own", () => {
   const owns = (command: string): boolean | undefined => checkRun(command)?.exitStatusIsCheck;
 
   it('owns it when the check is the whole command', () => {
-    expect(checkRun('pnpm test')).toEqual({ runner: 'pnpm test', exitStatusIsCheck: true });
+    expect(checkRun('pnpm test')).toEqual({
+      runner: 'pnpm test',
+      exitStatusIsCheck: true,
+      paths: [],
+    });
   });
 
   it('owns it when only setup runs BEFORE the check', () => {
@@ -369,6 +376,33 @@ describe("checkRun: is the exit status the check's own", () => {
     expect(owns(["pnpm test && cat > x <<'EOF'", 'body', 'EOF', 'echo after'].join('\n'))).toBe(
       false,
     );
+  });
+
+  // asc-gtnu.10: which files a check named, so a finding can join the check that covered it.
+  it('names the files a check was pointed at', () => {
+    expect(checkRun('npx vitest run packages/cli/test/a.test.ts src/b.ts')?.paths).toEqual([
+      'packages/cli/test/a.test.ts',
+      'src/b.ts',
+    ]);
+  });
+
+  it('names no file for a check that ran over its whole config', () => {
+    expect(checkRun('npx vitest run')?.paths).toEqual([]);
+  });
+
+  it('reads a redirect file as where output went, not a target', () => {
+    expect(checkRun('npm test > /tmp/x.log 2>&1')?.paths).toEqual([]);
+    expect(checkRun('npx vitest run a.test.ts 2>err/x.log')?.paths).toEqual(['a.test.ts']);
+  });
+
+  it('reads a path right after a flag as the flag value, not a target', () => {
+    expect(checkRun('npx tsc -p packages/cli/tsconfig.json --noEmit')?.paths).toEqual([]);
+  });
+
+  it('names the targets of the check, not of a step around it', () => {
+    expect(checkRun('cat notes/a.md && npx vitest run test/b.test.ts')?.paths).toEqual([
+      'test/b.test.ts',
+    ]);
   });
 
   it('is undefined when the command runs no check', () => {

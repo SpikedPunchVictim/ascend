@@ -213,6 +213,20 @@ describe('createNormalizer', () => {
     });
   });
 
+  it('carries the files a check named, and omits the field when it named none', () => {
+    const events = normalize([
+      assistant([
+        { id: 't1', name: 'Bash', input: { command: 'npx vitest run test/a.test.ts' } },
+        { id: 't2', name: 'Bash', input: { command: 'npx vitest run' } },
+      ]),
+      toolResult('t1', false),
+      toolResult('t2', false),
+    ]);
+    const checks = events.filter((event) => event.kind === 'check.run');
+    expect(checks.map((event) => event['paths'])).toEqual([['test/a.test.ts'], undefined]);
+    expect(checks[1]).not.toHaveProperty('paths');
+  });
+
   it('counts search hits from Grep and from a shell search', () => {
     const events = normalize([
       assistant([{ id: 't1', name: 'Grep', input: { pattern: 'foo' } }]),
@@ -789,6 +803,7 @@ describe('review.finding, from a ReportFindings call', () => {
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 10: `check.run` carries `paths` (asc-gtnu.10).
     // 9: `review.finding` carries `reviewer_model` (asc-gtnu.11).
     // 8: a notification after the harness preamble is read (asc-wkmq).
     // 7: shell segments read quotes (asc-7gz2).
@@ -797,7 +812,7 @@ describe('review.finding, from a ReportFindings call', () => {
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(9);
+    expect(EVENT_DERIVE_VERSION).toBe(10);
   });
 });
 

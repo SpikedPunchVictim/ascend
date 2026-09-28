@@ -63,8 +63,10 @@ import type { TranscriptFile } from './transcript-file.js';
  *    writes it: 33 `ReportFindings` calls across every project on 2026-09-28, 0 from a
  *    `<synthetic>` record, so it is taken as-is, exactly like `derive.ts`. A new field; no count
  *    moves.
+ * 10: `check.run` carries `paths`, the files the check named as targets (asc-gtnu.10), so a
+ *    handler can ask whether a check ran on THIS file. A new field; no count moves.
  */
-export const EVENT_DERIVE_VERSION = 9;
+export const EVENT_DERIVE_VERSION = 10;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -483,15 +485,19 @@ export function createNormalizer(): Normalizer {
             'check.run',
             call,
             ts,
-            typeof read === 'object'
-              ? {
-                  id,
-                  runner: check.runner,
-                  verdict: read.verdict ? 'passed' : 'failed',
-                  verdict_state: 'measured',
-                  verdict_source: read.source,
-                }
-              : { id, runner: check.runner, verdict_state: 'not_measured' },
+            {
+              id,
+              runner: check.runner,
+              ...(typeof read === 'object'
+                ? {
+                    verdict: read.verdict ? 'passed' : 'failed',
+                    verdict_state: 'measured',
+                    verdict_source: read.source,
+                  }
+                : { verdict_state: 'not_measured' }),
+              // Absent, not empty, when the check names no file: it ran over its whole config.
+              ...(check.paths.length === 0 ? {} : { paths: check.paths }),
+            },
             batch,
           );
         }

@@ -486,7 +486,15 @@ const OPERATOR = /(\|\||&&|;|\|&|\|(?!&)|(?<![<>&])&(?![>&]))/;
  */
 interface ExecStep {
   readonly segment: readonly string[] | undefined;
+  /** The same tokens with their directories kept: a check's targets are paths (asc-gtnu.10). */
+  readonly words: readonly string[] | undefined;
   readonly next: string | undefined;
+}
+
+/** A step from its raw text: its words from the real head on, and those words basenamed. */
+function stepOf(raw: string, next: string | undefined): ExecStep {
+  const words = strippedWords(raw);
+  return { segment: words?.map((one) => one.split('/').pop() ?? one), words, next };
 }
 
 type Quote = "'" | '"' | undefined;
@@ -568,7 +576,11 @@ function shellScript(raw: string): string | undefined {
 }
 
 function execSteps(command: string): readonly ExecStep[] {
-  const steps: { segment: readonly string[] | undefined; next: string | undefined }[] = [];
+  const steps: {
+    segment: readonly string[] | undefined;
+    words: readonly string[] | undefined;
+    next: string | undefined;
+  }[] = [];
   let heredoc: string | undefined;
   let quote: Quote;
   // A logical line: physical lines joined while a quote is open across them.
@@ -603,7 +615,7 @@ function execSteps(command: string): readonly ExecStep[] {
       const inner = script === undefined ? [] : execSteps(script).map((step) => ({ ...step }));
       const last = inner.at(-1);
       if (last === undefined) {
-        steps.push({ segment: stripSegment(raw), next });
+        steps.push(stepOf(raw, next));
       } else {
         // The shell's status is its script's last step's, so that step inherits what follows.
         last.next = next;
@@ -615,7 +627,7 @@ function execSteps(command: string): readonly ExecStep[] {
     if (opened !== null) heredoc = opened[1];
   }
   // A quote never closed: what was read is one argument, as the shell would refuse to run it.
-  if (open && text.trim().length > 0) steps.push({ segment: stripSegment(text), next: '\n' });
+  if (open && text.trim().length > 0) steps.push(stepOf(text, '\n'));
 
   // A trailing `;` or line end is no operator: nothing follows it. A trailing `&` still is --
   // it backgrounds the step, and the command's status becomes 0 at once.
@@ -625,7 +637,7 @@ function execSteps(command: string): readonly ExecStep[] {
 }
 
 /** The step's tokens from its real head on, or `undefined` if stripping consumes them all. */
-function stripSegment(raw: string): readonly string[] | undefined {
+function strippedWords(raw: string): readonly string[] | undefined {
   const tokens = raw
     .trim()
     .split(/\s+/)
@@ -642,7 +654,7 @@ function stripSegment(raw: string): readonly string[] | undefined {
       at += 2;
       continue;
     }
-    return tokens.slice(at).map((one) => one.split('/').pop() ?? one);
+    return tokens.slice(at);
   }
   return undefined;
 }
@@ -704,19 +716,56 @@ export function checkRunner(command: string): string | undefined {
  * `set -o pipefail` would make a pipe honest, and is not honoured: 9 of 8,339 check runs
  * mention it, and treating them as masked costs a verdict, never a wrong one.
  */
-export function checkRun(
-  command: string,
-): { readonly runner: string; readonly exitStatusIsCheck: boolean } | undefined {
+export function checkRun(command: string):
+  | {
+      readonly runner: string;
+      readonly exitStatusIsCheck: boolean;
+      readonly paths: readonly string[];
+    }
+  | undefined {
   const steps = execSteps(command);
   for (const [at, step] of steps.entries()) {
     const label = step.segment === undefined ? undefined : checkLabel(step.segment);
-    if (label === undefined) continue;
+    if (label === undefined || step.words === undefined) continue;
     const exitStatusIsCheck = steps
       .slice(at)
       .every((later) => later.next === undefined || later.next === '&&');
-    return { runner: label.slice(0, 60), exitStatusIsCheck };
+    return { runner: label.slice(0, 60), exitStatusIsCheck, paths: targetPaths(step.words) };
   }
   return undefined;
+}
+
+/** A redirection operator standing alone, whose file is the next word. */
+const REDIRECT = /^\d*(?:[<>]{1,2}|&>{1,2}|>\|)$/;
+
+/** A path with a directory in it, or a file name with a source-like extension. */
+const PATH_SHAPED =
+  /^(?:\.{0,2}\/)?[\w@.*-]+(?:\/[\w@.*-]+)+\/?$|^[\w@.-]+\.(?:[cm]?[jt]sx?|py|rs|go|java|rb)$/;
+
+/**
+ * The files a check names as its targets (asc-gtnu.10): its path-shaped arguments, read from the
+ * words with their directories kept. A check that names none ran over whatever its config
+ * covers, and that is a different fact, so the list is then empty rather than guessed. Two
+ * arguments are never targets: one right after a flag is taken as the flag's value
+ * (`-p packages/cli/tsconfig.json`), and a redirect's file is where the output went. The cost is
+ * an undercount after a boolean flag (`--watch src/a.ts`): a missing path, never a wrong one.
+ *
+ * Measured over 99,553 frozen Bash commands, 2026-09-28: 1,335 of 8,638 check runs name a
+ * target, 1,019 of them `npx vitest` (of its 1,292 runs); 1,932 of the 1,945 paths named carry a
+ * directory.
+ */
+function targetPaths(words: readonly string[]): string[] {
+  return words.filter(
+    (token, at) =>
+      at > 0 &&
+      !token.startsWith('-') &&
+      !(words[at - 1] ?? '').startsWith('-') &&
+      // A redirect's file is where output went, not what was checked: `> x.log`, `2>x.log`.
+      !/[<>]/.test(token) &&
+      !REDIRECT.test(words[at - 1] ?? '') &&
+      !token.includes('://') &&
+      PATH_SHAPED.test(token),
+  );
 }
 
 /**

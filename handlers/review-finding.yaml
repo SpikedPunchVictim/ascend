@@ -41,8 +41,10 @@
 #
 # `catchable_by` IS DECLARED AND ALWAYS ABSENT. It is the join's own question -- "was this the kind of
 # defect a check could have caught" -- and it has no value on either side: the harness's findings
-# schema has no such field, and `check.run` carries no `path` at all (read off 1,495 events), so even
-# with the join there is no per-file check signal today. It starts as a `judged` field, the construct
+# schema has no such field. `check.run` carries `paths` since asc-gtnu.10, the files a check named as
+# targets (1,335 of 8,638 frozen check runs name any, mostly `vitest`), relative to where it ran; a
+# check that names none covered its whole config, which no field resolves to files. So the per-file
+# signal is partial, and the join itself is asc-gtnu.7's. It starts as a `judged` field, the construct
 # asc-6ola.9 shipped: `not_measured` is the store's default state and needs no encoding, so the field
 # is simply absent from `fields` and the declaration is the one thing that says the absence was
 # intended. Filling it is an ordinary later record against the same row, not a new mechanism.
