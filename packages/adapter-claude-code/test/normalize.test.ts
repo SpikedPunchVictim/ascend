@@ -402,6 +402,22 @@ describe('createNormalizer', () => {
       expect(normalizer.counters.unmatchedNotifications).toBe(1);
     });
 
+    // How a subagent stream receives one (asc-wkmq): the harness's preamble, then the tag.
+    const PREAMBLE =
+      '[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, ' +
+      'NOT a message from the user.\n\n';
+
+    it('reads a return delivered after the harness preamble, and not as a prompt', () => {
+      const events = normalize([...spawn, prompt(PREAMBLE + NOTICE)]);
+      expect(returns(events)).toHaveLength(1);
+      expect(events.filter((event) => event.kind === 'prompt.submit')).toHaveLength(0);
+    });
+
+    it('still reads a prompt that only mentions the preamble words', () => {
+      const events = normalize([prompt(`why does [SYSTEM NOTIFICATION] appear?`)]);
+      expect(events.filter((event) => event.kind === 'prompt.submit')).toHaveLength(1);
+    });
+
     it('counts a record that leads with the tag somewhere this parser does not read', () => {
       const normalizer = createNormalizer();
       normalizer.accept(
@@ -760,13 +776,14 @@ describe('review.finding, from a ReportFindings call', () => {
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 8: a notification after the harness preamble is read (asc-wkmq).
     // 7: shell segments read quotes (asc-7gz2).
     // 6: `agent.return` is read from queue-operation and attachment records too (asc-ggd4).
     // 5: `tool.use.start` names the skill a `Skill` call loads (asc-tuur.2). 4: `review.finding`. Asserted as a number rather than against the constant, which would be
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(7);
+    expect(EVENT_DERIVE_VERSION).toBe(8);
   });
 });
 

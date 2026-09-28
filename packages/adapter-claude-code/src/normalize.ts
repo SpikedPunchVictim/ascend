@@ -55,8 +55,12 @@ import type { TranscriptFile } from './transcript-file.js';
  *    operator inside a quoted argument is no boundary, a comment is not a command, and the script
  *    of `sh -c` is. Over 99,553 frozen Bash commands: 49 checks that were text are gone, 6 runs
  *    inside `sh -c` are kept, and 5 checks now own their exit status.
+ * 8: a notification is also read after the harness's `[SYSTEM NOTIFICATION - NOT USER INPUT]`
+ *    preamble (asc-wkmq), the only form a subagent stream receives one in. On this project,
+ *    2026-09-28: 12 such deliveries stop being `prompt.submit` events, and the one subagent-spawned
+ *    async fork whose return was missing now closes.
  */
-export const EVENT_DERIVE_VERSION = 7;
+export const EVENT_DERIVE_VERSION = 8;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -194,7 +198,7 @@ function promptText(record: TranscriptRecord): string | undefined {
   if (record['type'] !== 'user' || record['isMeta'] === true) return undefined;
   const content = rec(record['message'])?.['content'];
   if (typeof content === 'string') {
-    return content.trimStart().startsWith('<task-notification>') ? undefined : str(content);
+    return NOTIFICATION.test(content) ? undefined : str(content);
   }
   if (!Array.isArray(content)) return undefined;
   const parts = content as readonly unknown[];
@@ -209,7 +213,13 @@ function promptText(record: TranscriptRecord): string | undefined {
   return str(joined);
 }
 
-const NOTIFICATION = /^\s*<task-notification>/;
+/**
+ * A notification leads its text, or follows the harness's own preamble. A subagent stream is
+ * delivered notifications ONLY in the preamble form -- 12 of 12 there, 0 read in any other shape
+ * in the same stream (asc-wkmq) -- so without it a subagent's own async child never returns, and
+ * the delivery was read as a prompt the user typed.
+ */
+const NOTIFICATION = /^\s*(?:\[SYSTEM NOTIFICATION - NOT USER INPUT\][^<]*)?<task-notification>/;
 
 /**
  * The text of a `<task-notification>`, from each record shape measured to carry one, or
@@ -228,7 +238,7 @@ function notificationText(record: TranscriptRecord): string | undefined {
   return typeof content === 'string' && NOTIFICATION.test(content) ? content : undefined;
 }
 
-/** Whether any string in `value`, at any depth, leads with the notification tag. */
+/** Whether any string in `value`, at any depth, leads with the notification tag or its preamble. */
 function leadsWithNotification(value: unknown): boolean {
   if (typeof value === 'string') return NOTIFICATION.test(value);
   if (Array.isArray(value)) return value.some(leadsWithNotification);
