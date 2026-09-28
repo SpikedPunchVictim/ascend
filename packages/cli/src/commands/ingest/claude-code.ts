@@ -148,6 +148,9 @@ const OUTCOME = 'outcome';
  * `occurred_at` or `runner` can be rewritten by a later rule and the entry is still the same
  * event, so the re-run recognises it instead of writing a second copy.
  */
+/** A typed handler's entry key: `<handler>@<hash12>:<session>:...` (`typed-handlers.ts`). */
+const HANDLER_KEY = /^([A-Za-z0-9_.-]+)@[0-9a-f]{12}:/;
+
 function idFor(entry: DerivedEntry): string {
   // `@n` only once a type's derivation rule has changed (`derivationVersion`), so the ids of
   // every type still on its first rule are byte-identical to the ones earlier runs wrote.
@@ -616,9 +619,18 @@ export default class IngestClaudeCode extends BaseCommand {
       const validated = validateEntry(spec, { properties: entry.properties });
       if (!validated.ok) {
         tally(entry.type, 'rejected');
+        // A typed handler's row is keyed `<handler>@<hash>:...`. The fix `validateEntry` offers
+        // is `asc record` advice, which is wrong for a row a handler wrote (asc-tuur.7): what
+        // to change is the handler, or the report it read.
+        const handler = HANDLER_KEY.exec(entry.key)?.[1];
         for (const issue of validated.errors) {
+          const fix =
+            handler === undefined
+              ? issue.fix
+              : `the handler ${handler} did not supply a value the type accepts; change the ` +
+                `handler or the report it reads -- a handler's row is never recorded by hand`;
           rejections.push(
-            `${entry.type} ${idFor(entry)}: ${issue.field}: ${issue.problem} (${issue.fix})`,
+            `${entry.type} ${idFor(entry)}: ${issue.field}: ${issue.problem} (${fix})`,
           );
         }
         continue;

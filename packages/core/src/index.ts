@@ -105,6 +105,7 @@ export {
   MAX_SUBJECT_LENGTH,
   compileHandler,
   handlerTokens,
+  markdownSections,
   markdownTables,
   runHandler,
   type ClosedBy,

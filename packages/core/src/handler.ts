@@ -23,7 +23,10 @@
  * the caller's job: this module still writes nothing, and a typed handler replays exactly like an
  * untyped one. `each: {table: <field>}` fans out over the rows of the markdown tables in a string
  * field, and `maps:` normalises a cell onto a closed vocabulary -- together, what it takes to read
- * a report a workflow already writes instead of asking the workflow to change.
+ * a report a workflow already writes instead of asking the workflow to change. `each.section`
+ * joins a row to the markdown section its first cell names, and a `capture:` given as a list of
+ * sources tries each in order -- for a report that keeps a finding's file in its own section
+ * rather than in the table (asc-tuur.7).
  *
  * IDENTITY is the sha256 of the canonical parsed form: comments and formatting do not change it,
  * and any change of meaning does.
@@ -179,6 +182,60 @@ export function markdownTables(text: string): MarkdownTable[] {
   return tables;
 }
 
+/** A row key or heading label as a lookup key: `**#3**`, `` `B3` `` and `b3` are `3`, `b3`, `b3`. */
+const sectionKey = (cell: string): string => cell.replace(/[`*#\s]/g, '').toLowerCase();
+
+/**
+ * A heading's key: the label a findings table's row names it by. `### 3. Title`, `### #3 -- Title`,
+ * `## Finding 3 -- Title` and `### B3 -- Title` are `3`, `3`, `3` and `b3`. A heading that starts
+ * with a range (`### 17-31`) covers several rows, so it is no row's section.
+ */
+const HEADING_KEY = /^(?:finding\s+)?#?([a-z]{0,3}\d+)(?![a-z0-9])(?!\s*[-\u2013\u2014]\s*\d)/i;
+
+/**
+ * The markdown sections of `text` by heading key: each one's text from its heading to the next
+ * heading at the same level or above. A key two headings share is left out -- which section a row
+ * meant is then a guess, and a guessed file is worse than a missing one.
+ *
+ * Exported for `asc types capture` (asc-tuur.8), for the reason `markdownTables` is.
+ */
+export function markdownSections(text: string): ReadonlyMap<string, string> {
+  const lines = text.slice(0, MAX_SUBJECT_LENGTH).split('\n');
+  const headings: { at: number; level: number; key: string | undefined }[] = [];
+  let fenced = false;
+  lines.forEach((line, at) => {
+    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+    const heading = fenced ? null : /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading === null) return;
+    const key = HEADING_KEY.exec((heading[2] ?? '').trim())?.[1];
+    headings.push({ at, level: (heading[1] ?? '').length, key: key?.toLowerCase() });
+  });
+  const found = new Map<string, string>();
+  const shared = new Set<string>();
+  headings.forEach((one, index) => {
+    if (one.key === undefined) return;
+    if (found.has(one.key)) {
+      shared.add(one.key);
+      return;
+    }
+    const end = headings.slice(index + 1).find((next) => next.level <= one.level)?.at;
+    found.set(one.key, lines.slice(one.at, end).join('\n'));
+  });
+  for (const key of shared) found.delete(key);
+  return found;
+}
+
+/** The first of a capture's sources whose field holds a string its regex matches. */
+function firstCapture(capture: Capture, read: (field: string) => unknown): string | undefined {
+  for (const source of capture.from) {
+    const text = read(source.field);
+    if (typeof text !== 'string') continue;
+    const value = source.regex.exec(text.slice(0, MAX_SUBJECT_LENGTH))?.[source.group];
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 /**
  * Look a cell up in a `maps:` vocabulary: the whole value, then its first `,` piece, then that
  * piece's first `/` piece -- the first that the map knows.
@@ -240,11 +297,21 @@ export interface HandlerRow {
 type Scope = (name: string) => unknown;
 type Test = (event: NormalizedEvent, trigger: Scope) => boolean;
 
-interface Capture {
-  readonly name: string;
+/** One place a capture looks: a field, and the regex group that reads the value out of it. */
+interface CaptureSource {
   readonly field: string;
   readonly regex: RegExp;
   readonly group: number;
+}
+
+/**
+ * A named value read out of a field by regex. `from` holds one source, or -- written as a list in
+ * the YAML -- several, tried in order until one matches (asc-tuur.7: a report's Finding cell names
+ * the file, or else the finding's own section does).
+ */
+interface Capture {
+  readonly name: string;
+  readonly from: readonly CaptureSource[];
 }
 
 interface ArrayEach {
@@ -264,6 +331,12 @@ interface TableEach {
   readonly field: string;
   readonly header: readonly string[];
   readonly as: string;
+  /**
+   * When set, `${as.<section>}` is the text of the markdown section the row's first cell names
+   * (asc-tuur.7) -- the heading `### 3.`, `### #3`, `## Finding 3` or `### B3` for a row keyed
+   * `3` or `B3`. Absent when no heading, or more than one, carries that key.
+   */
+  readonly section: string | undefined;
 }
 
 type Each = ArrayEach | TableEach;
@@ -985,33 +1058,16 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     if (!NAME.test(name)) refuse(`${at}: a capture name is lowercase letters, digits and _`);
     if (eventFieldType(on, name) !== undefined)
       refuse(`${at}: shadows the trigger's own field ${name}`);
-    if (!isMap(spec)) return refuse(`${at}: must be a map`);
-    for (const key of Object.keys(spec)) {
-      if (!['field', 'regex', 'group', 'flags'].includes(key)) refuse(`${at}: unknown key ${key}`);
+    const list = Array.isArray(spec);
+    if (list && spec.length === 0) refuse(`${at}: a list of sources must not be empty`);
+    const sources = (list ? (spec as readonly unknown[]) : [spec]).map((one, index) =>
+      compileCaptureSource(one, list ? `${at}[${String(index)}]` : at, on, tableAs),
+    );
+    const perRow = sources.map(([, row]) => row);
+    if (perRow.some((row) => row !== perRow[0])) {
+      refuse(`${at}: every source reads a table row (${String(tableAs)}.<column>), or none does`);
     }
-    const field = spec['field'];
-    const perRow =
-      tableAs !== undefined && typeof field === 'string' && field.startsWith(`${tableAs}.`);
-    if (perRow) {
-      if (!NAME.test(field.slice(tableAs.length + 1))) {
-        refuse(`${at}.field: ${field} -- a column is its snake-cased header name`);
-      }
-    } else if (typeof field !== 'string' || pathType(on, field, at) !== 'string') {
-      refuse(`${at}.field: must name a string field of ${on}`);
-    }
-    const group = spec['group'] ?? 1;
-    if (typeof group !== 'number' || !Number.isInteger(group) || group < 0) {
-      refuse(`${at}.group: must be a whole number`);
-    }
-    return [
-      {
-        name,
-        field: field as string,
-        regex: regex(spec['regex'], spec['flags'], at),
-        group: group as number,
-      },
-      perRow,
-    ];
+    return [{ name, from: sources.map(([one]) => one) }, perRow[0] ?? false];
   });
   const captures = allCaptures.filter(([, perRow]) => !perRow).map(([one]) => one);
   const itemCaptures = allCaptures.filter(([, perRow]) => perRow).map(([one]) => one);
@@ -1143,6 +1199,41 @@ function compileMaps(spec: unknown): ReadonlyMap<string, ReadonlyMap<string, str
   return out;
 }
 
+/** One capture source, and whether it reads a table row's cell rather than a trigger field. */
+function compileCaptureSource(
+  spec: unknown,
+  at: string,
+  on: string,
+  tableAs: string | undefined,
+): [CaptureSource, boolean] {
+  if (!isMap(spec)) return refuse(`${at}: must be a map`);
+  for (const key of Object.keys(spec)) {
+    if (!['field', 'regex', 'group', 'flags'].includes(key)) refuse(`${at}: unknown key ${key}`);
+  }
+  const field = spec['field'];
+  const perRow =
+    tableAs !== undefined && typeof field === 'string' && field.startsWith(`${tableAs}.`);
+  if (perRow) {
+    if (!NAME.test(field.slice(tableAs.length + 1))) {
+      refuse(`${at}.field: ${field} -- a column is its snake-cased header name`);
+    }
+  } else if (typeof field !== 'string' || pathType(on, field, at) !== 'string') {
+    refuse(`${at}.field: must name a string field of ${on}`);
+  }
+  const group = spec['group'] ?? 1;
+  if (typeof group !== 'number' || !Number.isInteger(group) || group < 0) {
+    refuse(`${at}.group: must be a whole number`);
+  }
+  return [
+    {
+      field: field as string,
+      regex: regex(spec['regex'], spec['flags'], at),
+      group: group as number,
+    },
+    perRow,
+  ];
+}
+
 function compileTableEach(
   spec: Readonly<Record<string, unknown>>,
   on: string,
@@ -1151,7 +1242,7 @@ function compileTableEach(
 ): TableEach {
   for (const key of Object.keys(spec)) {
     if (key === 'field') refuse('each: table and field are two different fan-outs -- pick one');
-    if (!['table', 'header', 'as'].includes(key)) refuse(`each: unknown key ${key}`);
+    if (!['table', 'header', 'as', 'section'].includes(key)) refuse(`each: unknown key ${key}`);
   }
   const field = spec['table'];
   if (typeof field !== 'string' || pathType(on, field, 'each.table') !== 'string') {
@@ -1177,7 +1268,14 @@ function compileTableEach(
   ) {
     refuse(`each.as: ${as} shadows a field or capture`);
   }
-  return { mode: 'table', field, header: columns, as };
+  const section = spec['section'];
+  if (section !== undefined && (typeof section !== 'string' || !NAME.test(section))) {
+    refuse('each.section: must be a name, the column the section is read as');
+  }
+  if (typeof section === 'string' && columns.includes(section)) {
+    refuse(`each.section: ${section} is also a header column -- name the section something else`);
+  }
+  return { mode: 'table', field, header: columns, as, section: section as string | undefined };
 }
 
 /**
@@ -1403,6 +1501,7 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     const text = read(trigger, each.field);
     if (typeof text !== 'string') return [];
     const out: HandlerRow[] = [];
+    const sections = each.section === undefined ? undefined : markdownSections(text);
     let item = 0;
     for (const table of markdownTables(text)) {
       if (!each.header.every((column) => table.header.includes(column))) continue;
@@ -1419,10 +1518,16 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
             cellsByName.set(column, cellsOfRow[at] ?? '');
           }
         });
+        if (each.section !== undefined) {
+          const body = sections?.get(sectionKey(cellsOfRow[0] ?? ''));
+          if (body === undefined) cellsByName.delete(each.section);
+          else cellsByName.set(each.section, body);
+        }
         const captured = new Map<string, string>();
         for (const capture of handler.itemCaptures) {
-          const cell = cellsByName.get(capture.field.slice(each.as.length + 1));
-          const value = cell === undefined ? undefined : capture.regex.exec(cell)?.[capture.group];
+          const value = firstCapture(capture, (field) =>
+            cellsByName.get(field.slice(each.as.length + 1)),
+          );
           if (value !== undefined) captured.set(capture.name, value);
         }
         const prefix = `${each.as}.`;
@@ -1573,10 +1678,7 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
 
     const captured: Record<string, string> = {};
     for (const capture of handler.captures) {
-      const source = read(event, capture.field);
-      if (typeof source !== 'string') continue;
-      const found = capture.regex.exec(source.slice(0, MAX_SUBJECT_LENGTH));
-      const value = found?.[capture.group];
+      const value = firstCapture(capture, (field) => read(event, field));
       if (value !== undefined) captured[capture.name] = value;
     }
     const scope: Scope = (name) =>

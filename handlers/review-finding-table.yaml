@@ -13,8 +13,19 @@
 # 76 rows from 5 report Writes in 4 sessions -- every one a bug-hunt report, reconciled per Write
 # against an independent header count (12+5, 17, 11, 31). 28 of the 29 refusals are rows whose Finding
 # cell names no file: two reports keep each finding's `file:line` in a per-finding section keyed by the
-# row's `#`, not in the table. One row's lens cell maps to nothing. Filed as a follow-up rather than
-# guessed at here.
+# row's `#`, not in the table. One row's lens cell maps to nothing.
+#
+# THE SECTION JOIN (asc-tuur.7). `each.section` binds each row's per-finding section -- the heading its
+# `#` cell names (`### 3.`, `### #3`, `### B3`, `## Finding 3`) -- and `file`/`line` fall back to the
+# first `path:line` in it when the Finding cell names no file. Re-measured 2026-09-27 the same way, 6
+# report Writes in 5 sessions:
+#
+#   entry    review_finding        423 new, 11 rejected      (the rest are ReportFindings rows)
+#   handler  review-finding-table  77 row(s) as review_finding, 1 malformed table row(s),
+#                                  1 left to the reported route in the same session
+#
+# 65 parsed rows written, up from 47; all 11 refusals are rows whose section names no file either
+# (1 also has an unmapped lens). A key two headings share joins nothing, rather than a guessed one.
 #
 # `type: review_finding` makes this a TYPED handler: `asc ingest claude-code` writes each row as a
 # `review_finding` entry with `captured_by: parsed`, keyed on the Write's tool_use id and the row's
@@ -43,13 +54,18 @@ each:
   table: after
   header: [finding, lens]
   as: row
+  section: section
 capture:
   file:
-    field: row.finding
-    regex: '^[`*]*([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)'
+    - field: row.finding
+      regex: '^[`*]*([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)'
+    - field: row.section
+      regex: '([A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+|[A-Za-z0-9_-]+\.[a-z]{1,4}):\d+'
   line:
-    field: row.finding
-    regex: '^[`*]*[A-Za-z0-9_./-]+\.[A-Za-z0-9]+:(\d+)'
+    - field: row.finding
+      regex: '^[`*]*[A-Za-z0-9_./-]+\.[A-Za-z0-9]+:(\d+)'
+    - field: row.section
+      regex: '(?:[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+|[A-Za-z0-9_-]+\.[a-z]{1,4}):(\d+)'
 before:
   on: model.context
 maps:

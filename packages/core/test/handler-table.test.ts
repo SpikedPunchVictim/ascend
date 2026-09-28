@@ -235,3 +235,98 @@ describe('compileHandler refuses a typed or table handler that would silently ma
     expect(refused({ on: 'file.changed', emit: { a: '${row.lens}' } })).toMatch(/no field "row"/);
   });
 });
+
+describe('each.section: a row joined to the markdown section its first cell names (asc-tuur.7)', () => {
+  const SECTIONED = [
+    '## Issue Rating Table',
+    '',
+    '| # | Finding | Lens |',
+    '|---|---------|------|',
+    '| 1 | the writer accepts a trailing separator | Write/Read |',
+    '| **B2** | `src/clock.ts:9` — a retry reads the wall clock | 6 |',
+    '| 3 | a finding whose section is ambiguous | Boundary |',
+    '| 4 | a finding with no section | Boundary |',
+    '| 17 | one of a range | Boundary |',
+    '',
+    '## Detailed Findings',
+    '',
+    '### 1. The writer accepts a trailing separator',
+    '',
+    'At `src/state.ts:412`, the separator is kept.',
+    '',
+    '### B2 — A retry reads the wall clock',
+    '',
+    'See src/other.ts:5.',
+    '',
+    '### 3. First heading keyed 3',
+    '',
+    'src/one.ts:1',
+    '',
+    '## Finding 3 — second heading keyed 3',
+    '',
+    'src/two.ts:2',
+    '',
+    '### 17–31',
+    '',
+    'src/range.ts:1',
+    '',
+    '```',
+    '### 4. a heading inside a code fence is not a heading',
+    'src/fenced.ts:1',
+    '```',
+  ].join('\n');
+
+  const SECTION_HANDLER = {
+    ...TABLE_HANDLER,
+    each: { ...TABLE_HANDLER.each, section: 'section' },
+    capture: {
+      file: [
+        { field: 'row.finding', regex: '^`?([^\\s`:]+\\.[A-Za-z0-9]+):' },
+        { field: 'row.section', regex: '([A-Za-z0-9_./-]+\\.[A-Za-z0-9]+):\\d+' },
+      ],
+    },
+    emit: { file: '${file}', summary: '${row.finding}' },
+  };
+
+  const files = (): (string | undefined)[] =>
+    run(SECTION_HANDLER, [changed(SECTIONED)]).rows.map((row) => row.fields['file']);
+
+  it('reads the file from the section when the Finding cell names none', () => {
+    expect(files()[0]).toBe('src/state.ts');
+  });
+
+  it('tries the sources in order, so a file in the cell wins over one in the section', () => {
+    expect(files()[1]).toBe('src/clock.ts');
+  });
+
+  it('joins no section for a key two headings share, rather than guessing one', () => {
+    expect(files()[2]).toBeUndefined();
+  });
+
+  it('joins no section for a row whose key only a code fence or a range heading carries', () => {
+    expect([files()[3], files()[4]]).toEqual([undefined, undefined]);
+  });
+
+  it('refuses a section name that is also a header column', () => {
+    expect(
+      refused({ ...SECTION_HANDLER, each: { ...SECTION_HANDLER.each, section: 'finding' } }),
+    ).toMatch(/also a header column/);
+  });
+
+  it('refuses a capture whose sources mix a row cell and a trigger field', () => {
+    const mixed = {
+      ...SECTION_HANDLER,
+      capture: {
+        file: [
+          { field: 'row.finding', regex: '(x)' },
+          { field: 'path', regex: '(x)' },
+        ],
+      },
+    };
+    expect(refused(mixed)).toMatch(/every source reads a table row/);
+  });
+
+  it('refuses an empty list of sources', () => {
+    expect(refused({ ...SECTION_HANDLER, capture: { file: [] } })).toMatch(/must not be empty/);
+  });
+});

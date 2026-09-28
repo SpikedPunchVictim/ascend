@@ -201,6 +201,15 @@ describe('asc ingest claude-code with a typed handler (asc-tuur.3)', () => {
     );
   });
 
+  it('says a refused row is the handler’s to fix, not a command to record by hand', () => {
+    // asc-tuur.7: the hint was `asc record review_finding --na file`, advice for a hand record.
+    const dir = project();
+    transcript(dir, 's-1', reportSession('s-1'));
+    const stderr = asc(['ingest', 'claude-code'], dir).stderr.replace(/\s+/g, ' ');
+    expect(stderr).toMatch(/the handler review-finding-table did not supply a value/);
+    expect(stderr).not.toMatch(/asc record review_finding/);
+  });
+
   it('is idempotent: a second run proposes the same ids and writes nothing', () => {
     const dir = project();
     transcript(dir, 's-1', reportSession('s-1'));
