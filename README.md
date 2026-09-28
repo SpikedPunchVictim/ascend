@@ -241,12 +241,16 @@ Honest about what exists, because a README that overstates is worse than one tha
 `--page`, `--sample`, `--max-tokens`, `--dump`, and the `--select`, `--filter` and `--group-by`
 drill-down), `asc stats` and the analysis layer behind it, `asc annotate`, `asc kappa`,
 `asc invalidate`, `asc export` and `asc import`, `asc handlers check` and `compare`, and
-`asc install-hook` and `asc install-skill` (the analysis skill and its slash command).
+`asc install-hook` and `asc install-skill` (the analysis skill and its slash command), and
+`asc doctor` (dead types, near-duplicate names, version drift, per-property not_applicable and
+not_measured counts, and the brief's size against its 2,000-token cap).
 
 Underneath all of them the store, the registry, generated views and the three-state model are
 complete.
 
-**Not built yet:** `asc doctor`. Nothing distributes derived entries *across* projects either —
+**Not built yet:** `asc doctor` cannot say whether an export exists (`asc export` writes to
+stdout and records nothing) or whether a type has ever been analysed (`asc stats` runs are not
+recorded), and it says so rather than guessing. Nothing distributes derived entries *across* projects either —
 the ingest reads the whole transcript corpus and writes it into the store of the project you run it
 in, so a second project's store gets its own full copy.
 
