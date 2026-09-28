@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Bead** | `asc-ggd4` (P1, open) |
+| **Bead** | `asc-ggd4` (P1, fixed) |
 | **Surfaced** | 2026-09-26 |
 | **Surfaced by** | replaying `handlers/subagent-outcome.yaml` over this project's log under `asc-6ola.9`, then asking why the handler's count was 44 when the spawn count was 85 |
 | **Entry type(s)** | none — the finding is in the adapter's normalizer (`packages/adapter-claude-code/src/normalize.ts`); the affected event kind is `agent.return` (normalized) |
 | **Severity** | P1 — the project's severity-zero class ("silently drops a fact and reports nothing wrong") |
-| **Status** | open |
+| **Status** | fixed in the commit that adds **Resolution** (`EVENT_DERIVE_VERSION` 6) |
 
 ## What was found
 
@@ -169,6 +169,56 @@ question asked of the *data* rather than of the handler.
 - **Re-measuring is cheap and must not be done with a changed handler.** The fix lands in the
   adapter; the replay command and the handler file stay byte-identical, so the before/after is
   one variable.
+
+## Resolution
+
+The normalizer now reads a notification from all three record shapes that carry one:
+
+- `user`, the delivered message;
+- `queue-operation`, the tag in a top-level `content`;
+- `attachment`, in `attachment.prompt`.
+
+It emits one `agent.return` per task id and fields, at the first sighting. Records whose strings
+lead with the tag somewhere it does not read are counted as `unreadNotifications`. That is the
+counter whose absence made this finding invisible.
+
+**Why a dedupe was needed.** A measurement before the change showed that one notification is
+written up to three times. This project's transcripts, read-only, 2026-09-28, gave these counts
+for strings that lead with the tag:
+
+```
+354 queue-operation:enqueue @ .content
+235 queue-operation:remove @ .content
+223 attachment:queued_command @ .attachment.prompt
+117 user @ .message.content
+1 user @ .message.content[].content,.toolUseResult.stdout
+```
+
+A notification is identified by its task id and parsed fields. For 309 of the 310 task ids that
+have an enqueue, that key yields exactly one notification per enqueue. The one exception carries
+no fields at all, so it is an anecdote.
+
+**The metric.** `asc handlers check handlers/subagent-outcome.yaml --samples 0` was run before and
+after on the same 98 files:
+
+```
+                          before (v5)   after (v6)
+rows                      45            89
+triggers                  95            95
+unclosed                  50            6
+unmatchedNotifications    57            273
+unreadNotifications       --            1
+```
+
+- **unclosed.** Five of the 6 remaining are spawns with no `child_agent_id`, the same 5 EV-25
+  found. They have no tool result to join. The sixth is an async `fork` with a child id and no
+  return, and it is not characterised.
+- **unmatchedNotifications** rises because it now sees every notification. 269 of the 273 come
+  from the 220 task ids that were never agents, and all 220 have the background-shell id form
+  (`b` plus 8 characters). A background shell's completion notification is not an agent's return,
+  so these are correctly unmatched, and counted once each rather than once per record.
+- **unreadNotifications = 1** is the single tool result above whose output leads with the tag.
+  It is a tool that printed a notification, not a shape the harness writes.
 
 ## Links
 

@@ -330,6 +330,91 @@ describe('createNormalizer', () => {
     expect(normalizer.counters.unmatchedNotifications).toBe(1);
   });
 
+  describe('a notification in the records that queue and deliver it (asc-ggd4)', () => {
+    const NOTICE =
+      '<task-notification>\n<task-id>child9</task-id>\n<tool-use-id>t1</tool-use-id>\n' +
+      '<status>completed</status>\n<usage><subagent_tokens>1200</subagent_tokens></usage>\n' +
+      '</task-notification>';
+    const spawn = [
+      assistant([{ id: 't1', name: 'Agent', input: { subagent_type: 'Explore' } }]),
+      toolResult('t1', false, { toolUseResult: { agentId: 'child9', isAsync: true } }),
+    ];
+    // The shapes measured in this project's transcripts: the tag in a top-level `content`, with
+    // no `message`, and in an attachment's `prompt`.
+    const queued = (operation: string, timestamp = TS): TranscriptRecord => ({
+      type: 'queue-operation',
+      operation,
+      sessionId: 'sess-1',
+      timestamp,
+      content: NOTICE,
+    });
+    const absorbed: TranscriptRecord = {
+      type: 'attachment',
+      sessionId: 'sess-1',
+      timestamp: TS,
+      attachment: { type: 'queued_command', prompt: NOTICE },
+    };
+    const returns = (events: readonly NormalizedEvent[]) =>
+      events.filter((event) => event.kind === 'agent.return');
+
+    it('reads a return from a queue-operation record', () => {
+      expect(returns(normalize([...spawn, queued('enqueue')]))).toMatchObject([
+        { id: 't1', child_agent_id: 'child9', status: 'completed', tokens: 1200 },
+      ]);
+    });
+
+    it('reads a return from an attachment that absorbed it mid-turn', () => {
+      expect(returns(normalize([...spawn, absorbed]))).toHaveLength(1);
+    });
+
+    it('emits one return for a notification queued, dequeued and delivered', () => {
+      const events = normalize([
+        ...spawn,
+        queued('enqueue', '2026-09-24T10:00:05.000Z'),
+        queued('remove'),
+        absorbed,
+        prompt(NOTICE),
+      ]);
+      // At the first sighting: the enqueue is when the child returned.
+      expect(returns(events).map((event) => event.ts)).toEqual(['2026-09-24T10:00:05.000Z']);
+    });
+
+    it('emits a second return when the same task notifies again with other fields', () => {
+      const again = NOTICE.replace('1200', '1500');
+      expect(returns(normalize([...spawn, prompt(NOTICE), prompt(again)]))).toHaveLength(2);
+    });
+
+    it('still emits the return when a copy was seen before the spawn was known', () => {
+      const events = normalize([
+        spawn[0] as TranscriptRecord,
+        queued('enqueue'),
+        spawn[1] as TranscriptRecord,
+        absorbed,
+      ]);
+      expect(returns(events)).toHaveLength(1);
+    });
+
+    it('counts an unmatched notification once, however many records carry it', () => {
+      const normalizer = createNormalizer();
+      for (const one of [queued('enqueue'), queued('remove'), absorbed]) {
+        normalizer.accept(one, MAIN);
+      }
+      expect(normalizer.counters.unmatchedNotifications).toBe(1);
+    });
+
+    it('counts a record that leads with the tag somewhere this parser does not read', () => {
+      const normalizer = createNormalizer();
+      normalizer.accept(
+        { type: 'system', sessionId: 'sess-1', timestamp: TS, data: { note: NOTICE } },
+        MAIN,
+      );
+      // A mention inside prose is not a notification, and is not counted.
+      normalizer.accept(prompt(`what is a ${NOTICE}?`), MAIN);
+      expect(normalizer.counters.unreadNotifications).toBe(1);
+      expect(normalizer.counters.unmatchedNotifications).toBe(0);
+    });
+  });
+
   it('treats a synchronous agent result as its return', () => {
     const events = normalize([
       assistant([{ id: 't1', name: 'Task', input: { subagent_type: 'general-purpose' } }]),
@@ -675,11 +760,12 @@ describe('review.finding, from a ReportFindings call', () => {
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 6: `agent.return` is read from queue-operation and attachment records too (asc-ggd4).
     // 5: `tool.use.start` names the skill a `Skill` call loads (asc-tuur.2). 4: `review.finding`. Asserted as a number rather than against the constant, which would be
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(5);
+    expect(EVENT_DERIVE_VERSION).toBe(6);
   });
 });
 

@@ -20,7 +20,13 @@
  * settles it (dogfood/0012).
  */
 
-import { MAIN_AGENT, type EventRole, type EventValue, type NormalizedEvent } from '@ascend/core';
+import {
+  MAIN_AGENT,
+  canonicalJson,
+  type EventRole,
+  type EventValue,
+  type NormalizedEvent,
+} from '@ascend/core';
 import type { TranscriptRecord } from './decode.js';
 import { checkRun, execSegments, readVerdict } from './derive.js';
 import { isFindingLens } from './derived-types.js';
@@ -39,8 +45,14 @@ import type { TranscriptFile } from './transcript-file.js';
  *    finding will not be mistaken for a handler bug.
  * 5: `tool.use.start` carries `skill` on a `Skill` call (asc-tuur.2), so a handler can tell which
  *    skill a request loaded. A new field, not a new event: no count moves.
+ * 6: `agent.return` is also read from `queue-operation` and `attachment` records (asc-ggd4,
+ *    dogfood/0017), which is where the harness writes most task notifications. One notification is
+ *    written up to three times (queued, dequeued, delivered), so a return is emitted once per
+ *    task id and fields, at its FIRST sighting: a return already emitted at 5 now carries the
+ *    enqueue's timestamp rather than the delivery's. On this project, 2026-09-28: 89 of 95
+ *    spawns close, up from 45.
  */
-export const EVENT_DERIVE_VERSION = 5;
+export const EVENT_DERIVE_VERSION = 6;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -50,8 +62,19 @@ export interface NormalizeCounters {
   unpairedResults: number;
   /** A `tool_use` whose result never arrived before its stream ended. */
   unfinishedCalls: number;
-  /** A `<task-notification>` naming a task this stream did not spawn as an agent. */
+  /**
+   * A `<task-notification>` naming a task this stream did not spawn as an agent. Counted once per
+   * notification, not per record: the harness writes one up to three times.
+   */
   unmatchedNotifications: number;
+  /**
+   * A record holding a string that LEADS with `<task-notification>` somewhere the parser does not
+   * read one (asc-ggd4). Its predecessor gap was invisible because `unmatchedNotifications` counts
+   * only what parsed: 108 notification records went uncounted (dogfood/0017). Should be zero, or
+   * explained -- a nonzero count is a record shape the harness started writing, or a tool whose
+   * output happened to be a notification.
+   */
+  unreadNotifications: number;
   /** An assistant record whose model is `<synthetic>` -- harness-injected, not model output. */
   syntheticModelRecords: number;
   /**
@@ -182,13 +205,37 @@ function promptText(record: TranscriptRecord): string | undefined {
   return str(joined);
 }
 
-/** The fields of a `<task-notification>` message, or `undefined` when it is not one. */
+const NOTIFICATION = /^\s*<task-notification>/;
+
+/**
+ * The text of a `<task-notification>`, from each record shape measured to carry one, or
+ * `undefined`. `user`: the delivered message. `queue-operation`: queued or dequeued, the tag in a
+ * top-level `content` with no `message`. `attachment`: absorbed mid-turn, in `attachment.prompt`.
+ */
+function notificationText(record: TranscriptRecord): string | undefined {
+  const content =
+    record['type'] === 'user'
+      ? rec(record['message'])?.['content']
+      : record['type'] === 'queue-operation'
+        ? record['content']
+        : record['type'] === 'attachment'
+          ? rec(record['attachment'])?.['prompt']
+          : undefined;
+  return typeof content === 'string' && NOTIFICATION.test(content) ? content : undefined;
+}
+
+/** Whether any string in `value`, at any depth, leads with the notification tag. */
+function leadsWithNotification(value: unknown): boolean {
+  if (typeof value === 'string') return NOTIFICATION.test(value);
+  if (Array.isArray(value)) return value.some(leadsWithNotification);
+  const object = rec(value);
+  return object !== undefined && Object.values(object).some(leadsWithNotification);
+}
+
+/** The fields of a `<task-notification>`, or `undefined` when the record carries none. */
 function taskNotification(record: TranscriptRecord): Record<string, string> | undefined {
-  if (record['type'] !== 'user') return undefined;
-  const content = rec(record['message'])?.['content'];
-  if (typeof content !== 'string' || !content.trimStart().startsWith('<task-notification>')) {
-    return undefined;
-  }
+  const content = notificationText(record);
+  if (content === undefined) return undefined;
   const out: Record<string, string> = {};
   // `<result>` is the subagent's prose and may itself contain tags, so it is cut out first.
   const body = content.replace(/<result>[\s\S]*?<\/result>/g, '');
@@ -227,6 +274,7 @@ export function createNormalizer(): Normalizer {
     unpairedResults: 0,
     unfinishedCalls: 0,
     unmatchedNotifications: 0,
+    unreadNotifications: 0,
     syntheticModelRecords: 0,
     offVocabularyFindings: 0,
   };
@@ -242,6 +290,9 @@ export function createNormalizer(): Normalizer {
   let pending = new Map<string, Pending>();
   /** child agent id -> nothing; which notifications belong to an agent this stream spawned. */
   let spawned = new Set<string>();
+  /** Notifications already emitted, and already counted as unmatched, by task id and fields. */
+  let returned = new Set<string>();
+  let unmatched = new Set<string>();
   /** The model and harness version last put into a `model.context` event on this stream. */
   let lastModel: string | undefined;
   let lastVersion: string | undefined;
@@ -345,6 +396,8 @@ export function createNormalizer(): Normalizer {
     lastTs = undefined;
     pending = new Map();
     spawned = new Set();
+    returned = new Set();
+    unmatched = new Set();
     lastModel = undefined;
     lastVersion = undefined;
   };
@@ -567,9 +620,16 @@ export function createNormalizer(): Normalizer {
     if (said !== undefined) emit(out, 'prompt.submit', calls, ts, { text: said });
 
     const notice = taskNotification(record);
-    if (notice !== undefined) {
+    if (notice === undefined) {
+      if (leadsWithNotification(record)) counters.unreadNotifications += 1;
+    } else {
       const child = notice['task-id'];
-      if (child !== undefined && spawned.has(child)) {
+      // A copy of one already emitted -- queued, dequeued, delivered -- is the same notification.
+      const key = canonicalJson(notice);
+      if (returned.has(key)) {
+        // Nothing to emit and nothing to count.
+      } else if (child !== undefined && spawned.has(child)) {
+        returned.add(key);
         const count = (name: string): number | undefined => {
           const raw = notice[name];
           return raw === undefined || !/^\d+$/.test(raw) ? undefined : Number(raw);
@@ -582,7 +642,8 @@ export function createNormalizer(): Normalizer {
           tool_uses: count('tool_uses'),
           duration_ms: count('duration_ms'),
         });
-      } else {
+      } else if (!unmatched.has(key)) {
+        unmatched.add(key);
         counters.unmatchedNotifications += 1;
       }
     }
