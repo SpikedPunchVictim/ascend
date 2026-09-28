@@ -90,6 +90,7 @@
  */
 
 import { resolve } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import { Flags } from '@oclif/core';
 import {
   DERIVED_SOURCE,
@@ -109,6 +110,7 @@ import { canonicalJson, validateEntry, type TypeSpec } from '@ascend/core';
 import {
   DuplicateEntryError,
   appliedHandlerHashes,
+  openEntriesByVersion,
   findEntry,
   findType,
   ingestCursorRows,
@@ -126,6 +128,7 @@ import { registerDocument } from '../../register-document.js';
 import { identityVocabularyOf, type Disclosing } from '../../redact.js';
 import {
   createHandlerProducer,
+  HASH_IN_KEY,
   loadProjectHandlers,
   type TypedHandler,
   type TypedHandlerOutcome,
@@ -436,7 +439,35 @@ export default class IngestClaudeCode extends BaseCommand {
 
       this.emit(format, { columns: [ACTION, TARGET, OUTCOME], rows });
       this.report(root, sweep, writes, dryRun);
+      this.reportEarlierVersions(project.store.db, loaded.typed);
     });
+  }
+
+  /**
+   * Name the entries an earlier version of a typed handler wrote that are still open (asc-w8tx).
+   *
+   * A changed handler writes new keys beside the old ones, by design -- that is what keeps a
+   * re-ingest idempotent -- so after an edit each finding is counted once per version that read
+   * it, and nothing else says so (dogfood/0024: 47 findings counted twice). Retiring them is a
+   * decision about the user's store, so this names them and the command that retires them; it
+   * does not write the invalidations itself.
+   */
+  private reportEarlierVersions(db: DatabaseSync, typed: readonly TypedHandler[]): void {
+    for (const { name, handler } of typed) {
+      const current = handler.hash.slice(0, HASH_IN_KEY);
+      const prefix = idFor({ type: handler.type, key: `${name}@` } as DerivedEntry);
+      for (const [version, open] of openEntriesByVersion(db, prefix, HASH_IN_KEY)) {
+        if (version === current) continue;
+        this.warn(
+          `${String(open)} ${handler.type} entr${open === 1 ? 'y' : 'ies'} from an earlier ` +
+            `version of handler ${name} (@${version}) ${open === 1 ? 'is' : 'are'} still ` +
+            `counted beside what the current version (@${current}) writes. Retire each one ` +
+            `whose row the current version also wrote: asc invalidate <id> --label superseded ` +
+            `--superseded-by <the same id with @${current}> --reason "<why the handler changed>". ` +
+            `List them: asc query "SELECT id FROM entries WHERE id LIKE '${prefix}${version}%'"`,
+        );
+      }
+    }
   }
 
   /**

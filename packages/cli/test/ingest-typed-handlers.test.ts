@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -275,6 +275,50 @@ describe('asc ingest claude-code with a typed handler (asc-tuur.3)', () => {
     expect(run.status, run.stderr).toBe(0);
     expect(run.stderr).toMatch(/handler handlers\/broken\.yaml was not run: on: "nope"/);
     expect(findings(dir).map((row) => row['captured_by'])).toEqual(['reported']);
+  });
+
+  it('names the entries an edited handler left open, until each is retired (asc-w8tx)', () => {
+    const dir = project();
+    transcript(dir, 's-1', reportSession('s-1'));
+    asc(['ingest', 'claude-code'], dir);
+    const before = findings(dir).map((row) => String(row['id']));
+
+    // Any change to the parsed YAML is a new version, and writes new keys beside the old ones.
+    const edited = join(dir, 'handlers', 'review-finding-table.yaml');
+    writeFileSync(
+      edited,
+      readFileSync(edited, 'utf8').replace(/^description: .*$/m, 'description: edited'),
+    );
+    const run = asc(['ingest', 'claude-code', '--full'], dir);
+    const warning = run.stderr.replace(/\s+/g, ' ');
+    expect(warning).toMatch(
+      /2 review_finding entries from an earlier version of handler review-finding-table \(@[0-9a-f]{12}\) are still counted/,
+    );
+    expect(findings(dir)).toHaveLength(4);
+
+    const after = findings(dir)
+      .map((row) => String(row['id']))
+      .filter((id) => !before.includes(id));
+    before.forEach((old, i) => {
+      const retired = asc(
+        [
+          'invalidate',
+          old,
+          '--label',
+          'superseded',
+          '--superseded-by',
+          String(after[i]),
+          '--reason',
+          'handler edited',
+          '--actor',
+          'test',
+        ],
+        dir,
+      );
+      expect(retired.status, retired.stderr).toBe(0);
+    });
+    const again = asc(['ingest', 'claude-code'], dir);
+    expect(again.stderr).not.toMatch(/from an earlier version/);
   });
 
   it('names the handler when it writes a type this project never defined', () => {

@@ -227,7 +227,7 @@ function outcome(
 }
 
 /** The part of the handler's hash that goes in the key: enough to tell two versions apart. */
-const HASH_IN_KEY = 12;
+export const HASH_IN_KEY = 12;
 
 function toEntry(
   name: string,

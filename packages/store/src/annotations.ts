@@ -1368,3 +1368,34 @@ export function schemeCensus(
     labels: labelRows.map((row) => ({ label: row.label, count: row.n })),
   };
 }
+
+/**
+ * Open entries -- none invalidated -- whose id starts with `prefix`, counted by the `width`
+ * characters that follow it (asc-w8tx).
+ *
+ * A typed handler keys its entries `<prefix><hash>:...`, and a changed handler writes new keys
+ * beside the old ones rather than replacing them. The caller passes a handler's prefix and reads
+ * off which versions still have open entries, so a version it no longer runs can be named instead
+ * of silently counted twice. Compared with `substr`, not `LIKE`: a handler name may hold `_`.
+ */
+export function openEntriesByVersion(
+  db: DatabaseSync,
+  prefix: string,
+  width: number,
+): ReadonlyMap<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT substr(e.id, ? + 1, ?) AS version, count(*) AS n
+         FROM entries AS e
+        WHERE substr(e.id, 1, ?) = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM annotations AS a WHERE a.entry_id = e.id AND a.scheme = ?
+          )
+        GROUP BY version`,
+    )
+    .all(prefix.length, width, prefix.length, prefix, RESERVED_SCHEME) as unknown as {
+    version: string;
+    n: number;
+  }[];
+  return new Map(rows.map((row) => [row.version, row.n]));
+}

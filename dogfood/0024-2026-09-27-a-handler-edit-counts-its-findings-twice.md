@@ -7,7 +7,7 @@
 | **Surfaced by** | measuring the section join for `asc-tuur.7` in a scratch store, then asking what the same change does to the live one |
 | **Entry type(s)** | `review_finding` (derived, via a typed handler) |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | fixed: live rows invalidated 2026-09-27 (47 of 47); ingest now warns, in the commit that adds **Resolution** |
 
 ## What was found
 
@@ -63,6 +63,22 @@ shape for `skill_activation` was a spike script, not a command, so it left no gu
 Entries are immutable, so the fix is an `invalidation` annotation (`asc invalidate --label
 superseded --superseded-by <new id>`) per old row, or prevention: ingest noticing open entries
 under the same handler name with another hash.
+
+## Resolution
+
+Both halves, as **Consequences and constraints** named them. Neither one writes to the store by itself.
+
+- **The live store.** Each of the 47 old-hash rows was invalidated as `superseded` by its twin
+  under the new hash. The run reported `wrote 47 failed 0`, after 47 of 47 dry-runs were OK.
+- **Prevention.** `asc ingest claude-code` now counts the open entries of every typed handler by the
+  hash in their key. For each version it is not running, it warns with the count and the
+  `asc invalidate` command that retires them (`reportEarlierVersions`,
+  `packages/cli/src/commands/ingest/claude-code.ts`). The test edits a handler and re-ingests, and
+  expects the warning with a count of 2. It then invalidates both rows and expects no warning
+  (`packages/cli/test/ingest-typed-handlers.test.ts`).
+- **Checked.** A `--dry-run` ingest on the live store after the migration printed no such warning.
+
+Retiring stays a decision the user makes, so the warning names the command and does not run it.
 
 ## Links
 

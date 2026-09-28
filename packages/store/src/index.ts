@@ -123,6 +123,7 @@ export {
   listInvalidations,
   listSchemes,
   matchingEntryIds,
+  openEntriesByVersion,
   recordAnnotations,
   recordInvalidation,
   registerScheme,
