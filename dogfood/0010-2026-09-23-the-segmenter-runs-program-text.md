@@ -7,7 +7,7 @@
 | **Surfaced by** | spike `asc-bolz`, eyeballing the `command.run` head distribution before trusting a matcher |
 | **Entry type(s)** | `verification_run` (derived), potentially |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | fixed in `a755937` (`verification_run` derivation 4); live store migrated |
 
 ## What was found
 
@@ -53,6 +53,62 @@ counts with call counts. The defect shows only when every segment becomes an eve
 
 Entries are immutable. If measurement finds fabricated `verification_run` rows, the response is
 an invalidation annotation plus a fix at write time, not deletion.
+
+## Resolution
+
+The segmenter now reads the shell's quoting, which it did not do before:
+
+- A newline inside a quote no longer ends a command. Physical lines are joined while a quote is
+  open.
+- Quoted characters are masked before splitting on `;`, `&&`, `||` and `|`, so an operator inside
+  program text is not a boundary.
+- A `#` that starts a word ends the line.
+- A heredoc opener is found in the masked text, and its tag is read from the real text, so
+  `<<'EOF'` is still recognised.
+- A step that runs `sh -c '…'` (or `bash -c`) is replaced by the steps of its script. The last of
+  those inherits the outer step's operator.
+
+**The metric.** The same frozen set of 99,553 Bash commands was run through `checkRun` and
+`execSegments` before and after (`measure.mjs`, scratchpad, not committed). The exact output:
+
+```
+before  commands 99553
+        segments 606875 checks 8687 max segs 163
+        heads const/"/} 10809 5520 3290
+after   segments 434263 checks 8638 max segs 102
+        heads const/"/} 3 7 865
+        [ [ 'check LOST', 49 ], [ 'ownership false->true', 5 ] ]
+```
+
+- **Checks lost: 49.** Every one of them is a check token inside program text or quoted
+  arguments, so none was a real run. No checks were gained.
+- **Ownership false→true: 5.** In these 5, a `;` inside quotes had split a chain, which hid the
+  call that really owns the exit status.
+- **`sh -c`: 6 real runs.** The first quote-aware pass lost 6 real runs inside `sh -c` scripts,
+  which is why `sh -c` is now expanded. After that change, all 6 are kept.
+- **The `}` heads (865)** that remain were not characterised. A shell group or function body
+  also ends with a lone `}`, so they are not all program text, but no count separates the two.
+
+**The live store.** `ingest --full` wrote the v4 rows. Then:
+
+- 1,225 v3 rows with an identical v4 twin were invalidated as `superseded`, each pointing at its
+  twin (dry run `ok=1225 failed=0`, then write `ok=1225 failed=0`).
+- 1 row was invalidated as `wrong_value`. In it, a `;` inside a `perl -e` script had credited
+  `npm run build` with a status that an earlier call owns.
+- 17 v3 rows are left open. Their transcripts have been deleted, so there is nothing to re-derive
+  them from, and they cannot be shown wrong.
+
+Read back afterwards with `asc query`:
+
+```
+v                   n     invalidated
+------------------  ----  -----------
+verification_run@2  1189  1189
+verification_run@3  1243  1226
+verification_run@4  1231  0
+```
+
+The v4 row with no v3 counterpart is one this session wrote after the migration.
 
 ## Links
 
