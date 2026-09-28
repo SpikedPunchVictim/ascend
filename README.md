@@ -236,22 +236,19 @@ evidence.
 Honest about what exists, because a README that overstates is worse than one that says nothing.
 
 **Built and working:** `asc init`, `asc record`, `asc query` (including `--across`), the whole
-`asc types` topic (`list`, `show`, `brief`, `define`, `deprecate`, `export`, `import`),
-`asc ingest claude-code`, and `asc search`. `asc explore` is built in five of its modes — the
-profile it defaults to, `--page`, `--sample`, `--max-tokens` and `--dump` — which is the set that
-answers *what is in this type* and *how do I read it without filling a context window*.
-`--select`, `--filter` and `--group-by` are not among them, so reading a type's entries *by
-property value* is not yet a command; `asc search` reports where a term occurs as a property value,
-but will not retrieve on it.
+`asc types` topic (`list`, `show`, `brief`, `define`, `deprecate`, `export`, `import`, `capture`),
+`asc ingest claude-code`, `asc search`, `asc explore` in all of its modes (the default profile,
+`--page`, `--sample`, `--max-tokens`, `--dump`, and the `--select`, `--filter` and `--group-by`
+drill-down), `asc stats` and the analysis layer behind it, `asc annotate`, `asc kappa`,
+`asc invalidate`, `asc export` and `asc import`, `asc handlers check` and `compare`, and
+`asc install-hook` and `asc install-skill` (the analysis skill and its slash command).
 
 Underneath all of them the store, the registry, generated views and the three-state model are
 complete.
 
-**Not built yet:** `asc explore --select/--filter/--group-by`; `asc stats` and the analysis layer
-behind it; `asc annotate` and `asc kappa`; `asc doctor`; the analysis skill and
-its slash command. Nothing distributes derived entries *across* projects either — the ingest reads
-the whole transcript corpus and writes it into the store of the project you run it in, so a second
-project's store gets its own full copy.
+**Not built yet:** `asc doctor`. Nothing distributes derived entries *across* projects either —
+the ingest reads the whole transcript corpus and writes it into the store of the project you run it
+in, so a second project's store gets its own full copy.
 
 ### What `asc search` does, and what it does not
 
