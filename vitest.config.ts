@@ -36,9 +36,16 @@ export default defineConfig({
      * this reds; at 34%, only 3x. Raising the 120,000 ms budget instead was rejected -- it is
      * the tripwire for a real regression, and the sweep only does ~10 s of actual work.
      *
+     * RE-MEASURED 2026-09-28 (asc-9ac), full suite, 0 failed, load average 2.8-4.0: the corpus is
+     * 1,214 files, 633,297 lines, 1.887 GiB -- +21% lines on 2026-09-20 -- and the sweep cost
+     * 9,422 ms, 7.9% of budget, against 80,919 ms (67.4%) that day. A bigger corpus ran ~8.6x
+     * faster, so the 2026-09-20 erosion was load, not growth; the budget stays at 120,000 ms.
+     *
      * Not a fitted constant: 12 cores, and a worker with one live `asc` child is two processes,
      * so six workers is the hardware. The measurement agrees with the arithmetic.
      */
+    // `default` for the terminal; the failure log so a rare red run keeps its name (asc-9ac).
+    reporters: ['default', './vitest.failure-log.ts'],
     poolOptions: {
       forks: {
         // `minForks` must not exceed `maxForks`, and it defaults to the core count -- setting
