@@ -44,6 +44,11 @@ export const ENVELOPE_FIELDS: Readonly<Record<string, EventFieldType>> = {
   ts: 'string',
   /** The adapter's derivation version. A count moves when this moves, with no handler changed. */
   derive_version: 'number',
+  /**
+   * The compaction segment within the stream, from 0: it advances at each `segment.start`. The
+   * holdout unit asc-6ola.4 settled on, so a handler can stratify by it (asc-73cb).
+   */
+  segment: 'number',
 };
 
 /**
@@ -161,6 +166,12 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
      */
     reviewer_model: 'string',
   },
+  /**
+   * The stream's context was compacted, and the events after it belong to segment `index`.
+   * `trigger` is the harness's own (`auto`, `manual`). Segment 0 has no such event: it starts
+   * with the stream.
+   */
+  'segment.start': { index: 'number', trigger: 'string' },
   /** Synthetic: the stream ended. What closes every window still open. */
   'session.end': {},
 };

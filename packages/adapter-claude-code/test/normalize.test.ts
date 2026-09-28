@@ -505,6 +505,54 @@ describe('createNormalizer', () => {
  * stratification key a holdout comparison needs. The comparison this project wanted is NOT
  * reachable from this data (EV-26), but the key has to be right before anything can rest on it.
  */
+/**
+ * `segment` (asc-73cb): the holdout unit asc-6ola.4 settled on -- stream start or a compaction
+ * boundary to the next -- carried on every event, with the boundary itself an event.
+ */
+describe('segment', () => {
+  const compaction = (trigger: string): TranscriptRecord => ({
+    type: 'system',
+    subtype: 'compact_boundary',
+    sessionId: 'sess-1',
+    timestamp: TS,
+    compactMetadata: { trigger, preTokens: 100, postTokens: 10 },
+  });
+
+  it('starts every stream at segment 0, with no event for it', () => {
+    const events = normalize([prompt('first')]);
+    expect(events.map((event) => event['segment'])).toEqual([0, 0]);
+    expect(kinds(events)).not.toContain('segment.start');
+  });
+
+  it('opens the next segment at each compaction, and marks the boundary', () => {
+    const events = normalize([
+      prompt('before'),
+      compaction('auto'),
+      prompt('between'),
+      compaction('manual'),
+      prompt('after'),
+    ]);
+    expect(events.filter((event) => event.kind === 'segment.start')).toMatchObject([
+      { index: 1, trigger: 'auto', segment: 1 },
+      { index: 2, trigger: 'manual', segment: 2 },
+    ]);
+    expect(
+      events.filter((event) => event.kind === 'prompt.submit').map((event) => event['segment']),
+    ).toEqual([0, 1, 2]);
+  });
+
+  it('counts segments per stream, so a new stream starts at 0 again', () => {
+    const normalizer = createNormalizer();
+    normalizer.accept(compaction('auto'), MAIN);
+    // Switching streams first ends the main one, in ITS segment; the subagent's own starts at 0.
+    const events = [...normalizer.accept(prompt('in a subagent'), SUB)];
+    expect(events.map((event) => [event.kind, event['segment']])).toEqual([
+      ['session.end', 1],
+      ['prompt.submit', 0],
+    ]);
+  });
+});
+
 describe('model.context', () => {
   const contexts = (events: readonly NormalizedEvent[]): NormalizedEvent[] =>
     events.filter((event) => event.kind === 'model.context');
@@ -526,6 +574,7 @@ describe('model.context', () => {
         call: 0,
         ts: TS,
         derive_version: EVENT_DERIVE_VERSION,
+        segment: 0,
         model: 'claude-opus-5',
         harness_version: '2.1.283',
       },
@@ -803,6 +852,7 @@ describe('review.finding, from a ReportFindings call', () => {
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 11: every event carries `segment`; a compaction is `segment.start` (asc-73cb).
     // 10: `check.run` carries `paths` (asc-gtnu.10).
     // 9: `review.finding` carries `reviewer_model` (asc-gtnu.11).
     // 8: a notification after the harness preamble is read (asc-wkmq).
@@ -812,7 +862,7 @@ describe('review.finding, from a ReportFindings call', () => {
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(10);
+    expect(EVENT_DERIVE_VERSION).toBe(11);
   });
 });
 

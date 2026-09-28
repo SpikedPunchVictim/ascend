@@ -65,8 +65,11 @@ import type { TranscriptFile } from './transcript-file.js';
  *    moves.
  * 10: `check.run` carries `paths`, the files the check named as targets (asc-gtnu.10), so a
  *    handler can ask whether a check ran on THIS file. A new field; no count moves.
+ * 11: every event carries `segment`, and a compaction boundary is a `segment.start` event
+ *    (asc-73cb): one more event per boundary, 149 on this project on 2026-09-28, so `seq` and a
+ *    count of all events move with no handler changed.
  */
-export const EVENT_DERIVE_VERSION = 10;
+export const EVENT_DERIVE_VERSION = 11;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -313,6 +316,8 @@ export function createNormalizer(): Normalizer {
   /** Notifications already emitted, and already counted as unmatched, by task id and fields. */
   let returned = new Set<string>();
   let unmatched = new Set<string>();
+  /** The compaction segment this stream is in; see `segment` on the envelope. */
+  let segment = 0;
   /** The model and harness version last put into a `model.context` event on this stream. */
   let lastModel: string | undefined;
   let lastVersion: string | undefined;
@@ -332,6 +337,7 @@ export function createNormalizer(): Normalizer {
       seq,
       call,
       derive_version: EVENT_DERIVE_VERSION,
+      segment,
     };
     if (batch !== undefined) event['batch'] = batch;
     if (ts !== undefined) event['ts'] = ts;
@@ -420,6 +426,7 @@ export function createNormalizer(): Normalizer {
     spawned = new Set();
     returned = new Set();
     unmatched = new Set();
+    segment = 0;
     lastModel = undefined;
     lastVersion = undefined;
   };
@@ -641,6 +648,13 @@ export function createNormalizer(): Normalizer {
           return block === undefined ? [] : [block];
         })
       : [];
+
+    // A compaction boundary opens the next segment, and every event from here carries it.
+    const compacted = rec(record['compactMetadata']);
+    if (compacted !== undefined) {
+      segment += 1;
+      emit(out, 'segment.start', calls, ts, { index: segment, trigger: str(compacted['trigger']) });
+    }
 
     const said = promptText(record);
     if (said !== undefined) emit(out, 'prompt.submit', calls, ts, { text: said });
