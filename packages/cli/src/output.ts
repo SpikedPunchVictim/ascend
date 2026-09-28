@@ -562,7 +562,8 @@ const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdf
  *
  * Backing off one unit is exact rather than a heuristic. The only unpaired surrogate a cut
  * can create is the last unit it keeps, and that unit is unpaired exactly when the next
- * unit is its other half -- so that test is the whole rule.
+ * unit is its other half -- so that test is the whole surrogate rule. It is now one case of
+ * `isBoundary`, which also refuses a cut inside a grapheme cluster (`asc-bcv.23`).
  *
  * A value that ALREADY held an unpaired surrogate passes through unchanged, deliberately:
  * it is malformed in the store, where `--json` escapes it and `--csv` carries it verbatim,
@@ -575,15 +576,8 @@ const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdf
  * No caller passes such a width today; the arithmetic should not depend on that.
  */
 function lastUnitToKeep(text: string, budget: number): number {
-  const end = Math.max(0, budget);
-  if (
-    end >= 1 &&
-    end < text.length &&
-    isHighSurrogate(text.charCodeAt(end - 1)) &&
-    isLowSurrogate(text.charCodeAt(end))
-  ) {
-    return end - 1;
-  }
+  let end = Math.min(text.length, Math.max(0, budget));
+  while (!isBoundary(text, end)) end -= 1;
   return end;
 }
 
@@ -604,16 +598,79 @@ function lastUnitToKeep(text: string, budget: number): number {
  * dropped in its entirety rather than split, which is the same choice `lastUnitToKeep` makes.
  */
 function firstUnitToKeepFromEnd(text: string, budget: number): number {
-  const start = Math.max(0, text.length - Math.max(0, budget));
-  if (
-    start >= 1 &&
-    start < text.length &&
-    isLowSurrogate(text.charCodeAt(start)) &&
-    isHighSurrogate(text.charCodeAt(start - 1))
-  ) {
-    return start + 1;
-  }
+  let start = Math.max(0, text.length - Math.max(0, budget));
+  while (!isBoundary(text, start)) start += 1;
   return start;
+}
+
+/**
+ * Whether a cut at unit `index` of `text` leaves every grapheme cluster whole (`asc-bcv.23`).
+ *
+ * A cut between two halves of a surrogate pair is the malformed case above. A cut inside a VALID
+ * cluster is quieter and was just as real: the bead measured 6 of 6 shapes severed -- a combining
+ * acute, a ZWJ sequence, a variation selector, a skin-tone modifier, a keycap, a flag -- each
+ * leaving well-formed bytes that show a different character than the value holds.
+ *
+ * **Why not `Intl.Segmenter`.** Its answer depends on the ICU data the runtime ships, so the same
+ * value could render differently on two machines; a table cell should not. These rules are a
+ * fixed subset of UAX #29, chosen to cover the shapes that occur:
+ *
+ * - never between the halves of a surrogate pair;
+ * - never before a mark (`\p{M}`, which covers variation selectors and the keycap's enclosing
+ *   mark), a ZWJ, a skin-tone modifier or a tag character -- each extends what precedes it;
+ * - never after a ZWJ that joins a pictograph (GB11); after anything else a ZWJ is an ordinary
+ *   character, and backing off there would drop text for nothing;
+ * - never between two regional indicators that pair: they pair by position in their run, so the
+ *   cut is inside a flag exactly when the run ending at it has odd length (GB12/13).
+ *
+ * The ends of the string are always boundaries, which is what ends both callers' loops.
+ */
+function isBoundary(text: string, index: number): boolean {
+  if (index <= 0 || index >= text.length) return true;
+  if (isHighSurrogate(text.charCodeAt(index - 1)) && isLowSurrogate(text.charCodeAt(index))) {
+    return false;
+  }
+  const next = text.codePointAt(index) ?? 0;
+  if (extendsPrevious(next)) return false;
+  const previous = codePointBefore(text, index);
+  if (previous === ZWJ && EXTENDED_PICTOGRAPHIC.test(String.fromCodePoint(next))) return false;
+  if (isRegionalIndicator(previous) && isRegionalIndicator(next)) {
+    return regionalIndicatorsEndingAt(text, index) % 2 === 0;
+  }
+  return true;
+}
+
+const ZWJ = 0x200d;
+const MARK = /\p{M}/u;
+const EXTENDED_PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
+
+function extendsPrevious(codePoint: number): boolean {
+  return (
+    codePoint === ZWJ ||
+    (codePoint >= 0x1f3fb && codePoint <= 0x1f3ff) || // skin-tone modifiers
+    (codePoint >= 0xe0020 && codePoint <= 0xe007f) || // tag characters
+    MARK.test(String.fromCodePoint(codePoint))
+  );
+}
+
+function isRegionalIndicator(codePoint: number): boolean {
+  return codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff;
+}
+
+/** The code point that ends just before `index`, reading a surrogate pair as one. */
+function codePointBefore(text: string, index: number): number {
+  const low = text.charCodeAt(index - 1);
+  if (index >= 2 && isLowSurrogate(low) && isHighSurrogate(text.charCodeAt(index - 2))) {
+    return text.codePointAt(index - 2) ?? low;
+  }
+  return low;
+}
+
+/** How many regional indicators run back-to-back up to `index`. Each is two units. */
+function regionalIndicatorsEndingAt(text: string, index: number): number {
+  let count = 0;
+  for (let i = index; i >= 2 && isRegionalIndicator(codePointBefore(text, i)); i -= 2) count += 1;
+  return count;
 }
 
 /**
@@ -639,16 +696,10 @@ function firstUnitToKeepFromEnd(text: string, budget: number): number {
  * more than a two-unit narrowing of the whole cell -- and the overlap guard below covers the case
  * where a budget too small for both halves would make them narrow into or past each other.
  *
- * **NEITHER BOUNDARY IS GRAPHEME-CLUSTER-SAFE, and this does not change that.** `asc-bcv.23` is the
- * open, unrelated decision about a cut landing INSIDE a valid cluster -- a combining mark, a ZWJ
- * sequence, a flag -- rather than through a surrogate pair: the bytes stay valid, but the cell can
- * show a different character than the value holds. This function does not resolve that ticket, and
- * does not need to: it reuses `lastUnitToKeep`'s existing surrogate guard unchanged at the head and
- * adds only its mirror at the tail, so the class of defect asc-bcv.23 describes is exactly as
- * possible here as it was before this change, at whichever boundary a cluster happens to sit on --
- * there are now two such boundaries instead of one, not zero. `asc-bcv.23` still needs its own design
- * decision (which boundary rule to use, and whether the width budget may be exceeded) independent of
- * this function's head/tail split.
+ * **BOTH BOUNDARIES ARE ALSO GRAPHEME-CLUSTER-SAFE (`asc-bcv.23`).** Each backs off, only ever
+ * shrinking its half, until it lands where `isBoundary` allows, so a cluster straddling a cut is
+ * dropped whole and the width promise holds. The one-unit bound above is the surrogate case; a
+ * cut inside a longer cluster narrows its half by up to that cluster's length.
  */
 function truncateCell(text: string, maxCellWidth: number): string {
   const budget = Math.max(0, maxCellWidth - 1); // one unit reserved for the ellipsis itself

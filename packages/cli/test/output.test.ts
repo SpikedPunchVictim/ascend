@@ -590,3 +590,64 @@ describe('renderProportion', () => {
     expect(failures).toEqual([]);
   });
 });
+
+/**
+ * asc-bcv.23: a cut must not land INSIDE a grapheme cluster either. Each shape below is placed so
+ * that a cut falls at `cutAt` units into it -- an offset that splits no surrogate pair, so these
+ * exercise the cluster rule and not the surrogate one. The cluster is dropped whole, never kept in
+ * part: a kept part is a valid string showing a different character than the value holds.
+ */
+describe('the table never cuts a grapheme cluster in half', () => {
+  const SHAPES: readonly (readonly [label: string, cluster: string, cutAt: number])[] = [
+    ['a combining acute, before the mark', 'e\u0301', 1],
+    ['a variation selector, before the selector', '\u2764\uFE0F', 1],
+    ['a skin-tone modifier, before the modifier', '\u{1F44D}\u{1F3FD}', 2],
+    ['a keycap, before the selector', '1\uFE0F\u20E3', 1],
+    ['a keycap, before the enclosing mark', '1\uFE0F\u20E3', 2],
+    ['a flag, between its two regional indicators', '\u{1F1EF}\u{1F1F5}', 2],
+    ['a ZWJ sequence, before the joiner', '\u{1F468}\u200D\u{1F469}', 2],
+    ['a ZWJ sequence, after the joiner', '\u{1F468}\u200D\u{1F469}', 3],
+  ];
+
+  it.each(SHAPES)('drops %s whole at the HEAD cut', (_label, cluster, cutAt) => {
+    const { head } = budgets(DEFAULT_WIDTH);
+    const prefix = 'a'.repeat(head - cutAt);
+    const rendered = cell(`${prefix}${cluster}${'b'.repeat(DEFAULT_WIDTH + 20)}`);
+    expect(rendered.slice(0, rendered.indexOf('…') + 1)).toBe(`${prefix}…`);
+  });
+
+  it.each(SHAPES)('drops %s whole at the TAIL cut', (_label, cluster, cutAt) => {
+    const { tail } = budgets(DEFAULT_WIDTH);
+    const suffix = 'b'.repeat(tail - (cluster.length - cutAt));
+    const rendered = cell(`${'a'.repeat(DEFAULT_WIDTH + 20)}${cluster}${suffix}`);
+    expect(rendered.slice(rendered.indexOf('…'))).toBe(`…${suffix}`);
+  });
+
+  it('cuts between two whole flags without backing off', () => {
+    // Regional indicators pair by position in their run, so a cut after the second of four is a
+    // boundary -- and backing off there would drop a flag the budget had room for.
+    const { head } = budgets(DEFAULT_WIDTH);
+    const prefix = 'a'.repeat(head - 4);
+    const flags = '\u{1F1EF}\u{1F1F5}\u{1F1FA}\u{1F1F8}';
+    const rendered = cell(`${prefix}${flags}${'b'.repeat(DEFAULT_WIDTH + 20)}`);
+    expect(rendered.startsWith(`${prefix}\u{1F1EF}\u{1F1F5}…`)).toBe(true);
+  });
+
+  it('keeps the character after a joiner that joins nothing', () => {
+    // A ZWJ only glues two pictographs; after a letter it is an ordinary boundary.
+    const { head } = budgets(DEFAULT_WIDTH);
+    const prefix = 'a'.repeat(head - 2);
+    const rendered = cell(`${prefix}e\u200Dx${'b'.repeat(DEFAULT_WIDTH + 20)}`);
+    expect(rendered.startsWith(`${prefix}e\u200D…`)).toBe(true);
+  });
+
+  it('never grows a cell past its width to keep a cluster', () => {
+    const cluster = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}';
+    const over: number[] = [];
+    for (let offset = 0; offset < 80; offset += 1) {
+      const rendered = cell(`${'a'.repeat(offset)}${cluster}${'b'.repeat(80)}`);
+      if (rendered.length > DEFAULT_WIDTH) over.push(offset);
+    }
+    expect(over).toEqual([]);
+  });
+});
