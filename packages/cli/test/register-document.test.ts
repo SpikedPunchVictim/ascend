@@ -206,3 +206,65 @@ describe('asc-bli.2/.3 -- guidance on a document', () => {
     });
   });
 });
+
+describe('asc-6jf -- a new version that omits the previous version’s guidance', () => {
+  const bumped = (extra: Partial<TypeDocument> = {}): TypeDocument => ({
+    name: 'widget_reviewed',
+    properties: [
+      { name: 'widget_kind', type: 'string' },
+      { name: 'reviewer', type: 'string' },
+    ],
+    ...extra,
+  });
+
+  const register = (store: Store, doc: TypeDocument, at: string, dryRun = false) =>
+    registerDocument(store, doc, { registeredAt: at, dryRun });
+
+  it('warns, naming the field, when the new version drops review_after', () => {
+    withStore((store) => {
+      register(store, document('k', { review_after: 30 }), AT);
+      const bump = register(store, bumped(), LATER);
+      expect(bump.warnings).toEqual([
+        expect.stringMatching(
+          /version 2 of widget_reviewed declares no review_after; version 1 declared 30/,
+        ),
+      ]);
+    });
+  });
+
+  it('does not carry the dropped field forward', () => {
+    withStore((store) => {
+      register(store, document('k', { review_after: 30 }), AT);
+      register(store, bumped(), LATER);
+      expect(findType(store.db, 'widget_reviewed', 2)?.guidance.review_after).toBeUndefined();
+    });
+  });
+
+  it('warns once per dropped field', () => {
+    withStore((store) => {
+      register(store, document('k', { review_after: 30, purpose: 'why' }), AT);
+      expect(register(store, bumped(), LATER).warnings).toHaveLength(2);
+    });
+  });
+
+  it('says nothing when the new version declares the field, whatever its value', () => {
+    withStore((store) => {
+      register(store, document('k', { review_after: 30 }), AT);
+      expect(register(store, bumped({ review_after: 60 }), LATER).warnings).toEqual([]);
+    });
+  });
+
+  it('says nothing when the previous version declared no guidance', () => {
+    withStore((store) => {
+      register(store, document('k'), AT);
+      expect(register(store, bumped(), LATER).warnings).toEqual([]);
+    });
+  });
+
+  it('warns on a dry run too, which is when the warning can still change the document', () => {
+    withStore((store) => {
+      register(store, document('k', { review_after: 30 }), AT);
+      expect(register(store, bumped(), LATER, true).warnings).toHaveLength(1);
+    });
+  });
+});

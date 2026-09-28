@@ -95,8 +95,45 @@ export function registerDocument(
     bump: result.bump,
     changeCount: result.changes.length,
     renames: result.renames,
-    warnings: result.warnings,
+    warnings: [
+      ...result.warnings,
+      ...(result.outcome === 'created'
+        ? droppedGuidance(document, store, result.name, result.version)
+        : []),
+    ],
   };
+}
+
+/**
+ * One warning per guidance field version N-1 declared and this document, minting version N, does
+ * not (asc-6jf).
+ *
+ * A warning, not a carry-forward. A new version takes only what its document says -- as
+ * `description` and `record_when` always have -- and inheriting guidance alone would be a rule a
+ * reader has to know. Omission is also the only way a document can DROP a field, so copying it
+ * forward would make "this version needs no review_after" unsayable. What was wrong was the
+ * silence: a shape bump from a hand-written document took `review_after` away, and with it the
+ * readiness line in `asc types brief` and the `asc record` advisory, and nothing said so.
+ *
+ * Computed on a dry run too, because that is when the document can still be fixed.
+ */
+function droppedGuidance(
+  document: TypeDocument,
+  store: Store,
+  name: string,
+  version: number,
+): string[] {
+  if (version <= 1) return [];
+  const previous = findType(store.db, name, version - 1);
+  if (previous === undefined) return [];
+  return GUIDANCE_FIELDS.filter(
+    (field) => previous.guidance[field] !== undefined && document[field] === undefined,
+  ).map(
+    (field) =>
+      `version ${String(version)} of ${name} declares no ${field}; version ${String(version - 1)} ` +
+      `declared ${JSON.stringify(previous.guidance[field])}. A new version keeps only what its ` +
+      `document says, so it has none -- add ${field} to the document and define it again to keep it.`,
+  );
 }
 
 /**
