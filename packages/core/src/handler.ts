@@ -728,8 +728,14 @@ function checkTemplateName(name: string, names: TemplateNames, where: string): v
   if (name.startsWith('before.')) {
     const kind = names.before;
     if (kind === undefined) {
+      // `file.changed` has a field named `before` of its own (asc-gtnu.12). A dotted reference
+      // is always the namespace, so the field is `${before}`, and filtered `${before|snake}`.
+      const own =
+        eventFieldType(names.triggerKind, 'before') === undefined
+          ? ''
+          : ` -- ${names.triggerKind}'s own field before is \${before}, filtered \${before|<filter>}`;
       return refuse(
-        `${where}: \${${name}} is not available from this handler, which declares no before:`,
+        `${where}: \${${name}} is not available from this handler, which declares no before:${own}`,
       );
     }
     pathType(kind, name.slice('before.'.length), where);

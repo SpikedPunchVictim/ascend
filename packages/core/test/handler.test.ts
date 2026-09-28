@@ -1175,6 +1175,28 @@ describe('before: the most recent match earlier in the partition', () => {
     );
   });
 
+  // asc-gtnu.12: `file.changed` has a field named `before`, beside the `before:` namespace.
+  it('points a dotted before reference on file.changed at the field it may have meant', () => {
+    expect(refused({ on: 'file.changed', emit: { x: '${before.snake}' } })).toMatch(
+      "file.changed's own field before is ${before}, filtered ${before|<filter>}",
+    );
+  });
+
+  it("reads file.changed's own before field, filtered, beside a before: block", () => {
+    const { rows } = run(
+      {
+        on: 'file.changed',
+        before: { on: 'check.run' },
+        emit: { own: '${before|snake}', prior: '${before.runner}' },
+      },
+      stream(
+        () => ev('check.run', 1, { runner: 'npm' }),
+        () => ev('file.changed', 2, { before: 'Old Text' }),
+      ),
+    );
+    expect(rows.map((one) => one.fields)).toEqual([{ own: 'old_text', prior: 'npm' }]);
+  });
+
   it('refuses before under scope: session, and says what the order would have been', () => {
     expect(
       refused({
