@@ -64,8 +64,9 @@ context; the depth lives in the numbered files.
 | [0021](0021-2026-09-27-a-refusal-that-blames-the-wrong-cause.md) | a `--full` re-ingest refused 994 derived rows as "most often a transcript edited after it was ingested"; 994 of 994 are rows the store holds redacted, so the stated cause is wrong and the rows can never reconcile | `asc-j0vh` (P3) | re-deriving `skill_activation` for `asc-gtnu.17`, which printed refusals for three types it did not touch — nobody was looking for it |
 | [0022](0022-2026-09-27-a-drafted-handler-credited-every-skill-in-the-session.md) | the first real `asc types capture` draft credited a table to all 4 skills loaded earlier in the session (1 writes it) and printed `refused.class 34` for 17 rows | `asc-tuur.5` (P2, fixed in `9792efb`) | checking Stage 4's success criterion on this repository's own transcripts — nobody was looking for it |
 | [0023](0023-2026-09-27-an-install-message-that-contradicts-itself.md) | `asc install-hook`'s consent text said it would rewrite a script that "does not exist yet", and called a hook inert in a checkout that has a store | `asc-tuur.6` (P3, fixed in flight) | the user upgrading an install and pasting the output — nobody was looking for it |
+| [0024](0024-2026-09-27-a-handler-edit-counts-its-findings-twice.md) | editing a typed handler re-keys its rows and retires none: the live store's 47 `review_finding` rows under the old hash each have a twin among the 65 the edited handler writes | `asc-w8tx` (P2) | measuring a handler change in a scratch store, then asking what it does to the live one — nobody was looking for it |
 
-Twenty-three findings, each with its own mechanism. The mechanism is the part that repeats even when
+Twenty-four findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 > Rows 0016 and 0017 were added 2026-09-26; 0016 had been written but never indexed, and the
