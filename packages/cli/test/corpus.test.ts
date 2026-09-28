@@ -1344,3 +1344,48 @@ describe('asc import', () => {
     expect(run.stdout).toContain('--dry-run');
   });
 });
+
+/**
+ * A secret-shaped value refuses the export (asc-4a6.2), reported by pattern name and never echoed
+ * (asc-4a6.3). The key is assembled at runtime: this repository is public, and a whole literal
+ * would be the disclosure under test.
+ */
+describe('asc export -- secret-shaped content', () => {
+  const KEY = ['AK', 'IA', 'Z'.repeat(16)].join('');
+
+  function withSecret(): string {
+    const dir = project();
+    recordDecision(dir, 'clean');
+    const run = asc(
+      ['record', 'decision', '--prop=chosen=rotate', `--prop=rationale=leaked ${KEY} in a log`],
+      dir,
+    );
+    expect(run.status).toBe(0);
+    return dir;
+  }
+
+  it('refuses, and writes nothing to stdout', () => {
+    const run = asc(['export'], withSecret());
+    expect([run.status, run.stdout]).toEqual([1, '']);
+  });
+
+  it('names the pattern and its line count', () => {
+    const run = asc(['export'], withSecret());
+    expect(flatten(run.stderr)).toContain('aws-access-key-id 1');
+  });
+
+  it('names the entry the match is in', () => {
+    const run = asc(['export'], withSecret());
+    expect(flatten(run.stderr)).toMatch(/The lines: entry [0-9a-f-]{36}\./);
+  });
+
+  it('never echoes the matched text', () => {
+    const run = asc(['export'], withSecret());
+    expect(run.stderr + run.stdout).not.toContain(KEY);
+  });
+
+  it('refuses a --redact export too, because redaction leaves a secret where it was', () => {
+    const run = asc(['export', '--redact'], withSecret());
+    expect([run.status, run.stdout]).toEqual([1, '']);
+  });
+});

@@ -40,6 +40,11 @@
  * lines they carry. `--redact-name` and `--redact-map` are refused outright without `--redact`,
  * rather than silently doing nothing: a caller who typed `--redact-name` alone and got an
  * unredacted stream back would have shipped the exact disclosure this feature exists to prevent.
+ *
+ * **A secret-shaped value refuses the export, redacted or not** (asc-4a6.2). Redaction rewrites
+ * identity; it leaves a credential where it was, and tokenising one would hand out a correlation
+ * handle for it. So every export is scanned (`secrets.ts`) before anything reaches stdout, and a
+ * match stops it with counts by pattern name and the lines' ids -- never the matched text.
  */
 
 import { Flags } from '@oclif/core';
@@ -76,6 +81,7 @@ import {
   type RedactionMap,
   type RedactionResult,
 } from '../redact.js';
+import { scanSecrets, type SecretScan } from '../secrets.js';
 
 export default class ExportCorpus extends BaseCommand {
   static override description =
@@ -165,6 +171,10 @@ export default class ExportCorpus extends BaseCommand {
 
     await this.withProject(({ store, root }) => {
       const rawLines = corpusLines(store);
+      // Before redaction and before anything reaches stdout, redacted or not: redaction rewrites
+      // identity and leaves a secret exactly where it was, so a --redact export needs the check
+      // as much as a plain one.
+      refuseSecrets(scanSecrets(rawLines));
       const lines = redact ? this.redacted(rawLines, redactNames, root, printMap) : rawLines;
 
       if (format === 'json') {
@@ -390,4 +400,28 @@ function annotationLines(
   );
 
   return rows.map(({ scheme, version, row }) => annotationLine(row, scheme, version));
+}
+
+/** How many locations a refusal lists before it summarises the rest as a count. */
+const MAX_LOCATIONS = 10;
+
+/**
+ * Refuse an export that would carry secret-shaped content (asc-4a6.2): counts by pattern name and
+ * the lines' locations, never the matched text -- `secrets.ts` says why. Nothing has been written
+ * when this throws.
+ */
+function refuseSecrets(scan: SecretScan): void {
+  if (scan.lines === 0) return;
+  const patterns = scan.byPattern.map(({ name, lines }) => `${name} ${String(lines)}`).join(', ');
+  const shown = scan.where.slice(0, MAX_LOCATIONS).join(', ');
+  const more =
+    scan.where.length > MAX_LOCATIONS
+      ? `, and ${String(scan.where.length - MAX_LOCATIONS)} more`
+      : '';
+  throw refusal(
+    `Export refused: ${String(scan.lines)} line(s) carry secret-shaped content (${patterns}), ` +
+      `and a corpus that leaves this machine must not carry a credential. Nothing was written. ` +
+      `The lines: ${shown}${more}. Entries are immutable, so the text cannot be edited out; ` +
+      `check whether each match is a real credential, and rotate any that is.`,
+  );
 }
