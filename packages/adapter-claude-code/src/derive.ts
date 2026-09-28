@@ -1327,11 +1327,11 @@ export function createDeriver(): Deriver {
             ...(verdict === undefined ? {} : { verdict }),
             // The model that produced the RECORD, which is the reviewer's own stream. Absent
             // when the transcript named none -- and NOT special-cased for `<synthetic>` the way
-            // `normalize.ts`'s `model.context` is, because that interaction is unmeasurable
-            // here: 0 `ReportFindings` calls exist, so whether a synthetic record can carry one
-            // has no data. Writing the branch blind would be a guess dressed as a guard. The
-            // failure mode if it ever happens is a visible `reviewer_model: '<synthetic>'`,
-            // which is a wrong value someone can see rather than a drop nobody can.
+            // `normalize.ts`'s `model.context` is: over every project on 2026-09-28, 33
+            // `ReportFindings` calls, 0 from a synthetic record. The failure mode if one ever
+            // appears is a visible `reviewer_model: '<synthetic>'`, a wrong value someone can see
+            // rather than a drop nobody can. `review.finding` carries the same value
+            // (asc-gtnu.11), so the log and the store agree.
             ...(model === undefined ? {} : { reviewer_model: model }),
           },
         );

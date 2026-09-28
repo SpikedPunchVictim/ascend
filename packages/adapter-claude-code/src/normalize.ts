@@ -59,8 +59,12 @@ import type { TranscriptFile } from './transcript-file.js';
  *    preamble (asc-wkmq), the only form a subagent stream receives one in. On this project,
  *    2026-09-28: 12 such deliveries stop being `prompt.submit` events, and the one subagent-spawned
  *    async fork whose return was missing now closes.
+ * 9: `review.finding` carries `reviewer_model` (asc-gtnu.11), the record's model as the deriver
+ *    writes it: 33 `ReportFindings` calls across every project on 2026-09-28, 0 from a
+ *    `<synthetic>` record, so it is taken as-is, exactly like `derive.ts`. A new field; no count
+ *    moves.
  */
-export const EVENT_DERIVE_VERSION = 8;
+export const EVENT_DERIVE_VERSION = 9;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -364,6 +368,7 @@ export function createNormalizer(): Normalizer {
     ts: string | undefined,
     id: string,
     input: Record<string, unknown> | undefined,
+    model: string | undefined,
   ): void => {
     const raw = input === undefined ? undefined : input['findings'];
     if (!Array.isArray(raw)) return;
@@ -393,6 +398,7 @@ export function createNormalizer(): Normalizer {
           failure_scenario: str(finding['failure_scenario']),
           verdict: str(finding['verdict']),
           level,
+          reviewer_model: model,
         },
         batch,
       );
@@ -689,7 +695,7 @@ export function createNormalizer(): Normalizer {
           batches,
         );
         if (tool === REPORT_FINDINGS_TOOL) {
-          reviewFindings(out, calls, batches, ts, id, rec(block['input']));
+          reviewFindings(out, calls, batches, ts, id, rec(block['input']), str(message?.['model']));
         }
       }
     }

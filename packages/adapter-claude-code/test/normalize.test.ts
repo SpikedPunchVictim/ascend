@@ -718,6 +718,18 @@ describe('review.finding, from a ReportFindings call', () => {
     }
   });
 
+  it('carries the model of the record that made the call, as the store entry does', () => {
+    const events = findings(
+      normalize([assistant([REPORT([FINDING()])], 'msg-1', 'claude-sonnet-5')]),
+    );
+    expect(events.map((event) => event['reviewer_model'])).toEqual(['claude-sonnet-5']);
+  });
+
+  it('OMITS reviewer_model when the record names no model', () => {
+    const [event] = findings(normalize([assistant([REPORT([FINDING()])])]));
+    expect(event).not.toHaveProperty('reviewer_model');
+  });
+
   it('OMITS line when the finding was not line-anchored, rather than writing 0', () => {
     const [event] = findings(normalize([assistant([REPORT([FINDING({ line: undefined })])])]));
     // `0` is a line number a reader would believe, and a finding about a whole file has none.
@@ -770,12 +782,14 @@ describe('review.finding, from a ReportFindings call', () => {
       'failure_scenario',
       'verdict',
       'level',
+      'reviewer_model',
     ]) {
       expect(eventFieldType('review.finding', field), field).toBe('string');
     }
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 9: `review.finding` carries `reviewer_model` (asc-gtnu.11).
     // 8: a notification after the harness preamble is read (asc-wkmq).
     // 7: shell segments read quotes (asc-7gz2).
     // 6: `agent.return` is read from queue-operation and attachment records too (asc-ggd4).
@@ -783,7 +797,7 @@ describe('review.finding, from a ReportFindings call', () => {
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(8);
+    expect(EVENT_DERIVE_VERSION).toBe(9);
   });
 });
 

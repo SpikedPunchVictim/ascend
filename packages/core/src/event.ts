@@ -149,6 +149,11 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
     failure_scenario: 'string',
     verdict: 'string',
     level: 'string',
+    /**
+     * The model of the record that made the call, as `review_finding.reviewer_model` holds it in
+     * the store (asc-gtnu.11), so the log can stratify findings by reviewer model too.
+     */
+    reviewer_model: 'string',
   },
   /** Synthetic: the stream ended. What closes every window still open. */
   'session.end': {},
