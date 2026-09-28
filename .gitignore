@@ -26,6 +26,8 @@ node_modules/
 
 # ascend corpus (local-only, never committed)
 .ascend/
+# archived stores and backups, kept beside the live one (local-only, never committed)
+.ascend-archived/
 
 # align machine-local files — telemetry (opt-in: ALIGN_TELEMETRY=1 / --telemetry / align.config.ts telemetry:true)
 # and the scan-observation record, which is evidence about THIS checkout only (ADR 029).
