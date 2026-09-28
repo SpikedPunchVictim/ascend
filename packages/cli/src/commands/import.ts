@@ -56,6 +56,8 @@ import {
   recordAnnotations,
   recordEntry,
   registerScheme,
+  RESERVED_SCHEME,
+  restoreInvalidationScheme,
   schemeVersions,
   typeVersions,
   withRollback,
@@ -218,9 +220,13 @@ export default class ImportCorpus extends BaseCommand {
         // need for a `versionsByHash`-style map built after the fact, because there is exactly one
         // `registerScheme` call per line and its return value already IS the resolution by hash.
         for (const { where, line: scheme } of schemes) {
-          const result = registerScheme(store.db, scheme.name, scheme.spec, {
-            createdAt: scheme.created_at,
-          });
+          // The reserved scheme is the store's own, so it is restored as itself rather than
+          // registered as a user's: `registerScheme` refuses the name (dogfood/0027).
+          const context = { createdAt: scheme.created_at };
+          const result =
+            scheme.name === RESERVED_SCHEME
+              ? restoreInvalidationScheme(store.db, scheme.spec, context)
+              : registerScheme(store.db, scheme.name, scheme.spec, context);
           if (result.version !== scheme.version) {
             throw schemeVersionMismatch(
               scheme,

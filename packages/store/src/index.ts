@@ -128,6 +128,7 @@ export {
   recordInvalidation,
   registerScheme,
   RESERVED_SCHEME,
+  restoreInvalidationScheme,
   schemeCensus,
   schemeHash,
   SchemeError,

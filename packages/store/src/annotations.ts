@@ -402,8 +402,9 @@ function requireName(db: DatabaseSync, name: string): void {
     throw new SchemeError(
       `'${RESERVED_SCHEME}' is a reserved scheme name: ARCHITECTURE.md makes invalidation an ` +
         `annotation scheme rather than an edit, so this name belongs to the store and must not ` +
-        `mean a user's rules. The command that will use it is asc-88m; until then nothing may ` +
-        `register under it. Registered schemes: ${registeredSchemes(db).join(', ') || '(none)'}.`,
+        `mean a user's rules. Only \`asc invalidate\` writes under it (and \`asc import\` restores ` +
+        `what \`asc invalidate\` wrote). Registered schemes: ` +
+        `${registeredSchemes(db).join(', ') || '(none)'}.`,
     );
   }
 }
@@ -472,6 +473,32 @@ export function registerScheme(
 ): RegisteredScheme {
   requireName(db, name);
   return registerSchemeUnchecked(db, name, spec, context);
+}
+
+/**
+ * Restore the reserved invalidation scheme from a backup: the one other caller `requireName`'s
+ * refusal must not stop.
+ *
+ * `asc import` replays a store's own export, and a store with a single invalidation exports a
+ * scheme line named `'invalidation'`. Sent through `registerScheme`, that line was refused, so the
+ * store could not be restored from its own backup (dogfood/0027). This admits the name only with
+ * the shape `recordInvalidation` registers, so it gives nothing to a stream that tries to carry
+ * its own rules or labels under the reserved name.
+ */
+export function restoreInvalidationScheme(
+  db: DatabaseSync,
+  spec: SchemeSpec,
+  context: SchemeContext,
+): RegisteredScheme {
+  if (schemeHash(spec) !== schemeHash(INVALIDATION_SCHEME_SPEC)) {
+    throw new SchemeError(
+      `a '${RESERVED_SCHEME}' scheme line carries a shape the store did not write: the reserved ` +
+        `scheme is always the labels ${INVALIDATION_LABELS.map((label) => `'${label}'`).join(', ')} ` +
+        `with no rules. Restoring any other shape would put a user's rules under the name the ` +
+        `store owns.`,
+    );
+  }
+  return registerSchemeUnchecked(db, RESERVED_SCHEME, spec, context);
 }
 
 /**

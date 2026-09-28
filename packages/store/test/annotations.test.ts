@@ -18,6 +18,7 @@ import {
   registerScheme,
   registerType,
   RESERVED_SCHEME,
+  restoreInvalidationScheme,
   schemeCensus,
   schemeHash,
   SchemeError,
@@ -158,14 +159,33 @@ describe('registering a scheme', () => {
     );
   });
 
-  it('refuses the reserved scheme name, and names the bead that owns it', () => {
+  it('refuses the reserved scheme name, and names the command that owns it', () => {
     withStore((store) => {
       expect(() =>
         registerScheme(store.db, RESERVED_SCHEME, spec(['x']), { createdAt: AT }),
       ).toThrow(SchemeError);
       expect(() =>
         registerScheme(store.db, RESERVED_SCHEME, spec(['x']), { createdAt: AT }),
-      ).toThrow(/asc-88m/);
+      ).toThrow(/asc invalidate/);
+    });
+  });
+
+  it('restores the reserved scheme with the shape the store writes (dogfood/0027)', () => {
+    withStore((store) => {
+      const restored = restoreInvalidationScheme(store.db, spec([...INVALIDATION_LABELS]), {
+        createdAt: AT,
+      });
+      expect(restored.version).toBe(1);
+    });
+  });
+
+  it('refuses to restore any other shape under the reserved name', () => {
+    withStore((store) => {
+      expect(() =>
+        restoreInvalidationScheme(store.db, spec([...INVALIDATION_LABELS, 'extra']), {
+          createdAt: AT,
+        }),
+      ).toThrow(/reserved scheme/);
     });
   });
 

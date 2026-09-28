@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { schemeHash, type SchemeSpec } from '@ascend/store';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
@@ -805,6 +806,64 @@ describe('asc export | asc import', () => {
     // And the strongest statement available: the restored project exports the same bytes. If any
     // column had been dropped, re-derived or re-ordered, this is where it shows.
     expect(asc(['export'], target).stdout).toBe(asc(['export'], source).stdout);
+  });
+
+  it('restores a store that holds invalidations, reserved scheme and all', () => {
+    // Found restoring this project's own store (dogfood/0027): `import` registered every scheme
+    // line through `registerScheme`, which refuses the reserved name, so any store with a single
+    // invalidation could not be restored from its own export.
+    const source = project();
+    const target = project();
+    corpus(source);
+    const ids = entries(source).map((entry) => entry.id);
+    expect(
+      asc(
+        [
+          'invalidate',
+          ...ids.slice(0, 2),
+          '--label=wrong_subject',
+          '--reason=measured the wrong thing',
+        ],
+        source,
+      ).status,
+    ).toBe(0);
+    const file = stream(source, 'corpus.jsonl', asc(['export'], source).stdout);
+
+    const run = asc(['import', file], target);
+    expect(run.stderr).toBe('');
+    expect(run.status).toBe(0);
+    expect(schemeRows(target)).toEqual(schemeRows(source));
+    expect(annotationsOf(target)).toEqual(annotationsOf(source));
+    expect(asc(['export'], target).stdout).toBe(asc(['export'], source).stdout);
+  });
+
+  it('refuses an invalidation scheme line whose spec is not the store-owned one', () => {
+    // The reserved name is restorable only as itself: a stream carrying a different shape under
+    // 'invalidation' would otherwise smuggle user rules into the name the store owns.
+    const source = project();
+    const target = project();
+    corpus(source);
+    const [first] = entries(source);
+    expect(
+      asc(['invalidate', first?.id ?? '', '--label=wrong_value', '--reason=bad'], source).status,
+    ).toBe(0);
+    const tampered = asc(['export'], source)
+      .stdout.split('\n')
+      .map((text) => {
+        if (text === '') return text;
+        const row = JSON.parse(text) as Record<string, unknown>;
+        if (row['kind'] !== 'scheme' || row['name'] !== 'invalidation') return text;
+        const spec = row['spec'] as SchemeSpec;
+        const widened = { ...spec, labels: [...spec.labels, 'extra'] };
+        // Re-hashed, so the line passes the hash check and reaches the reserved-name one.
+        return JSON.stringify({ ...row, spec: widened, scheme_hash: schemeHash(widened) });
+      })
+      .join('\n');
+
+    const run = asc(['import', stream(source, 'tampered.jsonl', tampered)], target);
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain('reserved');
+    expect(entries(target)).toEqual([]);
   });
 
   it('refuses a second restore, naming the ids it already holds and writing nothing', () => {
