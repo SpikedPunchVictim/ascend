@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { openStore, registerScheme } from '@ascend/store';
+import { splitHoldout } from '../src/holdout.js';
 import { flatten } from './helpers.js';
 
 /**
@@ -963,6 +964,75 @@ describe('asc annotate: --backtest (asc-3o9)', () => {
 
     expect(run.status).toBe(2);
     expect(flatten(run.stderr)).toContain('--backtest and --dry-run cannot be combined');
+  });
+});
+
+describe('asc annotate: --backtest --holdout (asc-z41.2)', () => {
+  const HAND = ['e1', 'e2', 'e3', 'e4', 'e5'].map((id) => ({ id }));
+
+  it('scores the training and held-out entries separately, on the split the hash fixes', () => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+    const expected = splitHoldout(HAND, 'hand', 0.5);
+
+    const run = reviewRun(dir, ['--backtest', 'hand', '--holdout', '0.5', '--json']);
+
+    expect(run.status, run.stderr).toBe(0);
+    const bySplit = (split: string): readonly Record<string, unknown>[] =>
+      rows(run.stdout).filter((row) => row['split'] === split);
+    expect(bySplit('train')[0]?.['compared']).toBe(expected.train.length);
+    expect(bySplit('holdout')[0]?.['compared']).toBe(expected.holdout.length);
+    expect(bySplit('train').length + bySplit('holdout').length).toBe(rows(run.stdout).length);
+  });
+
+  it('names the misses on training rows only, never on held-out ones', () => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+
+    const run = reviewRun(dir, ['--backtest', 'hand', '--holdout', '0.5', '--json']);
+
+    for (const row of rows(run.stdout)) {
+      expect(Object.hasOwn(row, 'false_negative_ids')).toBe(row['split'] === 'train');
+    }
+  });
+
+  it('holds out the same entries on every run', () => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+
+    const first = reviewRun(dir, ['--backtest', 'hand', '--holdout', '0.5', '--json']);
+    const second = reviewRun(dir, ['--backtest', 'hand', '--holdout', '0.5', '--json']);
+
+    expect(rows(second.stdout)).toStrictEqual(rows(first.stdout));
+  });
+
+  it('refuses a split that leaves one side empty, naming both counts', () => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+    // The precondition, checked rather than assumed: at 1% none of five ids is held out.
+    expect(splitHoldout(HAND, 'hand', 0.01).holdout).toHaveLength(0);
+
+    const run = reviewRun(dir, ['--backtest', 'hand', '--holdout', '0.01']);
+
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain('left 5 to train on and 0 held out');
+  });
+
+  it.each(['0', '1', '1.5', 'most'])('refuses --holdout %s as a usage error', (value) => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+
+    const run = reviewRun(dir, ['--backtest', 'hand', '--holdout', value]);
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('strictly between 0 and 1');
+  });
+
+  it('refuses --holdout without --backtest', () => {
+    const run = reviewRun(seeded(), ['--holdout', '0.3']);
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--holdout splits the hand sample');
   });
 });
 

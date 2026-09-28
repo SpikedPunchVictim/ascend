@@ -64,6 +64,13 @@
  * negatives) -- named by id, not only counted, because a rule's author fixes a rule by looking at the
  * specific entries it got wrong.
  *
+ * **`--holdout <fraction>` scores the rule on entries its author did not tune it to** (asc-z41.2).
+ * A rule written after reading the whole hand sample can score well by reproducing it, so the
+ * sample is split -- by a hash of each id seeded with the hand scheme's name, fixed across runs --
+ * and each side is reported with a `split` column. Holdout rows never name the entries they got
+ * wrong: reading those and fixing the rule would fit it to the holdout too. `holdout.ts` has the
+ * rest, including what the split cannot defend against.
+ *
  * **Nothing is registered and nothing is written.** The rule's matches are computed the same way
  * `--dry-run`'s preview computes them -- run in memory against the store, read, and discarded -- so
  * `--backtest` shares that half of `--dry-run`'s reasoning without sharing its flag: combining the
@@ -80,7 +87,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { Flags } from '@oclif/core';
-import { backtest } from '@ascend/analysis';
+import { backtest, type Labelled } from '@ascend/analysis';
 import {
   annotationPasses,
   annotationRows,
@@ -99,6 +106,7 @@ import {
 import { parseAssignments, parseRules } from '../annotation-rules.js';
 import { BaseCommand } from '../base.js';
 import { refusal, usageError } from '../errors.js';
+import { parseHoldoutFraction, splitHoldout } from '../holdout.js';
 import { renderProportion } from '../output.js';
 
 /**
@@ -175,6 +183,13 @@ export default class Annotate extends BaseCommand {
         'recall and support per label, and where the rule and the hand truth disagree. Writes ' +
         'nothing -- the rule never touches the corpus.',
     }),
+    holdout: Flags.string({
+      description:
+        'With --backtest, hold this fraction of the hand sample out (0.3 = 30%) and score the ' +
+        'rule on it separately. Which entries are held out is fixed per hand scheme, and ' +
+        'holdout rows never name the entries they got wrong, so fixing the rule reads only ' +
+        'training entries.',
+    }),
     'dry-run': Flags.boolean({
       description: 'Run the rules and report the census, then write nothing.',
     }),
@@ -194,6 +209,15 @@ export default class Annotate extends BaseCommand {
     const declared = flags.label ?? [];
     const scope = this.optionalFlag(flags.scope);
     const backtestScheme = this.optionalFlag(flags.backtest);
+    const rawHoldout = this.optionalFlag(flags.holdout);
+    if (rawHoldout !== undefined && backtestScheme === undefined) {
+      throw usageError(
+        '--holdout splits the hand sample --backtest grades against, so it needs --backtest. ' +
+          'Add --backtest <hand-scheme>, or drop --holdout.',
+      );
+    }
+    const holdout = rawHoldout === undefined ? undefined : parseHoldoutFraction(rawHoldout);
+    if (typeof holdout === 'string') throw usageError(holdout);
 
     // The sketch's `|`: the two modes write different kinds of pass and cannot be one call. A run
     // that mixed them would have to decide what a rule matched that a hand label contradicts.
@@ -322,12 +346,33 @@ export default class Annotate extends BaseCommand {
         }
         const predicted = [...predictedIds].map(([entryId, label]) => ({ id: entryId, label }));
 
-        const report = backtest(predicted, truth);
+        // The split is seeded by the hand scheme's name, so every backtest against it holds out
+        // the same entries (`holdout.ts`). Either side empty is refused rather than reported as a
+        // score over nothing.
+        let sides: readonly { split?: 'train' | 'holdout'; truth: readonly Labelled[] }[] = [
+          { truth },
+        ];
+        if (holdout !== undefined) {
+          const divided = splitHoldout(truth, backtestScheme, holdout);
+          if (divided.train.length === 0 || divided.holdout.length === 0) {
+            throw refusal(
+              `--holdout ${String(holdout)} over the ${String(truth.length)} hand-labelled ` +
+                `entries in scope left ${String(divided.train.length)} to train on and ` +
+                `${String(divided.holdout.length)} held out; both sides need at least one. ` +
+                'Label more entries, or change --holdout.',
+            );
+          }
+          sides = [
+            { split: 'train', truth: divided.train },
+            { split: 'holdout', truth: divided.holdout },
+          ];
+        }
 
         this.emit(format, {
           columns: [
             'scheme',
             'backtest',
+            ...(holdout === undefined ? [] : ['split']),
             'pass',
             'compared',
             'label',
@@ -339,34 +384,43 @@ export default class Annotate extends BaseCommand {
             'precision',
             'recall',
           ],
-          rows: report.measures.map((measure) => ({
-            scheme: schemeName,
-            backtest: backtestScheme,
-            pass: latestPass.createdAt,
-            compared: report.compared,
-            label: measure.label,
-            support: measure.actual,
-            predicted: measure.predicted,
-            true_positives: measure.truePositives,
-            false_positives: measure.falsePositives.length,
-            false_negatives: measure.falseNegatives.length,
-            // Rendered strings, so --table and --csv show the honest qualified form
-            // (`renderProportion`'s CI and small-group flag) rather than a bare number or a
-            // JSON-stringified object -- the same `tally`-plus-raw-field split `explore.ts`'s
-            // `propertyRow` uses for its own proportion-shaped value.
-            precision: renderProportion(measure.precision),
-            recall: renderProportion(measure.recall),
-            // The structured proportion, present only when there is one (never a `null` standing in
-            // for "no estimate" -- `TASKS.md` #7) and omitted from `columns` so it reaches `--json`
-            // only: a script that wants `successes`/`n`/`lower`/`upper` reads this rather than
-            // re-parsing the display string.
-            ...(measure.precision === null ? {} : { precision_measure: measure.precision }),
-            ...(measure.recall === null ? {} : { recall_measure: measure.recall }),
-            // Named, not only counted -- a rule's author fixes a rule by looking at the entries it
-            // got wrong, not by knowing how many there were.
-            false_positive_ids: measure.falsePositives,
-            false_negative_ids: measure.falseNegatives,
-          })),
+          rows: sides.flatMap(({ split, truth: sideTruth }) => {
+            const report = backtest(predicted, sideTruth);
+            return report.measures.map((measure) => ({
+              scheme: schemeName,
+              backtest: backtestScheme,
+              ...(split === undefined ? {} : { split }),
+              pass: latestPass.createdAt,
+              compared: report.compared,
+              label: measure.label,
+              support: measure.actual,
+              predicted: measure.predicted,
+              true_positives: measure.truePositives,
+              false_positives: measure.falsePositives.length,
+              false_negatives: measure.falseNegatives.length,
+              // Rendered strings, so --table and --csv show the honest qualified form
+              // (`renderProportion`'s CI and small-group flag) rather than a bare number or a
+              // JSON-stringified object -- the same `tally`-plus-raw-field split `explore.ts`'s
+              // `propertyRow` uses for its own proportion-shaped value.
+              precision: renderProportion(measure.precision),
+              recall: renderProportion(measure.recall),
+              // The structured proportion, present only when there is one (never a `null` standing
+              // in for "no estimate" -- `TASKS.md` #7) and omitted from `columns` so it reaches
+              // `--json` only: a script that wants `successes`/`n`/`lower`/`upper` reads this
+              // rather than re-parsing the display string.
+              ...(measure.precision === null ? {} : { precision_measure: measure.precision }),
+              ...(measure.recall === null ? {} : { recall_measure: measure.recall }),
+              // Named, not only counted -- a rule's author fixes a rule by looking at the entries
+              // it got wrong, not by knowing how many there were. NOT for the holdout: naming its
+              // misses would invite fixing the rule against them, which spends the holdout.
+              ...(split === 'holdout'
+                ? {}
+                : {
+                    false_positive_ids: measure.falsePositives,
+                    false_negative_ids: measure.falseNegatives,
+                  }),
+            }));
+          }),
         });
         return;
       }
