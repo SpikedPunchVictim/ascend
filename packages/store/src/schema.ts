@@ -525,6 +525,38 @@ ALTER TABLE entry_types ADD COLUMN guidance_json TEXT
 `;
 
 /**
+ * Migration 6 (asc-6yn): the same identity trigger, with a refusal that names every column that
+ * may change. Migration 1's message named three -- status, description and record_when -- while
+ * `prose_json` has always been mutable and migration 5 added `guidance_json`, so a reader who hit
+ * it was told two legal updates were illegal.
+ *
+ * The WHEN clause is migration 1's, column for column; only the message differs.
+ *
+ * **Procedural, like migration 3, and for its reason.** It creates no name that migration 1 did
+ * not: the trigger keeps its name, so there is nothing a `marker` could point at that would prove
+ * THIS migration ran. `DROP TRIGGER IF EXISTS` then `CREATE TRIGGER` leaves one state however many
+ * times it runs, so there is no "already ran, and would fail again" case to guard.
+ */
+const IDENTITY_TRIGGER_MESSAGE = `
+DROP TRIGGER IF EXISTS entry_types_identity_is_immutable;
+CREATE TRIGGER entry_types_identity_is_immutable
+BEFORE UPDATE ON entry_types
+WHEN OLD.name        <> NEW.name
+  OR OLD.version     <> NEW.version
+  OR OLD.major       <> NEW.major
+  OR OLD.type_hash   <> NEW.type_hash
+  OR OLD.spec_json   <> NEW.spec_json
+  OR OLD.created_at  <> NEW.created_at
+BEGIN
+  SELECT RAISE(ABORT, 'entry_types identity is immutable: register a new version instead of updating one. Only status, description, record_when, prose_json and guidance_json may change.');
+END;
+`;
+
+function correctIdentityTriggerMessage(db: DatabaseSync): void {
+  db.exec(IDENTITY_TRIGGER_MESSAGE);
+}
+
+/**
  * Every migration, in order.
  *
  * Append-only FROM THE FIRST RELEASE ON: an existing entry is never edited, because a
@@ -578,6 +610,11 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'guidance prose and review_after on entry_types (asc-bli.1)',
     sql: GUIDANCE,
     marker: { table: 'entry_types', column: 'guidance_json' },
+  },
+  {
+    version: 6,
+    name: 'name every mutable entry_types column in the identity refusal (asc-6yn)',
+    run: correctIdentityTriggerMessage,
   },
 ];
 

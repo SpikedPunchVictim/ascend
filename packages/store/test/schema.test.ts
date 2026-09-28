@@ -582,6 +582,7 @@ describe('migration 5 -- guidance_json on entry_types (asc-bli.1)', () => {
     try {
       expect(store.migrations.applied).toEqual([
         'guidance prose and review_after on entry_types (asc-bli.1)',
+        'name every mutable entry_types column in the identity refusal (asc-6yn)',
       ]);
       expect(userVersion(store.db)).toBe(SCHEMA_VERSION);
       expect(store.db.prepare('SELECT guidance_json FROM entry_types').all()).toEqual([
@@ -633,7 +634,8 @@ describe('migration 5 -- guidance_json on entry_types (asc-bli.1)', () => {
     // original name-only marker had nothing to find -- yet the DDL is exactly as non-idempotent as
     // a CREATE TABLE ("duplicate column name"), which is the case a marker exists for. A ledger
     // wound back to 4 must therefore be refused with the repair command, not fail on the DDL.
-    expect(HIGHEST_MARKED_VERSION).toBe(SCHEMA_VERSION);
+    // 5, not SCHEMA_VERSION: migration 6 is procedural and carries no marker (asc-6yn).
+    expect(HIGHEST_MARKED_VERSION).toBe(5);
 
     const dir = tempDir();
     openStore({ dir }).close();
@@ -1124,6 +1126,84 @@ describe('the store directory', () => {
       expect(statSync(dir).isDirectory()).toBe(true);
     } finally {
       store.close();
+    }
+  });
+});
+
+describe('migration 6 -- the identity refusal names every mutable column (asc-6yn)', () => {
+  const MUTABLE =
+    /Only status, description, record_when, prose_json and guidance_json may change\./;
+
+  /** A store on disk at schema version 5 with one registered type: the trigger as migration 1 wrote it. */
+  const buildVersion5Store = (dir: string): DatabaseSync => {
+    const db = new DatabaseSync(join(dir, STORE_FILE));
+    migrate(
+      db,
+      MIGRATIONS.filter((m) => m.version < 6),
+      join(dir, STORE_FILE),
+    );
+    register(db);
+    return db;
+  };
+
+  const refusalOf = (db: DatabaseSync): string => {
+    try {
+      db.prepare(
+        "UPDATE entry_types SET type_hash = 'other' WHERE name = 'review_completed'",
+      ).run();
+    } catch (error) {
+      return (error as Error).message;
+    }
+    throw new Error('the identity update was not refused');
+  };
+
+  it('names all five mutable columns on a new store', () => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      register(store.db);
+      expect(refusalOf(store.db)).toMatch(MUTABLE);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('replaces the three-column message on a store migrated from version 5', () => {
+    const db = buildVersion5Store(tempDir());
+    try {
+      const before = refusalOf(db);
+      migrate(db, MIGRATIONS);
+      expect([before, refusalOf(db)]).toEqual([
+        expect.stringMatching(/Only status, description and record_when may change\./),
+        expect.stringMatching(MUTABLE),
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('still allows an update to guidance_json after migrating', () => {
+    const db = buildVersion5Store(tempDir());
+    try {
+      migrate(db, MIGRATIONS);
+      expect(() =>
+        db
+          .prepare(`UPDATE entry_types SET guidance_json = '{}' WHERE name = 'review_completed'`)
+          .run(),
+      ).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('still refuses a major change after migrating', () => {
+    const db = buildVersion5Store(tempDir());
+    try {
+      migrate(db, MIGRATIONS);
+      expect(() =>
+        db.prepare("UPDATE entry_types SET major = 2 WHERE name = 'review_completed'").run(),
+      ).toThrow(/entry_types identity is immutable/);
+    } finally {
+      db.close();
     }
   });
 });
