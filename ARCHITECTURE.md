@@ -305,10 +305,14 @@ Constraints on it:
 - **Tiny output.** It is a context tax on every session in the project; the brief must earn its lines.
 
 Ruled out: a `Stop` hook nagging "you recorded nothing this session." `Stop` fires under `-p`
-with `stop_hook_active` and `last_assistant_message` (`spike/capture-hooks`), but its stdout is
-not shown to Claude -- it could only intervene via `exit 2`, which would block the session. A
-handler that wants to speak does it at the moment the work starts (a Skill call, a prompt), not
-after it ends. `asc hook` accepts only `user-prompt-submit` and `post-tool-use` for that reason.
+with `stop_hook_active` and `last_assistant_message` (`spike/capture-hooks`). Its plain stdout is
+not shown to Claude, but that is not the channel: a JSON `decision: block` with a `reason` IS
+delivered, as a `hook_blocking_error:Stop` record -- 2/2 in `spike/exposure/FINDINGS.md` (n = 2,
+one model, one harness version; not a rate). So Stop can speak. It is ruled out because of what
+speaking there costs: a block refuses to let the turn end, so every nag buys a whole extra turn
+after the work is done, and it arrives when the moment it is about has already passed. A handler
+that wants to speak does it at the moment the work starts (a Skill call, a prompt).
+`asc hook` accepts only `user-prompt-submit` and `post-tool-use` for that reason.
 
 ### Cross-project analysis (mitigating per-project storage)
 
