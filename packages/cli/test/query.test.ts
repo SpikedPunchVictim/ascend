@@ -1,5 +1,13 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -691,6 +699,45 @@ describe('a store written by a newer ascend', () => {
     expect(flatten(result.stderr)).toContain('Upgrade ascend');
     // Nothing was printed as data, because nothing was read.
     expect(result.stdout.trim()).toBe('');
+  });
+});
+
+describe('--across over a type shared by export and import (asc-yhz)', () => {
+  it('counts one definition recorded in two projects under one type_hash', () => {
+    // The per-project store is only analytically harmless if a type carried from one project to
+    // another is the SAME type there: `types import` preserves `type_hash`, and `--across` can then
+    // pool the two projects' entries by it. Each half is tested alone; this is the two together.
+    const { parent, members } = neighbourhood(2);
+    const [first, second] = members as [string, string];
+    const spec = {
+      name: 'probe_result',
+      properties: [{ name: 'verdict', type: 'string', required: true }],
+      record_when: 'Record when a probe finishes.',
+    };
+    writeFileSync(join(first, 'probe.json'), JSON.stringify(spec));
+    expect(asc(['types', 'define', 'probe.json'], first).status).toBe(0);
+    const exported = asc(['types', 'export'], first);
+    expect(exported.status).toBe(0);
+    expect(asc(['types', 'import', '-'], second, exported.stdout).status).toBe(0);
+    for (const dir of members) {
+      expect(asc(['record', 'probe_result', '--prop=verdict=pass'], dir).status).toBe(0);
+    }
+
+    const result = asc(
+      [
+        'query',
+        'SELECT type_hash, COUNT(*) AS n FROM (' +
+          "SELECT type_hash FROM proj_0.entries WHERE type_name = 'probe_result' UNION ALL " +
+          "SELECT type_hash FROM proj_1.entries WHERE type_name = 'probe_result') GROUP BY type_hash",
+        '--across',
+        `${parent}/*`,
+        '--json',
+      ],
+      parent,
+    );
+
+    expect(result.status).toBe(0);
+    expect(rows(result.stdout).map((row) => row['n'])).toEqual([2]);
   });
 });
 
