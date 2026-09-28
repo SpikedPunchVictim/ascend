@@ -106,7 +106,10 @@ and stays: it is the replayable definition of the two types this project defined
 byte-identical `type_hash` values (`f2f796ca`, `96880b60`, verified in commit `8fbabef` against a
 throwaway store). Schema only — a fresh clone gets the types and none of the corpus. It belongs in
 this directory for the same reason everything else here does: the types exist because dogfooding
-needed them.
+needed them. Since `asc-sny1` it also carries this project's own guidance — `purpose`,
+`analysis_questions` and `review_after` — for the hand-recorded types, the four starters included.
+Those values are this repository's intentions, not defaults, so they live here rather than in
+`starters.ts`; `asc types import dogfood/types.json` applies them in place, with no version bump.
 
 **The one required section is "The metric."** A finding without a measurement is an impression,
 and impressions belong in a bead comment. Every measurable claim carries the measured value and

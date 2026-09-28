@@ -53,7 +53,10 @@
       "method": "What was run, against what data, and how many times. Name the tool or script, the input it ran over, and the repeat count -- a method that does not say how many times something ran cannot be told apart from a single lucky sample.",
       "question": "The question, named BEFORE anything was run. Write it as it was asked at the start, not as it reads now that the answer is known -- a question restated in light of its own answer stops being a question and becomes a justification."
     },
-    "type_hash": "f2f796ca3c0beaaeac9289e4773e92ee63316df6eb5f8e97ab2bac6002663707"
+    "type_hash": "f2f796ca3c0beaaeac9289e4773e92ee63316df6eb5f8e97ab2bac6002663707",
+    "purpose": "Keep measured answers to questions named before measuring.",
+    "analysis_questions": ["How often did a result contradict its pre-registered prediction?"],
+    "review_after": 50
   },
   {
     "name": "note",
@@ -68,7 +71,9 @@
     "prose": {
       "text": "The correction or finding, in prose. State plainly what it corrects if it corrects something -- naming the entry or claim being corrected is what makes this findable later instead of just another unattached sentence."
     },
-    "type_hash": "96880b60e9c795766c5b6eb02da5a42611683b14bbe9a7e5e77a558b8a2e4b77"
+    "type_hash": "96880b60e9c795766c5b6eb02da5a42611683b14bbe9a7e5e77a558b8a2e4b77",
+    "purpose": "The last-resort type, for what fits no other shape.",
+    "analysis_questions": ["What share of notes should have been another type?"]
   },
   {
     "name": "search_miss",
@@ -148,6 +153,159 @@
         "type": "text",
         "description": "The search or check that produced the real answer, verbatim, so the entry carries the remedy and not only the fault. Where the fix was a different KIND of evidence rather than a better pattern -- reading a file, a token count, an experiment -- say that instead."
       }
-    ]
+    ],
+    "purpose": "Measure how often this project’s searches mislead it, and in which way.",
+    "analysis_questions": [
+      "Which failure_mode dominates?",
+      "What share were caught before_acting rather than after a wrong claim?"
+    ],
+    "review_after": 20
+  },
+  {
+    "name": "decision",
+    "properties": [
+      {
+        "name": "chosen",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "options_considered",
+        "type": "json"
+      },
+      {
+        "name": "rationale",
+        "type": "text",
+        "required": true
+      },
+      {
+        "name": "reversibility",
+        "type": "enum",
+        "enum_values": ["costly", "irreversible", "reversible"]
+      }
+    ],
+    "description": "A choice between alternatives that were both genuinely viable.",
+    "record_when": "a choice is made between approaches that were both real options -- the kind worth reopening later. Not every choice: if there was only one reasonable thing to do, it was not a decision, and recording it as one makes the entries that matter harder to find.",
+    "prose": {
+      "chosen": "The option that was taken, spelled as it appears in `options_considered` so the two can be matched without guessing at paraphrase.",
+      "options_considered": "A JSON array, one entry per alternative that was actually on the table. Each entry is a string naming the option, or an object with `option` plus `pros` and `cons`. Writing the pros and cons is what makes this worth recording -- a list of names with no reasoning is reconstructable from the diff. An EMPTY array is a real measurement meaning \"looked and found nothing\" -- leave the property out entirely to say nobody looked.",
+      "rationale": "Why that one and not the others. This is the part that cannot be recovered from the resulting code, which records what was chosen and never what was rejected.",
+      "reversibility": "What it would cost to change this later. An `irreversible` choice is the one a later reader most needs the reasoning for, so this is what makes the rationale findable."
+    },
+    "type_hash": "38c2391c3e05fd9352b0386215ba01777fbeded24ae0e75fc103983075e1db3e",
+    "purpose": "Keep the choices worth reopening, with what was rejected and why.",
+    "analysis_questions": [
+      "Which decisions were later reversed?",
+      "Was reversibility marked correctly on the ones that were?"
+    ],
+    "review_after": 100
+  },
+  {
+    "name": "stage_transition",
+    "properties": [
+      {
+        "name": "from_status",
+        "type": "enum",
+        "required": true,
+        "enum_values": ["complete", "in_progress", "not_started"]
+      },
+      {
+        "name": "stage",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "tests_passing",
+        "type": "boolean"
+      },
+      {
+        "name": "to_status",
+        "type": "enum",
+        "required": true,
+        "enum_values": ["complete", "in_progress", "not_started"]
+      }
+    ],
+    "description": "A stage of a written plan changed status.",
+    "record_when": "a stage in a plan document changes status -- the plan is the trigger, so record the transition when you edit that line, not at the end of the session when you no longer remember what was true at the moment it flipped.",
+    "prose": {
+      "from_status": "The status it had. One of the three the plan format allows.",
+      "stage": "The stage as the plan names it, including its number -- \"Stage 2: the store\". Matching `review_completed`'s `stage` makes \"what was reviewed while this stage was open\" a join rather than a guess.",
+      "tests_passing": "Whether the whole gate was green at the moment of the transition. Omit it if the gate was not run -- \"the tests were failing\" and \"nobody ran the tests\" are different facts, and `false` asserts the first.",
+      "to_status": "The status it now has. Equal to `from_status` is legal and usually a mistake -- record the transition, not the state."
+    },
+    "type_hash": "f24993bf7933febb71ae5b19d35193a25df24f0ee730dde1997e81894f8c0972",
+    "purpose": "See how plans actually move between stages.",
+    "analysis_questions": ["How often does a stage go complete without its tests passing?"],
+    "review_after": 50
+  },
+  {
+    "name": "stuck_event",
+    "properties": [
+      {
+        "name": "attempt_count",
+        "type": "integer",
+        "required": true
+      },
+      {
+        "name": "error_text",
+        "type": "text"
+      },
+      {
+        "name": "hypothesis",
+        "type": "text"
+      },
+      {
+        "name": "resolution",
+        "type": "enum",
+        "enum_values": ["abandoned", "escalated", "fixed", "unresolved", "worked_around"]
+      },
+      {
+        "name": "what_was_tried",
+        "type": "json"
+      }
+    ],
+    "description": "A problem resisted repeated attempts and forced a stop.",
+    "record_when": "the three-strike rule fires -- three attempts at the same problem have failed and you are stopping to reassess rather than trying a fourth variation. Record it at the moment you stop, not after you recover: the value of this entry is the state of mind you are about to leave, and it is the least reconstructable thing in the whole store. Keep the failing output as it was printed while you still have it -- `error_text` wants the exact words, and only the exact words are what a later search can find.",
+    "prose": {
+      "attempt_count": "How many attempts were made before stopping. This is the count of attempts MADE, which may exceed the length of `what_was_tried` -- some attempts are not worth writing down.",
+      "error_text": "The failure as it was printed, verbatim. Not a summary -- the exact text is what makes this findable by a later search, and a paraphrase destroys the only part a search matches.",
+      "hypothesis": "What you believe is actually wrong, stated as a belief rather than a finding. The point is to record the guess that the next attempt was about to test.",
+      "resolution": "How it ended: `fixed` (the real cause was found), `worked_around` (the symptom is gone and the cause remains), `escalated` (handed to someone or something else), `abandoned` (the goal was dropped), `unresolved` (stopped without a fix and not coming back). Leave `resolution` out ENTIRELY if the problem is still open -- that is a different claim from `unresolved`, which means you stopped for good.",
+      "what_was_tried": "A JSON array of what was attempted, in the order tried -- either bare strings, or objects with `attempt` and `result`. Order is the point: the sequence is how a later reader sees which ideas have already been spent. An EMPTY array is a real measurement meaning \"looked and found nothing\" -- leave the property out entirely to say nobody looked."
+    },
+    "type_hash": "a86e176a35dd2432e6b9297610639e7794c8cb3ddbdbe9e1316ea136357a21e1",
+    "purpose": "Find where three attempts at one problem fail, while the state of mind is still recoverable.",
+    "analysis_questions": ["Do stuck events cluster by area of the code, or by kind of error?"],
+    "review_after": 20
+  },
+  {
+    "name": "review_completed",
+    "properties": [
+      {
+        "name": "findings",
+        "type": "json"
+      },
+      {
+        "name": "stage",
+        "type": "string"
+      },
+      {
+        "name": "verdict",
+        "type": "enum",
+        "required": true,
+        "enum_values": ["approved", "changes_requested", "rejected"]
+      }
+    ],
+    "description": "A review of some work reached a verdict.",
+    "record_when": "a review finishes at any stage -- a code review, a review of a plan or a design, or a self-review before handing work off. Record it when you reach a verdict, not while you are still reading: a review with no verdict is not yet an entry, and an entry recorded mid-review is a claim you may have to contradict.",
+    "prose": {
+      "findings": "A JSON array, one object per problem found: `severity` (one of critical, high, medium, low), `category` (one of bug, security, design, style, docs, test), `file` for the path it is in, and `note` for anything that does not fit the other three. An EMPTY array is a real measurement meaning \"looked and found nothing\" -- leave the property out entirely to say nobody looked.",
+      "stage": "What the review covered, in the words the plan uses, so it joins `stage_transition`'s `stage`. A string rather than an enum because stage names are the project's own.",
+      "verdict": "`approved` -- good to proceed. `changes_requested` -- the approach holds, fix these and continue. `rejected` -- the approach itself is wrong, and fixing the findings would not save it. The distinction between the last two is the one worth being careful about."
+    },
+    "type_hash": "e1b06a2b5701fcb23a4094b58c687d4d269db15d53f11af367e3fef037a0697a",
+    "purpose": "Track what reviews conclude.",
+    "analysis_questions": ["What share of reviews end in changes requested?"],
+    "review_after": 20
   }
 ]
