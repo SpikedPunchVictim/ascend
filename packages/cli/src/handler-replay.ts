@@ -61,6 +61,11 @@ export interface LogHorizon {
   readonly files: number;
   /** Transcripts that could not be read to the end. A replay over a partial log says so. */
   readonly unreadable: number;
+  /**
+   * Transcripts under a known OS temp root that were NOT read (asc-80m). Only an all-projects
+   * replay without `includeEphemeral` skips any; a named project is always read.
+   */
+  readonly ephemeral: number;
   readonly events: number;
   /** Absent when no event carried a timestamp -- never a stand-in value. */
   readonly first_ts?: string;
@@ -76,11 +81,20 @@ export interface ReplayResult {
 
 export interface ReplayOptions {
   readonly root: string;
-  /** Claude Code's encoded directory name for the project, e.g. `-Users-me-projects-ascend`. */
-  readonly project: string;
+  /**
+   * Claude Code's encoded directory names for the projects to replay, e.g.
+   * `-Users-me-projects-ascend`, or `'all'` for every directory under `root` (asc-pps4: the
+   * stratum asc-6ola.10 exists for is not in one project).
+   */
+  readonly projects: readonly string[] | 'all';
+  /**
+   * Read projects under a known OS temp root in an `'all'` replay. Ignored for named projects,
+   * which are always read.
+   */
+  readonly includeEphemeral?: boolean;
 }
 
-/** Stream the project's transcripts once, offering every event to every handler. */
+/** Stream the projects' transcripts once, offering every event to every handler. */
 export async function replayHandlers(
   handlers: readonly NamedHandler[],
   options: ReplayOptions,
@@ -110,10 +124,12 @@ export async function replayHandlers(
     (record, file) => {
       for (const event of normalizer.accept(record, file)) offer(event);
     },
-    // `includeEphemeral`: the ephemeral skip exists for sweeps over every project (asc-80m). Here
-    // the caller named this one project, and skipping it would report a zero over a log that was
-    // never read -- found by the default-project test, whose scratch project sits under tmpdir.
-    { root: options.root, projects: new Set([options.project]), includeEphemeral: true },
+    // The ephemeral skip exists for sweeps over every project (asc-80m). A caller who NAMED a
+    // project asked for it, and skipping it would report a zero over a log that was never read --
+    // found by the default-project test, whose scratch project sits under tmpdir.
+    options.projects === 'all'
+      ? { root: options.root, includeEphemeral: options.includeEphemeral ?? false }
+      : { root: options.root, projects: new Set(options.projects), includeEphemeral: true },
   );
   for (const event of normalizer.drain()) offer(event);
 
@@ -137,6 +153,7 @@ export async function replayHandlers(
     horizon: {
       files: totals.files,
       unreadable: totals.failures.length,
+      ephemeral: totals.skipped.filter((entry) => entry.reason === 'ephemeral').length,
       events,
       ...(first === undefined ? {} : { first_ts: first }),
       ...(last === undefined ? {} : { last_ts: last }),

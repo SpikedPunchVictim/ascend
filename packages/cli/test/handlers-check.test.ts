@@ -186,6 +186,99 @@ describe('asc handlers check', () => {
   });
 });
 
+/**
+ * More than one project in one replay (asc-pps4). The fixture adds a second project holding one
+ * successful close, so every count below differs by project set: 3 rows for the first alone, 4
+ * for both, 5 once the temp-root project is read too.
+ */
+describe('asc handlers check over several projects', () => {
+  const OTHER_DIR = '-Users-me-other';
+  const EPHEMERAL_DIR = '-private-tmp-scratch';
+
+  function addProject(home: string, project: string, bead: string): void {
+    const dir = join(home, '.claude', 'projects', project);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'sess-2.jsonl'),
+      `${bash('u1', `bd close ${bead}`, false, 5).join('\n')}\n`,
+    );
+  }
+
+  function corpus(): string {
+    const home = fixture();
+    addProject(home, OTHER_DIR, 'asc-5');
+    addProject(home, EPHEMERAL_DIR, 'asc-6');
+    return home;
+  }
+
+  it('replays every project passed with a repeated --project', () => {
+    const home = corpus();
+    const run = asc(
+      ['bead-close.yaml', '--project', PROJECT_DIR, '--project', OTHER_DIR, '--json'],
+      home,
+    );
+    expect(valueOf(run, 'bead-close', 'rows')).toBe(4);
+  });
+
+  it('reports each replayed project as its own row', () => {
+    const home = corpus();
+    const run = asc(
+      ['bead-close.yaml', '--project', PROJECT_DIR, '--project', OTHER_DIR, '--json'],
+      home,
+    );
+    const rows = (JSON.parse(run.stdout) as { rows: JsonRow[] }).rows;
+    expect(rows.filter((row) => row.field === 'project').map((row) => row.value)).toEqual([
+      PROJECT_DIR,
+      OTHER_DIR,
+    ]);
+  });
+
+  it('refuses the whole replay when any named project has no directory', () => {
+    const home = corpus();
+    const run = asc(
+      ['bead-close.yaml', '--project', PROJECT_DIR, '--project', '-Users-me-elsewhere'],
+      home,
+    );
+    expect([run.status, run.stdout]).toEqual([1, '']);
+  });
+
+  it('reads a named temp-root project, because naming it asked for it', () => {
+    const home = corpus();
+    const run = asc(['bead-close.yaml', '--project', EPHEMERAL_DIR, '--json'], home);
+    expect(valueOf(run, 'bead-close', 'rows')).toBe(1);
+  });
+
+  it('replays every project but the temp-root one with --all-projects', () => {
+    const home = corpus();
+    const run = asc(['bead-close.yaml', '--all-projects', '--json'], home);
+    expect(valueOf(run, 'bead-close', 'rows')).toBe(4);
+  });
+
+  it('counts the temp-root transcripts --all-projects left unread', () => {
+    const home = corpus();
+    const run = asc(['bead-close.yaml', '--all-projects', '--json'], home);
+    expect(valueOf(run, '(log)', 'ephemeral_skipped')).toBe(1);
+  });
+
+  it('reads the temp-root projects too with --include-ephemeral', () => {
+    const home = corpus();
+    const run = asc(['bead-close.yaml', '--all-projects', '--include-ephemeral', '--json'], home);
+    expect(valueOf(run, 'bead-close', 'rows')).toBe(5);
+  });
+
+  it('refuses --all-projects together with --project', () => {
+    const home = corpus();
+    const run = asc(['bead-close.yaml', '--all-projects', '--project', PROJECT_DIR], home);
+    expect([run.status, run.stdout]).toEqual([2, '']);
+  });
+
+  it('refuses --include-ephemeral without --all-projects', () => {
+    const home = corpus();
+    const run = asc(['bead-close.yaml', '--include-ephemeral', '--project', PROJECT_DIR], home);
+    expect([run.status, run.stdout]).toEqual([2, '']);
+  });
+});
+
 describe('spreadSample', () => {
   it('spreads picks across the whole list', () => {
     expect(spreadSample([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 3)).toEqual([0, 3, 6]);
