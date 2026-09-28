@@ -9,7 +9,9 @@ import { canonicalJson } from '@ascend/core';
  * was ingested". Measured on the live store 2026-09-27, 994 of 994 refused ids were rows holding
  * redaction placeholders (`<user>`, `<project-B>`, `<org-B>`) where the transcript holds the real
  * value, and the transcripts had not been edited at all. So this names the fields that differ
- * instead of a cause, and recognises the one population measured, rather than asserting either.
+ * instead of a cause, and marks which of them the stored copy holds redacted, rather than asserting
+either. Redaction is rarely the whole difference: on the same store every redacted row also held
+an absolute `cwd` that the deriver has written project-relative since asc-tlc.
  */
 
 interface Comparable {
@@ -22,8 +24,11 @@ interface Comparable {
 export interface EntryDifference {
   /** `cwd`, `branch`, `evidenceText` and `properties.<name>`, sorted. Empty when the two agree. */
   readonly fields: readonly string[];
-  /** Every difference is a stored placeholder standing where the derived entry has real text. */
-  readonly redacted: boolean;
+  /**
+   * The differing fields whose stored value is a placeholder standing where the derived entry has
+   * real text, sorted. A subset of `fields`; equal to it when redaction is the whole difference.
+   */
+  readonly redacted: readonly string[];
 }
 
 /**
@@ -58,8 +63,8 @@ export function entryDifference(stored: Comparable, derived: Comparable): EntryD
   const fields = [...new Set([...before.keys(), ...after.keys()])]
     .filter((field) => (before.get(field) ?? 'null') !== (after.get(field) ?? 'null'))
     .sort();
-  const redacted =
-    fields.length > 0 &&
-    fields.every((field) => fillsPlaceholders(before.get(field) ?? '', after.get(field) ?? ''));
+  const redacted = fields.filter((field) =>
+    fillsPlaceholders(before.get(field) ?? '', after.get(field) ?? ''),
+  );
   return { fields, redacted };
 }

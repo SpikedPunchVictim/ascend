@@ -7,7 +7,7 @@
 | **Surfaced by** | `asc ingest claude-code --full`, run to re-derive `skill_activation` under rule 2 (`asc-gtnu.17`) |
 | **Entry type(s)** | `tool_denial`, `context_compaction`, `user_correction` (derived) |
 | **Severity** | P3 |
-| **Status** | open |
+| **Status** | fixed in the commit that adds **Resolution** (the message; the rows stay refused, correctly) |
 
 ## What was found
 
@@ -74,6 +74,60 @@ are never re-read.
 Rows are immutable, so there are two options. One is to name the case at write time: compare
 modulo redaction and say "stored redacted". The other is an invalidation annotation. Neither is a
 cleanup. Until one of them lands, a `--full` re-ingest prints 994 misleading warnings.
+
+## Resolution
+
+The line for each refusal now names the fields that differ, and which of them the stored copy holds
+redacted. It no longer names a cause (`packages/cli/src/entry-difference.ts`). The summary counts
+collisions that involve a redacted field separately, so a collision with **no** redacted field,
+such as an edited transcript or a rule change that forgot its derivation version, can be told
+apart from this population.
+
+**The metric.** `asc ingest claude-code --full --dry-run` on the live store, 2026-09-28. Exact
+table and summary:
+
+```
+entry    tool_denial           7 new, 74 already present, 505 collided
+entry    context_compaction    3 new, 222 already present, 453 collided
+entry    verification_run      1 new, 1231 already present
+entry    skill_activation      118 already present
+entry    user_correction       5 already present, 14 collided
+entry    review_finding        65 already present, 11 rejected
+Warning: 972 derived entries collided with a DIFFERENT entry already recorded under the same id, and were not written -- 972 of them where the stored copy holds a redaction placeholder in a field that differs.
+```
+
+The per-line messages, grouped (`uniq -c` over the unwrapped stderr, the text after the field list
+cut off):
+
+```
+ 827 differing in cwd, properties.project. The stored copy holds redaction placeholders in properties.project
+ 133 differing in cwd, properties.discovered_tools, properties.project. The stored copy holds redaction placeholders in properties.discovered_tools, properties.project
+  10 differing in cwd, evidenceText, properties.project. The stored copy holds redaction placeholders in properties.project
+   1 differing in cwd, properties.project, properties.tool_name. The stored copy holds redaction placeholders in properties.project, properties.tool_name
+   1 differing in cwd, evidenceText, properties.project. The stored copy holds redaction placeholders in evidenceText, properties.project
+```
+
+**What the first version of this fix got wrong, and how it was caught.** It flagged a collision
+as redaction only when *every* differing field was a filled placeholder. The unit fixtures agreed
+with that rule. The live store matched it on **0 of 972**. The reason is `cwd`: every redacted row
+stores an absolute path (`/Users/<user>/projects/<project-G>`), and the deriver has written `cwd`
+project-relative since `asc-tlc` (`.` for this sample). So `cwd` differs outside its
+placeholders. The split of stored derived rows, from `asc query`:
+
+```
+type_name           abs_cwd  placeholder  n
+context_compaction  0        0            222
+context_compaction  1        1            527
+tool_denial         0        0            74
+tool_denial         1        1            564
+user_correction     0        0            5
+user_correction     1        1            19
+```
+
+Every row with a placeholder has an absolute `cwd`, and no row without one does. Redaction is part
+of every one of these differences and the whole of none. So the message now marks redaction per
+field instead of claiming it as the cause. The 10 `evidenceText` differences that are not
+redaction are not characterised.
 
 ## Links
 

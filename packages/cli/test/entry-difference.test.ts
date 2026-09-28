@@ -15,7 +15,7 @@ const stored = {
 
 describe('entryDifference', () => {
   it('names nothing when the two agree', () => {
-    expect(entryDifference(stored, stored)).toEqual({ fields: [], redacted: false });
+    expect(entryDifference(stored, stored)).toEqual({ fields: [], redacted: [] });
   });
 
   it('names each differing property and locality field', () => {
@@ -26,11 +26,11 @@ describe('entryDifference', () => {
     };
     expect(entryDifference(stored, derived)).toEqual({
       fields: ['branch', 'properties.tool_name'],
-      redacted: false,
+      redacted: [],
     });
   });
 
-  it('calls a difference redacted when the stored placeholders stand where the real values are', () => {
+  it('names the fields whose stored placeholders stand where the real values are', () => {
     const derived = {
       properties: { project: '-Users-me-projects-grizzly', tool_name: 'Bash' },
       cwd: '/Users/me/projects/grizzly',
@@ -38,26 +38,26 @@ describe('entryDifference', () => {
     };
     expect(entryDifference(stored, derived)).toEqual({
       fields: ['cwd', 'properties.project'],
-      redacted: true,
+      redacted: ['cwd', 'properties.project'],
     });
   });
 
-  it('does not call it redacted when anything outside the placeholders differs too', () => {
+  it('does not call a field redacted when it differs outside its placeholders too', () => {
     const derived = {
       properties: { project: '-Users-me-projects-grizzly', tool_name: 'Bash' },
       cwd: '/Users/me/elsewhere/grizzly',
       branch: 'main',
     };
-    expect(entryDifference(stored, derived).redacted).toBe(false);
+    expect(entryDifference(stored, derived).redacted).toEqual(['properties.project']);
   });
 
-  it('does not call it redacted when a field differs that holds no placeholder', () => {
+  it('leaves a field with no placeholder out of the redacted ones', () => {
     const derived = {
       properties: { project: '-Users-me-projects-grizzly', tool_name: 'Edit' },
       cwd: '/Users/me/projects/grizzly',
       branch: 'main',
     };
-    expect(entryDifference(stored, derived).redacted).toBe(false);
+    expect(entryDifference(stored, derived).redacted).toEqual(['cwd', 'properties.project']);
   });
 
   it('treats an absent field and a null one as the same', () => {

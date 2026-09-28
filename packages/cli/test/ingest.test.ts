@@ -978,8 +978,8 @@ describe('asc ingest claude-code', () => {
     expect(second.status).toBe(0);
     // Warnings wrap at the terminal width, so the words are read with the wrapping undone.
     const stderr = second.stderr.replace(/\s+/g, ' ');
-    expect(stderr).toContain('1 of them only where the stored copy holds a redaction');
-    expect(stderr).toContain('already recorded with redacted evidenceText');
+    expect(stderr).toContain('1 of them where the stored copy holds a redaction placeholder');
+    expect(stderr).toContain('Every one of them is a redaction placeholder in the stored copy');
   });
 });
 

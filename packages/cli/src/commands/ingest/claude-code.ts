@@ -252,23 +252,26 @@ interface Writes {
   readonly rejections: readonly string[];
   /** One line per cross-file id collision. See `asc-90h`. */
   readonly collisions: readonly string[];
-  /** How many of those differ ONLY where the stored copy holds a redaction placeholder. */
+  /** How many of those the stored copy holds redacted in at least one differing field. */
   readonly redactedCollisions: number;
 }
 
 /**
- * One collision's line: the fields that differ, never a guessed cause (asc-o3tn, asc-j0vh).
- * A difference that is only redaction is named as such, because it is the one case measured --
- * 994 of 994 refusals on 2026-09-27 -- and the one no re-derive can ever reconcile.
+ * One collision's line: the fields that differ, never a guessed cause (asc-o3tn, asc-j0vh), and
+ * which of them the stored copy holds redacted. Redaction is named because it is the population
+ * measured -- every refusal on 2026-09-28 -- and because a redacted field can never re-derive
+ * equal. It is rarely the whole difference, so it is marked per field, not asserted as the cause.
  */
 function collisionLine(id: string, type: string, difference: EntryDifference): string {
   const fields = difference.fields.join(', ');
-  return difference.redacted
-    ? `${type} ${id}: already recorded with redacted ${fields} -- placeholders such as ` +
-        `<user> where the transcript holds the real value. A redacted row is never re-derived, ` +
-        `so this one was refused; the stored entry is unchanged.`
-    : `${type} ${id}: this id already holds a DIFFERENT entry, differing in ${fields}. This ` +
-        `one was refused rather than silently dropped; the stored entry is unchanged.`;
+  const head = `${type} ${id}: this id already holds a DIFFERENT entry, differing in ${fields}.`;
+  const tail = ' This one was refused rather than silently dropped; the stored entry is unchanged.';
+  if (difference.redacted.length === 0) return head + tail;
+  const redacted =
+    difference.redacted.length === difference.fields.length
+      ? ' Every one of them is a redaction placeholder in the stored copy'
+      : ` The stored copy holds redaction placeholders in ${difference.redacted.join(', ')}`;
+  return `${head}${redacted}, such as <user> where the transcript has the real value.${tail}`;
 }
 
 /**
@@ -651,7 +654,7 @@ export default class IngestClaudeCode extends BaseCommand {
     const collide = (entry: DerivedEntry, existing: RecordedEntry): void => {
       tally(entry.type, 'collided');
       const difference = entryDifference(existing, entry);
-      if (difference.redacted) redactedCollisions += 1;
+      if (difference.redacted.length > 0) redactedCollisions += 1;
       collisions.push(collisionLine(idFor(entry), entry.type, difference));
     };
     const valid: DerivedEntry[] = [];
@@ -770,8 +773,8 @@ export default class IngestClaudeCode extends BaseCommand {
             // `asc-90h`: a duplicate id is ordinary idempotency ONLY when it is a re-proposal of
             // the SAME content. `derive.ts`'s id has no file component, so an id already in the
             // store can be re-proposed carrying something else. Which fields differ is reported,
-            // not a guessed cause: the guess was "a transcript edited in place", and 994 of 994
-            // measured were rows stored redacted (asc-o3tn). Reading the existing row back and
+            // not a guessed cause: the guess was "a transcript edited in place", and every one
+            // measured was a row stored redacted, with an absolute cwd (asc-o3tn). Reading the existing row back and
             // comparing content is what tells the two cases apart; skipping the comparison is
             // exactly how this bug stayed invisible. A duplicate with no row to read is not a
             // collision at all, so it is rethrown.
@@ -958,8 +961,8 @@ export default class IngestClaudeCode extends BaseCommand {
           `DIFFERENT entry already recorded under the same id, and ` +
           `${collided === 1 ? 'was' : 'were'} not written` +
           (writes.redactedCollisions > 0
-            ? ` -- ${String(writes.redactedCollisions)} of them only where the stored copy ` +
-              `holds a redaction placeholder`
+            ? ` -- ${String(writes.redactedCollisions)} of them where the stored copy holds a ` +
+              `redaction placeholder in a field that differs`
             : '') +
           `. See the line(s) below. The entry already in the store stands: entries are ` +
           `immutable, so the newer content cannot replace it under this id.`,
