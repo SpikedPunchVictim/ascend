@@ -1,5 +1,5 @@
 /**
- * Replay handlers over one project's transcripts (asc-6ola.14).
+ * Replay handlers over one or more projects' transcripts (asc-6ola.14, asc-pps4).
  *
  * This is the dry run a handler must pass before it is trusted: the same normalizer and the same
  * evaluator a live hook will use, fed the project's recorded history instead of one event at a
@@ -54,6 +54,30 @@ export interface HandlerReplay {
   readonly unsatisfiedBefore: number;
   /** Table rows skipped because their cells did not match their header (asc-tuur.3). */
   readonly malformedItems: number;
+  /**
+   * Triggers and rows per unit (`unitKey`), for the units with at least one trigger (asc-jwm7).
+   * A row is counted in its TRIGGER's unit, wherever the event that completed it sat.
+   */
+  readonly units: ReadonlyMap<string, UnitCount>;
+}
+
+export interface UnitCount {
+  readonly triggers: number;
+  readonly rows: number;
+}
+
+/** The first and last timestamp seen in one unit. Absent when none of its events carried one. */
+export interface UnitSpan {
+  readonly first_ts?: string;
+  readonly last_ts?: string;
+}
+
+/**
+ * The holdout unit asc-6ola.4 settled on: one compaction segment of one stream. Keyed on the
+ * stream as well as the segment index, because every stream's segments count from 0.
+ */
+export function unitKey(session: string, agent: string, segment: number): string {
+  return `${session}\u0000${agent}\u0000${String(segment)}`;
 }
 
 export interface LogHorizon {
@@ -75,6 +99,8 @@ export interface LogHorizon {
 export interface ReplayResult {
   readonly handlers: readonly HandlerReplay[];
   readonly horizon: LogHorizon;
+  /** Every unit the log held, with its span, so a comparison can place it before or after a time. */
+  readonly units: ReadonlyMap<string, UnitSpan>;
   readonly derive_version: number;
   readonly counters: NormalizeCounters;
 }
@@ -104,7 +130,11 @@ export async function replayHandlers(
     handler,
     run: runHandler(handler),
     rows: [] as HandlerRow[],
+    units: new Map<string, { triggers: number; rows: number }>(),
+    // A row names its trigger by stream and seq, not by unit, so the unit is noted at the trigger.
+    triggerUnit: new Map<string, string>(),
   }));
+  const spans = new Map<string, { first_ts?: string; last_ts?: string }>();
   const normalizer = createNormalizer();
   let events = 0;
   let first: string | undefined;
@@ -117,7 +147,29 @@ export async function replayHandlers(
       if (first === undefined || ts < first) first = ts;
       if (last === undefined || ts > last) last = ts;
     }
-    for (const entry of runs) entry.rows.push(...entry.run.accept(event));
+    const segment = event['segment'];
+    // Every event the normalizer emits carries `segment` (asc-73cb), so a missing one is a broken
+    // invariant. Defaulting it to 0 would merge a stream's segments into one unit, silently.
+    if (typeof segment !== 'number') {
+      throw new Error(`A ${event.kind} event carries no segment; the normalizer must set one.`);
+    }
+    const unit = unitKey(event.session_id, event.agent_id, segment);
+    let span = spans.get(unit);
+    if (span === undefined) spans.set(unit, (span = {}));
+    if (typeof ts === 'string') {
+      if (span.first_ts === undefined || ts < span.first_ts) span.first_ts = ts;
+      if (span.last_ts === undefined || ts > span.last_ts) span.last_ts = ts;
+    }
+    for (const entry of runs) {
+      const before = entry.run.triggers;
+      const rows = entry.run.accept(event);
+      if (entry.run.triggers > before) {
+        entry.triggerUnit.set(streamSeq(event.session_id, event.agent_id, event.seq), unit);
+        countIn(entry.units, unit).triggers += entry.run.triggers - before;
+      }
+      entry.rows.push(...rows);
+      for (const row of rows) countRow(entry, row);
+    }
   };
 
   const totals = await streamCorpus(
@@ -140,10 +192,11 @@ export async function replayHandlers(
   for (const entry of runs) entry.run.finish();
 
   return {
-    handlers: runs.map(({ name, handler, run, rows }) => ({
+    handlers: runs.map(({ name, handler, run, rows, units }) => ({
       name,
       handler,
       rows,
+      units,
       triggers: run.triggers,
       unclosed: run.unclosed,
       noMatch: run.noMatch,
@@ -160,7 +213,39 @@ export async function replayHandlers(
     },
     derive_version: EVENT_DERIVE_VERSION,
     counters: normalizer.counters,
+    units: spans,
   };
+}
+
+function streamSeq(session: string, agent: string, seq: number): string {
+  return `${session}\u0000${agent}\u0000${String(seq)}`;
+}
+
+function countIn(
+  units: Map<string, { triggers: number; rows: number }>,
+  unit: string,
+): { triggers: number; rows: number } {
+  let count = units.get(unit);
+  if (count === undefined) units.set(unit, (count = { triggers: 0, rows: 0 }));
+  return count;
+}
+
+function countRow(
+  entry: {
+    units: Map<string, { triggers: number; rows: number }>;
+    triggerUnit: Map<string, string>;
+  },
+  row: HandlerRow,
+): void {
+  const unit = entry.triggerUnit.get(streamSeq(row.session_id, row.agent_id, row.seq));
+  // Every row comes from a trigger this replay offered, so a miss is a broken invariant, not data.
+  if (unit === undefined) {
+    throw new Error(
+      `A handler row names a trigger the replay never saw: ${row.session_id} ${row.agent_id} ` +
+        `seq ${String(row.seq)}.`,
+    );
+  }
+  countIn(entry.units, unit).rows += 1;
 }
 
 /**

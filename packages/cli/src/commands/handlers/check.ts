@@ -15,73 +15,22 @@
  * Read-only: nothing is written to the store or to the transcripts.
  */
 
-import { readFileSync, statSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
 import { Args, Flags } from '@oclif/core';
-import { defaultTranscriptRoot } from '@ascend/adapter-claude-code';
-import { canonicalJson, HandlerError, type CompiledHandler } from '@ascend/core';
+import { canonicalJson } from '@ascend/core';
 import { BaseCommand } from '../../base.js';
-import { refusal, usageError } from '../../errors.js';
+import { replayHandlers, spreadSample } from '../../handler-replay.js';
 import {
-  encodeProjectDir,
-  replayHandlers,
-  spreadSample,
-  type NamedHandler,
-  type ReplayResult,
-} from '../../handler-replay.js';
-import { loadHandler } from '../../handler-yaml.js';
-import { findGitRoot, findProjectRoot } from '../../project.js';
+  checkReplayScope,
+  FIELD,
+  HANDLER,
+  load,
+  logRows,
+  REPLAY_FLAGS,
+  replayScope,
+  VALUE,
+  type Row,
+} from '../../handler-scope.js';
 import { sayStage } from '../../typed-handlers.js';
-
-const HANDLER = 'handler';
-const FIELD = 'field';
-const VALUE = 'value';
-/** The pseudo-handler name the log's own facts are reported under. */
-const LOG = '(log)';
-
-type Row = Readonly<Record<typeof HANDLER | typeof FIELD | typeof VALUE, unknown>>;
-
-function load(path: string): NamedHandler {
-  let source: string;
-  try {
-    source = readFileSync(path, 'utf8');
-  } catch (error) {
-    throw refusal(`Cannot read handler ${path}: ${(error as Error).message}`);
-  }
-  let handler: CompiledHandler;
-  try {
-    handler = loadHandler(source);
-    // A say handler on a kind no lifecycle hook delivers would never run (asc-tuur.4).
-    if (handler.say) sayStage(handler);
-  } catch (error) {
-    if (error instanceof HandlerError) throw refusal(`${path}: ${error.message}`);
-    throw error;
-  }
-  return { name: basename(path).replace(/\.ya?ml$/, ''), handler };
-}
-
-function logRows(projects: readonly string[] | 'all', result: ReplayResult): Row[] {
-  const { horizon } = result;
-  const facts: [string, unknown][] = [
-    // One row per named project, so `--json` gets each as a plain string and the table's
-    // 60-character elision cannot hide the second one.
-    ...(projects === 'all'
-      ? [['project', '(all)'] as [string, unknown]]
-      : projects.map((project): [string, unknown] => ['project', project])),
-    ['derive_version', result.derive_version],
-    ['files', horizon.files],
-    ['unreadable', horizon.unreadable],
-    // Always, including zero: an all-projects count that silently left out the temp-root
-    // projects would read as the whole corpus.
-    ['ephemeral_skipped', horizon.ephemeral],
-    ['events', horizon.events],
-  ];
-  if (horizon.first_ts !== undefined) facts.push(['first_ts', horizon.first_ts]);
-  if (horizon.last_ts !== undefined) facts.push(['last_ts', horizon.last_ts]);
-  for (const [name, count] of Object.entries(result.counters))
-    facts.push([`normalizer.${name}`, count]);
-  return facts.map(([field, value]) => ({ [HANDLER]: LOG, [FIELD]: field, [VALUE]: value }));
-}
 
 export default class HandlersCheck extends BaseCommand {
   static override description =
@@ -104,30 +53,7 @@ export default class HandlersCheck extends BaseCommand {
   };
 
   static override flags = {
-    root: Flags.string({
-      description:
-        'The directory holding transcript projects. Defaults to ~/.claude/projects, which is ' +
-        'where Claude Code writes them.',
-    }),
-    project: Flags.string({
-      description:
-        'A transcript directory name to replay, e.g. -Users-me-projects-app. Repeat it to ' +
-        'replay several together. Defaults to the encoded path of the ascend project (or git ' +
-        'repository) containing the working directory.',
-      multiple: true,
-      exclusive: ['all-projects'],
-    }),
-    'all-projects': Flags.boolean({
-      description:
-        'Replay every transcript directory under the root. Projects under an OS temp root are ' +
-        'skipped and counted unless --include-ephemeral is passed.',
-      default: false,
-      exclusive: ['project'],
-    }),
-    'include-ephemeral': Flags.boolean({
-      description: 'With --all-projects, also replay projects under an OS temp root.',
-      default: false,
-    }),
+    ...REPLAY_FLAGS,
     samples: Flags.integer({
       description: 'Rows to show per handler, spread evenly across the log.',
       default: 3,
@@ -138,44 +64,17 @@ export default class HandlersCheck extends BaseCommand {
   public async run(): Promise<void> {
     const { argv, flags } = await this.parse(HandlersCheck);
     const format = this.resolveFormat(flags);
-    const root = resolve(this.optionalFlag(flags.root) ?? defaultTranscriptRoot());
-    const projects: readonly string[] | 'all' = flags['all-projects']
-      ? 'all'
-      : [...new Set(this.optionalFlag(flags.project) ?? [this.defaultProject()])];
-
-    // By hand rather than oclif's `dependsOn`, which counts `--all-projects`'s `false` default as
-    // present and so never refuses. A named project is always read, so the flag would do nothing.
-    if (flags['include-ephemeral'] && projects !== 'all') {
-      throw usageError(
-        '--include-ephemeral applies only with --all-projects: a project named with --project ' +
-          'is always read, wherever it lives.',
-      );
-    }
-
-    const handlers = (argv as string[]).map(load);
-    if (projects === 'all') {
-      if (!isDirectory(root)) {
-        throw refusal(`There is no transcript root ${root}, so there is no log to replay.`);
-      }
-    } else {
-      // Every name is checked before anything is replayed: a replay over the projects that
-      // existed would be a partial count that looks whole.
-      for (const project of projects) {
-        if (!isDirectory(join(root, project))) {
-          throw refusal(
-            `There is no transcript directory ${project} under ${root}, so there is no log to ` +
-              `replay. Pass --project with the directory name Claude Code used for this project.`,
-          );
-        }
-      }
-    }
-
-    const result = await replayHandlers(handlers, {
-      root,
-      projects,
-      includeEphemeral: flags['include-ephemeral'],
+    const scope = replayScope({
+      root: this.optionalFlag(flags.root),
+      project: this.optionalFlag(flags.project),
+      'all-projects': flags['all-projects'],
+      'include-ephemeral': flags['include-ephemeral'],
     });
-    const rows: Row[] = logRows(projects, result);
+    const handlers = (argv as string[]).map(load);
+    checkReplayScope(scope);
+
+    const result = await replayHandlers(handlers, scope);
+    const rows: Row[] = logRows(scope.projects, result);
     for (const replay of result.handlers) {
       const { name, handler } = replay;
       const add = (field: string, value: unknown): void => {
@@ -225,25 +124,5 @@ export default class HandlersCheck extends BaseCommand {
       });
     }
     this.emit(format, { columns: [HANDLER, FIELD, VALUE], rows });
-  }
-
-  private defaultProject(): string {
-    const cwd = process.cwd();
-    const root = findProjectRoot(cwd) ?? findGitRoot(cwd);
-    if (root === undefined) {
-      throw refusal(
-        'Not inside an ascend project or a git repository, so there is no project to replay. ' +
-          'Pass --project with a transcript directory name.',
-      );
-    }
-    return encodeProjectDir(root);
-  }
-}
-
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
   }
 }
