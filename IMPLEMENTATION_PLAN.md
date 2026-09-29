@@ -1219,9 +1219,96 @@ as the store itself.
     the path it actually wrote. First driven by hand in a scratch project before the test existed: 4
     records → a 118 KB `index.db`, exit 0, and `openIndex` refusing before the build and returning 3
     entries after it.
-- **E12.4 — the cutover and the migration.** This repo's 6,329 entries move from the 22 MB SQLite
-  store to the tracked JSONL tree; `asc export`/`asc import` keep working; the old store is retired,
-  not kept alongside.
+- **E12.4 — the cutover and the migration.** This repo's corpus moves from the 22 MB SQLite store to
+  the tracked JSONL tree; `asc export`/`asc import` keep working; the old store is retired, not kept
+  alongside. **6,404 entries as measured 2026-09-29 (`EV-34`)**, not the 6,329 this section has
+  carried since it was written — the count only ever grows, so it is quoted with its date, and the
+  stage's acceptance uses a number it computes rather than one quoted here.
+
+  **The work is not a redirect, and the Explore map is what established that.** There is no existing
+  tree path to point elsewhere: **`openIndex` has zero production callers**, `openRecordWriter` and
+  `writeGitattributes` are unwired, and all 22 `withProject` call sites get a **writable SQLite
+  handle**. So E12.4 builds the read path and the write path; it does not re-point them. What E12.3's
+  settlement contributes is the constraint they must respect — `openIndex` cannot build, so
+  **something other than a read has to keep the index current**, and that something is the write.
+
+  **Decision taken 2026-09-29, before any of it was built (owner): *a write replays its own lines into
+  the index, and only when the index was already current.*** The mechanism is in the box above. The
+  fast path is O(new lines); the fallback is E12.3's refusal, by construction rather than by a second
+  code path.
+
+  **This reverses a recorded decision on evidence, which is why it is written down instead of
+  quietly taken.** `EV-32` concluded: *"Because the rebuild is wholesale-cheap, there is no incremental
+  path. Wholesale-or-nothing behind the fingerprint: no partial rebuilds, no per-record index
+  bookkeeping."* `EV-33` then measured the premise at 10×: **40.27 s** for a cold rebuild at 63,290
+  records against **2.97 s** at 6,387. "Wholesale-cheap" is true at this repo's size and false at ten
+  times it, so the premise is now measured false — and the two rejected alternatives are rejected on
+  those same numbers rather than on taste. **Rebuild-on-write** would put 3.39 s (measured at 6,404
+  entries, `EV-34`) on every `asc record`, and 40.27 s at 10× — the cost `EV-32` used to kill
+  rebuild-on-*open*, moved onto the hot path. **Leave-it-stale** is simplest and truest to "a read
+  never builds", but it makes the product's basic loop *record → refused read → build → read* at
+  3.39 s a turn. The replay path is not new machinery: it is the same `replay` the build already
+  calls, with a currency check in front of it, which is also what keeps the two from diverging — an
+  incremental writer implemented separately from the builder is the shape that produces a silent
+  difference between two indexes.
+
+  **The guard this needs is the false-green class the dogfood series is about.** A silently stale
+  index is an index that answers wrongly, and E12.3's refusal is a guard only if the write path cannot
+  slip past it. So the write asserts, after every write, that the index's stamp equals the tree's — and
+  the negative control is a write performed against an **already-stale** index, which must leave it
+  stale rather than stamp it current. That second test is the one that can fail for a real reason.
+
+  **Stages.** Each lands green on its own; **b and c are one commit**, because a half-flipped store
+  reads one source and writes the other, and there is no ordering of the two that is not wrong.
+
+  - **E12.4a — the migration, and the archive.** `asc export` → tree in the project root through the
+    real writer, not a bespoke path; the SQLite store archived to `.ascend-archived/` (its home by the
+    `ascend-archive-location` memory), never left beside the new store as a second source of truth.
+    **Success:** `EV-34`'s check is promoted from throwaway spike into a test that asserts the corpus
+    survives — every line round-trips, every observable row of the four kinds is equal, invalidations
+    equal as rows *and* one by one through `listInvalidations()`, and the two known gaps
+    (`ingest_cursor`, the two `meta` keys) are named as dropped **in the migration's own report**
+    rather than silently absent. **Tests:** the equivalence check over a corpus fixture holding all
+    four kinds **and at least one invalidation**. The existing 9-line fixture in
+    `import-vs-index.test.ts` carries annotations — three of them, under scheme `review` — but **not
+    one invalidation**: its only scheme is `review`, not the reserved `invalidation` one, so it is
+    green by construction for the single kind that rides as two others (`invalidation` is not a `kind`
+    at all; it is a scheme line plus annotations, so nothing that compares *kinds* can see it). The
+    check to add is the one `EV-34` used on the real corpus: the invalidation annotations as rows,
+    **and** per entry through `listInvalidations()`, which is what "still strikes the same entries"
+    means. **Status:** Not started.
+  - **E12.4b — the write path.** Every writer appends to the tree and maintains the index by the
+    decision above. **Success:** a write is visible in the tree and in the index, and a read
+    immediately after a write is a cache hit (`0.05 s`) rather than a refusal. **Tests:** both
+    branches of the currency-guarded replay; a write against an already-stale index leaves it stale;
+    the stamp the read compares is the one the write wrote. **Status:** Not started.
+  - **E12.4c — the read path.** Production readers open `openIndex(root, indexFile)`; `openStore` on
+    `.ascend/ascend.db` becomes unreachable from `src`. **Success:** the whole suite's reads go
+    through the index and every existing read test passes unchanged — this is where E12.3's seam pays
+    for itself, and the map says by how much: the flip is **two functions**, `openProject`
+    (`packages/cli/src/project.ts:151`) and `openQueryProject` (`:191`), because every reader reaches
+    the store through `withProject`/`withQueryProject` in `base.ts` and none of the 22 `src` call
+    sites names a database file at all. `Store` exposes no read API — `{ db, dir, file, migrations,
+    close }` and nothing else, with reads as free functions over `store.db` — so `openIndex` already
+    returning a `Store` means the call sites do not learn a new type. **Tests:** the flip driven end
+    to end through the real binary, plus a source scan pinning the modules that may name the old store
+    file, the same instrument `index-build-is-explicit.test.ts` uses. **Status:** Not started.
+  - **E12.4d — retire the source of truth.** The SQLite store stops being a store; `asc export`/`asc
+    import` keep working against the tree. **`asc init` is part of this and is easy to miss: it is
+    the thing that creates the source of truth today** — `.ascend/` plus `ascend.db` through
+    `openStore` (`packages/cli/src/commands/init.ts:126`), and it appends the literal `.ascend/`
+    (`IGNORE_ENTRY`, `:60`, managed at `:240-302`) to `.gitignore`. In the new world it lays out the
+    tree instead, un-ignores the record subtree (the layout section's "un-ignore a subtree", which is
+    a `.gitignore` edit and not a move), and emits `.gitattributes` — which **nothing in `src` writes
+    today**: `writeGitattributes` exists in the store package with no production caller. The store's
+    own tests that asserted SQLite-as-store are retargeted rather than deleted. **Success:** the owner
+    ruling (*"JSONL is the store; SQLite does not coexist as a second source of truth"*) becomes
+    checkable by a test that fails if a production module opens a non-derived database. **Status:**
+    Not started.
+  - **E12.4e — the cutover, on this repo.** Run it on `.ascend/` and drive the real loop on the real
+    corpus: record, query, ingest, search. **Success:** `EV-34`'s numbers reproduce — 10,316 lines,
+    0 lost, ~4.65 s end to end — and the two gaps are reported rather than absorbed. **Status:** Not
+    started.
 - **E12.5 — the guards the blocked beads own.** `asc-2ezs` (one id, two contents, refused at read),
   `asc-98e1` (id-set superset of each parent — EV-31 measured that the markers-and-parse half alone
   passes exactly the resolution that loses a record), `asc-8uzh` (per-record size limit, byte-bounded
@@ -1245,7 +1332,13 @@ plan-level findings came out of E12.1 and are filed as beads rather than fixed h
 questions, not layer questions): a scheme name is any string, and a type line carries no version of its
 own. The design input E12.2 surfaced — a silent ~75 s rebuild — **is settled: a read never builds**
 (`asc-i5tj.3.1`), by a two-function split rather than a mode, and the `asc-63v` foreign-file guard moved
-with the write path when the build became a command. **E12.4 is next: the cutover.**
+with the write path when the build became a command. **E12.4 is next: the cutover**, and its two open
+questions were settled before it started rather than during — the migration's fidelity, by `EV-34`
+measured 2026-09-29 (10,316 lines, 0 lost, 0 gained; every row of the four kinds equal; ~4.65 s for the
+whole migration; two things the format cannot carry, filed as `asc-i5tj.14`), and the index-currency
+question, by the owner's decision above, which reverses `EV-32`'s "no incremental path" on `EV-33`'s
+measurement. Plan-level findings from E12.1 are still beads rather than edits here (a scheme name is any
+string; a type line carries no version of its own), because they are format questions and not layer ones.
 
 ---
 

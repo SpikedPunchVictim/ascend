@@ -74,8 +74,9 @@ context; the depth lives in the numbered files.
 | [0031](0031-2026-09-29-a-type-line-carries-no-version.md) | a `TypeLine` carries no version, so "keep FILE order" does not prevent the renumbering it exists to prevent: `merge=union` reorders before the reader sees it, and the version is read from the order | `asc-i5tj.6` (P1, open) | writing the same 10,263-line corpus forward and reversed, read back byte-for-byte, to confirm the ordering rule — nobody was looking for the type/scheme half |
 | [0032](0032-2026-09-29-a-union-merge-duplicates-a-shared-record.md) | a `merge=union` merge is clean and STILL duplicates a shared derived record — positionally, once when both sides align the line and twice when they interleave it — and the reader did not dedupe: merge exit 0, 0 conflicts, 4 raw lines, 3 distinct records read | `asc-i5tj.7`, `asc-i5tj.13` (P1, fixed in the working tree) | an adversarial review of E12.1 on the same model as the authoring session, which also refuted the plan's claim that the acceptance criterion had been met "in substance" — two halves measured, the join assumed |
 | [0033](0033-2026-09-29-a-tripwire-fired-because-the-work-got-done.md) | a tripwire test written to say "I have nothing to say" went red because the gap it named closed: the real corpus reached 18 `review.finding` events, and 18 = 2 calls x 9 findings — the first of those calls was REFUSED by the harness, so the deriver counts attempted findings | `asc-2uov` (P2, open) | the quality gate, run after fixing a review's findings — nobody was looking for it |
+| [0034](0034-2026-09-29-an-invariant-only-one-writer-enforces.md) | `listInvalidations` casts `reason` to `string` on a comment saying only `recordInvalidation` writes the reserved scheme, but `asc import` writes it through `recordAnnotations`, which refuses only an EMPTY note: an absent note reads back as `null` and a whitespace-only one as `"   "`, both with `asc import` exit 0 | `asc-4wx6` (P2, open) | reading `listInvalidations` to write E12.4's invalidation fixture, where the comment turned out to name one writer and `grep` named two — nobody was looking for it |
 
-Thirty-three findings, each with its own mechanism. The mechanism is the part that repeats even when
+Thirty-four findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 > Rows 0016 and 0017 were added 2026-09-26; 0016 had been written but never indexed, and the
@@ -91,6 +92,12 @@ the findings do not, so each record states its own explicitly.
 > instances in two days is what turns a class from a note into something to look for, which is why
 > the record states the cheap detector: for every report, check that the headline count equals the
 > sum of the counts that decompose it.
+>
+> **Adding 0034, the detector ran first and agreed again.** `grep -c '^| \[0'` returned 33 against a
+> sentence saying thirty-three before the edit; the row was added with no blank line above it, and the
+> sentence was moved to thirty-four and the count re-run. The blank-line trap `0029` records is the
+> reason the row is added flush rather than after a spacer, and the count is re-run rather than
+> assumed — a count that is only ever recomputed when someone suspects it is not a check.
 >
 > **Adding 0030-0033, the detector was run first.** `grep -c '^| \[0'` returned 29 against a
 > sentence saying twenty-nine, so the two agreed before the edit; four rows were added with no blank
