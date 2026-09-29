@@ -65,7 +65,7 @@ import {
   type UnaddressableName,
 } from '@ascend/core';
 import { existsSync } from 'node:fs';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import {
   ENVELOPE_COLUMNS,
   ident,
@@ -331,7 +331,7 @@ const ALWAYS_PRESENT: readonly string[] = ['main', 'temp'];
  * plus the two names the pragma does not report, since neither a caller nor SQLite would agree the
  * connection does not answer to those.
  */
-export function databaseNames(db: DatabaseSync): readonly string[] {
+export function databaseNames(db: SqlDatabase): readonly string[] {
   const reported = (db.prepare('PRAGMA database_list').all() as unknown as { name: string }[]).map(
     (row) => row.name,
   );
@@ -371,7 +371,7 @@ export function foldDatabaseName(name: string): string {
  * `ATTACH DATABASE` spelling have one owner, so the two callers cannot drift into attaching
  * differently.
  */
-export function attachStore(db: DatabaseSync, source: ProjectSource, alias: string): Attachment {
+export function attachStore(db: SqlDatabase, source: ProjectSource, alias: string): Attachment {
   if (!existsSync(source.file)) {
     // Checked before attaching, because ATTACH CREATES a database file when the path does not
     // exist and its directory does (measured). A read-only query would then leave a stray empty
@@ -402,7 +402,7 @@ export function attachStore(db: DatabaseSync, source: ProjectSource, alias: stri
 }
 
 /** Detach `alias`. The counterpart of `attachStore`, and the only way to release a project. */
-export function detachStore(db: DatabaseSync, alias: string): void {
+export function detachStore(db: SqlDatabase, alias: string): void {
   db.exec(`DETACH DATABASE ${ident(alias)}`);
 }
 
@@ -435,7 +435,7 @@ export function detachStore(db: DatabaseSync, alias: string): void {
  * `min(capacity, wanted)` -- and on the path that matters, where the caller refuses, it is below
  * `wanted` and is the true capacity, which is why it can be reported as one.
  */
-export function attachHeadroom(db: DatabaseSync, wanted: number): number {
+export function attachHeadroom(db: SqlDatabase, wanted: number): number {
   const taken = new Set(databaseNames(db).map(foldDatabaseName));
   const opened: string[] = [];
 
@@ -471,7 +471,7 @@ export function attachHeadroom(db: DatabaseSync, wanted: number): number {
  * module was about to use would otherwise get `database is already in use` from a function whose
  * only job was to read.
  */
-function freeAlias(db: DatabaseSync): string {
+function freeAlias(db: SqlDatabase): string {
   const taken = new Set(databaseNames(db));
   for (let index = 0; ; index++) {
     const candidate = `asc_union_${String(index)}`;
@@ -486,7 +486,7 @@ function freeAlias(db: DatabaseSync): string {
  * snapshot readable for the rest of the process, so a later query could answer from a database
  * nobody meant to consult any more.
  */
-function withProject<T>(db: DatabaseSync, source: ProjectSource, body: (alias: string) => T): T {
+function withProject<T>(db: SqlDatabase, source: ProjectSource, body: (alias: string) => T): T {
   const alias = freeAlias(db);
   attachStore(db, source, alias);
   try {
@@ -497,7 +497,7 @@ function withProject<T>(db: DatabaseSync, source: ProjectSource, body: (alias: s
 }
 
 /** The path SQLite resolved the attachment to, which is how two names for one file are caught. */
-function resolvedPath(db: DatabaseSync, name: string): string {
+function resolvedPath(db: SqlDatabase, name: string): string {
   const row = (
     db.prepare('PRAGMA database_list').all() as unknown as {
       name: string;
@@ -523,7 +523,7 @@ function resolvedPath(db: DatabaseSync, name: string): string {
  * empty"), so this was never a correctness gap -- only which message the caller sees, and now
  * both call the one function that decides it.
  */
-export function requireStore(db: DatabaseSync, name: string, source: ProjectSource): void {
+export function requireStore(db: SqlDatabase, name: string, source: ProjectSource): void {
   const found = (
     db
       .prepare(
@@ -568,7 +568,7 @@ export function requireStore(db: DatabaseSync, name: string, source: ProjectSour
  * what the caller wrote.
  */
 function readProject(
-  db: DatabaseSync,
+  db: SqlDatabase,
   source: ProjectSource,
   type: string,
   seen: Map<string, string>,
@@ -595,7 +595,7 @@ function readProject(
 
 /** Read every project, then settle which definition the union will use. */
 function survey(
-  db: DatabaseSync,
+  db: SqlDatabase,
   type: string,
   projects: readonly ProjectSource[],
   requested: string | undefined,
@@ -643,7 +643,7 @@ function survey(
  * select one of them explicitly.
  */
 export function unionEntries(
-  db: DatabaseSync,
+  db: SqlDatabase,
   type: string,
   projects: readonly ProjectSource[],
   options: UnionOptions = {},

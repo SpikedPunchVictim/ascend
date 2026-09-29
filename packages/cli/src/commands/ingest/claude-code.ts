@@ -90,7 +90,6 @@
  */
 
 import { resolve } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
 import { Flags } from '@oclif/core';
 import {
   DERIVED_SOURCE,
@@ -120,6 +119,7 @@ import {
   withRollback,
   withTransaction,
   type RecordedEntry,
+  type SqlDatabase,
   type Store,
 } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
@@ -473,7 +473,7 @@ export default class IngestClaudeCode extends BaseCommand {
    * decision about the user's store, so this names them and the command that retires them; it
    * does not write the invalidations itself.
    */
-  private reportEarlierVersions(db: DatabaseSync, typed: readonly TypedHandler[]): void {
+  private reportEarlierVersions(db: SqlDatabase, typed: readonly TypedHandler[]): void {
     for (const { name, handler } of typed) {
       const current = handler.hash.slice(0, HASH_IN_KEY);
       const prefix = idFor({ type: handler.type, key: `${name}@` } as DerivedEntry);

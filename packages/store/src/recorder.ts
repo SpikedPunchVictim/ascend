@@ -37,7 +37,7 @@ import {
   type TypeSpec,
   type ValidationIssue,
 } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import { SCHEMA_VERSION } from './schema.js';
 
 /** Where an entry came from. Mirrors the `source` CHECK constraint. */
@@ -216,7 +216,7 @@ function requireNonEmpty(field: string, value: string): void {
 }
 
 /** The registered type names, for the error message that tells a caller what exists. */
-function registeredTypes(db: DatabaseSync): readonly string[] {
+function registeredTypes(db: SqlDatabase): readonly string[] {
   const rows = db
     .prepare('SELECT DISTINCT name FROM entry_types ORDER BY name ASC')
     .all() as unknown as { name: string }[];
@@ -236,7 +236,7 @@ function registeredTypes(db: DatabaseSync): readonly string[] {
  * deprecated type), and the entry was written.
  */
 export function recordEntry(
-  db: DatabaseSync,
+  db: SqlDatabase,
   request: RecordRequest,
   context: RecordContext,
 ): RecordResult {
@@ -345,7 +345,7 @@ export function recordEntry(
  * near-miss the caller never wrote.
  */
 function findRegisteredType(
-  db: DatabaseSync,
+  db: SqlDatabase,
   name: string,
   version: number | undefined,
 ): { name: string; version: number; typeHash: string; spec: TypeSpec; status: string } {
@@ -411,7 +411,7 @@ interface EntryRow {
  * recorded against, so deriving them from whatever the type looks like today would
  * report three-state ratios for a shape the values never had.
  */
-export function findEntry(db: DatabaseSync, id: string): RecordedEntry | undefined {
+export function findEntry(db: SqlDatabase, id: string): RecordedEntry | undefined {
   const row = db
     .prepare(
       `SELECT id, type_name, type_version, type_hash, recorded_at, run_id, workflow, actor, source,

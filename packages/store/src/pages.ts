@@ -44,7 +44,7 @@ import {
   scopeFingerprint,
   type Cursor,
 } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import { findEntry, type RecordedEntry } from './recorder.js';
 import { typeFilterScope } from './type-filter.js';
 
@@ -162,7 +162,7 @@ const ALL_IN_ORDER = `SELECT id FROM entries
  * `reviewKind` and resumed with a cursor for `review_kind` (or vice versa) are recognised as the
  * same scope instead of refused as a mismatch.
  */
-export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult {
+export function pageEntries(db: SqlDatabase, options: PageOptions): PageResult {
   // The default comes from core rather than being written here, because the CLI prints it in
   // `--limit`'s help text from the same constant. Two copies of one number is two numbers.
   const limit = options.limit ?? DEFAULT_PAGE_SIZE;
@@ -264,7 +264,7 @@ export function pageEntries(db: DatabaseSync, options: PageOptions): PageResult 
  * `type` is canonicalized before the lookup, for the reason given on `pageEntries` above
  * (asc-pw2): `entries.type_name` is always the canonical spelling.
  */
-export function entryIds(db: DatabaseSync, type: string): readonly string[] {
+export function entryIds(db: SqlDatabase, type: string): readonly string[] {
   const rows = db.prepare(ALL_IN_ORDER).all(canonicalName(type)) as { id: string }[];
   return rows.map((row) => row.id);
 }

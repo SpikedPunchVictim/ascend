@@ -42,7 +42,7 @@
  */
 
 import { canonicalName, renderDeclaredValue, type PropertyType } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import { INVALIDATION_LABELS, RESERVED_SCHEME, type InvalidationLabel } from './annotations.js';
 import { propertiesOf, valueExpr } from './properties.js';
 import { typeVersions } from './registry.js';
@@ -295,7 +295,7 @@ function measuredTest(property: string): string {
  * counted over the same narrowed `WHERE`, so there is no second denominator to get wrong.
  */
 function stateCounts(
-  db: DatabaseSync,
+  db: SqlDatabase,
   type: string,
   property: string,
   declaring: readonly number[],
@@ -322,7 +322,7 @@ function stateCounts(
 
 /** Distinct measured values -- the size of the set the top-K was drawn from. */
 function distinctCount(
-  db: DatabaseSync,
+  db: SqlDatabase,
   type: string,
   property: string,
   scopeClause: string,
@@ -362,7 +362,7 @@ function distinctCount(
  * printing in the same command.
  */
 function topValues(
-  db: DatabaseSync,
+  db: SqlDatabase,
   type: string,
   property: string,
   k: number,
@@ -391,7 +391,7 @@ function topValues(
 
 /** Lowest and highest measured value, or nulls when nothing was measured. */
 function rangeOf(
-  db: DatabaseSync,
+  db: SqlDatabase,
   type: string,
   property: string,
   scopeClause: string,
@@ -423,11 +423,7 @@ function rangeOf(
  * `ORDER BY n DESC, label ASC` is `topValues`'s own determinism rule: two runs over one store
  * return the labels in the same order even when two labels tie on count.
  */
-function invalidatedCounts(
-  db: DatabaseSync,
-  type: string,
-  scopeClause: string,
-): InvalidatedSummary {
+function invalidatedCounts(db: SqlDatabase, type: string, scopeClause: string): InvalidatedSummary {
   const rows = db
     .prepare(
       `SELECT label, COUNT(*) AS n FROM (\n` +
@@ -492,7 +488,7 @@ function invalidatedCounts(
  * `groupEntries` -- the CLI is where all three become a `usageError` naming `--filter`.
  */
 export function profileType(
-  db: DatabaseSync,
+  db: SqlDatabase,
   rawType: string,
   options: ProfileOptions = {},
 ): TypeProfile | undefined {

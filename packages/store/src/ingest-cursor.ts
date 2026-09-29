@@ -22,7 +22,7 @@
  * that this package never reads a clock -- `recorder.test.ts` scans `src` for exactly that.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 
 /** One file's recorded cursor: what its stat was, the last time it was read in full. */
 export interface IngestCursorRow {
@@ -36,7 +36,7 @@ export interface IngestCursorRow {
  * Every recorded cursor row, in no particular order -- a caller keys them by `path` itself
  * (`asc ingest claude-code` builds a `Map` from this).
  */
-export function ingestCursorRows(db: DatabaseSync): readonly IngestCursorRow[] {
+export function ingestCursorRows(db: SqlDatabase): readonly IngestCursorRow[] {
   const rows = db
     .prepare(`SELECT path, mtime_ms AS mtimeMs, size, ingested_at AS ingestedAt FROM ingest_cursor`)
     .all() as unknown as { path: string; mtimeMs: number; size: number; ingestedAt: string }[];
@@ -60,7 +60,7 @@ export function ingestCursorRows(db: DatabaseSync): readonly IngestCursorRow[] {
  * into a wrong answer instead of merely a slow one.
  */
 export function recordIngestCursor(
-  db: DatabaseSync,
+  db: SqlDatabase,
   path: string,
   mtimeMs: number,
   size: number,
@@ -88,7 +88,7 @@ const APPLIED_HANDLERS = 'ingest.applied_handlers';
  * file when one is new, which is the same "absence costs time, never correctness" contract the
  * cursor already keeps: an empty set means a full read, never a missed one.
  */
-export function appliedHandlerHashes(db: DatabaseSync): ReadonlySet<string> {
+export function appliedHandlerHashes(db: SqlDatabase): ReadonlySet<string> {
   const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(APPLIED_HANDLERS) as
     { value: string } | undefined;
   if (row === undefined) return new Set();
@@ -106,7 +106,7 @@ export function appliedHandlerHashes(db: DatabaseSync): ReadonlySet<string> {
  * Replace the applied set. Call it inside the same transaction as the cursor rows it vouches
  * for, so a dry run's rollback discards both together.
  */
-export function recordAppliedHandlers(db: DatabaseSync, hashes: Iterable<string>): void {
+export function recordAppliedHandlers(db: SqlDatabase, hashes: Iterable<string>): void {
   db.prepare(
     `INSERT INTO meta (key, value) VALUES (?, ?)
        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,

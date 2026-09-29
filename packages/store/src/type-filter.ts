@@ -44,7 +44,7 @@
  */
 
 import { canonicalName } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import { propertiesOf, valueExpr } from './properties.js';
 import { UnknownTypeError } from './recorder.js';
 import { registeredNames, typeVersions } from './registry.js';
@@ -62,7 +62,7 @@ import { wrapPredicateOverQuery } from './statements.js';
  * refused (`PredicateError`) rather than silently truncated by `db.prepare`, exactly as
  * `wrapPredicate` already refuses one over the raw table for `annotate --scope`.
  */
-export function typeFilterScope(db: DatabaseSync, type: string, fragment: string): string {
+export function typeFilterScope(db: SqlDatabase, type: string, fragment: string): string {
   const canonical = canonicalName(type);
   const versions = typeVersions(db, canonical);
   if (versions.length === 0) {

@@ -32,6 +32,7 @@ import {
   userVersion,
   type MigrationResult,
 } from './schema.js';
+import type { SqlDatabase } from './sql-port.js';
 
 /** The per-project store directory name. Gitignored; never committed. */
 export const STORE_DIR = '.ascend';
@@ -312,7 +313,7 @@ export class ForeignStoreError extends Error {
 }
 
 export interface Store {
-  readonly db: DatabaseSync;
+  readonly db: SqlDatabase;
   readonly dir: string;
   readonly file: string;
   readonly migrations: MigrationResult;
@@ -426,7 +427,7 @@ const asStoreBusy = (error: unknown, file: string): never => {
  * statement in the store already spends, and no number has to be invented. A spin also burns a core;
  * this does not.
  */
-const waitForExclusiveLock = (db: DatabaseSync): void => {
+const waitForExclusiveLock = (db: SqlDatabase): void => {
   db.exec('BEGIN EXCLUSIVE');
   db.exec('ROLLBACK');
 };
@@ -457,7 +458,7 @@ const waitForExclusiveLock = (db: DatabaseSync): void => {
  * Only a busy failure is waited out and retried. A `readonly database` failure is not a lock, and is
  * rethrown by the first attempt rather than reported as contention.
  */
-function setJournalModeWal(db: DatabaseSync): void {
+function setJournalModeWal(db: SqlDatabase): void {
   try {
     db.exec('PRAGMA journal_mode = WAL');
     return;
@@ -480,7 +481,7 @@ export class PragmaError extends Error {
   }
 }
 
-const readSetting = (db: DatabaseSync, pragma: string, column = pragma): string => {
+const readSetting = (db: SqlDatabase, pragma: string, column = pragma): string => {
   // `PRAGMA x` returns one row whose single column is USUALLY named `x` -- but not always, which is
   // why the column is a parameter. Measured across every pragma this module reads: `journal_mode`
   // -> `journal_mode`, `foreign_keys` -> `foreign_keys`, `synchronous` -> `synchronous`,
@@ -525,7 +526,7 @@ const readSetting = (db: DatabaseSync, pragma: string, column = pragma): string 
  * to disagree with.
  */
 export function verifyPragmas(
-  db: DatabaseSync,
+  db: SqlDatabase,
   options: { readonly inMemory: boolean; readonly busyTimeoutMs: number },
 ): void {
   if (!options.inMemory) {
@@ -607,7 +608,7 @@ const STORE_MARKER_TABLES = ['meta', 'entries', 'entry_types'] as const;
  * AUTOINCREMENT table, `sqlite_stat1` -- is not the caller's content and must not be what makes a
  * file look foreign.
  */
-function userTables(db: DatabaseSync): string[] {
+function userTables(db: SqlDatabase): string[] {
   return (
     db
       .prepare(
@@ -639,7 +640,7 @@ function userTables(db: DatabaseSync): string[] {
  * one by any means available here, and is adopted. Nothing is lost in that case -- there is nothing
  * in the file -- which is why it is accepted rather than refused on a heuristic.
  */
-function assertNotForeign(db: DatabaseSync, file: string, inMemory: boolean): void {
+function assertNotForeign(db: SqlDatabase, file: string, inMemory: boolean): void {
   // An in-memory database has no file, so there is no one else's data to protect. Exempt rather
   // than checked, because it would report zero tables and pass anyway -- a branch that cannot
   // change an outcome is not worth the reader's attention.
@@ -854,7 +855,7 @@ export function openStore(options: OpenOptions): Store {
  * that itself fails would replace that error -- unavoidable in a `finally`, and noted rather
  * than hidden.
  */
-export function withRollback<T>(db: DatabaseSync, body: () => T): T {
+export function withRollback<T>(db: SqlDatabase, body: () => T): T {
   return inOwnTransaction(db, 'withRollback', 'ROLLBACK', body);
 }
 
@@ -892,7 +893,7 @@ export function withRollback<T>(db: DatabaseSync, body: () => T): T {
  * writer waits rather than whether it fails -- which is the point, and the only change to the
  * caller's contract.
  */
-export function withTransaction<T>(db: DatabaseSync, body: () => T): T {
+export function withTransaction<T>(db: SqlDatabase, body: () => T): T {
   return inOwnTransaction(db, 'withTransaction', 'COMMIT', body);
 }
 
@@ -908,7 +909,7 @@ export function withTransaction<T>(db: DatabaseSync, body: () => T): T {
  * propagates because `finally` does not swallow.
  */
 function inOwnTransaction<T>(
-  db: DatabaseSync,
+  db: SqlDatabase,
   caller: string,
   ending: 'COMMIT' | 'ROLLBACK',
   body: () => T,
@@ -949,6 +950,6 @@ function inOwnTransaction<T>(
  * reports it CAUGHT). So the lint error was the false signal here, and the fix is to make the code
  * say what it means rather than to suppress the rule.
  */
-function hasOpenTransaction(db: DatabaseSync): boolean {
+function hasOpenTransaction(db: SqlDatabase): boolean {
   return db.isTransaction;
 }

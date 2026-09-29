@@ -27,7 +27,7 @@
  */
 
 import { canonicalName } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import { literal, stateCase, type EntryState } from './sql.js';
 
 /** One property's state and value for one entry. */
@@ -90,7 +90,7 @@ function valueExpr(property: string): string {
  * caller of this function (the sampler) has no reason to have folded its own argument first.
  */
 export function signatures(
-  db: DatabaseSync,
+  db: SqlDatabase,
   rawType: string,
   properties: readonly SignatureProperty[],
 ): readonly EntrySignature[] {

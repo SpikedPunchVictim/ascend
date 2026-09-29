@@ -33,7 +33,7 @@ import {
   STORE_FILE,
   type Attachment,
   type ProjectSource,
-  type Store,
+  type SqlDatabase,
 } from '@ascend/store';
 import { globSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -47,13 +47,13 @@ import type { Output } from '../output.js';
 /**
  * The handle this command runs statements against.
  *
- * Written as an indexed access on the store's own `Store` type rather than as an import, and that is
- * a boundary rule rather than a preference: `node:sqlite` may not be imported anywhere but
- * `@ascend/store` (align and eslint both enforce it), and `import type { DatabaseSync } from
- * 'node:sqlite'` names the specifier even when the import erases. `Store['db']` is the same type,
- * reached through the package that is allowed to own it.
+ * The store's own port, named directly. Before E12.3 this had to be an indexed access -- `Store['db']`
+ * -- because the only name for the type was `DatabaseSync`, and `node:sqlite` may not be imported
+ * anywhere but `@ascend/store` (align and eslint both enforce it), so naming the specifier was a
+ * violation even in an import that erases. The port is exported from the package that owns the
+ * driver, so the type now has a name that is not the driver's.
  */
-type Handle = Store['db'];
+type Handle = SqlDatabase;
 
 /**
  * `SQLITE_READONLY`, and the reason this is a number rather than a message match.

@@ -77,7 +77,7 @@ import {
   unaddressablePropertyName,
   type TypeSpec,
 } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import { ENVELOPE_COLUMNS, ident, invalidatedColumnSql, literal, stateCase } from './sql.js';
 
 /**
@@ -205,7 +205,7 @@ function indexDefinition(name: string, property: string): string {
  * is on `(type_name, recorded_at)` -- a name that was taken by an index over a different
  * expression, answered "yes, you are covered" to a property with no index anywhere.
  */
-function holdsDefinition(db: DatabaseSync, name: string, property: string): boolean {
+function holdsDefinition(db: SqlDatabase, name: string, property: string): boolean {
   const row = db
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(name) as { sql: string } | undefined;
@@ -276,7 +276,7 @@ function recordedAtClockWarning(eventClocks: readonly string[]): string | undefi
 }
 
 /** Every registered version of a type, oldest first. */
-function versionsOf(db: DatabaseSync, typeName: string): readonly TypeVersion[] {
+function versionsOf(db: SqlDatabase, typeName: string): readonly TypeVersion[] {
   const rows = db
     .prepare(
       'SELECT version, major, spec_json FROM entry_types WHERE name = ? ORDER BY version ASC',
@@ -315,7 +315,7 @@ function versionsOf(db: DatabaseSync, typeName: string): readonly TypeVersion[] 
  * bead was filed about.
  */
 function ensurePropertyIndex(
-  db: DatabaseSync,
+  db: SqlDatabase,
   typeName: string,
   property: string,
 ): { created: boolean; renamed: string | undefined } {
@@ -337,7 +337,7 @@ function ensurePropertyIndex(
  * Idempotent and safe to call at any time. Returns what it did, so `asc types` can report it
  * and a test can assert that a second call is a no-op rather than trusting that it is.
  */
-export function refreshTypeViews(db: DatabaseSync, typeName: string): RefreshReport {
+export function refreshTypeViews(db: SqlDatabase, typeName: string): RefreshReport {
   const versions = versionsOf(db, typeName);
   if (versions.length === 0) {
     throw new Error(`no entry type '${typeName}' is registered, so it has no views to build`);

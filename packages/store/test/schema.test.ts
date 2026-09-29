@@ -18,6 +18,7 @@ import {
   verifyPragmas,
   viewName,
   type Migration,
+  type SqlDatabase,
 } from '../src/index.js';
 
 /**
@@ -41,14 +42,14 @@ afterEach(() => {
 });
 
 /** A registered definition, so entries have something legal to reference. */
-const register = (db: DatabaseSync, version = 1, hash = 'hash_v1'): void => {
+const register = (db: SqlDatabase, version = 1, hash = 'hash_v1'): void => {
   db.prepare(
     `INSERT INTO entry_types (name, version, major, type_hash, spec_json, created_at)
      VALUES ('review_completed', ?, 1, ?, '{"name":"review_completed","properties":[]}', '2026-09-11T10:00:00Z')`,
   ).run(version, hash);
 };
 
-const insertEntry = (db: DatabaseSync, id: string, version = 1, hash = 'hash_v1'): void => {
+const insertEntry = (db: SqlDatabase, id: string, version = 1, hash = 'hash_v1'): void => {
   db.prepare(
     `INSERT INTO entries (id, type_name, type_version, type_hash, recorded_at, source, ascend_version, schema_version)
      VALUES (?, 'review_completed', ?, ?, '2026-09-11T10:00:00Z', 'self', '0.0.0', 1)`,
@@ -553,7 +554,7 @@ describe('migration 5 -- guidance_json on entry_types (asc-bli.1)', () => {
     return file;
   };
 
-  const hasGuidanceColumn = (db: DatabaseSync): boolean =>
+  const hasGuidanceColumn = (db: SqlDatabase): boolean =>
     db
       .prepare(`SELECT 1 FROM pragma_table_info('entry_types') WHERE name = 'guidance_json'`)
       .get() !== undefined;
@@ -1146,7 +1147,7 @@ describe('migration 6 -- the identity refusal names every mutable column (asc-6y
     return db;
   };
 
-  const refusalOf = (db: DatabaseSync): string => {
+  const refusalOf = (db: SqlDatabase): string => {
     try {
       db.prepare(
         "UPDATE entry_types SET type_hash = 'other' WHERE name = 'review_completed'",

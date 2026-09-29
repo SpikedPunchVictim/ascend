@@ -23,6 +23,7 @@ import {
   type InvalidationLabel,
   type ProjectSource,
   type RecordContext,
+  type SqlDatabase,
   type Store,
 } from '../src/index.js';
 
@@ -96,7 +97,7 @@ interface FixtureEntry {
 
 /** Build a project store through `register`, then record its entries through the real recorder. */
 function projectWith(
-  register: (db: DatabaseSync, spec: TypeSpec) => void,
+  register: (db: SqlDatabase, spec: TypeSpec) => void,
   specs: readonly TypeSpec[],
   entries: readonly FixtureEntry[] = [],
 ): ProjectSource {
@@ -169,7 +170,7 @@ function projectBypassingTheRegistry(
 }
 
 /** The connection a union runs through. Its own `main` database must never be consulted. */
-const withConnection = (body: (db: DatabaseSync, store: Store) => void): void => {
+const withConnection = (body: (db: SqlDatabase, store: Store) => void): void => {
   const store = openStore({ dir: join(tempDir(), 'local') });
   try {
     body(store.db, store);
@@ -178,7 +179,7 @@ const withConnection = (body: (db: DatabaseSync, store: Store) => void): void =>
   }
 };
 
-const attachedNames = (db: DatabaseSync): readonly string[] =>
+const attachedNames = (db: SqlDatabase): readonly string[] =>
   (db.prepare('PRAGMA database_list').all() as unknown as { name: string }[]).map(
     (row) => row.name,
   );

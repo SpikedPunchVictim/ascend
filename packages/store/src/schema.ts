@@ -23,7 +23,7 @@
  * carries a CHECK rejecting `''` for that reason.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import { refreshTypeViews } from './views.js';
 
 /**
@@ -107,7 +107,7 @@ interface SqlMigration {
 interface ProceduralMigration {
   readonly version: number;
   readonly name: string;
-  readonly run: (db: DatabaseSync) => void;
+  readonly run: (db: SqlDatabase) => void;
   /**
    * Never present on a `run` migration -- see `Migration`'s own doc for why this field has to
    * exist at all, typed as `never`, rather than being left off `ProceduralMigration` and trusted
@@ -452,7 +452,7 @@ END;
  * **Runs inside `migrate`'s own transaction.** No `BEGIN`, `COMMIT`, or `ROLLBACK` here -- see
  * `ProceduralMigration`.
  */
-function rebuildAllTypeViews(db: DatabaseSync): void {
+function rebuildAllTypeViews(db: SqlDatabase): void {
   const rows = db.prepare('SELECT DISTINCT name FROM entry_types ORDER BY name').all() as {
     name: string;
   }[];
@@ -552,7 +552,7 @@ BEGIN
 END;
 `;
 
-function correctIdentityTriggerMessage(db: DatabaseSync): void {
+function correctIdentityTriggerMessage(db: SqlDatabase): void {
   db.exec(IDENTITY_TRIGGER_MESSAGE);
 }
 
@@ -648,7 +648,7 @@ export const HIGHEST_MARKED_VERSION: number = MIGRATIONS.reduce(
 );
 
 /** The store's own schema version, from SQLite's `user_version` pragma. */
-export function userVersion(db: DatabaseSync): number {
+export function userVersion(db: SqlDatabase): number {
   const row = db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined;
   return row?.user_version ?? 0;
 }
@@ -695,7 +695,7 @@ export function assertNotAhead(observed: number, target: number = SCHEMA_VERSION
   if (observed > target) throw new NewerSchemaError(observed, target);
 }
 
-function markerPresent(db: DatabaseSync, marker: Marker): boolean {
+function markerPresent(db: SqlDatabase, marker: Marker): boolean {
   if (typeof marker === 'string') {
     return db.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(marker) !== undefined;
   }
@@ -725,7 +725,7 @@ function markerPresent(db: DatabaseSync, marker: Marker): boolean {
  * check for `run` migrations entirely), so a procedural step never being able to move `inferred`
  * costs this function nothing it was ever asked to report.
  */
-function inferAppliedVersion(db: DatabaseSync, migrations: readonly Migration[]): number {
+function inferAppliedVersion(db: SqlDatabase, migrations: readonly Migration[]): number {
   let inferred = 0;
   for (const migration of [...migrations].sort((left, right) => left.version - right.version)) {
     if (typeof migration.sql !== 'string') continue;
@@ -810,7 +810,7 @@ export class LedgerMismatchError extends Error {
  * placeholder instead of a path that does not exist.
  */
 export function migrate(
-  db: DatabaseSync,
+  db: SqlDatabase,
   migrations: readonly Migration[] = MIGRATIONS,
   file?: string,
 ): MigrationResult {

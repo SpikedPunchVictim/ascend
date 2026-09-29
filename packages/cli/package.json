@@ -41,6 +41,9 @@
       "handlers": {
         "description": "Check replay handlers against this project's recorded transcripts."
       },
+      "index": {
+        "description": "Build the derived index the JSONL tree is read through. Reads never build it."
+      },
       "ingest": {
         "description": "Derive entries from sources outside this project, and write them into the store."
       },

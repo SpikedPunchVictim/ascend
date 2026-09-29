@@ -1,7 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
 import type { TypeSpec } from '@ascend/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -18,6 +17,7 @@ import {
   searchScope,
   toFtsMatch,
   type RecordContext,
+  type SqlDatabase,
   type Store,
 } from '../src/index.js';
 
@@ -447,7 +447,7 @@ describe('migration 2 backfills entries that predate it', () => {
    * migrates first. Seeding by hand is what keeps this test about a store from before migration 2
    * rather than about today's code run against yesterday's schema.
    */
-  const seedVersion1Entry = (db: DatabaseSync, id: string, evidenceText: string): void => {
+  const seedVersion1Entry = (db: SqlDatabase, id: string, evidenceText: string): void => {
     db.prepare(
       `INSERT INTO entry_types (name, version, major, type_hash, spec_json, created_at)
        VALUES ('note', 1, 1, 'hash_v1', ?, ?)`,

@@ -70,7 +70,7 @@ import {
   withTransaction,
   type InvalidationLabel,
   type RecordedInvalidation,
-  type Store,
+  type SqlDatabase,
 } from '@ascend/store';
 import { BaseCommand } from '../base.js';
 import { usageError } from '../errors.js';
@@ -78,12 +78,11 @@ import { usageError } from '../errors.js';
 /**
  * The handle this command reads `annotations.created_at` back through.
  *
- * An indexed access on the store's own `Store` type rather than an `import type { DatabaseSync }
- * from 'node:sqlite'`: `node:sqlite` may not be named anywhere but `@ascend/store` (align and
- * eslint both enforce it), and `Store['db']` is the same type reached through the package that is
- * allowed to own it. `query.ts`'s `Handle` is the precedent for this.
+ * The store's port, named directly, like `query.ts`'s `Handle`. Both were `Store['db']` until E12.3
+ * gave the type a name that is not the driver's -- that file records why naming `node:sqlite` was
+ * itself the violation.
  */
-type Handle = Store['db'];
+type Handle = SqlDatabase;
 
 /**
  * The row's actual stored `created_at`, read back rather than assumed.

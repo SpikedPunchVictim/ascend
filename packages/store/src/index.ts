@@ -39,6 +39,15 @@ export {
   type Store,
 } from './db.js';
 
+export type {
+  SqlColumn,
+  SqlDatabase,
+  SqlRow,
+  SqlRunResult,
+  SqlStatement,
+  SqlValue,
+} from './sql-port.js';
+
 export {
   assertNotAhead,
   HIGHEST_MARKED_VERSION,
@@ -211,10 +220,11 @@ export {
   buildIndex,
   FINGERPRINT_KEY,
   INDEX_FILE,
+  IndexStaleError,
   openIndex,
   treeFingerprint,
+  type IndexBuild,
   type IndexOptions,
-  type OpenedIndex,
 } from './jsonl-index.js';
 
 export { entryFromLine, typeRegistrationOptions } from './replay.js';

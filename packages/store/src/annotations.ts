@@ -58,7 +58,7 @@
  */
 
 import { canonicalJson, nonJsonReason, sha256Hex } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 // Type-only, and it must stay that way: `jsonl.ts` imports `schemeHash` from this module, so a VALUE
 // import here would close a runtime cycle between the two. `annotationPassGroups` only needs the
 // line's shape, which a type import supplies and erases.
@@ -371,7 +371,7 @@ function requireFtsMatch(query: string, label: string): string {
  * stable reading order sorts by entry id, which is what `annotationRows` does.
  */
 export function matchingEntryIds(
-  db: DatabaseSync,
+  db: SqlDatabase,
   rule: { readonly label: string; readonly kind: SchemeRuleKind; readonly query: string },
 ): readonly string[] {
   if (rule.kind === 'sql') {
@@ -388,14 +388,14 @@ export function matchingEntryIds(
 }
 
 /** The registered scheme names, for the error message that tells a caller what exists. */
-function registeredSchemes(db: DatabaseSync): readonly string[] {
+function registeredSchemes(db: SqlDatabase): readonly string[] {
   const rows = db
     .prepare('SELECT DISTINCT name FROM annotation_schemes ORDER BY name ASC')
     .all() as unknown as { name: string }[];
   return rows.map((row) => row.name);
 }
 
-function requireName(db: DatabaseSync, name: string): void {
+function requireName(db: SqlDatabase, name: string): void {
   if (name === '') {
     throw new SchemeError(
       'a scheme name is empty. An empty string is a real value in SQLite, not "unknown" -- name ' +
@@ -420,7 +420,7 @@ function requireName(db: DatabaseSync, name: string): void {
  * version it returns and a silent undefined would become `undefined` in a version column.
  */
 function requireScheme(
-  db: DatabaseSync,
+  db: SqlDatabase,
   name: string,
   version?: number,
 ): { readonly version: number; readonly created_at: string; readonly spec_json: string } {
@@ -470,7 +470,7 @@ function requireScheme(
  * `registerType` and why the difference is the point.
  */
 export function registerScheme(
-  db: DatabaseSync,
+  db: SqlDatabase,
   name: string,
   spec: SchemeSpec,
   context: SchemeContext,
@@ -490,7 +490,7 @@ export function registerScheme(
  * its own rules or labels under the reserved name.
  */
 export function restoreInvalidationScheme(
-  db: DatabaseSync,
+  db: SqlDatabase,
   spec: SchemeSpec,
   context: SchemeContext,
 ): RegisteredScheme {
@@ -519,7 +519,7 @@ export function restoreInvalidationScheme(
  * "idempotent" means.
  */
 function registerSchemeUnchecked(
-  db: DatabaseSync,
+  db: SqlDatabase,
   name: string,
   spec: SchemeSpec,
   context: SchemeContext,
@@ -688,7 +688,7 @@ function requireUtc(value: string, field: string): void {
  * those is a hard error, and none of them writes a row.
  */
 export function recordAnnotations(
-  db: DatabaseSync,
+  db: SqlDatabase,
   pass: AnnotationPass,
   context: AnnotationContext,
 ): RecordedAnnotations {
@@ -953,7 +953,7 @@ export interface InvalidationRow {
  * command's own help is what tells them to.
  */
 export function recordInvalidation(
-  db: DatabaseSync,
+  db: SqlDatabase,
   input: RecordInvalidationInput,
 ): RecordedInvalidation {
   requireUtc(input.createdAt, 'createdAt');
@@ -1166,7 +1166,7 @@ export function recordInvalidation(
  * decide what "latest" means when two invalidations of the one entry tie on `created_at` -- this
  * function does not resolve that, it only orders for a human or a report to read down from the top.
  */
-export function listInvalidations(db: DatabaseSync, entryId?: string): readonly InvalidationRow[] {
+export function listInvalidations(db: SqlDatabase, entryId?: string): readonly InvalidationRow[] {
   const clauses = ['scheme = ?'];
   const parameters: string[] = [RESERVED_SCHEME];
   if (entryId !== undefined) {
@@ -1229,7 +1229,7 @@ export function listInvalidations(db: DatabaseSync, entryId?: string): readonly 
  * structurally required for `asc export` to be correct the day a scheme's shape changes -- not
  * because a multi-version scheme has been observed.
  */
-export function schemeVersions(db: DatabaseSync, name: string): readonly SchemeSummary[] {
+export function schemeVersions(db: SqlDatabase, name: string): readonly SchemeSummary[] {
   const rows = db
     .prepare(
       'SELECT name, version, created_at, spec_json FROM annotation_schemes WHERE name = ? ' +
@@ -1251,7 +1251,7 @@ export function schemeVersions(db: DatabaseSync, name: string): readonly SchemeS
 }
 
 /** Every registered scheme's latest version, oldest name first. */
-export function listSchemes(db: DatabaseSync): readonly SchemeSummary[] {
+export function listSchemes(db: SqlDatabase): readonly SchemeSummary[] {
   const rows = db
     .prepare(
       `SELECT s.name AS name, s.version AS version, s.created_at AS created_at, s.spec_json AS spec_json
@@ -1277,7 +1277,7 @@ export function listSchemes(db: DatabaseSync): readonly SchemeSummary[] {
 
 /** Every pass of a scheme, oldest first -- the list `asc kappa` chooses two passes from. */
 export function annotationPasses(
-  db: DatabaseSync,
+  db: SqlDatabase,
   name: string,
   version?: number,
 ): readonly AnnotationPassRow[] {
@@ -1327,7 +1327,7 @@ export function annotationPasses(
  * millisecond that version already used -- but the ORDER BY is what makes that a fact about the
  * answer rather than about the plan the query planner happened to choose.
  */
-function versionOfPass(db: DatabaseSync, name: string, pass: string): number | undefined {
+function versionOfPass(db: SqlDatabase, name: string, pass: string): number | undefined {
   const row = db
     .prepare(
       'SELECT scheme_version AS version FROM annotations WHERE scheme = ? AND created_at = ? ' +
@@ -1346,7 +1346,7 @@ function versionOfPass(db: DatabaseSync, name: string, pass: string): number | u
  * readability rather than for correctness.
  */
 export function annotationRows(
-  db: DatabaseSync,
+  db: SqlDatabase,
   options: { readonly scheme: string; readonly version?: number; readonly pass?: string },
 ): readonly AnnotationRow[] {
   // A pass names its own version, so a caller holding a pass timestamp does not also have to know
@@ -1420,7 +1420,7 @@ export function annotationRows(
  * is not part of what is being measured.
  */
 export function schemeCensus(
-  db: DatabaseSync,
+  db: SqlDatabase,
   options: {
     readonly scheme: string;
     readonly version?: number;
@@ -1494,7 +1494,7 @@ export function schemeCensus(
  * of silently counted twice. Compared with `substr`, not `LIKE`: a handler name may hold `_`.
  */
 export function openEntriesByVersion(
-  db: DatabaseSync,
+  db: SqlDatabase,
   prefix: string,
   width: number,
 ): ReadonlyMap<string, number> {

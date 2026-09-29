@@ -51,7 +51,7 @@
  */
 
 import { canonicalName, renderDeclaredValue, type PropertyType } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import { propertiesOf, summaryFor, TOP_K, valueExpr, type PropertySummary } from './profile.js';
 import { UnknownTypeError, type RecordedEntry } from './recorder.js';
 import { registeredNames, typeVersions, type TypeVersionRow } from './registry.js';
@@ -314,7 +314,7 @@ interface AxisMarginal {
  * are two distinct groups, not two spellings of one.
  */
 function axisMarginal(
-  db: DatabaseSync,
+  db: SqlDatabase,
   type: string,
   scope: string,
   key: ResolvedKey,
@@ -348,7 +348,7 @@ interface JointRow {
 
 /** The joint (value, state) x (value, state) counts for two keys, over the filtered population. */
 function jointCounts(
-  db: DatabaseSync,
+  db: SqlDatabase,
   type: string,
   scope: string,
   key1: ResolvedKey,
@@ -409,7 +409,7 @@ function jointCells(
  * second statement is still refused (`PredicateError`) rather than silently truncated by
  * `db.prepare`.
  */
-export function groupEntries(db: DatabaseSync, request: GroupRequest): GroupResult {
+export function groupEntries(db: SqlDatabase, request: GroupRequest): GroupResult {
   if (request.keys.length !== 1 && request.keys.length !== 2) {
     throw new GroupKeyCountError(request.keys.length);
   }
@@ -573,7 +573,7 @@ function resolveStateKey(
  * the one round trip the caller already paid to look the type up, not one query per entry.
  */
 export function entryStates(
-  db: DatabaseSync,
+  db: SqlDatabase,
   type: string,
   entries: readonly RecordedEntry[],
   properties: readonly string[],

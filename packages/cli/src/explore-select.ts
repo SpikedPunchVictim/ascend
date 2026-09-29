@@ -43,20 +43,19 @@ import {
   findType,
   type EntryState,
   type RecordedEntry,
-  type Store,
+  type SqlDatabase,
   type TypeProfile,
 } from '@ascend/store';
 import { refusal } from './errors.js';
 import type { Row } from './output.js';
 
 /**
- * The handle a per-version property-type lookup (and `entryStates`) runs against.
+ * The handle the per-version property-type lookup (and `entryStates`) runs against.
  *
- * An indexed access on the store's own `Store` type rather than `import type { DatabaseSync } from
- * 'node:sqlite'`: `node:sqlite` may not be named anywhere but `@ascend/store` (align and eslint both
- * enforce it). `query.ts`'s `Handle` is the precedent for this.
+ * The store's port, named directly; see `query.ts`'s `Handle` for why this was an indexed access
+ * onto `Store['db']` before E12.3 gave the type a name that is not the driver's.
  */
-type Handle = Store['db'];
+type Handle = SqlDatabase;
 
 /** `--select a,b,c` as the names, in the order typed. Not deduplicated: a repeated name is a caller
  * mistake that surfaces as two identical columns rather than one silently dropped. */

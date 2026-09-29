@@ -35,7 +35,7 @@ import {
   type TypeGuidance,
   type TypeSpec,
 } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 import { refreshTypeViews } from './views.js';
 
 export interface RegisterTypeOptions {
@@ -310,7 +310,7 @@ function guidanceJson(guidance: TypeGuidance): string | null {
  * hand or by a model at define time, not per entry). Measured against the 4 starter types: 8 rows,
  * and the whole check does not register on a define that already writes a row and builds a view.
  */
-export function registeredNames(db: DatabaseSync): {
+export function registeredNames(db: SqlDatabase): {
   readonly types: readonly string[];
   readonly properties: readonly string[];
 } {
@@ -358,7 +358,7 @@ export function registeredNames(db: DatabaseSync): {
  * property already registered is skipped above -- and a genuinely new property on a new version is
  * still reported, which is the case that matters.
  */
-function vocabularyNotes(db: DatabaseSync, spec: TypeSpec): readonly string[] {
+function vocabularyNotes(db: SqlDatabase, spec: TypeSpec): readonly string[] {
   const known = registeredNames(db);
   const notes: string[] = [];
 
@@ -438,7 +438,7 @@ const describeShared = (matches: readonly { readonly shared: readonly string[] }
  * are the only changes a registered version permits.
  */
 export function registerType(
-  db: DatabaseSync,
+  db: SqlDatabase,
   spec: TypeSpec,
   options: RegisterTypeOptions,
 ): RegisteredType {
@@ -704,7 +704,7 @@ const SELECT_VERSION = `SELECT name, version, major, type_hash, spec_json, descr
  * deterministic, so the answer is knowable -- and matching the raw string exactly
  * would refuse the very spelling a user is most likely to type.
  */
-export function typeVersions(db: DatabaseSync, name: string): readonly TypeVersionRow[] {
+export function typeVersions(db: SqlDatabase, name: string): readonly TypeVersionRow[] {
   const rows = db
     .prepare(`${SELECT_VERSION} WHERE name = ? ORDER BY version ASC`)
     .all(canonicalName(name)) as unknown as VersionRowShape[];
@@ -767,7 +767,7 @@ interface SummaryRowShape {
  * wants to filter. `asc types list` decides how to show them; this reports what is
  * registered.
  */
-export function listTypes(db: DatabaseSync): readonly TypeSummary[] {
+export function listTypes(db: SqlDatabase): readonly TypeSummary[] {
   const rows = db
     .prepare(
       // The latest version of each name, its version count, and its entry count -- one
@@ -820,7 +820,7 @@ export function listTypes(db: DatabaseSync): readonly TypeSummary[] {
  * `entryCount`, by the same definition, so `asc types list` and the `review_after` advisory
  * (asc-bli.5) cannot disagree about a number. One `COUNT(*)` over `idx_entries_type_time`.
  */
-export function entryCount(db: DatabaseSync, typeName: string): number {
+export function entryCount(db: SqlDatabase, typeName: string): number {
   const row = db
     .prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?')
     .get(canonicalName(typeName)) as { n: number };
@@ -838,7 +838,7 @@ export function entryCount(db: DatabaseSync, typeName: string): number {
  * exactly refuses a type under the very name it was defined with.
  */
 export function findType(
-  db: DatabaseSync,
+  db: SqlDatabase,
   name: string,
   version?: number,
 ): TypeVersionRow | undefined {
@@ -864,7 +864,7 @@ export function findType(
  * (asc-pw2): the stored name is already canonical, so matching the caller's raw spelling
  * exactly refuses a type under the very name it was defined with.
  */
-export function deprecateType(db: DatabaseSync, name: string): number {
+export function deprecateType(db: SqlDatabase, name: string): number {
   const result = db
     .prepare(
       "UPDATE entry_types SET status = 'deprecated' WHERE name = ? AND status <> 'deprecated'",
@@ -885,7 +885,7 @@ export function deprecateType(db: DatabaseSync, name: string): number {
  * which is why the parameter is not simply optional-and-truthy.
  */
 export function updateTypeProse(
-  db: DatabaseSync,
+  db: SqlDatabase,
   name: string,
   version: number,
   prose: {

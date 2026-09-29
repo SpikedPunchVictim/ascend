@@ -11,9 +11,41 @@
  *    there is nothing to write with, not because callers were asked to behave. The only code that
  *    writes the index is `buildIndex`, and the only thing it writes FROM is the tree.
  * 2. **It is a function of the tree.** `openIndex` either finds an index whose fingerprint is the
- *    tree's, or replaces the index with one built from the tree. It never repairs, merges into, or
- *    incrementally updates an existing index, so there is no stateful path by which the index can
- *    come to hold something the tree does not.
+ *    tree's, or REFUSES. It never repairs, merges into, or incrementally updates an existing index --
+ *    and since `asc-i5tj.3.1` it never rebuilds one either, because a read has no path to a build.
+ *    See "A read never builds" below for what that replaced and why.
+ *
+ * ## A read never builds (`asc-i5tj.3.1`)
+ *
+ * `openIndex` used to rebuild on a fingerprint miss, wholesale and silently. EV-33 measured what that
+ * costs -- and, more to the point, what it *hides*: 2.97 s at this project's 6,387 entries and **~75 s**
+ * at 63,870, with no signal, no progress and no warning, so a caller running a READ could not tell
+ * "working" from "hung". At EV-32's 3.02 s estimate the silence was invisible. The defect was never
+ * either number; it was that a read could cost one at all.
+ *
+ * So the build is now a command a caller asks for by name, and `openIndex` refuses instead. It takes
+ * no `IndexOptions`, therefore no clock, therefore nothing a build needs; its refusal is
+ * `IndexStaleError`, which names `asc index build`; and it leaves the filesystem exactly as it found
+ * it. **The guard is a property of the API rather than of a printer**: no mode, flag or option
+ * re-enables a rebuild from here, because a parameter is something a later caller sets differently and
+ * a missing code path is not.
+ *
+ * Two things this deliberately does NOT do, both of which the bead's option 2 would have:
+ *
+ *   - **It does not announce a rebuild before starting one**, because nothing here starts one.
+ *   - **It does not refuse loudly and then build anyway** on the grounds that the caller probably
+ *     wanted it -- the finding is that a read's cost must be predictable from the command typed.
+ *
+ * What it costs: a caller who wants a current index must build one, and a read against a stale index
+ * is now an error rather than a 75-second answer. That is the right direction -- a stale index is the
+ * false-green this module exists to prevent -- and `asc index build` is one command away.
+ *
+ * **The guard against a read re-reaching a build is two tests, in two files, and neither covers the
+ * other's hole.** `packages/cli/test/index-build-is-explicit.test.ts` scans the source and pins the
+ * set of modules that can call `buildIndex`, which catches a read path in a module that has not run;
+ * the `openIndex` tests below drive every shape of not-current index and require a refusal that writes
+ * nothing, which is the only thing that can catch a build put back inside this very file, where a scan
+ * for calls to `buildIndex` cannot see the difference between defining it and calling it.
  *
  * ## Wholesale-or-nothing, and why there is no incremental path
  *
@@ -137,20 +169,43 @@ export interface IndexOptions {
   /**
    * ISO-8601 UTC, the moment of this call.
    *
-   * Consulted only when the index must be BUILT: a cache hit parses no record and takes no
-   * timestamp, so a caller on the fast path reads a clock for nothing. That is the cost of one
-   * signature over two, and it is a clock read at a boundary that already does one.
+   * `buildIndex` is the only taker, and it is required rather than optional so there is one signature
+   * for a build. `openIndex` used to share it and now takes no options at all: a read never builds, so
+   * a read never needs a clock, and the parameter it does not have is part of how that is enforced
+   * rather than merely documented -- see "A read never builds".
    */
   readonly now: string;
 }
 
+/** What a build did, for the caller that asked for one. */
+export interface IndexBuild {
+  /** The tree's fingerprint, which the index now carries. `openIndex` compares this, not an mtime. */
+  readonly fingerprint: string;
+  /**
+   * How many lines were replayed.
+   *
+   * One number rather than a count per kind, because it is the only one a caller has asked for: it is
+   * what makes `asc index build`'s report concrete, and it is free here (the build already holds the
+   * parsed lines). A per-kind breakdown is a one-line change with a caller behind it; returning the
+   * lines themselves is not, because at 10x that is hundreds of megabytes the caller would keep alive.
+   */
+  readonly records: number;
+}
+
 /**
- * Build the index at `dbPath` from the tree at `root`, wholesale, and return the fingerprint it
- * stamped.
+ * Build the index at `dbPath` from the tree at `root`, wholesale, and report what it did.
+ *
+ * **This is the only code that writes the index, and the only caller that may is a build command.**
+ * Until `asc-i5tj.3.1` it was also reached from `openIndex` on a fingerprint miss; that path is gone,
+ * and `packages/cli/test/index-build-is-explicit.test.ts` is what keeps it gone.
  *
  * **The tree is read BEFORE anything is created.** An unreadable line therefore refuses before a
  * temp file exists, let alone before the live index is touched -- so a malformed tree costs nothing
  * and, in particular, does not leave the caller without an index they already had.
+ *
+ * **A file ascend did not create is refused.** `assertReplaceable` below is the guard `asc-63v`
+ * asks for, and it belongs here now rather than on the read path: this function publishes by
+ * `renameSync`, which would replace a stranger's database as completely as writing into it.
  *
  * **Refuses a tree whose lines disagree with what the store would mint.** Three claims a line makes
  * can be silently reinterpreted rather than rejected: a scheme's `version`, because `registerScheme`
@@ -164,7 +219,7 @@ export interface IndexOptions {
  * conflict markers and belongs to E12.5; it is the narrow version of it that this module's own
  * invariant requires.
  */
-export function buildIndex(root: string, dbPath: string, options: IndexOptions): string {
+export function buildIndex(root: string, dbPath: string, options: IndexOptions): IndexBuild {
   const lines = readRecordTree(root);
   const fingerprint = treeFingerprint(root);
 
@@ -173,6 +228,10 @@ export function buildIndex(root: string, dbPath: string, options: IndexOptions):
   // A leftover from a build that died. Removed rather than opened: `openStore` would find a
   // half-built store there, migrate it happily, and produce a plausible index from a fragment.
   rmSync(join(dir, staging), { force: true });
+
+  // Before the rename can clobber it -- and before a temp file is created, so a refusal costs the
+  // caller nothing. See `assertReplaceable`.
+  assertReplaceable(dbPath);
 
   const store = openStore({ dir, file: staging });
   try {
@@ -188,63 +247,119 @@ export function buildIndex(root: string, dbPath: string, options: IndexOptions):
 
   renameSync(join(dir, staging), dbPath);
 
-  return fingerprint;
-}
-
-/** What `openIndex` found, and what it had to do about it. */
-export interface OpenedIndex {
-  /** READ-ONLY: the index cannot be written through this handle. See the module doc. */
-  readonly store: Store;
-  /** True when the index was built or rebuilt by this call rather than found current. */
-  readonly rebuilt: boolean;
-  /** The tree's fingerprint, which the index now carries. */
-  readonly fingerprint: string;
+  return { fingerprint, records: lines.length };
 }
 
 /**
- * An index for the tree at `root`, current as of this call.
+ * The index is not current for the tree, and a read will not make it so (`asc-i5tj.3.1`).
+ *
+ * A class rather than a bare `Error` because the caller that meets it is a read path deciding what to
+ * say, and which of the three ways it is stale changes what is worth saying -- "there is no index
+ * here" and "the tree moved under it" are different situations for the person reading, and neither is
+ * a reason to guess. It carries the path and the reason as data, and the message names the remedy and
+ * the file, because the file is safe to delete and a refusal is where someone finds that out.
+ */
+export class IndexStaleError extends Error {
+  constructor(
+    readonly indexFile: string,
+    readonly reason: string,
+  ) {
+    super(
+      `the index at ${indexFile} is not current for this tree (${reason}), and a read does not ` +
+        `build one: a rebuild is ~75 s at 63,870 entries and must be asked for. Run ` +
+        `\`asc index build\` to rebuild it from the JSONL tree.`,
+    );
+    this.name = 'IndexStaleError';
+  }
+}
+
+/**
+ * Why the index is not current, in words the caller can act on rather than a code to decode.
+ *
+ * Three cases, and `openIndex` refuses all of them the same way but says a different thing about each:
+ * a missing index has never been built, an unreadable one is a file a build would have to replace, and
+ * a mismatched fingerprint means the tree moved after the index was built. The last is the common one
+ * -- it is what any edit or checkout produces -- so it gets the plainest wording.
+ */
+function stalenessReason(present: boolean, stored: string | undefined): string {
+  if (!present) return 'there is no index there';
+  if (stored === undefined) return 'the file there is not an index ascend can read';
+  return 'the tree has changed since it was built';
+}
+
+/**
+ * An index for the tree at `root`, or a refusal. **It never builds one** (`asc-i5tj.3.1`).
  *
  * The fast path hashes the tree and reads one row: no record is parsed, which is what makes a cache
- * hit cost EV-32's 0.05 s rather than a full replay. The parse happens only on the path that is
- * about to rebuild anyway.
+ * hit cost EV-32's 0.05 s rather than a full replay -- and, unlike the version that shipped before the
+ * settlement, there is no slow path at all. A refusal costs a hash plus one SELECT.
  *
- * **An index that cannot be read is rebuilt, and a file ascend did not create is refused.** That
- * line is the whole policy. The index is derived, so a corrupt, truncated, stale-schema or
- * newer-schema file is evidence of nothing and replacing it is the point of the design; a file that
- * is a valid SQLite database ascend did not write is someone else's, and overwriting it is what
- * `ForeignStoreError` exists to prevent (`asc-63v`). Refusing costs the caller one `rm` on a file
- * they can regenerate, and the alternative is ascend writing into a database it did not create.
+ * **An index that is not current is refused, and a file ascend did not create is refused harder.**
+ * The first is `IndexStaleError` and names `asc index build`; the second is `ForeignStoreError`
+ * (`asc-63v`), which propagates out of `openIndexReadOnly` unchanged, because a valid SQLite database
+ * ascend did not write is someone else's and the guard that stops ascend writing into it is not one
+ * this module gets to relax. Read-only is not a courtesy either: the handle this returns cannot be
+ * written through, which is what makes the bead's invariant -- *no write may land in the index that is
+ * not first in the JSONL* -- structural rather than conventional.
  *
- * There is no rebuild loop to worry about: whatever a rebuilt index looks like, it opens, because
- * the second open is unconditional and its errors propagate.
+ * There is no rebuild loop to worry about, because there is no rebuild: a successful return means the
+ * index's fingerprint WAS the tree's, checked in this call and not inferable from the file.
  */
-export function openIndex(root: string, dbPath: string, options: IndexOptions): OpenedIndex {
+export function openIndex(root: string, dbPath: string): Store {
   const fingerprint = treeFingerprint(root);
+  const present = existsSync(dbPath);
+  const stored = present ? storedFingerprint(dbPath) : undefined;
 
-  if (existsSync(dbPath) && storedFingerprint(dbPath) === fingerprint) {
-    return { store: openIndexStore(dbPath), rebuilt: false, fingerprint };
+  if (stored !== fingerprint) {
+    throw new IndexStaleError(dbPath, stalenessReason(present, stored));
   }
 
-  buildIndex(root, dbPath, options);
+  return openIndexStore(dbPath);
+}
 
-  return { store: openIndexStore(dbPath), rebuilt: true, fingerprint };
+/**
+ * Refuse to build over a file ascend did not create (`asc-63v`).
+ *
+ * **This check moved here when the build became a command, and it was not a formality.** Until
+ * `asc-i5tj.3.1`, `openIndex` replaced a not-current index and reached `openStore` first, so
+ * `ForeignStoreError` came out of the READ path -- which meant the read path was also the only thing
+ * that could clobber the file, and the guard sat with it. Now `buildIndex` is the only code that
+ * writes the index at all, and it publishes by `renameSync`: without this, a stranger's database at
+ * `index.db` would be replaced wholesale, leaving no file to recover and no error to explain it.
+ *
+ * An index ascend built but cannot open -- truncated, corrupt, newer schema -- is still replaced, and
+ * that is the point of the design: it is derived, so it is disposable. The line is who CREATED the
+ * file, not whether it reads.
+ */
+function assertReplaceable(dbPath: string): void {
+  if (!existsSync(dbPath)) return;
+  // Opening it and closing it again LOOKS like a no-op and is the whole check: `openIndexReadOnly`
+  // lets `ForeignStoreError` out and absorbs every lesser failure, so reaching the line after it
+  // means the file is ascend's own and merely not current.
+  const existing = openIndexReadOnly(dbPath);
+  existing?.db.close();
+}
+
+/**
+ * An ascend index opened read-only, or `undefined` when the file is not one ascend can read.
+ *
+ * `ForeignStoreError` is deliberately NOT absorbed, and it is the one failure handed back to the
+ * caller: a file ascend did not create is someone else's, and every caller here has to refuse it
+ * rather than treat it as a disposable index.
+ */
+function openIndexReadOnly(dbPath: string): Store | undefined {
+  try {
+    return openIndexStore(dbPath);
+  } catch (error) {
+    if (error instanceof ForeignStoreError) throw error;
+    return undefined;
+  }
 }
 
 /** The fingerprint an existing index carries, or `undefined` if it carries none. */
 function storedFingerprint(dbPath: string): string | undefined {
-  const dir = dirname(dbPath);
-  const file = basename(dbPath);
-  let store: Store;
-
-  try {
-    store = openStore({ dir, file, readOnly: true });
-  } catch (error) {
-    // A file ascend did not create is the one thing an unreadable index can be that must not be
-    // replaced. Everything else -- a foreign schema version, a truncated file, a file that is not a
-    // database at all -- is disposable, because the tree it was built from is not.
-    if (error instanceof ForeignStoreError) throw error;
-    return undefined;
-  }
+  const store = openIndexReadOnly(dbPath);
+  if (store === undefined) return undefined;
 
   try {
     const row = store.db.prepare('SELECT value FROM meta WHERE key = ?').get(FINGERPRINT_KEY);

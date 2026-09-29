@@ -88,8 +88,8 @@ error naming field, expected type, and corrected command; `asc init` gitignores 
 `asc-865` closed: `asc-0j0`, `asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7`, `asc-l00`, and the P1 defect
 found in E3's own output, `asc-865.1`, now fixed (see below). **E4 (`asc-baj`) In Progress — E4.1
 and E4.2 complete, including the six `asc types` subcommands; E4.3 next.** **E12 (`asc-i5tj`, the
-git-native JSONL store) In Progress — E12.1 and E12.2 as built, `EV-32` and `EV-33` in hand; E12.3
-next.** The stages are specified
+git-native JSONL store) In Progress — E12.1, E12.2 and E12.3 as built (the seam and its `asc-i5tj.3.1`
+settlement), E12.4 next; `EV-32` and `EV-33` in hand.** The stages are specified
 below; cold start is already measured and needs no fast path. 343 tests pass, `align check` is green,
 and the CLI suite drives the built binary rather than the handler.
 
@@ -1125,10 +1125,100 @@ as the store itself.
     not a record the JSONL is missing — but the equivalence test has to exclude it, and excluding a
     column silently is how a real divergence gets hidden. So it is excluded by name, with the reason in
     the test.
-- **E12.3 — the read layer.** Extract the storage-neutral interface the store package does not have
-  today (every public function currently takes `db: DatabaseSync`), with the SQLite index as the one
-  implementation behind it. `align check` must stay green — this is the structural change most likely
-  to redden it.
+- **E12.3 — the read layer.** Extract the interface the store package does not have today: every
+  public function takes `db: DatabaseSync` (107 mentions across 14 modules) and
+  `interface Store { db: DatabaseSync }` (`db.ts:302`) is the only boundary. `align check` must stay
+  green — this is the structural change most likely to redden it.
+
+  **As built (2026-09-29), in progress.** Five decisions, taken before the change rather than
+  discovered during it, because the shape of this seam is the deliverable and it is expensive to
+  reverse:
+
+  - **(1) The seam is a SQL port, and that is narrower than the epic's phrase — deliberately.** The
+    epic says "storage-neutral", and this port is not that: it names `prepare`, `exec` and a row's
+    shape, so a non-SQL backend could not implement it. The reason is that two things on the public
+    surface cannot be made neutral — `asc query` hands the user raw SQL as a stable feature, and
+    `--across` ATTACHes other projects onto the connection — so a domain-level interface would have a
+    SQL-shaped hole in it either way. What the port buys is real and narrower, and the docs say the
+    narrower thing: **the store's own modules stop naming the driver.** Claiming storage neutrality
+    for a port whose only implementation is SQLite is the overselling this plan's measurement
+    discipline exists to forbid, and the phrase is corrected where it appears rather than repeated.
+  - **(2) The port is STRUCTURAL, not a wrapper class.** `DatabaseSync` already satisfies it, so the
+    runtime path is byte-identical, there is no adapter to drift from the driver, and the stage's
+    evidence that nothing changed behaviourally is the 2,719 tests already in the suite. A wrapper
+    with exactly one implementation behind it would be the premature abstraction the project's own
+    rules warn against; the port is a *type* the store's signatures name, and that is the whole of it.
+  - **(3) The port lives in its own leaf module, and that is forced rather than stylistic.** `db.ts`
+    imports `schema.ts`, so declaring the port in `db.ts` would make all 13 other modules import
+    `db.ts` *through* the schema edge they already have — `align`'s `noCycles()` would redden, and it
+    would be right to. `sql-port.ts` imports nothing at all.
+  - **(4) Its surface is exactly what ascend uses, enumerated from the source rather than from the
+    driver's documentation.** On the handle: `prepare`, `exec`, `close`, `isTransaction` — 43, 43, 4
+    and 11 call sites. On a statement: `run`, `get`, `all` — 13, 52, 39. Plus `columns`,
+    `setReadBigInts` and `setReturnArrays`, which exist for `asc query` alone and for measured
+    reasons recorded in `query-values.ts` (a `RangeError` on a legitimate large integer; a
+    duplicate-column value the driver has already discarded by the time JS sees it). Absent because
+    nothing uses them: `iterate`, `expandedSQL`, `open`, and the named-parameter overloads — measured
+    by grep, `.(run|get|all)({` occurs 0 times in the package.
+  - **(5) The guard is a source scan in this repo's established idiom, plus a runtime pin.** Exactly
+    one module in `packages/store/src` may name `node:sqlite`, and the test asserts *which* one rather
+    than only counting, so a second import landing in a new file is a failure with a name. The same
+    file pins the port's members against a real `DatabaseSync` at runtime, so a `node:sqlite` upgrade
+    that drops or renames one fails in one place with a clear message instead of at whichever call
+    site runs first.
+
+  **What this stage does NOT claim.** Nothing here makes a second backend possible, and the store's
+  functions still require something that speaks SQLite's dialect. The source of truth does not move in
+  this stage — that is E12.4. A reader who takes "storage-neutral" from the epic at face value will
+  expect more than is delivered, which is why (1) is written down.
+
+  **`asc-i5tj.3.1` is settled here as its own step, and settled in a stronger form than the option's
+  own description.** EV-33 found that `openIndex` rebuilds silently on a fingerprint miss (`~75 s` at
+  10×), and the settlement chosen is that **a read never builds**. The option as written proposed an
+  `onMissing: 'refuse' | 'build'` mode; what was built is a **two-function split**, because a parameter
+  is something a later caller sets differently and an absent code path is not: `openIndex(root, dbPath)`
+  *is* the refusing read — no `IndexOptions`, therefore no clock, therefore nothing a build needs — and
+  `buildIndex(root, dbPath, { now })` remains the only builder, reachable only from the new
+  `asc index build`. That deletes the silent-rebuild path from the API rather than gating it, which is
+  what the bead's "otherwise the guard is a convention and the next caller re-introduces it" asked for.
+  `OpenedIndex` is gone with it: `rebuilt` was a claim the function made about itself, and
+  `fingerprint` was definitionally the tree's own hash.
+  - **The guard is two tests in two files, and each one's hole is the other's job.** `openIndex`'s
+    refusal is asserted *behaviourally*, on all three shapes of not-current index, by requiring the
+    filesystem to be unchanged afterwards (`index.db` absent or byte-identical, no `.tmp`) — that is the
+    only test that can catch a rebuild put back *inside* `jsonl-index.ts`, where a source scan for calls
+    to `buildIndex` cannot tell defining it from calling it. `packages/cli/test/index-build-is-explicit.test.ts`
+    scans every package's `src` and pins the set of modules that can *call* `buildIndex` to two by name
+    (its definition and the command), which is what catches a read path in a module that has not run —
+    including the `openIndex` caller E12.4 will add. The scan carries a positive *and* negative control,
+    on the argument `purity-enforcement.test.ts` makes: a rule that never fires looks identical to a
+    rule that passes.
+  - **A guard moved, and the move was not a formality.** `asc-63v`'s `ForeignStoreError` reached
+    readers through `openIndex`, because `openIndex` was what replaced a not-current index and so the
+    read path was the only thing that could clobber the file. Now `buildIndex` is the only writer, and
+    it publishes by `renameSync` — so without a check the build path would replace a stranger's
+    SQLite file at `index.db` wholesale, with no file to recover and no error to explain it. The guard
+    is now `assertReplaceable` inside `buildIndex`, asserted by bytes on both halves: a read refuses a
+    foreign file, a build refuses it, and a merely *unreadable* index (truncated, corrupt, newer
+    schema) is still replaced by a build because it is derived and disposable. Driven end to end:
+    clobbering a built `index.db` into an 11-table foreign shape makes `asc index build` exit 1 with
+    the file byte-untouched.
+  - **What it does not do, by decision.** There is no progress line and no pre-build banner: the
+    bead's option 2 was "a rebuild announces itself", and printing one as well would leave it
+    ambiguous which settlement was taken. Option 1 removes the *unexpected* wait rather than narrating
+    it — the caller typed `asc index build`.
+  - **Driven end to end, and the command has a test of its own.** `packages/cli/test/index-build-cli.test.ts`
+    drives the real binary in a real project (4 tests): it builds where the layout says and reports what
+    it replayed, it is idempotent over an unchanged tree (same fingerprint, no `.tmp` left), it refuses a
+    foreign `index.db` byte-untouched, and it refuses where there is no project rather than falling back
+    to the working directory. That file exists because the command does three things no unit test of
+    `buildIndex` covers — resolves the root by walking up, joins it to `STORE_DIR`/`INDEX_FILE`, and
+    reports — and a wrong join in either half would exit 0, print a plausible path, and build nothing
+    anyone will read. One measured surprise, asserted rather than normalised away: the reported path is
+    RESOLVED (`/private/var/...` for a `/var/folders/...` temp path on macOS), because the command prints
+    the path it actually wrote. First driven by hand in a scratch project before the test existed: 4
+    records → a 118 KB `index.db`, exit 0, and `openIndex` refusing before the build and returning 3
+    entries after it.
 - **E12.4 — the cutover and the migration.** This repo's 6,329 entries move from the 22 MB SQLite
   store to the tracked JSONL tree; `asc export`/`asc import` keep working; the old store is retired,
   not kept alongside.
@@ -1137,14 +1227,25 @@ as the store itself.
   passes exactly the resolution that loses a record), `asc-8uzh` (per-record size limit, byte-bounded
   rollover).
 
-**Status: E12.1 and E12.2 as built** (2026-09-29) — the record layer exists (37 tests) and the derived
-index exists (21 tests); `pnpm quality-gate` green end to end; `align` green with no `store -> cli` edge.
-E12.1 is validated by a real-git merge replay, not only by its own suite, and E12.2 by
+**Status: E12.1 and E12.2 built; E12.3 built as the seam and its settlement** (2026-09-29) — the record
+layer exists (37 tests), the derived index exists (26 tests after `asc-i5tj.3.1`), the store names a SQL
+port instead of the driver (3 tests, one module may import `node:sqlite`, pinned by name), and
+`asc index build` is the only way an index is built (4 real-binary tests, plus a source scan pinning the
+two modules that may call `buildIndex`). `align` green with no `store -> cli` edge, and the full suite
+green. **The gate's typecheck is `tsc -b && tsc -p tsconfig.eslint.json`, and `tsc -b` alone is not
+it** — the second project is what covers test files, so "`tsc -b` clean" is not a typecheck and was
+reported as one here until the first commit attempt was blocked. What it was hiding: three store test
+files still named `DatabaseSync` where the store now hands back a `SqlDatabase`, and the new
+`index-build-cli.test.ts` left a property's `type` to inference (where it widens to `string`, so the
+document stops being a `TypeDocument`) and read its JSON report through a `Record<string, unknown>`
+index signature. Every fix was to name the type; none was a cast. E12.1 is validated by a real-git
+merge replay, not only by its own suite, and E12.2 by
 `docs/evidence/EV-33.md`, which re-times the real build path and records a correction to EV-32. Two
 plan-level findings came out of E12.1 and are filed as beads rather than fixed here (they are format
 questions, not layer questions): a scheme name is any string, and a type line carries no version of its
-own. **E12.2 surfaces one design input E12.3 must settle: a rebuild is ~75 s at 10× and is currently
-silent, so no read may trigger one without saying so.** **E12.3 is next.**
+own. The design input E12.2 surfaced — a silent ~75 s rebuild — **is settled: a read never builds**
+(`asc-i5tj.3.1`), by a two-function split rather than a mode, and the `asc-63v` foreign-file guard moved
+with the write path when the build became a command. **E12.4 is next: the cutover.**
 
 ---
 

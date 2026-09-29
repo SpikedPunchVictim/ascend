@@ -57,7 +57,7 @@
  */
 
 import { canonicalName } from '@ascend/core';
-import type { DatabaseSync } from 'node:sqlite';
+import type { SqlDatabase } from './sql-port.js';
 
 /** The FTS5 table migration 2 creates. Named here once so the SQL below cannot drift from it. */
 const FTS_TABLE = 'entries_fts';
@@ -157,7 +157,7 @@ export function searchTerms(query: string): readonly string[] {
  * tell "no results" from "your query was rejected" cannot report either honestly.
  */
 export function searchEntries(
-  db: DatabaseSync,
+  db: SqlDatabase,
   query: string,
   options: SearchOptions = {},
 ): readonly SearchHit[] {
@@ -208,7 +208,7 @@ export function searchEntries(
  * Exists so a caller can tell "the corpus has nothing like this" from "the index was never
  * built" -- two situations that produce an identical empty result and want opposite responses.
  */
-export function indexedDocumentCount(db: DatabaseSync): number {
+export function indexedDocumentCount(db: SqlDatabase): number {
   const row = db.prepare(`SELECT COUNT(*) AS n FROM ${FTS_TABLE}`).get() as { n: number };
   return row.n;
 }
@@ -231,7 +231,7 @@ export function indexedDocumentCount(db: DatabaseSync): number {
  * about whether a query is answerable.
  */
 export function countSearchMatches(
-  db: DatabaseSync,
+  db: SqlDatabase,
   query: string,
   options: { readonly type?: string } = {},
 ): number {
@@ -283,7 +283,7 @@ export interface SearchScope {
   readonly indexed: number;
 }
 
-export function searchScope(db: DatabaseSync, rawType: string): SearchScope {
+export function searchScope(db: SqlDatabase, rawType: string): SearchScope {
   // Canonicalized for the reason given on `searchEntries` above (asc-pw2).
   const type = canonicalName(rawType);
   const entries = db.prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?').get(type) as {
@@ -331,7 +331,7 @@ export interface PropertyValueHit {
  * it: a term differing from a stored value by non-ASCII case finds nothing.
  */
 export function propertyValueMatches(
-  db: DatabaseSync,
+  db: SqlDatabase,
   options: { readonly type: string; readonly terms: readonly string[]; readonly limit: number },
 ): readonly PropertyValueHit[] {
   if (options.terms.length === 0) return [];
