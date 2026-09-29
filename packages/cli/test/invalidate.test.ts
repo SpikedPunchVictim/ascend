@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -19,11 +19,47 @@ import { flatten } from './helpers.js';
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const bin = join(root, 'packages/cli/dist/bin.js');
 
+/**
+ * The fixture store, built ONCE for this file and copied per test.
+ *
+ * `seeded()` used to spawn the binary FIVE times for EVERY test -- `init`, `types define`, and one
+ * `record` per entry -- and that was the file's cost, not the tests. Measured 2026-09-28: this file
+ * takes 56.77 s and its tests measure roughly 2 s each, while the same `init`/`types define`/
+ * `record` sequence replicated outside vitest costs well under a second (the eight-spawn sequence
+ * in `annotations.test.ts` measured 1.866 s, asc-37es).
+ *
+ * Copying is sound because the store is LOCATION-INDEPENDENT, and that was measured rather than
+ * assumed -- on the `annotations.test.ts` seed, which is built the same way: a seeded store is one
+ * file, `.ascend/ascend.db`, 200 K, with no `-wal`/`-shm` left beside it; a scan of every table for
+ * the seed directory's absolute path returned ZERO hits; `meta` holds only
+ * `created_by_ascend_version` and `cwd_convention = project-relative`; and every entry carries
+ * `cwd = '.'` with `repo`, `git_sha` and `branch` null. A copy into a different temporary directory
+ * therefore says exactly what the original said. `viewLabel`'s read-only open of the copied
+ * `.ascend/ascend.db` still sees the generated `v_note_v1` view, because the view travels in the
+ * file.
+ *
+ * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
+ * producing what `asc init` produces. What is NOT changed is the part under test: every assertion
+ * below still runs the real binary as a subprocess and still reads what it wrote back out of SQLite.
+ */
+let seedDir: string;
+
 beforeAll(() => {
   execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-b'], {
     cwd: root,
     stdio: 'pipe',
   });
+
+  seedDir = mkdtempSync(join(tmpdir(), 'asc-invalidate-seed-'));
+  dirs.push(seedDir);
+  expect(asc(['init'], seedDir).status).toBe(0);
+  writeFileSync(join(seedDir, 'note.json'), JSON.stringify(NOTE));
+  expect(asc(['types', 'define', join(seedDir, 'note.json')], seedDir).status).toBe(0);
+  for (const id of ['e1', 'e2', 'e3']) {
+    const entry = { id, properties: { body: id }, evidence_text: id };
+    const run = asc(['record', NOTE.name, '-', '--json'], seedDir, JSON.stringify(entry));
+    expect(run.status, run.stderr).toBe(0);
+  }
 });
 
 const dirs: string[] = [];
@@ -81,19 +117,18 @@ function invalidationRows(dir: string): readonly unknown[][] {
 /** A type to record into. */
 const NOTE = { name: 'note', properties: [{ name: 'body', type: 'string' }] };
 
-/** A project with three entries recorded and nothing invalidated. */
+/**
+ * A project with three entries recorded and nothing invalidated: a copy of the seed above.
+ *
+ * Its own directory, so a test that writes cannot reach the seed or any other test. That isolation
+ * is the reason to copy rather than to share one store, and it is the whole of what this function
+ * still does.
+ */
 function seeded(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-invalidate-'));
   dirs.push(dir);
-  expect(asc(['init'], dir).status).toBe(0);
-  writeFileSync(join(dir, 'note.json'), JSON.stringify(NOTE));
-  expect(asc(['types', 'define', join(dir, 'note.json')], dir).status).toBe(0);
-
-  for (const id of ['e1', 'e2', 'e3']) {
-    const entry = { id, properties: { body: id }, evidence_text: id };
-    const run = asc(['record', NOTE.name, '-', '--json'], dir, JSON.stringify(entry));
-    expect(run.status, run.stderr).toBe(0);
-  }
+  mkdirSync(join(dir, '.ascend'), { recursive: true });
+  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
   return dir;
 }
 

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -19,11 +19,38 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const bin = join(root, 'packages/cli/dist/bin.js');
 
+/**
+ * The fixture store, built ONCE for this file and copied per test.
+ *
+ * `project()` used to spawn the binary twice for EVERY test -- `init` and `types define` -- and
+ * those runs were the file's fixed cost, not the tests. Measured 2026-09-28 (asc-37es): a seeded
+ * store is ONE file, `.ascend/ascend.db`, 217,088 bytes, with no `-wal`/`-shm` left beside it; a
+ * scan of every table for the seed directory's absolute path returned ZERO hits; and `meta` holds
+ * only `created_by_ascend_version` and `cwd_convention = project-relative`. A copy into a different
+ * temporary directory therefore says exactly what the original said -- checked rather than assumed,
+ * by recording, exploring and redefining the type through the real binary against a copy.
+ *
+ * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
+ * producing what `asc init` and `asc types define` produce -- including the starter types that
+ * `init` registers. Rebuilding that through the store API would be a second definition of what a
+ * project is, which is the kind of thing that agrees on the day it is written and drifts after.
+ *
+ * What is NOT changed is the part under test: every assertion below still runs the real binary as a
+ * subprocess, and the records each test writes are still written by that binary, not by hand.
+ */
+let seedDir: string;
+
 beforeAll(() => {
   execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-b'], {
     cwd: root,
     stdio: 'pipe',
   });
+
+  seedDir = mkdtempSync(join(tmpdir(), 'asc-explore-crosstab-seed-'));
+  dirs.push(seedDir);
+  expect(asc(['init'], seedDir).status).toBe(0);
+  writeFileSync(join(seedDir, 'spec.json'), JSON.stringify(SPEC));
+  expect(asc(['types', 'define', join(seedDir, 'spec.json')], seedDir).status).toBe(0);
 });
 
 const dirs: string[] = [];
@@ -68,12 +95,19 @@ const SPEC = {
   ],
 };
 
+/**
+ * A project with the probe type defined and no entries recorded: a copy of the seed above.
+ *
+ * Its own directory, so the records a test writes -- and most tests here write -- cannot reach the
+ * seed or any other test. That isolation is the reason to copy rather than to share one store, and
+ * it is the whole of what this function still does; the `init` and `types define` runs that used to
+ * be here happen once, in `beforeAll`.
+ */
 function project(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-explore-crosstab-'));
   dirs.push(dir);
-  expect(asc(['init'], dir).status).toBe(0);
-  writeFileSync(join(dir, 'spec.json'), JSON.stringify(SPEC));
-  expect(asc(['types', 'define', join(dir, 'spec.json')], dir).status).toBe(0);
+  mkdirSync(join(dir, '.ascend'), { recursive: true });
+  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
   return dir;
 }
 

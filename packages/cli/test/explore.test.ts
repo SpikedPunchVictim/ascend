@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -23,11 +23,40 @@ import { OUTPUT_CONTRACT_VERSION } from '@ascend/cli';
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const bin = join(root, 'packages/cli/dist/bin.js');
 
+/**
+ * The fixture store behind `emptyProject()`, built ONCE for this file and copied per test.
+ *
+ * `emptyProject()` used to spawn the binary twice for EVERY test -- `init`, then `types define`.
+ * That was the helper's cost and the tests were not: measured 2026-09-28 (asc-37es), the two spawns
+ * are ~0.46 s and 36 of this file's tests call the helper.
+ *
+ * Copying is sound because the store is LOCATION-INDEPENDENT, and that was measured rather than
+ * assumed: a seeded store is one file, `.ascend/ascend.db`, 200 K, with no `-wal`/`-shm` beside it;
+ * a scan of every table for the seed directory's absolute path returns ZERO hits; `meta` holds only
+ * `created_by_ascend_version` and `cwd_convention = project-relative`; and every entry carries
+ * `cwd = '.'` with `repo`, `git_sha` and `branch` null. The fixture is still built by the REAL
+ * BINARY, so it keeps producing what those two commands produce.
+ *
+ * **The entries are deliberately not part of this.** Each test records its own, and the count it
+ * records is frequently the assertion -- `count` on the map is the number of rows the test wrote.
+ *
+ * `boolProject()` is NOT seeded here, and that is a scope decision rather than an omission: its
+ * `BOOL_SPEC` is declared inside the `describe` that uses it, so hoisting it would mean moving a
+ * fixture to module scope to save two spawns on four tests.
+ */
+let seedDir: string;
+
 beforeAll(() => {
   execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-b'], {
     cwd: root,
     stdio: 'pipe',
   });
+
+  seedDir = mkdtempSync(join(tmpdir(), 'asc-explore-seed-'));
+  dirs.push(seedDir);
+  expect(asc(['init'], seedDir).status).toBe(0);
+  writeFileSync(join(seedDir, 'spec.json'), JSON.stringify(SPEC));
+  expect(asc(['types', 'define', join(seedDir, 'spec.json')], seedDir).status).toBe(0);
 });
 
 const dirs: string[] = [];
@@ -132,13 +161,18 @@ const SPEC = {
   ],
 };
 
-/** A directory holding an `.ascend/` store with SPEC registered and nothing recorded. */
+/**
+ * A directory holding an `.ascend/` store with SPEC registered and nothing recorded: a copy of the
+ * seed above.
+ *
+ * Its own directory, so a test that writes cannot reach the seed or any other test. That isolation
+ * is the whole of what this function still does.
+ */
 function emptyProject(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-explore-'));
   dirs.push(dir);
-  expect(asc(['init'], dir).status).toBe(0);
-  writeFileSync(join(dir, 'spec.json'), JSON.stringify(SPEC));
-  expect(asc(['types', 'define', join(dir, 'spec.json')], dir).status).toBe(0);
+  mkdirSync(join(dir, '.ascend'), { recursive: true });
+  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
   return dir;
 }
 

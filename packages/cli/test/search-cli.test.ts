@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -29,12 +29,88 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const bin = join(root, 'packages/cli/dist/bin.js');
 
+/**
+ * The fixture stores, built ONCE each in `beforeAll` and copied per test.
+ *
+ * `project()` and `fixture(count)` used to spawn the binary for EVERY test -- `init`, one
+ * `types define` per spec, and one `record` per entry. Measured 2026-09-28 (asc-37es): `fixture(2)`
+ * costs 1.387 s and `fixture(4)` 1.795 s replicated outside vitest, every test in this file
+ * measures ~2.4-3.4 s, and the file's 25 tests take 65.82 s in all -- so the fixture was the
+ * majority of each test's runtime.
+ *
+ * There is one seed per `count`, because the number of recorded entries IS the fixture's shape: a
+ * search returns `count` rows, and `count` is the number the coverage, ranking and assist
+ * assertions count. No single store can answer that for every count, so the seed is built for each
+ * `count` the tests use and `fixture(count)` copies the one that matches.
+ *
+ * Copying is sound because the store is LOCATION-INDEPENDENT, and that was measured rather than
+ * assumed: a seeded store is one file, `.ascend/ascend.db`, with no `-wal`/`-shm` left beside it;
+ * `meta` holds only `created_by_ascend_version` and `cwd_convention = project-relative`; every
+ * entry carries `cwd = '.'` with `repo`, `git_sha` and `branch` null; and a scan of every table for
+ * the seed directory's own path returned ZERO hits. A copy into a different temporary directory
+ * therefore says exactly what the original said.
+ *
+ * The fixtures are still built by the REAL BINARY rather than through `@ascend/store`, so they keep
+ * producing what `asc init`, `asc types define` and `asc record` produce.
+ *
+ * What is NOT changed is the part under test: every assertion below still runs the real binary as a
+ * subprocess, and still reads what it printed rather than inferring it.
+ */
+let seedDir: string;
+const seedsByCount = new Map<number, string>();
+
 beforeAll(() => {
   execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-b'], {
     cwd: root,
     stdio: 'pipe',
   });
-});
+
+  seedDir = mkdtempSync(join(tmpdir(), 'asc-search-seed-'));
+  dirs.push(seedDir);
+  expect(asc(['init'], seedDir).status).toBe(0);
+  for (const spec of SPECS) {
+    writeFileSync(join(seedDir, 'spec.json'), JSON.stringify(spec));
+    expect(asc(['types', 'define', join(seedDir, 'spec.json')], seedDir).status).toBe(0);
+  }
+
+  for (const count of [1, 2, 3, 4]) {
+    const dir = mkdtempSync(join(tmpdir(), 'asc-search-seed-'));
+    dirs.push(dir);
+    mkdirSync(join(dir, '.ascend'), { recursive: true });
+    copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
+    for (let i = 0; i < count; i += 1) {
+      // Cycled through all three enum values rather than alternated between two, so that a fixture
+      // of three entries holds one of each -- which is what lets the underscore test assert a real
+      // match count instead of a value that no entry carries.
+      const runners = ['cargo test', 'pnpm build', 'npm_run_build'] as const;
+      const run = asc(
+        [
+          'record',
+          SEARCHABLE.name,
+          '--prop',
+          `runner=${runners[i % runners.length] as string}`,
+          '--prop',
+          `note=n${String(i)}`,
+          // The word 'deployment' is on every entry, 'disk' on every second one, so a query can be
+          // chosen that matches all of them, half of them, or one.
+          '--evidence',
+          i % 2 === 0 ? `deployment failed disk ${String(i)}` : `deployment failed ${String(i)}`,
+          '--json',
+        ],
+        dir,
+      );
+      expect(run.status).toBe(0);
+    }
+
+    const bare = asc(['record', UNINDEXED.name, '--prop', 'runner=cargo test', '--json'], dir);
+    expect(bare.status).toBe(0);
+
+    seedsByCount.set(count, dir);
+  }
+  // Building the four seeds spawns the binary fourteen times and costs ~7 s on its own -- most of
+  // vitest's default 10 s hook budget, before `tsc -b` or any contention from the other workers in
+  // a full run. `annotations.test.ts`'s single seed fits in the default; this one is given room.
+}, 120_000);
 
 const dirs: string[] = [];
 
@@ -97,14 +173,18 @@ const EMPTY = { name: 'hollow', properties: [{ name: 'note', type: 'text' }] };
 
 const SPECS = [SEARCHABLE, UNINDEXED, EMPTY];
 
+/**
+ * A project with the three specs registered and nothing recorded: a copy of the seed `asc init` and
+ * `asc types define` built in `beforeAll`.
+ *
+ * Its own directory, so a test that writes -- the one below that records its own entries does --
+ * cannot reach the seed or any other test.
+ */
 function project(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-search-'));
   dirs.push(dir);
-  expect(asc(['init'], dir).status).toBe(0);
-  for (const spec of SPECS) {
-    writeFileSync(join(dir, 'spec.json'), JSON.stringify(spec));
-    expect(asc(['types', 'define', join(dir, 'spec.json')], dir).status).toBe(0);
-  }
+  mkdirSync(join(dir, '.ascend'), { recursive: true });
+  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
   return dir;
 }
 
@@ -131,36 +211,20 @@ interface Envelope {
 /**
  * A project with `SEARCHABLE` holding `count` indexed entries and `UNINDEXED` holding one unindexed
  * one, which is the smallest fixture in which every reason the assist names is reachable.
+ *
+ * The entries were recorded once, in `beforeAll`, into the seed for this `count`; this copies that
+ * seed into its own directory so a test cannot reach any other. The recording itself lives with the
+ * other seeds above rather than here, because it only has to happen once for the whole file.
  */
 function fixture(count: number): string {
-  const dir = project();
-  for (let i = 0; i < count; i += 1) {
-    // Cycled through all three enum values rather than alternated between two, so that a fixture
-    // of three entries holds one of each -- which is what lets the underscore test assert a real
-    // match count instead of a value that no entry carries.
-    const runners = ['cargo test', 'pnpm build', 'npm_run_build'] as const;
-    const run = asc(
-      [
-        'record',
-        SEARCHABLE.name,
-        '--prop',
-        `runner=${runners[i % runners.length] as string}`,
-        '--prop',
-        `note=n${String(i)}`,
-        // The word 'deployment' is on every entry, 'disk' on every second one, so a query can be
-        // chosen that matches all of them, half of them, or one.
-        '--evidence',
-        i % 2 === 0 ? `deployment failed disk ${String(i)}` : `deployment failed ${String(i)}`,
-        '--json',
-      ],
-      dir,
-    );
-    expect(run.status).toBe(0);
+  const seed = seedsByCount.get(count);
+  if (seed === undefined) {
+    throw new Error(`no fixture seeded for ${String(count)} entries`);
   }
-
-  const bare = asc(['record', UNINDEXED.name, '--prop', 'runner=cargo test', '--json'], dir);
-  expect(bare.status).toBe(0);
-
+  const dir = mkdtempSync(join(tmpdir(), 'asc-search-'));
+  dirs.push(dir);
+  mkdirSync(join(dir, '.ascend'), { recursive: true });
+  copyFileSync(join(seed, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
   return dir;
 }
 

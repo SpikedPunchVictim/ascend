@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -29,11 +29,46 @@ import { flatten } from './helpers.js';
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const bin = join(root, 'packages/cli/dist/bin.js');
 
+/**
+ * The fixture store, built ONCE for this file and copied per test.
+ *
+ * `seeded()` used to spawn the binary eight times for EVERY test -- `init`, `types define`, and one
+ * `record` per entry in `ENTRIES`. That was the file's cost, and the tests were not. Measured
+ * 2026-09-28 (asc-37es): the sequence replicated outside vitest costs 1.866 s, every test here
+ * measures ~2.8 s, and this file alone takes 178.86 s.
+ *
+ * Copying is sound because the store is LOCATION-INDEPENDENT, and that was measured rather than
+ * assumed. A seeded store is one file, `.ascend/ascend.db`, 200 K, with no `-wal`/`-shm` left
+ * beside it; a scan of every table for the seed directory's absolute path returned ZERO hits;
+ * `meta` holds only `created_by_ascend_version` and `cwd_convention = project-relative`; and every
+ * entry carries `cwd = '.'` with `repo`, `git_sha` and `branch` null. A copy into a different
+ * temporary directory therefore says exactly what the original said.
+ *
+ * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
+ * producing what `asc init` produces -- including the four starter types that command registers.
+ * Rebuilding that through the store API would be a second definition of what a project is, which is
+ * the kind of thing that agrees on the day it is written and drifts on the day after.
+ *
+ * What is NOT changed is the part under test: every assertion below still runs the real binary as a
+ * subprocess, and still reads what it wrote back out of SQLite rather than trusting its report.
+ */
+let seedDir: string;
+
 beforeAll(() => {
   execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-b'], {
     cwd: root,
     stdio: 'pipe',
   });
+
+  seedDir = mkdtempSync(join(tmpdir(), 'asc-annotate-seed-'));
+  dirs.push(seedDir);
+  expect(asc(['init'], seedDir).status).toBe(0);
+  writeFileSync(join(seedDir, 'note.json'), JSON.stringify(NOTE));
+  expect(asc(['types', 'define', join(seedDir, 'note.json')], seedDir).status).toBe(0);
+  for (const entry of ENTRIES) {
+    const run = asc(['record', NOTE.name, '-', '--json'], seedDir, JSON.stringify(entry));
+    expect(run.status, run.stderr).toBe(0);
+  }
 });
 
 const dirs: string[] = [];
@@ -190,18 +225,18 @@ const ENTRIES = [
   { id: 'e6', properties: { body: 'install' }, evidence_text: 'the install happened' },
 ];
 
-/** A project with six entries recorded and no scheme registered. */
+/**
+ * A project with six entries recorded and no scheme registered: a copy of the seed above.
+ *
+ * Its own directory, so a test that writes -- and most here do, since `annotate` and `kappa` both
+ * write -- cannot reach the seed or any other test. That isolation is the reason to copy rather
+ * than to share one store, and it is the whole of what this function still does.
+ */
 function seeded(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-annotate-'));
   dirs.push(dir);
-  expect(asc(['init'], dir).status).toBe(0);
-  writeFileSync(join(dir, 'note.json'), JSON.stringify(NOTE));
-  expect(asc(['types', 'define', join(dir, 'note.json')], dir).status).toBe(0);
-
-  for (const entry of ENTRIES) {
-    const run = asc(['record', NOTE.name, '-', '--json'], dir, JSON.stringify(entry));
-    expect(run.status, run.stderr).toBe(0);
-  }
+  mkdirSync(join(dir, '.ascend'), { recursive: true });
+  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
   return dir;
 }
 

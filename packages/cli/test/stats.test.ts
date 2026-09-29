@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -30,11 +30,45 @@ import { flatten } from './helpers.js';
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const bin = join(root, 'packages/cli/dist/bin.js');
 
+/**
+ * The fixture store, built ONCE for this file and copied per test.
+ *
+ * `project()` used to spawn the binary THREE times for EVERY test -- `init` and one `types define`
+ * per spec -- and that was the file's floor, not the tests. Measured 2026-09-28: this file takes
+ * 48.22 s and its tests measure roughly 1.5-2 s each, while the same `init`/`types define` sequence
+ * replicated outside vitest costs well under a second (the eight-spawn sequence in
+ * `annotations.test.ts` measured 1.866 s, asc-37es).
+ *
+ * Copying is sound because the store is LOCATION-INDEPENDENT, and that was measured rather than
+ * assumed -- on the `annotations.test.ts` seed, which is built the same way: a seeded store is one
+ * file, `.ascend/ascend.db`, 200 K, with no `-wal`/`-shm` left beside it; a scan of every table for
+ * the seed directory's absolute path returned ZERO hits; `meta` holds only
+ * `created_by_ascend_version` and `cwd_convention = project-relative`. A copy into a different
+ * temporary directory therefore says exactly what the original said, views and all.
+ *
+ * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
+ * producing what `asc init` and `asc types define` actually produce, generated views included.
+ *
+ * `record()` is deliberately NOT hoisted: it writes each test's OWN entries, so it stays a per-test
+ * call. What is NOT changed is the part under test: every assertion below still runs the real binary
+ * as a subprocess and still hand-derives its expectations.
+ */
+let seedDir: string;
+
 beforeAll(() => {
   execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-b'], {
     cwd: root,
     stdio: 'pipe',
   });
+
+  seedDir = mkdtempSync(join(tmpdir(), 'asc-stats-seed-'));
+  dirs.push(seedDir);
+  expect(asc(['init'], seedDir).status).toBe(0);
+  for (const spec of [SPEC, BARE] as readonly Spec[]) {
+    const file = join(seedDir, `${spec.name}.json`);
+    writeFileSync(file, JSON.stringify(spec));
+    expect(asc(['types', 'define', file], seedDir).status).toBe(0);
+  }
 });
 
 const dirs: string[] = [];
@@ -110,16 +144,18 @@ interface Spec {
   readonly properties: readonly Record<string, unknown>[];
 }
 
-/** An initialised project with both specs registered and nothing recorded. */
+/**
+ * An initialised project with both specs registered and nothing recorded: a copy of the seed above.
+ *
+ * Its own directory, so a test that writes cannot reach the seed or any other test. That isolation
+ * is the reason to copy rather than to share one store, and it is the whole of what this function
+ * still does.
+ */
 function project(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-stats-'));
   dirs.push(dir);
-  expect(asc(['init'], dir).status).toBe(0);
-  for (const spec of [SPEC, BARE] as readonly Spec[]) {
-    const file = join(dir, `${spec.name}.json`);
-    writeFileSync(file, JSON.stringify(spec));
-    expect(asc(['types', 'define', file], dir).status).toBe(0);
-  }
+  mkdirSync(join(dir, '.ascend'), { recursive: true });
+  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
   return dir;
 }
 

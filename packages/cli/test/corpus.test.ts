@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -30,11 +30,40 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const bin = join(root, 'packages/cli/dist/bin.js');
 
+/**
+ * The fixture store, built ONCE for this file and copied per test.
+ *
+ * `project()` used to spawn the binary for EVERY test -- a real `asc init`, which creates the store
+ * and registers the four starter types. Measured 2026-09-28 (asc-37es): that single `init` costs
+ * 0.195 s replicated outside vitest, and this file's 43 tests take 78.59 s in all.
+ *
+ * Copying is sound because the store `asc init` leaves is LOCATION-INDEPENDENT, and that was
+ * measured rather than assumed: a seeded store is one file, `.ascend/ascend.db`, 200704 bytes,
+ * with no `-wal`/`-shm` left beside it; `meta` holds only `created_by_ascend_version` and
+ * `cwd_convention = project-relative`; and a scan of every table for the seed directory's own path
+ * returned ZERO hits. A copy into a different temporary directory therefore says exactly what the
+ * original said.
+ *
+ * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
+ * producing what `asc init` produces -- including the four starter types that command registers.
+ * Rebuilding that through the store API would be a second definition of what a project is, which is
+ * the kind of thing that agrees on the day it is written and drifts on the day after.
+ *
+ * What is NOT changed is the part under test: every assertion below still runs the real binary as a
+ * subprocess, and still reads what it wrote back out of SQLite rather than trusting its report.
+ */
+let seedDir: string;
+
 beforeAll(() => {
   execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-b'], {
     cwd: root,
     stdio: 'pipe',
   });
+
+  seedDir = mkdtempSync(join(tmpdir(), 'asc-corpus-seed-'));
+  dirs.push(seedDir);
+  mkdirSync(join(seedDir, '.git'));
+  expect(asc(['init'], seedDir).status).toBe(0);
 });
 
 const dirs: string[] = [];
@@ -104,15 +133,19 @@ function flatten(text: string): string {
 }
 
 /**
- * A project with the starter types installed: a directory that looks like a repository, plus `init`.
+ * A project with the starter types installed: a directory that looks like a repository, plus a copy
+ * of the seed `asc init` made in `beforeAll`.
  *
  * `.git` is a plain directory rather than `git init`, so the suite does not depend on git being
- * installed -- `init` only ever asks whether the path exists.
+ * installed -- `init` only ever asks whether the path exists, and the later `record` calls read
+ * provenance from the same place. The store itself is copied rather than rebuilt, which is why this
+ * no longer spawns the binary.
  */
 function project(): string {
   const dir = scratch();
   mkdirSync(join(dir, '.git'));
-  expect(asc(['init'], dir).status).toBe(0);
+  mkdirSync(join(dir, '.ascend'), { recursive: true });
+  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
   return dir;
 }
 
