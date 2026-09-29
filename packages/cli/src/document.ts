@@ -44,269 +44,28 @@
  * the ones that exist.
  */
 
-import {
-  GUIDANCE_FIELDS,
-  guidanceProblems,
-  PROPERTY_TYPES,
-  type PropertySpec,
-  type PropertyType,
-  type TypeGuidance,
-  type TypeSpec,
-} from '@ascend/core';
+import type { TypeSpec } from '@ascend/core';
 import {
   documentFromRow,
   documentGuidance,
   orderedDocument,
+  parseDocument,
+  parseDocuments,
   specHash,
   type TypeDocument,
 } from '@ascend/store';
-import { refusal } from './errors.js';
-import { describeValue, fieldError, isJsonObject } from './json-fields.js';
 
 /**
  * Re-exported so every existing importer of these from `./document.js` keeps working unchanged.
  *
- * They moved to `@ascend/store` in `asc-i5tj`: the store is now a writer of `type` lines itself, so
- * it needs the same row-to-document-to-ordered-object path this file had, and `align` forbids
- * `store -> cli`. Only the output direction moved -- the parsers below still live here, because
- * they validate text a human wrote and throw this package's `refusal`. That module carries the
- * full rationale.
+ * The whole format -- output AND input -- lives in `@ascend/store` now (`asc-i5tj`). The output
+ * direction (`documentFromRow`, `orderedDocument`) moved first, because the store had become a
+ * writer of `type` lines; `parseDocument`/`parseDocuments` followed, because the store's corpus
+ * reader parses `type` lines too and `align` forbids `store -> cli`. That module carries the full
+ * rationale.
  */
-export { documentFromRow, documentGuidance, orderedDocument };
+export { documentFromRow, documentGuidance, orderedDocument, parseDocument, parseDocuments };
 export type { TypeDocument };
-
-const KNOWN_KEYS = [
-  'name',
-  'properties',
-  'description',
-  'record_when',
-  ...GUIDANCE_FIELDS,
-  'prose',
-  'type_hash',
-] as const;
-const KNOWN_PROPERTY_KEYS = [
-  'name',
-  'type',
-  'required',
-  'enum_values',
-  'unit',
-  'description',
-] as const;
-
-/** A JSON object, as opposed to a JSON array or any scalar. */
-const isRecord = isJsonObject;
-
-function parseProperty(source: string, index: number, raw: unknown): PropertySpec {
-  const where = `properties[${String(index)}]`;
-  if (!isRecord(raw)) fieldError(source, where, 'an object', raw);
-
-  for (const key of Object.keys(raw)) {
-    if (!(KNOWN_PROPERTY_KEYS as readonly string[]).includes(key)) {
-      throw refusal(
-        `${source}: ${where} has no such field '${key}'. The fields are: ` +
-          `${KNOWN_PROPERTY_KEYS.join(', ')}.`,
-      );
-    }
-  }
-
-  if (typeof raw['name'] !== 'string') fieldError(source, `${where}.name`, 'a string', raw['name']);
-
-  const type = raw['type'];
-  if (typeof type !== 'string' || !(PROPERTY_TYPES as readonly string[]).includes(type)) {
-    throw refusal(
-      `${source}: ${where}.type must be one of ${PROPERTY_TYPES.join(', ')}, ` +
-        `but it is ${describeValue(type)}.`,
-    );
-  }
-
-  const required = raw['required'];
-  if (required !== undefined && typeof required !== 'boolean') {
-    fieldError(source, `${where}.required`, 'a boolean', required);
-  }
-
-  const unit = raw['unit'];
-  if (unit !== undefined && typeof unit !== 'string') {
-    fieldError(source, `${where}.unit`, 'a string', unit);
-  }
-
-  const description = raw['description'];
-  if (description !== undefined && typeof description !== 'string') {
-    fieldError(source, `${where}.description`, 'a string', description);
-  }
-
-  const enumValues = raw['enum_values'];
-  if (enumValues !== undefined) {
-    if (!Array.isArray(enumValues) || enumValues.some((value) => typeof value !== 'string')) {
-      fieldError(source, `${where}.enum_values`, 'an array of strings', enumValues);
-    }
-  }
-
-  // Built field by field rather than spread, because `exactOptionalPropertyTypes` is on and
-  // an explicit `undefined` is a different type from an absent key. A spread of raw JSON
-  // would carry every key it saw, including ones that should be absent.
-  return {
-    name: raw['name'],
-    type: type as PropertyType,
-    ...(required === true ? { required: true } : {}),
-    ...(enumValues === undefined ? {} : { enum_values: enumValues as string[] }),
-    ...(unit === undefined ? {} : { unit }),
-    ...(description === undefined ? {} : { description }),
-  };
-}
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  isRecord(value) && Object.values(value).every((item) => typeof item === 'string');
-
-/**
- * Parse one document.
- *
- * `source` names where the text came from (a path, or `standard input`) so every error can
- * say which document it is about -- with `import` reading a list, "which one?" is the first
- * thing a caller needs to know.
- */
-export function parseDocument(text: string, source: string): TypeDocument {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw refusal(
-      `${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}.`,
-    );
-  }
-
-  if (!isRecord(raw)) {
-    throw refusal(`${source} must be a JSON object holding a type definition, but it is not.`);
-  }
-
-  for (const key of Object.keys(raw)) {
-    if (!(KNOWN_KEYS as readonly string[]).includes(key)) {
-      throw refusal(
-        `${source} has no such field '${key}'. The fields are: ${KNOWN_KEYS.join(', ')}. ` +
-          `Fields are not ignored when unrecognised, so that a misspelt one cannot be dropped in silence.`,
-      );
-    }
-  }
-
-  if (typeof raw['name'] !== 'string') fieldError(source, 'name', 'a string', raw['name']);
-
-  const properties = raw['properties'];
-  if (!Array.isArray(properties)) fieldError(source, 'properties', 'an array', properties);
-
-  const description = raw['description'];
-  if (description !== undefined && typeof description !== 'string') {
-    fieldError(source, 'description', 'a string', description);
-  }
-  // Refused here rather than left to the database (asc-zrx). `schema.ts`'s `entry_types` table
-  // carries `CHECK (description IS NULL OR description <> '')`, and until this guard existed
-  // nothing upstream re-checked it: an empty string passed every parse and validation check in
-  // this file and reached the store, which refused it with SQLite's own CHECK-constraint text --
-  // naming a table and a column, not a document. Matched to the CHECK's own rule: `undefined`
-  // (the key omitted) is still the way to leave the field unset; `''` is refused the same as any
-  // other malformed field, with a message that says which document and what to do about it.
-  if (description === '') {
-    throw refusal(
-      `${source}: description is '' (empty). The store never stores an empty description -- ` +
-        `omit the field entirely to leave it unset, or give it real text.`,
-    );
-  }
-
-  const recordWhen = raw['record_when'];
-  if (recordWhen !== undefined && typeof recordWhen !== 'string') {
-    fieldError(source, 'record_when', 'a string', recordWhen);
-  }
-  // Same CHECK, same reasoning, the other column it guards.
-  if (recordWhen === '') {
-    throw refusal(
-      `${source}: record_when is '' (empty). The store never stores an empty record_when -- ` +
-        `omit the field entirely to leave it unset, or give it real text.`,
-    );
-  }
-
-  const guidance = parseGuidance(source, raw);
-
-  const prose = raw['prose'];
-  if (prose !== undefined && !isPlainObject(prose)) {
-    fieldError(source, 'prose', 'an object of strings, keyed by property name', prose);
-  }
-
-  const hash = raw['type_hash'];
-  if (hash !== undefined && typeof hash !== 'string') {
-    fieldError(source, 'type_hash', 'a string', hash);
-  }
-
-  return {
-    name: raw['name'],
-    properties: properties.map((property, index) => parseProperty(source, index, property)),
-    ...(description === undefined ? {} : { description }),
-    ...(recordWhen === undefined ? {} : { record_when: recordWhen }),
-    ...guidance,
-    ...(prose === undefined ? {} : { prose: prose as Record<string, string> }),
-    ...(hash === undefined ? {} : { type_hash: hash }),
-  };
-}
-
-/**
- * The guidance fields of a raw document, type-checked here and then checked for content by
- * core's `guidanceProblems` -- the same function the store refuses with, so a document cannot
- * pass this and then be refused by the store with a message that names no document.
- */
-function parseGuidance(source: string, raw: Record<string, unknown>): TypeGuidance {
-  const purpose = raw['purpose'];
-  if (purpose !== undefined && typeof purpose !== 'string') {
-    fieldError(source, 'purpose', 'a string', purpose);
-  }
-  const notes = raw['interpretation_notes'];
-  if (notes !== undefined && typeof notes !== 'string') {
-    fieldError(source, 'interpretation_notes', 'a string', notes);
-  }
-  const questions = raw['analysis_questions'];
-  if (
-    questions !== undefined &&
-    !(Array.isArray(questions) && questions.every((question) => typeof question === 'string'))
-  ) {
-    fieldError(source, 'analysis_questions', 'an array of strings', questions);
-  }
-  const reviewAfter = raw['review_after'];
-  if (reviewAfter !== undefined && typeof reviewAfter !== 'number') {
-    fieldError(source, 'review_after', 'a number', reviewAfter);
-  }
-
-  const guidance: TypeGuidance = {
-    ...(purpose === undefined ? {} : { purpose }),
-    ...(questions === undefined ? {} : { analysis_questions: questions }),
-    ...(notes === undefined ? {} : { interpretation_notes: notes }),
-    ...(reviewAfter === undefined ? {} : { review_after: reviewAfter }),
-  };
-
-  const problems = guidanceProblems(guidance);
-  if (problems.length > 0) throw refusal(`${source}: ${problems.join('; ')}.`);
-  return guidance;
-}
-
-/**
- * Parse a document, or a list of them.
- *
- * `export` writes a list, and accepting a single document too costs nothing and saves a
- * caller from having to know which they have -- `asc types export x > one.json` produces a
- * one-element list, while a hand-written definition is usually a bare object.
- */
-export function parseDocuments(text: string, source: string): readonly TypeDocument[] {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw refusal(
-      `${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}.`,
-    );
-  }
-
-  if (Array.isArray(raw)) {
-    return raw.map((item, index) =>
-      parseDocument(JSON.stringify(item), `${source} [${String(index)}]`),
-    );
-  }
-  return [parseDocument(text, source)];
-}
 
 /**
  * The identity-bearing part of a document: what gets registered and hashed.

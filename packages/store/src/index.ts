@@ -165,19 +165,27 @@ export {
   documentFromRow,
   documentGuidance,
   orderedDocument,
+  parseDocument,
+  parseDocuments,
   type TypeDocument,
 } from './document.js';
+
+export { describeValue, fieldError, isJsonObject } from './json-fields.js';
 
 export {
   annotationLine,
   entryLine,
   orderedLine,
+  parseCorpus,
   schemeLine,
   serializeCorpus,
   typeLine,
+  verifySchemeLine,
+  verifyTypeLine,
   type AnnotationLine,
   type CorpusLine,
   type EntryLine,
+  type ParsedLine,
   type SchemeLine,
   type TypeLine,
 } from './jsonl.js';
