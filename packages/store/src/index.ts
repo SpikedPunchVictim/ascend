@@ -223,8 +223,10 @@ export {
   IndexStaleError,
   openIndex,
   treeFingerprint,
+  writeLines,
   type IndexBuild,
   type IndexOptions,
+  type WriteReport,
 } from './jsonl-index.js';
 
 export { entryFromLine, typeRegistrationOptions } from './replay.js';

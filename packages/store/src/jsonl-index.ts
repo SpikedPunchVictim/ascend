@@ -6,14 +6,17 @@
  * design: it can be deleted at any moment and reconstructed from the JSONL alone. That only stays
  * true if it is enforced rather than asserted, so this module enforces it twice over:
  *
- * 1. **There is no writable handle.** `openIndex` returns a store opened READ-ONLY, so the bead's
- *    invariant -- *no write may land in the index that is not first in the JSONL* -- holds because
- *    there is nothing to write with, not because callers were asked to behave. The only code that
- *    writes the index is `buildIndex`, and the only thing it writes FROM is the tree.
+ * 1. **A READ has no writable handle.** `openIndex` returns a store opened READ-ONLY, so the bead's
+ *    invariant -- *no write may land in the index that is not first in the JSONL* -- holds on the read
+ *    path because there is nothing to write with, not because callers were asked to behave. Since
+ *    E12.4b there IS a second writer, `writeLines`, and it holds the same invariant by ORDER instead:
+ *    it appends to the tree before it replays anything here, so a line can only reach the index by
+ *    having already reached the JSONL. See "The write path" below.
  * 2. **It is a function of the tree.** `openIndex` either finds an index whose fingerprint is the
- *    tree's, or REFUSES. It never repairs, merges into, or incrementally updates an existing index --
- *    and since `asc-i5tj.3.1` it never rebuilds one either, because a read has no path to a build.
- *    See "A read never builds" below for what that replaced and why.
+ *    tree's, or REFUSES. It never repairs one, and since `asc-i5tj.3.1` it never rebuilds one either,
+ *    because a read has no path to a build. See "A read never builds" below for what that replaced
+ *    and why. `writeLines` is a WRITE and not a repair: it is reached only by something that has just
+ *    changed the tree, and it declines to touch an index that was not already current.
  *
  * ## A read never builds (`asc-i5tj.3.1`)
  *
@@ -47,13 +50,48 @@
  * nothing, which is the only thing that can catch a build put back inside this very file, where a scan
  * for calls to `buildIndex` cannot see the difference between defining it and calling it.
  *
- * ## Wholesale-or-nothing, and why there is no incremental path
+ * ## Wholesale for a BUILD, incremental for a WRITE (E12.4b reverses EV-32)
  *
- * EV-32 measured the alternatives. A cold rebuild costs 3.02 s at this project's 6,329 entries and
- * 40.27 s at 63,290, so **rebuild-on-open is out**; hashing the whole JSONL set costs 0.05 s at
- * 7.8 MB and 0.24 s at 71 MB, so **hashing on every open is affordable**. Given both, a persistent
- * index behind a fingerprint is the whole design, and partial rebuilds buy nothing they do not cost
- * in bookkeeping that can itself be wrong.
+ * EV-32 measured the alternatives and concluded: *"Because the rebuild is wholesale-cheap, there is no
+ * incremental path. Wholesale-or-nothing behind the fingerprint: no partial rebuilds, no per-record
+ * index bookkeeping."* The first half of that is still this module's design -- a build is wholesale,
+ * and `buildIndex` is the only thing that does one. **The second half was measured false**, and the
+ * section is corrected here rather than left standing, because a doc that contradicts its own code
+ * teaches the next reader the wrong thing.
+ *
+ * What changed the answer is EV-33, which measured the premise at 10x: **40.27 s** for a cold rebuild
+ * at 63,290 records against **2.97 s** at 6,387. "Rebuild-on-open is out" and "hashing on every open
+ * is affordable" both survive -- hashing is 0.05 s at 7.8 MB, and a read still never builds. What does
+ * not survive is *wholesale-on-write*: rebuilding on every `asc record` would put 3.39 s (EV-34, at
+ * 6,404 entries) on the product's most frequent operation, and 40.27 s at 10x. So the trade EV-32
+ * refused -- per-record index bookkeeping -- is now the cheaper one, and `writeLines` is it.
+ *
+ * **The bookkeeping is the build's own `replay`, and that is the whole of the safety argument.** An
+ * incremental writer implemented separately from the builder is the shape that produces two indexes
+ * that disagree with nothing reporting it; here the write replays through the same function the build
+ * calls, in the same order, against the same store shape. The only thing the write adds is the
+ * currency check in front of it.
+ *
+ * ## The write path: order is the invariant, not a check
+ *
+ * `writeLines` appends lines to the tree and, **if and only if** the index already described the tree,
+ * replays those same lines into the index and re-stamps it. Two properties make the result safe, and
+ * neither is an assertion that could be forgotten:
+ *
+ *   - **The tree is appended first.** A line can only reach the index by having already reached the
+ *     JSONL, which is the bead's invariant held by ordering rather than by a guard.
+ *   - **The stamp is written last, in the same transaction as the replay.** A death between the append
+ *     and the commit therefore leaves an index describing a tree that no longer exists, so every read
+ *     refuses until a build -- and a build reads the tree, which is the copy that has the write. There
+ *     is no interleaving in which the index holds a record the tree does not.
+ *
+ * **A stale index is left stale, and that is not the "leave-it-stale" option the plan rejected.** That
+ * option was about the ordinary case, where the index describes the tree and rebuilding on write is
+ * what costs 3.39 s. This is the case where someone else already moved the tree -- an edit, a checkout,
+ * a merge -- and the write cannot make the index current without a wholesale build it has no mandate
+ * to run. It appends to the tree and reports `stale: true`, and the caller says so; the alternative
+ * would be a write that quietly triggers a 40-second rebuild, which is the silence `asc-i5tj.3.1`
+ * exists to remove.
  *
  * ## The fingerprint is a content hash, and that is not a detail
  *
@@ -108,7 +146,7 @@ import {
 } from './annotations.js';
 import { ForeignStoreError, openStore, withTransaction, type Store } from './db.js';
 import { documentSpec, type TypeDocument } from './document.js';
-import { readRecordTree, recordFiles } from './jsonl-files.js';
+import { readRecordTree, recordFiles, openRecordWriter } from './jsonl-files.js';
 import type { CorpusLine, EntryLine, SchemeLine } from './jsonl.js';
 import { recordEntry } from './recorder.js';
 import { entryFromLine, typeRegistrationOptions } from './replay.js';
@@ -315,6 +353,93 @@ export function openIndex(root: string, dbPath: string): Store {
   }
 
   return openIndexStore(dbPath);
+}
+
+/** What a guarded write did, and what it refused to do. */
+export interface WriteReport {
+  /** Lines appended to the tree. */
+  readonly lines: number;
+  /** The tree's fingerprint AFTER the append, which the index carries when `stale` is false. */
+  readonly fingerprint: string;
+  /**
+   * The index was not current for the tree before this write, so it was left exactly as it was.
+   *
+   * Reported rather than thrown, because the write itself SUCCEEDED -- the records are in the JSONL,
+   * which is the store. A caller that can say so should, since the next read will refuse and the
+   * reason is not visible from the refusal alone.
+   */
+  readonly stale: boolean;
+}
+
+/**
+ * Append `lines` to the tree at `root`, and keep the index at `dbPath` current for it when it was.
+ *
+ * The write path's whole operation, and the three steps are in this order for reasons rather than
+ * taste -- see this module's "The write path" section for the argument in full:
+ *
+ * 1. **Read the currency of the index BEFORE appending.** The append is what makes an index stale, so
+ *    a check after it would always answer no. This is the only moment the question can be asked.
+ * 2. **Append to the tree.** Before anything reaches the index, which is what makes the invariant hold
+ *    by ordering. If this throws, the index is untouched and still describes the tree it described
+ *    before -- a partial tree is a stale index, which is a state this design already handles.
+ * 3. **Replay the same lines, and stamp, in one transaction.** The stamp is the tree's fingerprint as
+ *    of AFTER the append, so a read either sees both the records and the stamp or neither.
+ *
+ * **A write against a not-current index is not refused and not repaired.** The lines go to the tree,
+ * `stale: true` comes back, and the index is left byte-identical. See the section above for why this
+ * is not the rejected leave-it-stale option.
+ *
+ * **A file at `dbPath` that ascend did not create refuses the write entirely**, before the append:
+ * `ForeignStoreError` (asc-63v) propagates out of the currency check. Writing the tree while refusing
+ * to touch someone else's database would be the worst of both -- records that no read of this project
+ * can see, and a file ascend must not overwrite -- so the caller is told before anything moves.
+ */
+export function writeLines(
+  root: string,
+  dbPath: string,
+  lines: readonly CorpusLine[],
+  options: IndexOptions,
+): WriteReport {
+  const before = treeFingerprint(root);
+  const current = existsSync(dbPath) && storedFingerprint(dbPath) === before;
+
+  const writer = openRecordWriter(root);
+  for (const line of lines) writer.append(line);
+
+  const fingerprint = treeFingerprint(root);
+  if (!current) return { lines: lines.length, fingerprint, stale: true };
+
+  const store = openIndexWritable(dbPath);
+  try {
+    withTransaction(store.db, () => {
+      replay(store, lines, options.now);
+      store.db
+        .prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+        .run(FINGERPRINT_KEY, fingerprint);
+    });
+  } finally {
+    // `close()` checkpoints the WAL, so the index is one self-contained file -- the same property
+    // `buildIndex` relies on when it publishes by `renameSync`, and the one the tests assert by
+    // looking for `-wal`/`-shm` residue.
+    store.db.close();
+  }
+
+  return { lines: lines.length, fingerprint, stale: false };
+}
+
+/**
+ * The index, opened for writing. The ONLY writable handle to a derived index in this package.
+ *
+ * Private, and reachable from exactly one caller (`writeLines`), which is the same construction
+ * `buildIndex` has: the writable index is a thing this module does, never a thing a caller is handed.
+ * `openIndex`'s read-only handle is what every other caller gets, and the two are separate functions
+ * rather than one with a flag so that adding a write is a visible edit here.
+ *
+ * It is opened through the ordinary `openStore`, so every guard still runs -- `assertNotForeign` above
+ * all, which is what stops a write landing in a database that is not ascend's.
+ */
+function openIndexWritable(dbPath: string): Store {
+  return openStore({ dir: dirname(dbPath), file: basename(dbPath) });
 }
 
 /**
