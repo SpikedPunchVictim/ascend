@@ -45,6 +45,27 @@
 # was found by first). A cell nothing maps leaves `class` absent, and the type then refuses the row --
 # an unmapped lens is never written under its own spelling. The numbers follow the `### Lens N` headings
 # in ~/.claude/skills/bug-hunt/SKILL.md, the same provenance as FINDING_LENSES.
+# IT CARRIES NEITHER `failure_scenario` NOR `catchable_by`, and this comment is where that is said
+# rather than a `judged` line, for a MEASURED reason (asc-my84). Adding `judged:` to this file moves
+# its hash: core hashes the whole parsed document (packages/core/src/handler.ts:1148), so a key that
+# emits nothing still changes the handler's identity, and the entry key carries that hash
+# (packages/cli/src/typed-handlers.ts:252). A new identity means the next ingest re-runs this handler
+# over the entire corpus and writes every row again. Measured 2026-09-28, `asc ingest claude-code
+# --dry-run`: with `judged: [failure_scenario, catchable_by]` present, `entry review_finding 65 new,
+# 11 rejected`; with the line absent, `entry review_finding none`. So declaring the absence
+# machine-readably would double the parsed corpus until a 65-row hand migration of the kind asc-w8tx
+# documents, and this type's entire product is comparable counts. The declaration waits for a handler
+# hash that ignores it.
+#
+# `failure_scenario` is the load-bearing absence. The type calls it "the field that separates a real
+# finding from a suspicion", and this route cannot fill it, because the table it reads has a Finding
+# cell, a Lens cell and a Confidence cell and no column for a scenario. MEASURED 2026-09-28: 112 of
+# 112 `review_finding` entries carried no `failure_scenario`, and every one of them was
+# `captured_by: parsed` -- so by the type's own definition this route produces a corpus of
+# suspicions, and nothing said so until `asc doctor` counted it (dogfood/0026). The nudge handler
+# beside this one (review-finding-nudge.yaml) exists to get the REPORTED route firing on real work,
+# which is the only way the field starts arriving. `catchable_by` is absent here for the same reason
+# it is absent on every route: nothing in the harness report carries it.
 type: review_finding
 on: file.changed
 description: One finding per row of a findings table in a report the reviewer wrote.

@@ -519,13 +519,20 @@ export const DERIVED_TYPES: readonly TypeSpec[] = [
     name: 'review_finding',
     description:
       'One finding an adversarial reviewer reported, derived from the reviewer’s own ' +
-      'report rather than from anything it chose to run. MEASURED 2026-09-26: this type has ' +
-      'ZERO entries, and that is the state it ships in -- the tool it derives from ' +
-      '(`ReportFindings`) exists in the harness and was called 0 times across 1,236 transcript ' +
-      'files and 637,258 records. A derived type with no producer is not a broken one, but it ' +
-      'is not a useful one either, and the honest place to say so is here rather than in a ' +
-      'report that shows a clean zero. When the first reviewer reports, this fills with no ' +
-      'change to this file. ' +
+      'report rather than from anything it chose to run. TWO ROUTES FILL THIS, and they do ' +
+      'not carry the same fields, so split any count of this type by `captured_by` before ' +
+      'comparing it: `reported` is one element of a `ReportFindings` call, `parsed` is a row ' +
+      'of the findings table in the report the reviewer already wrote. MEASURED 2026-09-28, ' +
+      'REPLACING a paragraph here that said this type was empty: `ReportFindings` had by then ' +
+      'been called 33 times (358 findings), and the store this was measured in held 112 ' +
+      'review findings, EVERY ONE of them `captured_by: parsed`. All 33 reported calls are ' +
+      'in EPHEMERAL probe projects, which ingest skips by design, so the reported route has ' +
+      'still not fired on real work -- that is the gap the `on_skill` nudge ' +
+      '(`handlers/review-finding-nudge.yaml`) exists to close, by asking a reviewer for ' +
+      '`ReportFindings` at the moment it loads the review skill. The superseded sentence was ' +
+      'a dated measurement rather than an error, and it is recorded here because a type ' +
+      'description is a measurement with a date on it, and the date is how a later reader ' +
+      'knows which one to trust (dogfood/0021). ' +
       'THE ONE CLOSED VOCABULARY WE DO NOT OWN is `class` -- see `FINDING_LENSES` for the ' +
       'provenance, the reason, and the version-bump cost of a tenth lens. ' +
       '`catchable_by` IS DECLARED AND NEVER FILLED: nothing in the harness report carries it, ' +
@@ -588,7 +595,21 @@ export const DERIVED_TYPES: readonly TypeSpec[] = [
           'Concrete inputs or state leading to a wrong outcome, in the reviewer’s words. This ' +
           'is the field that separates a real finding from a suspicion, and it is the one a ' +
           'later reader needs in order to check the claim rather than trust it -- so it is ' +
-          'carried verbatim as the reviewer wrote it, never summarized.',
+          'carried verbatim as the reviewer wrote it, never summarized. ' +
+          'ABSENT ON EVERY `parsed` ENTRY, and that is the route rather than a loss: the ' +
+          'findings table a report writes has a Finding cell, a Lens cell and a Confidence ' +
+          'cell, and no column for a scenario, so `handlers/review-finding-table.yaml` has ' +
+          'nothing to read, emits no value for the field, and says so in its own header instead ' +
+          'of inventing one. Measured ' +
+          '2026-09-28: 112 of 112 entries in the store this was measured in carried no ' +
+          '`failure_scenario`, every one of them `captured_by: parsed`, while the reported ' +
+          'route writes it whenever the reviewer gave one. An absent value here is therefore ' +
+          'a property of WHICH ROUTE captured the finding rather than of the finding itself, ' +
+          'and a count of this field must be split by `captured_by` before the blank is read ' +
+          'as a defect (asc-my84). NOT REQUIRED, and that is the same decision seen from the ' +
+          'other side: a required field would force the parsed route either to refuse a real ' +
+          'finding or to fill this with words the reviewer never wrote, which is the one ' +
+          'thing this type must never do.',
       },
       {
         name: 'verdict',

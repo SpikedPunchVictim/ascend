@@ -376,11 +376,33 @@ describe('the one vocabulary we close, and the one we do not', () => {
     expect(property?.description).toMatch(/not_measured/);
   });
 
-  it('says in its own description that it has no producer yet', () => {
-    // Zero entries is a measurement, not a gap in the file, and the type is where a reader
-    // looks. Measured 2026-09-26: `ReportFindings` called 0 times across 1,236 files.
-    expect(spec()?.description).toMatch(/ZERO entries/);
-    expect(spec()?.description).toMatch(/0 times/);
+  it('says in `failure_scenario` that the parsed route never carries it', () => {
+    // The field the type itself calls "the one that separates a real finding from a suspicion" is
+    // absent on every entry this store has ever held, and that is the ROUTE rather than a loss:
+    // the findings table a report writes has no scenario column, so the table handler has nothing
+    // to read. Measured 2026-09-28, 112 of 112 entries, every one `captured_by: parsed`. A reader
+    // comparing this column across the two routes has to know that before reading the blank as a
+    // defect -- the same reason `catchable_by` states its own absence, and the reason the table
+    // handler declares it under `judged` (asc-my84).
+    const property = spec()?.properties.find((one) => one.name === 'failure_scenario');
+    expect(property?.type).toBe('text');
+    // Not required, deliberately: a required field would force the parsed route either to invent
+    // a scenario or to refuse the row, and the row is a real finding either way.
+    expect(property?.required).toBeUndefined();
+    expect(property?.description).toMatch(/parsed/i);
+    expect(property?.description).toMatch(/captured_by/);
+  });
+
+  it('states its own production state, which is no longer empty', () => {
+    // This replaced a test that asserted the wording "this type has ZERO entries" and "0 times".
+    // Both were true when measured on 2026-09-26 and the first real reviewer turned them false, so
+    // the test pinned a sentence that had stopped being a measurement. The INTENT is kept -- the
+    // type states its own production state rather than leaving a clean zero to be read as health,
+    // which is the whole point of the paragraph -- and the assertion is moved off the number that
+    // ages and onto the fact a reader needs: which route has fired and which has not (asc-my84).
+    expect(spec()?.description).toMatch(/captured_by: parsed/);
+    expect(spec()?.description).toMatch(/ephemeral/i);
+    expect(spec()?.description).not.toMatch(/ZERO entries/);
   });
 });
 
