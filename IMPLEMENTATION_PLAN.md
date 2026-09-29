@@ -87,7 +87,8 @@ error naming field, expected type, and corrected command; `asc init` gitignores 
 **Status: In Progress** — **E2 complete** (7/7, epic `asc-72s` closed). **E3 7/7 complete**, epic
 `asc-865` closed: `asc-0j0`, `asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7`, `asc-l00`, and the P1 defect
 found in E3's own output, `asc-865.1`, now fixed (see below). **E4 (`asc-baj`) In Progress — E4.1
-and E4.2 complete, including the six `asc types` subcommands; E4.3 next.** The stages are specified
+and E4.2 complete, including the six `asc types` subcommands; E4.3 next.** **E12 (`asc-i5tj`, the
+git-native JSONL store) Not Started — specified below, `EV-32` in hand.** The stages are specified
 below; cold start is already measured and needs no fast path. 343 tests pass, `align check` is green,
 and the CLI suite drives the built binary rather than the handler.
 
@@ -949,6 +950,78 @@ requires `pnpm build`, not just the source restore.
   fires with the allowlist entry. Decision rule fixed in advance: *if a record costs more than a few
   hundred tokens, simplify the surface BEFORE E5.*
 - **`asc-brt` (P2)** — `asc export` / `asc import` (JSONL) as the durability escape hatch.
+
+---
+
+### E12 — the git-native JSONL store (`asc-i5tj`), in stages
+
+**Goal** — records live in git as per-type append-only JSONL with `merge=union`, read through a
+storage-neutral layer, with a **derived, rebuildable** index behind it. `asc-i5tj` blocks four other
+beads (`asc-2ezs`, `asc-98e1`, `asc-8uzh`, `asc-3ow4`), each of which guards files that do not exist
+yet, so this is the item everything else in the storage line waits on.
+
+**The owner ruling, and why a derived index does not contradict it.** `asc-i5tj` carries an owner
+decision: *"either/or, never both. JSONL is the store (developers branch and merge it); SQLite does
+not coexist as a second source of truth."* The index is **derived and rebuildable**, which is not a
+source of truth — it can be deleted at any moment and reconstructed from the JSONL alone. It is a
+cache with a correctness invariant attached (it must never hold anything the JSONL does not). The
+rule this must respect is therefore: **no write may ever land in the index that is not first in the
+JSONL**, and a test must assert it.
+
+**EV-constraints carried in (`EV-32`, measured 2026-09-28 at full scale):**
+- **A cold rebuild costs 3.02 s at this project's 6,329 entries (7.77 MB JSONL → 22 MB index) and
+  40.27 s at 63,290 (71 MB → 206 MB).** 13.3× the time for 10× the records. Rebuild-on-open is out;
+  the index persists and is rebuilt only when its inputs change.
+- **Hashing the whole JSONL set costs 0.05 s at 7.8 MB and 0.24 s at 71 MB** — affordable on every
+  open. Use a **content hash, not mtime**: `git checkout` stamps mtimes with the current time even
+  when content returns to an already-indexed state, so mtime forces a spurious multi-second rebuild
+  on every branch switch.
+- **Because the rebuild is wholesale-cheap, there is no incremental path.** Wholesale-or-nothing
+  behind the fingerprint: no partial rebuilds, no per-record index bookkeeping.
+- **A single write costs 0.19 s end-to-end at both 21 MB and 208 MB** — below process startup, i.e.
+  invisible. A write is "append one JSONL line, then apply that one record to the index".
+- **The 20 MB rollover cap is near-dead code at measured sizes** (entries mean 840 B; 5,000 records =
+  4.1 MiB; the cap binds only above a 4,194 B mean, against a 2,697 B p99). The record-count
+  threshold binds first by ~5×. Carried into `asc-8uzh`.
+
+**Layout** (a decision made here, `git mv`-reversible but committed, so recorded rather than assumed):
+
+```
+.ascend/
+  .gitattributes              records.jsonl merge=union   (and the other record files)
+  types/          0001.jsonl  append-only: `type` lines, content-addressed
+  entries/<type>/ 0001.jsonl  append-only, rolled at 5,000 records
+  annotations/<scheme>/0001.jsonl
+  index.db                    DERIVED. gitignored. delete it and it rebuilds.
+```
+
+`.ascend/` stays the marker directory — `findProjectRoot` already keys on it and `STORE_DIR` is
+already `.ascend` — so the change is to **un-ignore a subtree** of it rather than to move the store.
+The directory names mirror the corpus's four `kind` values, so `asc export` remains the same shape
+as the store itself.
+
+**Stages:**
+
+- **E12.1 — the record layer, standalone.** `serialize`/`parse`/`append`/`read` over the four line
+  kinds, the `.gitattributes` emission, rollover at the 5,000-record threshold, and `(recorded_at,
+  id)` read ordering. No index, no CLI wiring. Green when the spike's S1–S4 fixtures round-trip
+  through it line-for-line.
+- **E12.2 — the index.** Build `index.db` from a JSONL tree; store the fingerprint; on open, hash →
+  compare → rebuild-wholesale or use. The invariant under test: **an index holding anything the
+  JSONL does not is a failure**, asserted by deleting and rebuilding.
+- **E12.3 — the read layer.** Extract the storage-neutral interface the store package does not have
+  today (every public function currently takes `db: DatabaseSync`), with the SQLite index as the one
+  implementation behind it. `align check` must stay green — this is the structural change most likely
+  to redden it.
+- **E12.4 — the cutover and the migration.** This repo's 6,329 entries move from the 22 MB SQLite
+  store to the tracked JSONL tree; `asc export`/`asc import` keep working; the old store is retired,
+  not kept alongside.
+- **E12.5 — the guards the blocked beads own.** `asc-2ezs` (one id, two contents, refused at read),
+  `asc-98e1` (id-set superset of each parent — EV-31 measured that the markers-and-parse half alone
+  passes exactly the resolution that loses a record), `asc-8uzh` (per-record size limit, byte-bounded
+  rollover).
+
+**Status: Not Started.** `EV-32` is in hand; E12.1 is next.
 
 ---
 

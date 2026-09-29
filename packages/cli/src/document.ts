@@ -53,27 +53,27 @@ import {
   type TypeGuidance,
   type TypeSpec,
 } from '@ascend/core';
-import { specHash, type TypeVersionRow } from '@ascend/store';
+import {
+  documentFromRow,
+  documentGuidance,
+  orderedDocument,
+  specHash,
+  type TypeDocument,
+} from '@ascend/store';
 import { refusal } from './errors.js';
 import { describeValue, fieldError, isJsonObject } from './json-fields.js';
 
 /**
- * The guidance fields sit at the top level beside `record_when`, rather than nested under a
- * `guidance` key, because they are the same kind of thing -- prose about the type that is not
- * its identity -- and a document already spells that kind of thing flat.
+ * Re-exported so every existing importer of these from `./document.js` keeps working unchanged.
+ *
+ * They moved to `@ascend/store` in `asc-i5tj`: the store is now a writer of `type` lines itself, so
+ * it needs the same row-to-document-to-ordered-object path this file had, and `align` forbids
+ * `store -> cli`. Only the output direction moved -- the parsers below still live here, because
+ * they validate text a human wrote and throw this package's `refusal`. That module carries the
+ * full rationale.
  */
-export interface TypeDocument extends TypeGuidance {
-  readonly name: string;
-  readonly properties: readonly PropertySpec[];
-  /** Type-level prose. Not part of identity; editable in place. */
-  readonly description?: string;
-  /** Prose telling a model when to record this type. Surfaced by `asc types brief`. */
-  readonly record_when?: string;
-  /** Per-property prose, keyed by property name. Not part of identity. */
-  readonly prose?: Readonly<Record<string, string>>;
-  /** The identity this document claims. Recomputed and checked on import. */
-  readonly type_hash?: string;
-}
+export { documentFromRow, documentGuidance, orderedDocument };
+export type { TypeDocument };
 
 const KNOWN_KEYS = [
   'name',
@@ -283,20 +283,6 @@ function parseGuidance(source: string, raw: Record<string, unknown>): TypeGuidan
   return guidance;
 }
 
-/** Only the guidance fields of a document, in document order, for the store. */
-export function documentGuidance(document: TypeDocument): TypeGuidance {
-  return {
-    ...(document.purpose === undefined ? {} : { purpose: document.purpose }),
-    ...(document.analysis_questions === undefined
-      ? {}
-      : { analysis_questions: document.analysis_questions }),
-    ...(document.interpretation_notes === undefined
-      ? {}
-      : { interpretation_notes: document.interpretation_notes }),
-    ...(document.review_after === undefined ? {} : { review_after: document.review_after }),
-  };
-}
-
 /**
  * Parse a document, or a list of them.
  *
@@ -353,44 +339,6 @@ export function verifyDocumentHash(document: TypeDocument, source: string): void
       `register a definition under the wrong identity. Re-export the type rather than editing ` +
       `the document by hand.`,
   );
-}
-
-/**
- * The document describing a registered version.
- *
- * `spec` is the stored shape, already canonical, so an export is canonical by construction.
- * Prose is read from the columns and the prose column rather than from the spec, because
- * that is where the store keeps it.
- */
-export function documentFromRow(row: TypeVersionRow): TypeDocument {
-  return {
-    name: row.name,
-    properties: row.spec.properties,
-    ...(row.description === null ? {} : { description: row.description }),
-    ...(row.recordWhen === null ? {} : { record_when: row.recordWhen }),
-    ...row.guidance,
-    ...(Object.keys(row.prose).length === 0 ? {} : { prose: row.prose }),
-    type_hash: row.typeHash,
-  };
-}
-
-/**
- * A document as a plain object, with a fixed key order.
- *
- * Separate from serializing so that a single document and a list of them are built by the same
- * function -- `export` writes a list, and a list whose elements were ordered by a second
- * implementation is a list that could disagree with the documents it is made of.
- */
-export function orderedDocument(document: TypeDocument): Record<string, unknown> {
-  return {
-    name: document.name,
-    properties: document.properties,
-    ...(document.description === undefined ? {} : { description: document.description }),
-    ...(document.record_when === undefined ? {} : { record_when: document.record_when }),
-    ...documentGuidance(document),
-    ...(document.prose === undefined ? {} : { prose: document.prose }),
-    ...(document.type_hash === undefined ? {} : { type_hash: document.type_hash }),
-  };
 }
 
 /**

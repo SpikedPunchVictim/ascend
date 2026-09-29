@@ -162,6 +162,27 @@ export {
 export type { EntryState } from './sql.js';
 
 export {
+  documentFromRow,
+  documentGuidance,
+  orderedDocument,
+  type TypeDocument,
+} from './document.js';
+
+export {
+  annotationLine,
+  entryLine,
+  orderedLine,
+  schemeLine,
+  serializeCorpus,
+  typeLine,
+  type AnnotationLine,
+  type CorpusLine,
+  type EntryLine,
+  type SchemeLine,
+  type TypeLine,
+} from './jsonl.js';
+
+export {
   profileType,
   TOP_K,
   type InvalidatedLabelCount,
