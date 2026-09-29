@@ -9,9 +9,9 @@
  * 1. **A READ has no writable handle.** `openIndex` returns a store opened READ-ONLY, so the bead's
  *    invariant -- *no write may land in the index that is not first in the JSONL* -- holds on the read
  *    path because there is nothing to write with, not because callers were asked to behave. Since
- *    E12.4b there IS a second writer, `writeLines`, and it holds the same invariant by ORDER instead:
- *    it appends to the tree before it replays anything here, so a line can only reach the index by
- *    having already reached the JSONL. See "The write path" below.
+ *    E12.4b there ARE writers, `writeLines` and (from b3) `writeProducedLines`, and both hold the same
+ *    invariant by ORDER instead: each appends to the tree before it replays anything here, so a line
+ *    can only reach the index by having already reached the JSONL. See "The write path" below.
  * 2. **It is a function of the tree.** `openIndex` either finds an index whose fingerprint is the
  *    tree's, or REFUSES. It never repairs one, and since `asc-i5tj.3.1` it never rebuilds one either,
  *    because a read has no path to a build. See "A read never builds" below for what that replaced
@@ -93,6 +93,16 @@
  * would be a write that quietly triggers a 40-second rebuild, which is the silence `asc-i5tj.3.1`
  * exists to remove.
  *
+ * **`writeProducedLines` has no stale branch, because its lines come from the index it would be
+ * leaving stale.** `writeLines` is handed lines its caller already had, so appending them is right
+ * however old the index is. `writeProducedLines` COMPUTES them, by running the real writers against
+ * that index -- so a stale index does not merely mean "the index cannot be maintained", it means the
+ * lines are not true. EV-35 measured what that produces: a well-formed scheme line claiming version 2,
+ * in a `merge=union` file, beside a version 2 the tree already had. So it builds first (the owner's
+ * *"build, then write"*), re-checks the fingerprint inside its own lock, and refuses rather than
+ * appends. Both writers still hold the invariant by ORDER; only `writeLines` has the outcome where
+ * the order is all the caller gets.
+ *
  * ## The fingerprint is a content hash, and that is not a detail
  *
  * `git checkout` and `git switch` stamp files with the CURRENT time even when the content returns to
@@ -148,9 +158,10 @@ import { ForeignStoreError, openStore, withTransaction, type Store } from './db.
 import { documentSpec, type TypeDocument } from './document.js';
 import { readRecordTree, recordFiles, openRecordWriter } from './jsonl-files.js';
 import type { CorpusLine, EntryLine, SchemeLine } from './jsonl.js';
+import { produceLines, type Producers } from './line-producers.js';
 import { recordEntry } from './recorder.js';
 import { entryFromLine, typeRegistrationOptions } from './replay.js';
-import { registerType } from './registry.js';
+import { pendingProseUpdate, registerType, updateTypeProse } from './registry.js';
 
 /**
  * The index's file name inside the store directory.
@@ -411,12 +422,7 @@ export function writeLines(
 
   const store = openIndexWritable(dbPath);
   try {
-    withTransaction(store.db, () => {
-      replay(store, lines, options.now);
-      store.db
-        .prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
-        .run(FINGERPRINT_KEY, fingerprint);
-    });
+    replayInto(store, lines, fingerprint, options.now);
   } finally {
     // `close()` checkpoints the WAL, so the index is one self-contained file -- the same property
     // `buildIndex` relies on when it publishes by `renameSync`, and the one the tests assert by
@@ -427,13 +433,122 @@ export function writeLines(
   return { lines: lines.length, fingerprint, stale: false };
 }
 
+/** What a fused produce-and-write did. */
+export interface ProducedWrite<Result> {
+  /** Lines appended to the tree. */
+  readonly lines: number;
+  /** The tree's fingerprint AFTER the append, which the index now carries. */
+  readonly fingerprint: string;
+  /** What the producing body returned: the warnings, the `unchanged`s, the counts. */
+  readonly result: Result;
+}
+
+/**
+ * Produce lines from `body` and put them in the tree and the index, under ONE lock, or refuse.
+ *
+ * The write path the five CLI sites use (E12.4b3), and it is a separate function from `writeLines`
+ * rather than a flag on it for two reasons that are both about what a caller can then say:
+ *
+ * 1. **The lines come from HERE.** `writeLines` takes lines its caller already had, so it cannot be
+ *    wrong about them. This computes them, which means the currency of the index is no longer a
+ *    question about whether the index can be *maintained* -- it is a question about whether the
+ *    lines are *true*. EV-35 measured the difference: a producer run against an index holding
+ *    `screening` v1 beside a tree holding v1 and v2 minted a well-formed line claiming version 2
+ *    with a spec the tree's version 2 does not carry, in a `merge=union` file where nothing collapses
+ *    it. So where `writeLines` reports `stale: true` and appends anyway, this one REFUSES, and its
+ *    report has no `stale` field for a caller to branch on.
+ * 2. **The lock spans all three steps.** The probe reads the index, the append moves the tree and the
+ *    replay moves the index, and they are one decision -- "what does this store hold now?" -- so a
+ *    concurrent writer must not be able to slip between them. `withRollback` nests as a savepoint
+ *    since `db.ts`'s `inOwnScope` (2026-09-29), so `produceLines` runs inside this transaction rather
+ *    than beside it, and `annotate.ts`'s read-produce-append (asc-q4p) is one `BEGIN IMMEDIATE`.
+ *
+ * **The index is made current BEFORE the lock is taken, and re-checked after.** `buildIndex` takes no
+ * lock of its own and publishes by `renameSync`, so it cannot be run while a transaction is open on
+ * the file it replaces -- hence the build here rather than inside. That is the owner's *"build, then
+ * write"* ruling (2026-09-29), and it is what stops a checkout or a merge from making every
+ * `asc record` fail until someone thinks to run `asc index build`. The check is then made AGAIN
+ * inside the lock, because the first one describes a moment that a concurrent writer can invalidate;
+ * the two together are what make "a write cannot slip past the guard" structural rather than likely.
+ *
+ * **A file at `dbPath` that ascend did not create refuses the write entirely**, before the append:
+ * `ForeignStoreError` (`asc-63v`) propagates out of the build, exactly as it does out of `writeLines`.
+ *
+ * The body is handed to `produceLines` unwrapped, so a site's dry run and its real run can be the
+ * same function -- `produceLines(store.db, body)` for the preview, this for the write.
+ */
+export function writeProducedLines<Result>(
+  root: string,
+  dbPath: string,
+  options: IndexOptions,
+  body: (produce: Producers) => Result,
+): ProducedWrite<Result> {
+  const before = treeFingerprint(root);
+  if (!existsSync(dbPath) || storedFingerprint(dbPath) !== before)
+    buildIndex(root, dbPath, options);
+
+  const store = openIndexWritable(dbPath);
+  try {
+    return withTransaction(store.db, () => {
+      // Inside the lock, and read from OUR handle rather than by reopening the file: a check-then-act
+      // whose check happens outside `BEGIN IMMEDIATE` describes a moment another writer can undo.
+      const tree = treeFingerprint(root);
+      const stamp = (
+        store.db.prepare('SELECT value FROM meta WHERE key = ?').get(FINGERPRINT_KEY) as
+          { value?: string } | undefined
+      )?.value;
+      if (stamp !== tree) throw new IndexStaleError(dbPath, stalenessReason(true, stamp));
+
+      const { lines, result } = produceLines(store.db, body);
+
+      const writer = openRecordWriter(root);
+      for (const line of lines) writer.append(line);
+
+      const fingerprint = treeFingerprint(root);
+      replayInto(store, lines, fingerprint, options.now);
+      return { lines: lines.length, fingerprint, result };
+    });
+  } finally {
+    store.db.close();
+  }
+}
+
+/**
+ * Replay `lines` into an open index and stamp it, in one transaction.
+ *
+ * The half `writeLines` and `writeProducedLines` share, and shared rather than written twice for the
+ * reason the module doc gives about the build: an incremental writer implemented separately from
+ * another incremental writer is how two indexes end up disagreeing with nothing reporting it. Both
+ * callers reach the same `replay` with the same stamp, and the only thing either adds is the
+ * currency check in front of it.
+ *
+ * `fingerprint` is the tree's, as of AFTER the append its caller made -- which is why it is a
+ * parameter rather than recomputed here. A caller that has not yet appended would stamp a fingerprint
+ * describing a tree without the lines it just replayed, which is the false-green this file exists to
+ * prevent, spelled as a plausible-looking argument.
+ */
+function replayInto(
+  store: Store,
+  lines: readonly CorpusLine[],
+  fingerprint: string,
+  now: string,
+): void {
+  withTransaction(store.db, () => {
+    replay(store, lines, now);
+    store.db
+      .prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+      .run(FINGERPRINT_KEY, fingerprint);
+  });
+}
+
 /**
  * The index, opened for writing. The ONLY writable handle to a derived index in this package.
  *
- * Private, and reachable from exactly one caller (`writeLines`), which is the same construction
- * `buildIndex` has: the writable index is a thing this module does, never a thing a caller is handed.
- * `openIndex`'s read-only handle is what every other caller gets, and the two are separate functions
- * rather than one with a flag so that adding a write is a visible edit here.
+ * Private, and reachable from exactly two callers (`writeLines` and `writeProducedLines`), which is
+ * the same construction `buildIndex` has: the writable index is a thing this module does, never a
+ * thing a caller is handed. `openIndex`'s read-only handle is what every other caller gets, and the
+ * two are separate functions rather than one with a flag so that adding a write is a visible edit
+ * here.
  *
  * It is opened through the ordinary `openStore`, so every guard still runs -- `assertNotForeign` above
  * all, which is what stops a write landing in a database that is not ascend's.
@@ -545,11 +660,23 @@ function isAnnotation(line: CorpusLine): line is Extract<CorpusLine, { kind: 'an
 function replayType(store: Store, document: TypeDocument, now: string): void {
   // `now`, injected, because a `TypeLine` carries no registration timestamp -- see the module doc's
   // "One column the tree cannot determine". The store reads no clock of its own.
-  const registered = registerType(
-    store.db,
-    documentSpec(document),
-    typeRegistrationOptions(document, now),
-  );
+  const options = typeRegistrationOptions(document, now);
+  const registered = registerType(store.db, documentSpec(document), options);
+
+  // **A second line for a version the store already holds is how PROSE changes in the tree, and
+  // `registerType` alone cannot see it.** Prose is not part of a type's identity -- that is why
+  // `registerType` compares specs and answers `unchanged` -- but it does live in the version's LINE,
+  // so the tree's copy of a prose edit is a repeat of the same `(name, version)` with a different
+  // description. Replayed through `registerType` alone that repeat is a no-op and the edit is gone:
+  // an index that disagrees with the tree it was built from, with nothing reporting it. The same
+  // question `typeLines` asks on the way out (`pendingProseUpdate`), asked on the way in, so the rule
+  // has one spelling.
+  if (registered.outcome === 'unchanged') {
+    const pending = pendingProseUpdate(store.db, registered.name, registered.version, options);
+    if (pending !== undefined) {
+      updateTypeProse(store.db, registered.name, registered.version, pending);
+    }
+  }
 
   if (document.type_hash !== undefined && document.type_hash !== registered.typeHash) {
     throw new Error(

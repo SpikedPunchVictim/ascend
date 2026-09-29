@@ -888,17 +888,7 @@ export function updateTypeProse(
   db: SqlDatabase,
   name: string,
   version: number,
-  prose: {
-    readonly description?: string | null;
-    readonly recordWhen?: string | null;
-    readonly propertyProse?: Readonly<Record<string, string>>;
-    /**
-     * Merged field by field, with the same `undefined` / `null` rule as the fields above: an
-     * omitted guidance field is kept, a `null` one is cleared. So a document that mentions only
-     * `purpose` does not erase the questions someone else wrote.
-     */
-    readonly guidance?: GuidanceEdit;
-  },
+  prose: ProseUpdate,
 ): void {
   // The same protocol `registerType` uses, and for the same reason (asc-vnn): the read of
   // `existing` below and the UPDATE at the end are one decision -- "what is the merged prose?" --
@@ -963,6 +953,107 @@ export function updateTypeProse(
 export type GuidanceEdit = {
   readonly [Field in keyof TypeGuidance]?: TypeGuidance[Field] | null;
 };
+
+/**
+ * The prose fields of a registration, as `updateTypeProse` takes them.
+ *
+ * Named rather than spelled inline at the one call site it had, because `pendingProseUpdate` below
+ * RETURNS this shape and hands it straight back to that call site. Two spellings of one parameter
+ * is the drift this package refuses everywhere else, and here it would be drift between a question
+ * ("what prose is pending?") and its only answer.
+ *
+ * `undefined` leaves a field alone and `null` clears it -- see `updateTypeProse`. `pendingProseUpdate`
+ * never returns `null`, because it reports work rather than intent: a caller who wants a field
+ * cleared passes the null themselves, which is a different request from "this document is out of
+ * date".
+ */
+export interface ProseUpdate {
+  readonly description?: string | null;
+  readonly recordWhen?: string | null;
+  readonly propertyProse?: Readonly<Record<string, string>>;
+  /**
+   * Merged field by field, with the same `undefined` / `null` rule as the fields above: an
+   * omitted guidance field is kept, a `null` one is cleared. So a document that mentions only
+   * `purpose` does not erase the questions someone else wrote.
+   */
+  readonly guidance?: GuidanceEdit;
+}
+
+/**
+ * The prose a registration asks for that the store does not already hold, or `undefined`.
+ *
+ * **A prose-only edit is `unchanged` to `registerType`, and that is the defect this exists to
+ * close.** `registerType` compares SPECS, which is right -- prose is not part of a type's identity,
+ * so editing it mints no version and invalidates no entry. The consequence is that a write which
+ * changed only prose reports that it changed nothing. While the store's own rows were the store,
+ * that was harmless: the prose was already updated in place by `updateTypeProse` and the report
+ * was merely coy about it.
+ *
+ * **It stops being harmless the moment the tree is the store**, which is E12.4. A caller that
+ * produces LINES from a write has nothing to hand to `writeLines` when the write was a prose edit,
+ * and a tree that is the source of truth rebuilds the version from its line -- so the edit does not
+ * exist. That is silent data loss of exactly the class `asc-i5tj.4.1`'s survey was looking for, and
+ * it is why this is not left to the caller: both the producer (`typeLines`, which needs the LINE)
+ * and the replay (`replayType`, which needs the ROW) ask this same question, and a second answer to
+ * "did the prose change?" is a second answer to what the tree means.
+ *
+ * Returned rather than applied, so each caller does its own half and neither re-decides the rule.
+ * `undefined` is the ordinary re-run -- `asc types define` on an unchanged file -- and it is
+ * load-bearing that it is `undefined` there: a line emitted for a no-op edit would be appended to a
+ * `merge=union` file on every run, where nothing ever collapses it.
+ *
+ * Only fields the caller actually MENTIONS are compared, which is `updateTypeProse`'s own
+ * `undefined`/`null` rule read backwards: a registration that says nothing about `record_when` is
+ * not asking for its stored value to be cleared, so silence must not read as a change.
+ */
+export function pendingProseUpdate(
+  db: SqlDatabase,
+  name: string,
+  version: number,
+  prose: {
+    readonly description?: string;
+    readonly recordWhen?: string;
+    readonly prose?: Readonly<Record<string, string>>;
+    readonly guidance?: TypeGuidance;
+  },
+): ProseUpdate | undefined {
+  const stored = findType(db, name, version);
+  // A version this store does not hold is `registerType`'s refusal to make, not this function's:
+  // answering `undefined` here would silence it.
+  if (stored === undefined) return undefined;
+
+  let pending = false;
+
+  if (prose.description !== undefined && prose.description !== (stored.description ?? undefined)) {
+    pending = true;
+  }
+  if (prose.recordWhen !== undefined && prose.recordWhen !== (stored.recordWhen ?? undefined)) {
+    pending = true;
+  }
+  // Property prose arrives already canonical (`canonicalProseKeys` folded it on the way in), so this
+  // compares the same spellings the store holds. The fold is upstream on purpose: it is a question
+  // about the DOCUMENT's two spellings, and this function is not handed a document.
+  for (const [property, text] of Object.entries(prose.prose ?? {})) {
+    if (stored.prose[property] !== text) pending = true;
+  }
+  // Compared as JSON so `analysis_questions` is compared by content rather than by reference: a
+  // document re-read from disk is never the same array object as the one the store returned.
+  for (const field of GUIDANCE_FIELDS) {
+    const wanted = prose.guidance?.[field];
+    if (wanted !== undefined && JSON.stringify(wanted) !== JSON.stringify(stored.guidance[field])) {
+      pending = true;
+    }
+  }
+
+  if (!pending) return undefined;
+
+  return {
+    ...(prose.description === undefined ? {} : { description: prose.description }),
+    ...(prose.recordWhen === undefined ? {} : { recordWhen: prose.recordWhen }),
+    ...(prose.prose === undefined ? {} : { propertyProse: prose.prose }),
+    ...(prose.guidance === undefined ? {} : { guidance: prose.guidance }),
+  };
+}
 
 function mergeGuidance(existing: TypeGuidance, edit: GuidanceEdit): TypeGuidance {
   // `null` clears, `undefined` keeps -- `updateTypeProse`'s rule for every prose field.

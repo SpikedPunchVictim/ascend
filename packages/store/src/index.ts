@@ -224,8 +224,10 @@ export {
   openIndex,
   treeFingerprint,
   writeLines,
+  writeProducedLines,
   type IndexBuild,
   type IndexOptions,
+  type ProducedWrite,
   type WriteReport,
 } from './jsonl-index.js';
 
@@ -233,7 +235,12 @@ export { entryFromLine, typeRegistrationOptions } from './replay.js';
 
 export { corpusLines } from './corpus-lines.js';
 
-export { produceLines, type ProducedLines, type Producers } from './line-producers.js';
+export {
+  produceLines,
+  type ProducedLines,
+  type Producers,
+  type TypeProduction,
+} from './line-producers.js';
 
 export {
   migrateStoreToTree,

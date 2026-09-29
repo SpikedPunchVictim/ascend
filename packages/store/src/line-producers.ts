@@ -24,12 +24,22 @@
  * The cost is one extra statement per write, rolled back. Measured against what the plan refused --
  * a wholesale rebuild on write, 3.39 s (EV-34) -- it is not the same kind of cost at all.
  *
- * **A producer is usable against a STALE index, and that is the point.** A checkout, a merge or a
- * hand edit leaves the index describing a tree that has moved, and the product cannot respond by
- * refusing every `asc record` until someone rebuilds -- that is the loop the plan rejected. So the
- * probe writes to whatever index is there and rolls it back, and `writeLines` decides separately
- * whether that index is current enough to maintain. The two decisions are independent by
- * construction, which is why they live in different functions.
+ * **A producer is usable ONLY against a CURRENT index, and this paragraph used to say the
+ * opposite.** It read: *"A producer is usable against a STALE index, and that is the point. ... So
+ * the probe writes to whatever index is there and rolls it back, and `writeLines` decides separately
+ * whether that index is current enough to maintain."* That argument is about whether the INDEX can be
+ * maintained, and it never asks whether the LINE is true. Measured (`EV-35`, 2026-09-29, n=1, scheme
+ * productions): an index holding `screening` v1 beside a tree holding v1 and v2 produced a
+ * well-formed scheme line claiming **version 2** with a spec the tree's version 2 does not carry --
+ * a duplicate version number in a `merge=union` file, where nothing ever collapses it. It does not
+ * fail, and the line is not one the store would reject. So the fused write path
+ * (`writeProducedLines`, `jsonl-index.ts`) refuses a stale index instead of appending beside one, and
+ * makes the index current before it takes its lock. The two decisions are not independent after all:
+ * the probe's input is the thing the write path is deciding about.
+ *
+ * Only `schemeLines` was measured there. `entryLines` against a stale index is expected to refuse
+ * (`UnknownTypeError`, or a version the tree has since grown past) rather than to mint a duplicate --
+ * a different failure, and **unmeasured**.
  *
  * **A sequence is ONE rollback, and `produceLines` is the only way to produce at all.** The first
  * version of this module exported five functions that each opened their own `withRollback`, and it
@@ -71,6 +81,15 @@
  * duplicate to the tree on every re-run, which is the one thing a `merge=union` file must not
  * accumulate. So the lines are empty in those cases, and the caller learns why from `result` rather
  * than from a line count.
+ *
+ * **`unchanged` is not the same question as "wrote nothing", and `typeLines` is where the two come
+ * apart.** Prose is not part of a type's identity -- that is deliberate, and it is why `registerType`
+ * compares specs -- but prose DOES live in the version's line, so `asc types define` with only the
+ * description changed is a real write that `registerType` reports as `unchanged`. Asked no further,
+ * `typeLines` would emit nothing and the tree, being the store, would rebuild the version without the
+ * edit: silent data loss. `pendingProseUpdate` (`registry.ts`) is that second question, it answers
+ * `undefined` for the ordinary re-run, and `TypeProduction.proseUpdated` reports the distinction its
+ * own `outcome` cannot. `replayType` asks it too, on the way back in, for the same reason.
  */
 
 import type { TypeSpec } from '@ascend/core';
@@ -100,8 +119,10 @@ import {
   type RecordResult,
 } from './recorder.js';
 import {
+  pendingProseUpdate,
   registerType,
   typeVersions,
+  updateTypeProse,
   type RegisteredType,
   type RegisterTypeOptions,
 } from './registry.js';
@@ -122,7 +143,7 @@ export interface ProducedLines<Result> {
  */
 export interface Producers {
   entry(request: RecordRequest, context: RecordContext): RecordResult;
-  type(spec: TypeSpec, options: RegisterTypeOptions): RegisteredType;
+  type(spec: TypeSpec, options: RegisterTypeOptions): TypeProduction;
   scheme(name: string, spec: SchemeSpec, context: SchemeContext): RegisteredScheme;
   annotation(pass: AnnotationPass, context: AnnotationContext): RecordedAnnotations;
   invalidation(input: RecordInvalidationInput): RecordedInvalidation;
@@ -188,6 +209,21 @@ function entryLines(
 }
 
 /**
+ * What `registerType` did, plus the half its own `outcome` cannot report.
+ *
+ * `outcome` answers *is this shape already registered*, which is the right question for minting a
+ * version and the wrong one for a write: prose is not part of a type's identity, so a prose-only
+ * edit registers as `unchanged` while changing the version's line. A caller that reported
+ * `unchanged` there would be telling the truth about the shape and a lie about the write -- and the
+ * CLI's `asc types define` reports exactly this distinction as `prose-updated`, so the answer has to
+ * come from the call that knows rather than be re-derived by re-reading the row.
+ */
+export interface TypeProduction extends RegisteredType {
+  /** This registration also replaced the version's prose. `outcome` cannot say so. */
+  readonly proseUpdated: boolean;
+}
+
+/**
  * The line `registerType` would append for this definition, with nothing registered.
  *
  * The row is read back rather than assembled from `RegisteredType`. `typeLine` takes the row the
@@ -195,24 +231,35 @@ function entryLines(
  * document built here would be a second spelling of that row, which is the drift this module's
  * header exists to prevent. The read is one statement against a table the transaction has already
  * touched, and the rollback takes the row with it.
+ *
+ * **A prose-only edit is still a write, and `outcome` alone would call it `unchanged`.** Prose is
+ * not part of a type's identity -- that is deliberate, and it is why the registry compares specs --
+ * but prose DOES live in the version's line, so an edit that produced no line would be an edit the
+ * tree, being the source of truth, does not have. `pendingProseUpdate` is the second question, and
+ * `undefined` from it is the ordinary re-run: emitting a line for a no-op edit would append a
+ * duplicate to a `merge=union` file on every run, where nothing ever collapses it.
  */
 function typeLines(
   db: SqlDatabase,
   spec: TypeSpec,
   options: RegisterTypeOptions,
-): ProducedLines<RegisteredType> {
+): ProducedLines<TypeProduction> {
   const registered = registerType(db, spec, options);
 
+  const pending =
+    registered.outcome === 'unchanged'
+      ? pendingProseUpdate(db, registered.name, registered.version, options)
+      : undefined;
+  if (pending !== undefined) updateTypeProse(db, registered.name, registered.version, pending);
+
   return {
-    // `unchanged` means this exact shape is already registered, so the export already carries its
-    // line and this write adds nothing to the tree.
     lines:
-      registered.outcome === 'unchanged'
-        ? []
-        : typeVersions(db, registered.name)
+      registered.outcome === 'created' || pending !== undefined
+        ? typeVersions(db, registered.name)
             .filter((row) => row.version === registered.version)
-            .map(typeLine),
-    result: registered,
+            .map(typeLine)
+        : [],
+    result: { ...registered, proseUpdated: pending !== undefined },
   };
 }
 
