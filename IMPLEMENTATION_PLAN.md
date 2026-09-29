@@ -656,11 +656,17 @@ the ids it would reuse now collide. With the transaction, the exit code describe
 **0 means every entry is there, 1 means none is.**
 
 `withTransaction` is `withRollback`'s commit half, and the two now share a private
-`inOwnTransaction(db, caller, ending, body)` with **one** nesting guard — two copies of a rule with
-one owner is how the owner stops being one. The `--dry-run` path is the *same work* inside
-`withRollback`, so a preview cannot report an outcome the real run would not produce. `transaction.test.ts`
-(7 tests) proves both directions, plus the property that makes a batch coherent: **the body sees its
-own earlier writes**, which is what lets a duplicate id inside one batch be caught at all.
+`inOwnScope(db, ending, body)` — one owner for the opening, the ending and the failure path, because
+two copies of a rule with one owner is how the owner stops being one. The `--dry-run` path is the
+*same work* inside `withRollback`, so a preview cannot report an outcome the real run would not
+produce. `transaction.test.ts` proves both directions, plus the property that makes a batch coherent:
+**the body sees its own earlier writes**, which is what lets a duplicate id inside one batch be
+caught at all.
+
+This paragraph used to name `inOwnTransaction(db, caller, ending, body)`, to call the shared thing
+"one nesting guard", and to claim 7 tests. All three stopped being true at E12.4b3, which retired the
+guard when it needed a preview to sit **inside** a write's transaction; the file has 11 tests now.
+The argument above is unchanged and is why the shared half exists at all.
 
 **`json-fields.ts` exists so two wire formats cannot disagree.** `isJsonObject`, `describeValue` and
 `fieldError` moved out of `document.ts` (`asc types`' format) so `entry-document.ts` reports a bad
@@ -721,9 +727,9 @@ measured rather than guessed:
   compiles and was caught.
 
 **A lint rule was the false signal this time, and it was fixed rather than suppressed.** eslint's
-`no-unnecessary-condition` reported the rollback in `inOwnTransaction` as "value is always falsy".
-It was reading a **stale narrowing**: `@types/node` declares `readonly isTransaction: boolean`, so
-TypeScript narrows it to `false` after the nesting guard and then *keeps* that narrowing across
+`no-unnecessary-condition` reported the rollback in `inOwnScope` as "value is always falsy". It was
+reading a **stale narrowing**: `@types/node` declares `readonly isTransaction: boolean`, so
+TypeScript narrows it to `false` after the check above and then *keeps* that narrowing across
 `db.exec('BEGIN')`, unable to see that a method call changed the property. The branch is
 load-bearing — deleting it fails `keeps NOTHING when the body throws` (CAUGHT above). There is **no
 `eslint-disable` anywhere in this repo's source**, so the fix is a `hasOpenTransaction(db)` helper
@@ -1421,12 +1427,48 @@ as the store itself.
       typecheck tests, so `tsc -p tsconfig.eslint.json` is the gate that caught it.
     - **E12.4b3 — the five write sites.** `record.ts`, `annotate.ts`, `invalidate.ts`,
       `register-document.ts` and `import.ts` move off `recordEntry(store.db, …)`-shaped calls onto
-      the new path, each handing `writeLines` the lines it produced. **Status:** Not started. No
-      longer blocked: b1's sequence defect is fixed, and each of the five sites is now a single
-      `produceLines` call around a body that makes its writes in order — `import.ts`'s four loops and
+      the new path, each handing `writeLines` the lines it produced. **Status:** In Progress
+      (2026-09-29). The write lock half is done and committed (below); the five sites have not moved
+      yet. b1's sequence defect is fixed, and each of the five sites is now a single `produceLines`
+      call around a body that makes its writes in order — `import.ts`'s four loops and
       `annotate.ts`'s scheme-plus-pass both fall out of the one transaction the producers now share.
       What each site gains is that its dry run and its real run differ only in whether `writeLines`
       is called.
+
+      **The write lock needs the preview to nest, so that landed first (`db.ts`, its own change).**
+      `annotate.ts` must read, produce and append under ONE lock — `asc-q4p`: the read has to be
+      inside `BEGIN IMMEDIATE`, or two concurrent `asc annotate` processes compute the same
+      `nextSpec` and append two scheme lines with the same version and different specs, the open P1
+      `asc-i5tj.6` / `dogfood/0031` class. But `produceLines` opens `withRollback`, `writeLines`
+      opens its own transaction, and `withRollback` **refused** to run inside a transaction it did
+      not open. So the lock that spans them could not exist.
+
+      The refusal was retired rather than softened, because its own argument does not apply to what
+      replaced it. It said *neither function may end a transaction that belongs to the caller* —
+      true of a second `BEGIN`/`ROLLBACK`, false of a SAVEPOINT, which ends only its own scope. So
+      `withRollback` and `withTransaction` now open a transaction at the outermost level and a
+      savepoint whenever one is already open, **by any means**, not only when the other helper
+      opened it. `BEGIN IMMEDIATE` stays at the outermost level and that is the whole reason
+      `inOwnScope` has two shapes: a savepoint with no enclosing transaction is itself a DEFERRED
+      transaction, so a savepoint-only implementation would take the lock at the body's first write
+      and reintroduce the `SQLITE_BUSY_SNAPSHOT` failure measured at 1 ms, in the scenario
+      `withTransaction`'s own doc names. `produceLines(db, body)` and
+      `writeLines(root, dbPath, lines, opts)` keep their signatures: the alternative was to thread a
+      transaction object through every caller, and this is the same nesting with nothing new to pass.
+
+      Verified by mutation twice, because four tests that replaced a refusal have to be worth
+      something. Dropping `ROLLBACK TO` from the nested discard and keeping `RELEASE` fails exactly
+      `withRollback ... sits inside a real write`, `1 failed | 9 passed`. Replacing the nested
+      `RELEASE` with `COMMIT` — the mutation that makes a nested scope genuinely durable, which no
+      other test in the file can see — fails three, `3 failed | 7 passed`, `does not make a nested
+      commit durable` among them. The second run also **corrected a test**: the first version
+      asserted a nested `withTransaction`'s row was absent, which is the meaning of a ROLLBACK and
+      not of a COMMIT. `[ 'after', 'caller', 'nested' ]` is what it measures now.
+
+      `registerType`'s own `dryRun` refusal (`registry.ts:453`) is untouched, and now reads as the
+      opposite of the idiom that nests: it uses its own `BEGIN`/`ROLLBACK`, so it genuinely cannot
+      promise an unchanged store inside a caller's transaction, while `withRollback` now can — which
+      is why `produceLines` uses `withRollback` and not `dryRun`. Two previews, one of them nests.
 
       **The write site survey is done (2026-09-29), and four of the five paths are under
       `commands/`.** `commands/record.ts` (672 `recordEntry`, batched, `withRollback`/`withTransaction`

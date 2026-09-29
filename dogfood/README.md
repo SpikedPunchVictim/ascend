@@ -77,8 +77,10 @@ context; the depth lives in the numbered files.
 | [0034](0034-2026-09-29-an-invariant-only-one-writer-enforces.md) | `listInvalidations` casts `reason` to `string` on a comment saying only `recordInvalidation` writes the reserved scheme, but `asc import` writes it through `recordAnnotations`, which refuses only an EMPTY note: an absent note reads back as `null` and a whitespace-only one as `"   "`, both with `asc import` exit 0 | `asc-4wx6` (P2, open) | reading `listInvalidations` to write E12.4's invalidation fixture, where the comment turned out to name one writer and `grep` named two — nobody was looking for it |
 
 | [0035](0035-2026-09-29-a-sequence-of-previews-cannot-see-itself.md) | five line producers that each ran their writer inside their own `withRollback` were correct one call at a time and could not be sequenced — 14 tests green while the module could not do the one thing it exists for: a pass could not see the scheme registered one call earlier (`SchemeError: annotation scheme 'screening' has no version 1. Its versions: (none).`), every replayed type came out version 1 (`expected [ 1, 1 ] to deeply equal [ 1, 2 ]`), and an invalidation batch emitted the reserved scheme line per claim, permanently, into a `merge=union` tree | none filed — found and fixed in-flight under `asc-i5tj.4.1` (P1, fixed in the working tree) | a throwaway probe written to ask whether b3 could call them at all — nobody was looking for it |
+| [0036](0036-2026-09-29-a-closed-vocabulary-is-elided.md) | the default view of `asc types show` elides a cell mid-word, including a closed vocabulary: 7 of 18 rendered rows carry the U+2026 marker, and both `enum required` cells for `stage_transition` read `enum required [complete, in_pr…`, losing the third legal value — and the `to_status` cell drops the field's own warning, `Equal to from_status is legal and usually a mistake -- record the transition, not the state.` — while `--json` carries the full `value` and an `enum_values` array | `asc-1gnl` (P3, open) | reading `asc types show stage_transition` to fill in an `asc record` call, because a closed vocabulary has to be readable from the command whose job is to document it — nobody was looking for it |
+| [0037](0037-2026-09-29-a-no-op-transition-is-a-real-entry.md) | `asc record stage_transition` accepts and stores an entry whose `to_status` equals its `from_status`, which the field's own description calls "legal and usually a mistake": the mistake lands as a durable entry that cannot be deleted and enters the count this type exists for (`How often does a stage go complete without its tests passing?`) while describing no change at all — and the safe probe for the same question exists and writes nothing, measured (`stage_transition entries: 45` before and after a `--dry-run` that printed the row and the id it would have minted) | `asc-xvz5` (P2, open) | recording the value the truncated list hid, because writing an entry was the only other way to ask whether a value was legal — nobody was looking for it |
 
-Thirty-five findings, each with its own mechanism. The mechanism is the part that repeats even when
+Thirty-seven findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 > Rows 0016 and 0017 were added 2026-09-26; 0016 had been written but never indexed, and the
@@ -94,6 +96,13 @@ the findings do not, so each record states its own explicitly.
 > instances in two days is what turns a class from a note into something to look for, which is why
 > the record states the cheap detector: for every report, check that the headline count equals the
 > sum of the counts that decompose it.
+>
+> **Adding 0036 and 0037, the detector ran first and agreed a fourth time.** `grep -c '^| \[0'`
+> returned 35 against a sentence saying thirty-five before the edit; both rows were added flush, the
+> sentence moved to thirty-seven, and the count re-run. 0036 and 0037 are also the first pair in the
+> series where one finding is the *cause* of the next rather than a sibling of it: a truncated
+> vocabulary is what sent a hand to `asc record` to ask whether a value was legal, and that write is
+> what became the false entry.
 >
 > **Adding 0035, the detector ran first and agreed a third time.** `grep -c '^| \[0'` returned 34
 > against a sentence saying thirty-four before the edit; the row was added flush, the sentence moved

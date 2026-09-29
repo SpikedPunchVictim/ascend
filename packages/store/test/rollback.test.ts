@@ -16,8 +16,9 @@ import { openStore, registerType, withRollback, type Store } from '../src/index.
  * real run is worse than no preview.
  *
  * So the two things tested here are the two halves of that: the body sees its own writes, and
- * none of them survive. Plus the refusal, because a nested rollback would not undo the *body's*
- * work -- it would undo the caller's, which is the thing transactions exist to prevent.
+ * none of them survive. Plus the nesting, because a rollback that undid the *caller's* work would
+ * be the thing transactions exist to prevent -- and a savepoint is what makes the nested case undo
+ * the body's work and only the body's.
  */
 
 const dirs: string[] = [];
@@ -122,23 +123,40 @@ describe('withRollback', () => {
     });
   });
 
-  it('refuses to run inside a caller-managed transaction', () => {
+  it('nests inside a caller-managed transaction, discarding only its own body', () => {
+    // This asserted a refusal until b3 needed the opposite. The argument for the refusal was that a
+    // nested rollback would not undo the *body's* work -- it would undo the caller's, which is the
+    // thing transactions exist to prevent. That is true of a second BEGIN and false of a savepoint,
+    // which ends only its own scope, so the refusal was retired rather than softened and this is
+    // the property that replaced it.
     withStore((store) => {
-      store.db.exec('BEGIN');
+      store.db.exec('BEGIN IMMEDIATE');
       try {
-        expect(() => {
-          withRollback(store.db, () => {
-            /* never reached: the refusal is the point */
-          });
-        }).toThrow(/caller-managed transaction/);
+        registerType(store.db, spec('caller'), { registeredAt: AT });
+
+        withRollback(store.db, () => {
+          registerType(store.db, spec('previewed'), { registeredAt: AT });
+          // Nested, the preview can see what the caller already wrote -- which is the whole reason
+          // a preview is the work, undone, rather than a second implementation of it.
+          expect(rows(store)).toBe(2);
+        });
+
+        // The body's registration and its generated view are gone; the caller's is not, and the
+        // caller's transaction is still theirs to end.
+        expect(rows(store)).toBe(1);
+        expect(schemaObjects(store, 'previewed')).toBe(0);
+        expect(store.db.isTransaction).toBe(true);
+        registerType(store.db, spec('after'), { registeredAt: AT });
+        store.db.exec('COMMIT');
       } finally {
-        store.db.exec('ROLLBACK');
+        if (store.db.isTransaction) store.db.exec('ROLLBACK');
       }
 
-      // And the caller's transaction is still theirs to end: the refusal happened before any
-      // `BEGIN`, so it neither nested nor rolled anything back.
       expect(store.db.isTransaction).toBe(false);
-      expect(rows(store)).toBe(0);
+      const kept = store.db.prepare('SELECT name FROM entry_types ORDER BY name').all() as {
+        name: string;
+      }[];
+      expect(kept.map((row) => row.name)).toEqual(['after', 'caller']);
     });
   });
 

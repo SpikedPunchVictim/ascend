@@ -17,8 +17,9 @@ import { openStore, withRollback, withTransaction, type Store } from '../src/ind
  * it is "**a failure leaves nothing behind, and the exit code alone tells the whole story**".
  *
  * Both directions are tested, plus the two things that make the two functions one mechanism rather
- * than two: the nesting refusal they share, and the fact that a body sees its own earlier writes.
- * The second is what lets a preview report the outcome the real run would produce.
+ * than two: the nesting they share, and the fact that a body sees its own earlier writes. The
+ * second is what lets a preview report the outcome the real run would produce; the first is what
+ * lets that preview sit inside the caller's transaction instead of beside it.
  */
 
 const dirs: string[] = [];
@@ -47,6 +48,10 @@ const count = (store: Store, sql: string): number =>
 
 const rows = (store: Store, table: string): number =>
   count(store, `SELECT COUNT(*) AS n FROM ${table}`);
+
+/** The ids present, in a fixed order, because the order a test asserts should not be the store's. */
+const ids = (store: Store): string[] =>
+  (store.db.prepare('SELECT id FROM t ORDER BY id').all() as { id: string }[]).map((row) => row.id);
 
 /** A table created for the test, so the transaction is exercised without the recorder in the way. */
 const createTable = (store: Store): void => {
@@ -162,31 +167,104 @@ describe('withTransaction', () => {
     });
   });
 
-  it('refuses to run inside a transaction it did not open', () => {
-    // Two functions commit the same way here: neither may end a transaction that belongs to the
-    // caller, because only the caller knows when their work should become durable.
+  it('runs inside a transaction it did not open, and keeps the caller whole', () => {
+    // The refusal these two tests used to assert was retired rather than weakened: it argued that
+    // neither function may end a transaction that belongs to the caller, and that is true of a
+    // second BEGIN/ROLLBACK and false of a savepoint, which ends only its own scope. So the
+    // stronger property replaces it -- not "it refuses" but "it nests, and the caller keeps what
+    // they wrote".
+    //
+    // `[ 'after', 'caller', 'nested' ]` is measured, and it corrected this test: the first version
+    // asserted the nested id was absent, which is the meaning of a ROLLBACK and not of a COMMIT. A
+    // nested COMMIT releases its savepoint into the caller's transaction, so its rows are there and
+    // the caller's ending still decides whether they survive -- which is the next test.
     withStore((store) => {
       createTable(store);
-      expect(() => {
+      withTransaction(store.db, () => {
+        insert(store, 'caller');
         withTransaction(store.db, () => {
-          withTransaction(store.db, () => {
-            insert(store, 'nested');
-          });
+          insert(store, 'nested');
         });
-      }).toThrow(/cannot run inside a caller-managed transaction/);
+        insert(store, 'after');
+      });
+      expect(ids(store)).toEqual(['after', 'caller', 'nested']);
     });
   });
 
-  it('and so does withRollback, which is the same guard', () => {
+  it('and so does withRollback, which is how a preview sits inside a real write', () => {
+    // b3's exact shape: the write site holds one transaction across the read, the preview and the
+    // append, and the preview is `withRollback` inside it (asc-q4p -- the read has to be under the
+    // same lock, or two concurrent writers compute the same next version). A preview that ended
+    // the caller's transaction would commit or discard the append that follows it.
     withStore((store) => {
       createTable(store);
-      expect(() => {
+      withTransaction(store.db, () => {
         withRollback(store.db, () => {
+          insert(store, 'previewed');
+        });
+        insert(store, 'real');
+      });
+      expect(ids(store)).toEqual(['real']);
+    });
+  });
+
+  it('lets the caller carry on after a nested body throws, and keeps their own work', () => {
+    withStore((store) => {
+      createTable(store);
+      withTransaction(store.db, () => {
+        insert(store, 'caller');
+        expect(() =>
+          withTransaction(store.db, () => {
+            insert(store, 'nested');
+            throw new Error('the nested body failed');
+          }),
+        ).toThrow('the nested body failed');
+        insert(store, 'after');
+      });
+      expect(ids(store)).toEqual(['after', 'caller']);
+    });
+  });
+
+  it('nests inside a transaction the caller opened by hand, not only inside its own helpers', () => {
+    // `inOwnScope` decides by asking whether a transaction is open, not by whether one of these two
+    // functions opened it, so a caller who took their own lock gets the same nesting. Worth pinning
+    // because it is the property that makes this a rule about the database rather than a protocol
+    // the two helpers share privately.
+    withStore((store) => {
+      createTable(store);
+      store.db.exec('BEGIN IMMEDIATE');
+      try {
+        insert(store, 'caller');
+        withRollback(store.db, () => {
+          insert(store, 'previewed');
+        });
+        insert(store, 'after');
+        store.db.exec('COMMIT');
+      } finally {
+        if (store.db.isTransaction) store.db.exec('ROLLBACK');
+      }
+      expect(ids(store)).toEqual(['after', 'caller']);
+    });
+  });
+
+  it('does not make a nested commit durable, because the caller still decides that', () => {
+    // The property that separates a savepoint from a transaction, and the one thing here that no
+    // other test in this file can see. A nested scope that really committed -- i.e. one that opened
+    // its own BEGIN and COMMIT -- would pass every test above and leave `nested` behind here, while
+    // the exit code said the batch failed. Entries are immutable and cannot be deleted, so that
+    // residue would be permanent.
+    withStore((store) => {
+      createTable(store);
+      expect(() =>
+        withTransaction(store.db, () => {
+          insert(store, 'caller');
           withTransaction(store.db, () => {
             insert(store, 'nested');
           });
-        });
-      }).toThrow(/cannot run inside a caller-managed transaction/);
+          throw new Error('the caller failed after the nested scope returned');
+        }),
+      ).toThrow('the caller failed after the nested scope returned');
+      expect(rows(store, 't')).toBe(0);
     });
   });
 

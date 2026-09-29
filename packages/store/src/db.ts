@@ -847,16 +847,19 @@ export function openStore(options: OpenOptions): Store {
  * where the real run produces 1 then 2. A preview that misdescribes what the real run does is
  * worse than no preview. Owning the transaction here is what lets the sequence see itself.
  *
- * **Refuses to run inside an existing transaction**, for the same reason `registerType`'s
- * `dryRun` does: a ROLLBACK this function did not open would discard work that belongs to the
- * caller, and nothing here could promise otherwise.
+ * **Nests, and the nesting is what a preview of a sequence needs.** Inside a transaction the caller
+ * already opened, the discard is a SAVEPOINT rather than a second `BEGIN`, so `ROLLBACK TO` undoes
+ * this call's work and nothing else: the caller's own writes survive it, and the caller still
+ * decides when those become durable. The first version of this function refused to nest at all, on
+ * the ground that a ROLLBACK it did not open could discard work it did not own. That is true of a
+ * second `BEGIN`/`ROLLBACK`, and it is the reason the refusal was written -- but it is not true of a
+ * savepoint, which ends only its own scope. So the refusal is not weakened here, it is retired.
  *
- * If `body` throws, the rollback still happens and the original error propagates. A rollback
- * that itself fails would replace that error -- unavoidable in a `finally`, and noted rather
- * than hidden.
+ * If `body` throws, the discard still happens and the original error propagates. A discard that
+ * itself fails would replace that error -- noted rather than hidden.
  */
 export function withRollback<T>(db: SqlDatabase, body: () => T): T {
-  return inOwnTransaction(db, 'withRollback', 'ROLLBACK', body);
+  return inOwnScope(db, 'ROLLBACK', body);
 }
 
 /**
@@ -870,9 +873,10 @@ export function withRollback<T>(db: SqlDatabase, body: () => T): T {
  * collide. All-or-nothing is the only shape that leaves the store in a state the caller can
  * reason about from the exit code alone.
  *
- * The counterpart of `withRollback`, sharing its nesting guard for the reason stated there: a
- * transaction this function did not open is one it cannot COMMIT on the caller's behalf without
- * changing when the caller's own work becomes durable.
+ * The counterpart of `withRollback`, nesting by the same mechanism and for the same reason: a
+ * nested scope is a savepoint, so the caller's transaction is left open and its durability is still
+ * the caller's to decide. A nested COMMIT therefore does not make the caller's work durable -- it
+ * releases the savepoint and lets the caller's own ending decide.
  *
  * `BEGIN IMMEDIATE`, not `BEGIN`, and the comment here used to argue the opposite: *"this is a
  * writer, but the lock is taken by the first write inside `body` regardless, and the store is
@@ -892,50 +896,94 @@ export function withRollback<T>(db: SqlDatabase, body: () => T): T {
  * writer blocks *there*, where the busy timeout applies, and waits. That moves when a concurrent
  * writer waits rather than whether it fails -- which is the point, and the only change to the
  * caller's contract.
+ *
+ * That the **outermost** scope is where `IMMEDIATE` belongs is the reason `inOwnScope` has two
+ * shapes rather than one. A savepoint with no enclosing transaction is itself a deferred
+ * transaction, so a savepoint-only implementation would take the lock at the body's first write and
+ * reintroduce the failure measured above, in the same scenario.
  */
 export function withTransaction<T>(db: SqlDatabase, body: () => T): T {
-  return inOwnTransaction(db, 'withTransaction', 'COMMIT', body);
+  return inOwnScope(db, 'COMMIT', body);
 }
 
 /**
- * Open a transaction, run `body`, and end it with `ending`.
+ * Run `body` in a scope of its own, ended with `ending`.
  *
- * The shared half of the two functions above, extracted so the nesting guard and the
- * "a rollback in `finally` still happens when `body` throws" behaviour cannot drift between
- * them -- two copies of a rule with one owner is how the owner stops being one.
+ * The shared half of the two functions above, extracted so the beginning, the ending and the
+ * "a failure still discards" behaviour cannot drift between them -- two copies of a rule with one
+ * owner is how the owner stops being one.
  *
- * The `finally` is what makes a throw safe: on the COMMIT path it issues ROLLBACK against a
- * transaction whose body failed, which is the correct end for it, and the original error
- * propagates because `finally` does not swallow.
+ * A transaction when none is open, a savepoint when one is. The savepoint path is entered whenever
+ * the caller has an open transaction **by any means**, not only through these two functions, so a
+ * caller who opened their own `BEGIN` gets the same nesting.
+ *
+ * On either path a body that throws leaves the scope ended and the caller's handle usable. On the
+ * savepoint path the scope is popped rather than left on the stack, which is not a correctness
+ * requirement -- the enclosing COMMIT releases every savepoint under it -- but it is what makes the
+ * scope's end visible to SQLite instead of only to the reader of this file.
  */
-function inOwnTransaction<T>(
-  db: SqlDatabase,
-  caller: string,
-  ending: 'COMMIT' | 'ROLLBACK',
-  body: () => T,
-): T {
-  if (hasOpenTransaction(db)) {
-    throw new Error(
-      `${caller} cannot run inside a caller-managed transaction: it would ` +
-        `${ending === 'COMMIT' ? 'also commit' : 'roll back'} work that is not its own, so ` +
-        `nothing here could guarantee the caller keeps what they wrote.`,
-    );
+function inOwnScope<T>(db: SqlDatabase, ending: 'COMMIT' | 'ROLLBACK', body: () => T): T {
+  if (!hasOpenTransaction(db)) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = body();
+      db.exec(ending);
+      return result;
+    } finally {
+      // Only reachable with the transaction still open -- i.e. `body` threw, or `COMMIT`
+      // itself failed. On the happy path `ending` has already closed it.
+      if (hasOpenTransaction(db)) db.exec('ROLLBACK');
+    }
   }
 
-  db.exec('BEGIN IMMEDIATE');
+  const name = nextSavepointName();
+  db.exec(`SAVEPOINT ${name}`);
   try {
     const result = body();
-    db.exec(ending);
+    // ROLLBACK TO does not pop the savepoint -- it rewinds to it and leaves it live -- so the
+    // discard's RELEASE is not redundant bookkeeping, it is the half that ends the scope.
+    if (ending === 'ROLLBACK') db.exec(`ROLLBACK TO ${name}`);
+    db.exec(`RELEASE ${name}`);
     return result;
-  } finally {
-    // Only reachable with the transaction still open -- i.e. `body` threw, or `COMMIT`
-    // itself failed. On the happy path `ending` has already closed it.
-    if (hasOpenTransaction(db)) db.exec('ROLLBACK');
+  } catch (error) {
+    discardSavepoint(db, name);
+    throw error;
   }
 }
 
 /**
- * Whether a transaction is open on this handle, read outside `inOwnTransaction`'s body.
+ * Undo a savepoint's work and pop it, leaving the caller's transaction exactly as it was.
+ *
+ * Called from a `catch`, so a failure here replaces the error that got us here. Unavoidable, and
+ * the original is the one worth keeping -- so the discard is the two unconditional statements an
+ * already-created savepoint cannot refuse, and nothing that reads or validates is allowed in front
+ * of them.
+ */
+function discardSavepoint(db: SqlDatabase, name: string): void {
+  db.exec(`ROLLBACK TO ${name}`);
+  db.exec(`RELEASE ${name}`);
+}
+
+/**
+ * A savepoint name no other scope on this connection is using.
+ *
+ * A counter rather than a depth or a random value: savepoint names are per-connection, so the only
+ * property that matters is that two live scopes on one handle never share one, and a counter is the
+ * smallest thing that guarantees it. A scope's name is never reused even after it ends, which costs
+ * nothing and removes the question of what happens when a name is resurrected.
+ */
+let savepointCounter = 0;
+
+const nextSavepointName = (): string => {
+  savepointCounter += 1;
+  // `String(...)` rather than the bare number because this repo's `restrict-template-expressions`
+  // has `allowNumber` off, and the name is a string the moment it is built -- so interpolating a
+  // number here would be the one place in the module where the type is wrong and the code is right.
+  return `asc_scope_${String(savepointCounter)}`;
+};
+
+/**
+ * Whether a transaction is open on this handle, read outside `inOwnScope`'s body.
  *
  * **This is a function rather than an inline `db.isTransaction` for a measured reason, not for
  * style.** `@types/node` declares the property `readonly isTransaction: boolean`, so TypeScript
