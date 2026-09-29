@@ -66,20 +66,34 @@ context; the depth lives in the numbered files.
 | [0023](0023-2026-09-27-an-install-message-that-contradicts-itself.md) | `asc install-hook`'s consent text said it would rewrite a script that "does not exist yet", and called a hook inert in a checkout that has a store | `asc-tuur.6` (P3, fixed in flight) | the user upgrading an install and pasting the output — nobody was looking for it |
 | [0024](0024-2026-09-27-a-handler-edit-counts-its-findings-twice.md) | editing a typed handler re-keys its rows and retires none: the live store's 47 `review_finding` rows under the old hash each have a twin among the 65 the edited handler writes | `asc-w8tx` (P2, fixed) | measuring a handler change in a scratch store, then asking what it does to the live one — nobody was looking for it |
 | [0025](0025-2026-09-28-a-subagent-hears-its-notifications-behind-a-preamble.md) | a subagent receives task notifications only behind the harness preamble, which the parser never read: 12 of 12 there dropped, each read as a prompt nobody typed, and one async fork never returned | `asc-wkmq` (P3, fixed) | characterising the one spawn `asc-ggd4` left unclosed, after a first reading blamed cross-stream order — nobody was looking for the fake prompts |
-| [0026](0026-2026-09-28-no-stored-finding-carries-its-failure-scenario.md) | no stored `review_finding` carries `failure_scenario`: 0 of 112 measured, all through the parsed route, while all 33 `ReportFindings` calls that do carry it sit in ephemeral probes ingest skips | `asc-my84` (P2, open) | the first run of `asc doctor`, after a first reading blamed the deriver — nobody was looking for it |
+| [0026](0026-2026-09-28-no-stored-finding-carries-its-failure-scenario.md) | no stored `review_finding` carries `failure_scenario`: 0 of 112 measured, all through the parsed route, while all 33 `ReportFindings` calls that do carry it sit in ephemeral probes ingest skips | `asc-my84` (P2, fixed: the absence is now stated on the type; the field still arrives only by the reported route) | the first run of `asc doctor`, after a first reading blamed the deriver — nobody was looking for it |
 | [0027](0027-2026-09-28-a-store-with-invalidations-cannot-be-restored.md) | `asc import` refused the reserved `invalidation` scheme line from the store's own export, so no store with an invalidation could be restored from its backup | `asc-ax8c` (P1, fixed) | the first whole-store export → import, as step one of `asc-o3tn` — nobody was looking for it |
+| [0028](0028-2026-09-28-the-recording-path-is-reachable-only-by-discovery.md) | a session can only record if it discovers the command, and the artifacts it reads teach one the allowlist denies: `asc record` occurs 0 times in the brief, and the shipped hook script's own invocation is `node …/bin.js` — the form one session was denied 4 times before it stopped | `asc-uftd`, `asc-l38f` (P2, open) | a pre-registered measurement (`asc-4so.3`) whose prediction held while the written *reason* for it turned out to be false — nobody was looking |
+| [0029](0029-2026-09-28-prose-defined-onto-a-version-nobody-reads.md) | `asc types define` resolves a document's version by shape and reports `prose-updated` for a write onto a version nobody reads: a stale-shape document landed on `review_finding` version 1 (0 entries) while version 2 (112 entries) is what every reader by name shows | `asc-w0b2` (P3, open) | a probe written to check whether a prose edit had reached the live store, after misreading one `instr()` column as a flag — nobody was looking for it |
 
-Twenty-five findings, each with its own mechanism. The mechanism is the part that repeats even when
+Twenty-nine findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 > Rows 0016 and 0017 were added 2026-09-26; 0016 had been written but never indexed, and the
 > count here said "Ten" while the table listed fifteen.
+>
+> **The same thing happened again, which is what makes it a class rather than a slip.** On
+> 2026-09-28 the count said "Twenty-five" while the table listed twenty-seven rows — 0026 and 0027
+> were added without touching it. The detector is the one `0018` states: check the headline count
+> against the sum of what decomposes it. Here that is `grep -c '^| \[0'` against the sentence.
 >
 > Row 0018 is the second instance of `dogfood/0016`'s class — a construct that terminates without
 > producing output, and a report that therefore reads the same whether it worked or not. Two
 > instances in two days is what turns a class from a note into something to look for, which is why
 > the record states the cheap detector: for every report, check that the headline count equals the
 > sum of the counts that decompose it.
+>
+> **Adding 0029, the count held and the table was still wrong.** The sentence said twenty-eight and
+> `grep -c '^| \[0'` returned 28 — correct on the number, while the row added for 0028 carried a
+> blank line above it, which ends a markdown table and starts a second one. So the detector above
+> counted the rows of a table that had quietly become two, and would have answered correctly for a
+> table that no longer rendered as an index. A count is a check on the rows, not on the document
+> holding them.
 
 ## The convention
 

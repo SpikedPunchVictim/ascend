@@ -109,8 +109,14 @@ const OVERSIZED_TYPES = Number(process.env['EV16_OVERSIZED_N'] ?? '400');
  * decision about how to handle the even-length case, a fix, possibly a stuck moment -- and says
  * nothing about making one. A task that said "record an entry" would measure instruction
  * following, which is not the question.
+ *
+ * `EV16_TASK` overrides it, and exists for exactly one pre-registered use: asc-4so.3, which asks
+ * the complementary question -- does a task that ASKS for a record produce one? Its task appends
+ * the ask without naming the tool or command. The byte-identical-task discipline holds WITHIN a
+ * run, so the override is only legitimate when every arm in the run shares it.
  */
-const TASK = 'Read calc.js, find and fix the bug in median(), then run the tests.';
+const TASK =
+  process.env['EV16_TASK'] ?? 'Read calc.js, find and fix the bug in median(), then run the tests.';
 
 /**
  * The bug: `median` never sorts, and takes the lower element on an even-length input instead of
@@ -255,6 +261,15 @@ const ARMS = {
    * rate is the only thing this arm measures.
    */
   E: { hook: true, mentionsBrief: false, oversized: false, pointer: true, isolates: 'reading the brief vs having it' },
+  /**
+   * NOT arms A-E. asc-4so.3's prompted-recall arms, pre-registered in that bead's notes before any
+   * session ran. The task is EV16_TASK's prompted variant, identical bytes in both arms; only the
+   * hook varies. F asks whether the recording PATH works when the session intends to record (the
+   * brief names the command and the types); G re-tests P4 at a floor that is not assumed zero --
+   * without the brief the session must discover the path on its own.
+   */
+  F: { hook: true, mentionsBrief: false, oversized: false, isolates: 'prompted recall with the brief' },
+  G: { hook: false, mentionsBrief: false, oversized: false, isolates: 'prompted recall without the brief' },
 };
 
 function promptFor(arm) {
@@ -305,8 +320,30 @@ function storeOutcome(dir) {
   // asks whether a model INVENTS a type name, and a null here would have read as "no invented
   // type" when it actually meant "not measured". That distinction is the whole discipline.
   const types = asc(['query', '--json', 'SELECT name FROM entry_types'], dir);
+  // THE HOOK POLLUTES THIS STORE, MEASURED (asc-4so.3 dry run's first real attempt, 2026-09-25).
+  // The hook the F arm installs has run `asc ingest claude-code` at SessionStart since b19237f
+  // (2026-09-22 -- AFTER EV-16's arms ran, so their stores were clean and their zero stands).
+  // That ingest sweeps ~/.claude/projects into the scratch store: a fresh F1 store held 2,588
+  // derived entries from another project's transcripts, every one written by the hook before the
+  // session's first turn. The outcome the arms measure is what the SESSION recorded by hand;
+  // `asc record` writes source 'self' (record.ts) and ingest writes 'derived:claude-code'. Both
+  // are reported; only handEntries is an outcome.
+  const hand = asc(
+    [
+      'query',
+      '--json',
+      "SELECT type_name, COUNT(*) AS n FROM entries WHERE source = 'self' GROUP BY type_name",
+    ],
+    dir,
+  );
+  const derived = asc(
+    ['query', '--json', "SELECT COUNT(*) AS n FROM entries WHERE source != 'self'"],
+    dir,
+  );
   return {
     entries: rows.status === 0 ? JSON.parse(rows.stdout).rows : null,
+    handEntries: hand.status === 0 ? JSON.parse(hand.stdout).rows : null,
+    derivedEntries: derived.status === 0 ? JSON.parse(derived.stdout).rows[0]?.n ?? null : null,
     registeredTypes: types.status === 0 ? JSON.parse(types.stdout).rows.map((r) => r.name) : null,
   };
 }
@@ -416,17 +453,33 @@ async function runSession(arm, rep, spent) {
     }
   }
 
+  // A session that produced no billable envelope is a MEASUREMENT FAILURE, not a data point.
+  // Measured the hard way (2026-09-25): the route 404'd every session (model_not_found,
+  // modelUsage {}, total_cost_usd 0) and the first version of this harness still exited 0 with a
+  // JSON summary whose storeOutcome looked like results -- the severity-zero class, in the tool
+  // that exists to measure. modelUsage empty is the load-bearing check: an envelope that names
+  // nothing as billed cannot be evidence about a rate.
+  const modelUsage = result?.modelUsage ?? null;
+  const sessionFailed =
+    result === null ||
+    result.is_error === true ||
+    modelUsage === null ||
+    Object.keys(modelUsage).length === 0;
+
   return {
     ...meta,
     exitCode,
     wallMs,
     spentUsd: result?.total_cost_usd ?? 0,
-    modelUsage: result?.modelUsage ?? null,
+    modelUsage,
     numTurns: result?.num_turns ?? null,
     // Reported because it names what the model TRIED and was stopped from doing. It is not
     // evidence of where the session stayed: an out-of-grant READ leaves this empty, measured.
     permissionDenials: result?.permission_denials ?? null,
     isError: result?.is_error ?? null,
+    apiErrorStatus: result?.api_error_status ?? null,
+    resultText: typeof result?.result === 'string' ? result.result.slice(0, 400) : null,
+    sessionFailed,
     storeAfter: storeOutcome(dir),
   };
 }
@@ -447,6 +500,16 @@ for (const arm of arms) {
     spent += session.spentUsd ?? 0;
     sessions.push(session);
     writeFileSync(join(out, 'ev16-arms.json'), JSON.stringify({ sessions, spent }, null, 2));
+    if (session.sessionFailed) {
+      console.error(
+        `SESSION FAILED: arm ${arm} rep ${String(rep)} produced no billable envelope ` +
+          `(is_error ${String(session.isError)}, api_error_status ${String(session.apiErrorStatus)}, ` +
+          `modelUsage ${JSON.stringify(session.modelUsage)}): ${session.resultText ?? 'no result text'}. ` +
+          `Raw stream: spike/tmp/ev16-${arm}${String(rep)}-stream.jsonl. ` +
+          `Stopping: a failed session is not data, and a rate measured over one is a false green.`,
+      );
+      process.exit(3);
+    }
   }
 }
 
@@ -471,7 +534,11 @@ console.log(
         inflatedTypes: s.inflatedTypes,
         spentUsd: s.spentUsd,
         numTurns: s.numTurns ?? null,
+        // handEntries is the outcome; entries is kept raw because the hook's ingest makes the
+        // difference visible rather than hypothetical -- see storeOutcome's comment.
         entries: s.storeAfter?.entries ?? null,
+        handEntries: s.storeAfter?.handEntries ?? null,
+        derivedEntries: s.storeAfter?.derivedEntries ?? null,
         permissionDenials: s.permissionDenials ?? null,
       })),
     },

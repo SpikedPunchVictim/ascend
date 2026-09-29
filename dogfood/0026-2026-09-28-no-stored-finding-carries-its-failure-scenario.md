@@ -7,7 +7,7 @@
 | **Surfaced by** | the first run of `asc doctor` (`asc-12a`) against this project's store |
 | **Entry type(s)** | `review_finding` (derived) |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | fixed (uncommitted): the absence is now stated on the type, which is what the owner chose — see "How it was decided" |
 
 ## What was found
 
@@ -98,11 +98,39 @@ Nothing aggregated "declared but never measured" across the registry until `doct
 Entries are immutable, so the 112 cannot be backfilled with a scenario they never had. The
 options are all at write time: map a scenario-like column in the table handler, get the
 reported route to fire on real work through the `on_skill` nudge, or state on the type that
-parsed entries never carry the field, as `catchable_by` already does. They are listed on
-`asc-my84` and not yet decided.
+parsed entries never carry the field, as `catchable_by` already does. They were listed on
+`asc-my84` and decided there — see below.
+
+## How it was decided
+
+The owner chose **(b) + (c)** on 2026-09-28, recorded on `asc-my84` verbatim: *"rely on the
+`on_skill` nudge to get `ReportFindings` firing in real work, AND state on the type that
+table-parsed entries never carry `failure_scenario` (as `catchable_by` does)."*
+
+What that is, uncommitted:
+
+- **(b)** is `handlers/review-finding-nudge.yaml`, which already existed and is pinned by tests
+  that it speaks at the moment `bug-hunt` loads and names all nine lens slugs.
+- **(c)** is three prose edits, all of them on surfaces a recorder or a reader actually sees:
+  `review_finding`'s own description now says the reported route is the only one that fills the
+  field; `failure_scenario`'s property description says it is absent on every `parsed` entry **by
+  construction**, naming the handler that has no column to read; and
+  `handlers/review-finding-table.yaml` says the same thing in its own header.
+- The handler states it **in prose and deliberately not** as `judged: [failure_scenario,
+  catchable_by]`. Measured 2026-09-28: `judged:` moves the handler's hash (`packages/core/src/handler.ts:1148`
+  hashes the whole parsed document, and the entry key carries it — `packages/cli/src/typed-handlers.ts:252`),
+  and `asc ingest claude-code --dry-run` goes from `entry review_finding none` to
+  `65 new, 11 rejected`. That is the parsed corpus written a second time, needing a hand migration
+  of the kind `dogfood/0024` documents — for a declaration that emits nothing. A test pins
+  `handler.judged` to `[]` as the speed bump for anyone who adds it back.
+
+The field is still absent on all 112, and that is (c) rather than a failure of it: the measurement
+did not change, the statement about it did. `asc doctor` will go on reporting
+`failure_scenario 'measured 0 of 112, not_measured 112'`, and is now right to.
 
 ## Links
 
 - Bead: `asc-my84`
 - Found by: `asc-12a` (`asc doctor`), commit `c562c4e`
-- Related: `dogfood/0024` (the twins inside the 112)
+- Related: `dogfood/0024` (the twins inside the 112), `dogfood/0029` (the same type, one day
+  later: a prose write that landed on a version nobody reads)
