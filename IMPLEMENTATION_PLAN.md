@@ -1298,7 +1298,157 @@ as the store itself.
     decision above. **Success:** a write is visible in the tree and in the index, and a read
     immediately after a write is a cache hit (`0.05 s`) rather than a refusal. **Tests:** both
     branches of the currency-guarded replay; a write against an already-stale index leaves it stale;
-    the stamp the read compares is the one the write wrote. **Status:** Not started.
+    the stamp the read compares is the one the write wrote. **Status:** In Progress (2026-09-29).
+
+    **Three sub-stages, and the order is by dependency rather than by layer.** b2 was built first
+    because it is the heart and it needs no writer surgery — it composes `replay`, `treeFingerprint`
+    and `FINGERPRINT_KEY`, all private to `jsonl-index.ts`, so it is testable against hand-written
+    lines and nothing else has to move. b1 then gives the writers a way to produce those lines
+    without inserting, and b3 wires the five `src` write sites to the new path. Only b1 depends on
+    b2's existence; b3 depends on both.
+
+    - **E12.4b2 — the guarded write.** `openIndexForWrite` (a currency-checked, read-write index
+      handle — the read path's own handle stays read-only, which is what keeps "a read never builds"
+      structural) plus the operation that appends lines to the tree and replays them into the index
+      when it was current. **Success:** a read immediately after a write is a cache hit, and the
+      crash window is closed by ORDER rather than by luck — the tree is appended before the stamp is
+      written, so a death between the two leaves a tree the stamp does not describe and every read
+      refuses until a build. **Tests:** both branches; a write against an already-stale index leaves
+      it stale; the stamp the read compares is the one the write wrote. **Status:** Complete
+      (2026-09-29). `writeLines` (`packages/store/src/jsonl-index.ts`, 8 tests in
+      `index-write.test.ts`), and the writable handle is PRIVATE to that module — reachable from one
+      caller, the same construction `buildIndex` has.
+
+      Three things only building it established. **The order claim is verified by mutation**: a
+      faithful reversal (replay in both branches, append after) failed exactly the refused-replay
+      test and passed the other seven — `1 failed | 7 passed`, so that test is the one place the
+      ordering is load-bearing rather than decorative. **A foreign file at `index.db` refuses the
+      write BEFORE the append**, propagating `ForeignStoreError`: a tree written while the index
+      cannot be touched would be records no read of the project can see. And **the stale branch
+      returns rather than throws**, because the write itself succeeded — the JSONL is the store —
+      so the caller is told `stale: true` and can say so.
+
+      **This reverses EV-32's "no incremental path", and the module doc was corrected rather than
+      left contradicting its own code.** EV-32 concluded wholesale-or-nothing from a cold rebuild of
+      3.02 s; EV-33 measured 40.27 s at 10×, which kills wholesale-*on-write* (3.39 s on every
+      `asc record`, measured at 6,404 entries by EV-34) while leaving every other part of the
+      design standing. The bookkeeping EV-32 refused is now the build's own `replay` with a
+      currency check in front of it — not a second writer, which is the shape that produces two
+      indexes that disagree with nothing reporting it.
+    - **E12.4b1 — the line producers.** Each writer gains the half that computes its line(s) against
+      a reader rather than the half that INSERTs: entries, types, schemes and annotations, the
+      invalidation pass included. **Success:** the line a producer returns is byte-identical to the
+      line `corpusLines` returns after the same write has been performed — the equivalence that
+      makes the split survivable, because a producer that disagreed with the reader would mint a
+      tree the export does not reproduce. **Status:** Complete (2026-09-29) — the equivalence holds
+      for a single call AND for a sequence, which is the only way b3 calls it. Five productions in
+      `packages/store/src/line-producers.ts` behind one exported entry point, `produceLines`;
+      18 tests in `line-producers.test.ts`, all green.
+
+      **The defect this stage found, kept because the mechanism generalizes.** The first version
+      exported five functions that each opened their own `withRollback`, and it was green — 14 tests,
+      all passing — while being unusable for the only thing it exists for. A sequence does not see
+      itself when each production rolls back before the next. Ran as a throwaway probe (3 tests,
+      since deleted), one call per sequence, all three failing:
+
+      ```
+      annotate: scheme then the pass that needs it
+        SchemeError: annotation scheme 'screening' has no version 1. Its versions: (none).
+      import: two type versions in one sequence
+        expected [ 1, 1 ] to deeply equal [ 1, 2 ]
+      invalidate: two claims in one sequence
+        expected [ 2, 2 ] to deeply equal [ 2, 1 ]
+      ```
+
+      Three different symptoms, one cause, and each a real b3 write site: `annotate.ts` registers a
+      scheme and the pass that belongs to it in ONE transaction, so the pass producer must see the
+      scheme the scheme producer just produced; `import.ts` replays a corpus where each type and
+      scheme version depends on the one before it, so every version would come out 1; and
+      `invalidate.ts`'s batch would re-emit the reserved scheme line per claim — a duplicate in a
+      `merge=union` tree, which is the exact failure the "no second scheme line" test covers for
+      separate CALLS and cannot cover for a batch.
+
+      **A single-call equivalence test is structurally unable to see any of that, so the fix is a
+      shape and not a test.** `produceLines(db, body)` opens ONE rollback and hands `body` the only
+      way to produce — an object whose five methods are the productions — so the single-production
+      functions are private and the mistake is unspellable rather than documented. It is
+      `withRollback`'s own warning ("a preview of registering three documents would have each one
+      rolled back before the next, so the second would compute its version as though the first had
+      never happened") arriving one layer up; this module is the caller that sentence was written
+      about.
+
+      **The two candidate fixes the defect note named were both rejected, and on the same ground.**
+      A `withRollback` that JOINS an enclosing rollback silently makes a per-call rollback legal
+      again, which is the footgun restored. Producers that REFUSE to run outside a caller-opened
+      rollback leave the caller free to wrap in `withTransaction` instead, where the probe would
+      COMMIT and the damage would surface later as `DuplicateEntryError` at the replay — and
+      `SqlDatabase.isTransaction` cannot tell a rollback from a commit, so no guard in this package
+      could catch it. Both also change `db.ts`, a shared primitive; the fix that shipped changes
+      nothing outside this module.
+
+      **Measured by mutation, not argued.** Reverting `produceLines` to one rollback per production
+      fails exactly the four sequence tests and nothing else (`4 failed | 14 passed`), with the
+      symptoms above verbatim — and the invalidate one as
+      `[ 'scheme', 'annotation', 'scheme', 'annotation' ]`, measured because the throwaway probe had
+      counted scheme VERSIONS (`[ 2, 2 ]` vs `[ 2, 1 ]`) while the test counts line kinds, and where
+      the duplicate sits was a guess until that run showed it interleaved rather than grouped.
+
+      **The producer is its writer, run and undone** (`withRollback`, the idiom `registerType`'s
+      `dryRun` and `import --dry-run` already use) rather than a second implementation of the
+      validation or a no-INSERT half threaded through `recorder.ts`, `registry.ts` and
+      `annotations.ts`. The two rejected alternatives and their costs are argued in the module doc;
+      the property that made the choice is that the producers are additive, so a write that does not
+      want a line cannot be affected by them.
+
+      Three things only building it established. **A write that wrote nothing produces no lines**:
+      `registerType` and `registerScheme` answer `'unchanged'` and `recordInvalidation` answers
+      `created: false`, and in each case the export already carries the line — emitting it again
+      would append a duplicate to a `merge=union` file on every re-run. **The first invalidation
+      produces TWO lines**, a scheme line and an annotation line, because the reserved scheme is
+      registered by the same call and `import` rebuilds it from a scheme LINE
+      (`restoreInvalidationScheme`); a producer that emitted only the annotation would mint a tree
+      the store's own import refuses. And **`annotationLines` sorts by `id`**, `corpusLines`' own
+      tiebreak within a pass, not the `(created_at, entry_id)` that `annotationRows` returns: a pass
+      holds one label per entry so the two orders hold the same rows, but the tree is bytes and
+      "holds exactly what the export would write" is a claim about bytes.
+
+      The equivalence is measured as a **multiset difference against the corpus the real write
+      added**, which is order-sensitive and catches both directions — a producer line the export
+      would not write, and a write that added a line the producer never mentioned.
+
+      One gate note: a `TypeSpec` fixture held in a `const` needs the annotation spelled out, because
+      away from the call site the literal's `type: 'text'` widens to `string`. `tsc -b` does not
+      typecheck tests, so `tsc -p tsconfig.eslint.json` is the gate that caught it.
+    - **E12.4b3 — the five write sites.** `record.ts`, `annotate.ts`, `invalidate.ts`,
+      `register-document.ts` and `import.ts` move off `recordEntry(store.db, …)`-shaped calls onto
+      the new path, each handing `writeLines` the lines it produced. **Status:** Not started. No
+      longer blocked: b1's sequence defect is fixed, and each of the five sites is now a single
+      `produceLines` call around a body that makes its writes in order — `import.ts`'s four loops and
+      `annotate.ts`'s scheme-plus-pass both fall out of the one transaction the producers now share.
+      What each site gains is that its dry run and its real run differ only in whether `writeLines`
+      is called.
+
+      **The write site survey is done (2026-09-29), and four of the five paths are under
+      `commands/`.** `commands/record.ts` (672 `recordEntry`, batched, `withRollback`/`withTransaction`
+      chosen at 744), `commands/annotate.ts` (560 `registerScheme` + 562 `recordAnnotations`, one
+      `withTransaction`), `commands/invalidate.ts` (267 `recordInvalidation`, batched, 278),
+      `commands/import.ts` (178 `registerDocument`, 209 `recordEntry`, 231 `restoreInvalidationScheme`
+      /`registerScheme`, 255 `recordAnnotations`, four loops under one wrapper at 289/299), and
+      `register-document.ts` (69 `registerType`, 83 `updateTypeProse`, no wrapper of its own).
+      `Project` exposes only `{ root, store }` and **only `commands/record.ts` destructures `root`**,
+      so the other four sites need the project root threaded to them — which the read-path flip
+      should carry, since it is the same `openProject` that knows it.
+
+      **The write command must ensure a current index before it can probe** (owner, 2026-09-29:
+      *build, then write*). The probe is its writer run and undone, so it reads `entry_types` and
+      `entries`; after the flip the only database is the index, and `openIndex` refuses when it is
+      absent or the tree has moved — which includes a checkout or a merge, routine in this design.
+      So the write command builds when the index is not current, then probes, then appends. **This
+      widens E12.3's source scan** (`asc index build` is the only builder, pinned by the module
+      allowlist) from two modules to three; it does not add a second builder, because the same
+      `buildIndex` is called. `writeLines`'s stale branch then stops being reachable from the CLI and
+      becomes the re-check that makes "a write cannot slip past the guard" structural — which is why
+      it stays, and why its test stays.
   - **E12.4c — the read path.** Production readers open `openIndex(root, indexFile)`; `openStore` on
     `.ascend/ascend.db` becomes unreachable from `src`. **Success:** the whole suite's reads go
     through the index and every existing read test passes unchanged — this is where E12.3's seam pays

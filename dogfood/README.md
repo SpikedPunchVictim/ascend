@@ -76,7 +76,9 @@ context; the depth lives in the numbered files.
 | [0033](0033-2026-09-29-a-tripwire-fired-because-the-work-got-done.md) | a tripwire test written to say "I have nothing to say" went red because the gap it named closed: the real corpus reached 18 `review.finding` events, and 18 = 2 calls x 9 findings — the first of those calls was REFUSED by the harness, so the deriver counts attempted findings | `asc-2uov` (P2, open) | the quality gate, run after fixing a review's findings — nobody was looking for it |
 | [0034](0034-2026-09-29-an-invariant-only-one-writer-enforces.md) | `listInvalidations` casts `reason` to `string` on a comment saying only `recordInvalidation` writes the reserved scheme, but `asc import` writes it through `recordAnnotations`, which refuses only an EMPTY note: an absent note reads back as `null` and a whitespace-only one as `"   "`, both with `asc import` exit 0 | `asc-4wx6` (P2, open) | reading `listInvalidations` to write E12.4's invalidation fixture, where the comment turned out to name one writer and `grep` named two — nobody was looking for it |
 
-Thirty-four findings, each with its own mechanism. The mechanism is the part that repeats even when
+| [0035](0035-2026-09-29-a-sequence-of-previews-cannot-see-itself.md) | five line producers that each ran their writer inside their own `withRollback` were correct one call at a time and could not be sequenced — 14 tests green while the module could not do the one thing it exists for: a pass could not see the scheme registered one call earlier (`SchemeError: annotation scheme 'screening' has no version 1. Its versions: (none).`), every replayed type came out version 1 (`expected [ 1, 1 ] to deeply equal [ 1, 2 ]`), and an invalidation batch emitted the reserved scheme line per claim, permanently, into a `merge=union` tree | none filed — found and fixed in-flight under `asc-i5tj.4.1` (P1, fixed in the working tree) | a throwaway probe written to ask whether b3 could call them at all — nobody was looking for it |
+
+Thirty-five findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 > Rows 0016 and 0017 were added 2026-09-26; 0016 had been written but never indexed, and the
@@ -92,6 +94,12 @@ the findings do not, so each record states its own explicitly.
 > instances in two days is what turns a class from a note into something to look for, which is why
 > the record states the cheap detector: for every report, check that the headline count equals the
 > sum of the counts that decompose it.
+>
+> **Adding 0035, the detector ran first and agreed a third time.** `grep -c '^| \[0'` returned 34
+> against a sentence saying thirty-four before the edit; the row was added flush, the sentence moved
+> to thirty-five, and the count re-run. Twice in a row now the number held before an edit rather than
+> being discovered wrong after one — which is what this procedure is for, and it is the first time
+> the series can say that about consecutive additions rather than about a single one.
 >
 > **Adding 0034, the detector ran first and agreed again.** `grep -c '^| \[0'` returned 33 against a
 > sentence saying thirty-three before the edit; the row was added with no blank line above it, and the

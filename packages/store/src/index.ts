@@ -233,6 +233,8 @@ export { entryFromLine, typeRegistrationOptions } from './replay.js';
 
 export { corpusLines } from './corpus-lines.js';
 
+export { produceLines, type ProducedLines, type Producers } from './line-producers.js';
+
 export {
   migrateStoreToTree,
   type DroppedTable,
