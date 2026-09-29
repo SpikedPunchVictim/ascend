@@ -1447,4 +1447,15 @@ describe('asc export -- secret-shaped content', () => {
     const run = asc(['export', '--redact'], withSecret());
     expect([run.status, run.stdout]).toEqual([1, '']);
   });
+
+  it('says that no override exists, so a false positive is not a flag hunt', () => {
+    // The last of `asc-42i1`'s options, (d): build no escape until one fires. That decision is only
+    // observable through this message -- an operator who hits a false positive has no other signal
+    // that the block is deliberate rather than unimplemented, and the message's other advice
+    // ("rotate any that is") has nothing to act on when the match is a fixture. So the sentence is
+    // load-bearing, and this is what fails if it is edited away.
+    const run = asc(['export'], withSecret());
+    const said = flatten(run.stderr);
+    expect(said).toContain('no override flag');
+  });
 });

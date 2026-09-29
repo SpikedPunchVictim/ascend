@@ -374,6 +374,58 @@ describe('asc invalidate: identity is the claim, not the moment', () => {
   });
 });
 
+/**
+ * The label `asc query` reads for one entry out of the type's generated view.
+ *
+ * Read straight from the view rather than through `asc query`, so the claim under test -- which
+ * claim the view exposes -- is not asserted through a second command's rendering of it.
+ */
+function viewLabel(dir: string, id: string): string | null {
+  const file = join(dir, '.ascend', 'ascend.db');
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const row = db.prepare('SELECT invalidated FROM v_note_v1 WHERE id = ?').get(id) as
+      { invalidated: string | null } | undefined;
+    return row?.invalidated ?? null;
+  } finally {
+    db.close();
+  }
+}
+
+// Retraction is deliberately unbuilt (asc-k6p.2), and that decision turns on one measured
+// asymmetry that nothing else here pins. Re-invalidating an entry REPLACES the label its view
+// exposes -- the view takes the latest claim by insertion order -- while leaving the earlier row
+// readable through `--list`. So a wrong LABEL is recoverable by stating a truer one, and a wrongly
+// struck ENTRY is not recoverable at all: every label in the vocabulary strikes, so no second
+// invalidation can un-strike one. A retraction design has to answer for the second shape, and this
+// is where that is said in the code rather than only on the bead.
+describe('asc invalidate: a later label replaces the one the view shows, and never un-strikes', () => {
+  it('moves the view to the later label while both claims survive in the store', () => {
+    const dir = seeded();
+
+    const first = asc(
+      ['invalidate', 'e1', '--label', 'wrong_subject', '--reason', 'probe one'],
+      dir,
+    );
+    expect(first.status, first.stderr).toBe(0);
+    expect(viewLabel(dir, 'e1')).toBe('wrong_subject');
+
+    // The strike a retraction would have to undo: the entry really did stop counting, and the
+    // reason given for it was the wrong one. Stating a truer label is the whole remedy available.
+    const second = asc(
+      ['invalidate', 'e1', '--label', 'wrong_value', '--reason', 'probe two'],
+      dir,
+    );
+    expect(second.status, second.stderr).toBe(0);
+
+    expect(viewLabel(dir, 'e1')).toBe('wrong_value');
+    // Additive, as annotations are: the correction is a second row, not an edit of the first.
+    expect(invalidationRows(dir)).toHaveLength(2);
+    // Per-entry, not a rewrite of the type: an entry nobody struck still reads NULL.
+    expect(viewLabel(dir, 'e2')).toBe(null);
+  });
+});
+
 describe('asc invalidate: --dry-run', () => {
   it('writes nothing and reports what would happen', () => {
     const dir = seeded();
@@ -579,5 +631,20 @@ describe('asc invalidate: the surface', () => {
         `example names --superseded-by without --label superseded: ${example}`,
       ).toContain('--label superseded');
     }
+  });
+
+  // The deferral in asc-k6p.2 is only durable if the surface says it out loud, because the trigger
+  // is a REPORT: someone who has just struck the wrong entry has to learn here that there is no
+  // undo and that saying so is what reopens the decision. Without this the help reads as though
+  // nothing had been considered, and the mistake the decision waits for arrives as a bug report
+  // against a feature the command never advertised.
+  it('says a mistaken strike cannot be withdrawn, and names reporting one as the trigger', () => {
+    const dir = seeded();
+
+    const help = asc(['invalidate', '--help'], dir);
+
+    expect(help.status, help.stderr).toBe(0);
+    expect(help.stdout).toContain('cannot be withdrawn');
+    expect(help.stdout).toContain('asc-k6p.2');
   });
 });

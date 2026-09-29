@@ -44,7 +44,10 @@
  * **A secret-shaped value refuses the export, redacted or not** (asc-4a6.2). Redaction rewrites
  * identity; it leaves a credential where it was, and tokenising one would hand out a correlation
  * handle for it. So every export is scanned (`secrets.ts`) before anything reaches stdout, and a
- * match stops it with counts by pattern name and the lines' ids -- never the matched text.
+ * match stops it with counts by pattern name and the lines' ids -- never the matched text. **No
+ * override exists, by decision** (asc-42i1): a false positive makes a store unexportable, and that
+ * was chosen over an escape -- `secrets.ts` records why, and the options a later escape would
+ * choose between, because the refusal is where the person who hits one will be looking.
  */
 
 import { Flags } from '@oclif/core';
@@ -409,6 +412,12 @@ const MAX_LOCATIONS = 10;
  * Refuse an export that would carry secret-shaped content (asc-4a6.2): counts by pattern name and
  * the lines' locations, never the matched text -- `secrets.ts` says why. Nothing has been written
  * when this throws.
+ *
+ * It closes by saying there is **no override** (asc-42i1). Without that sentence the message sends
+ * a false positive down a dead end -- "rotate any that is" is advice with nothing to act on when
+ * the match is a fixture, and the operator is left looking for a flag that does not exist, or
+ * concluding the command is broken. The absence of an escape is itself something to be told
+ * about, because this refusal is the only thing that announces it.
  */
 function refuseSecrets(scan: SecretScan): void {
   if (scan.lines === 0) return;
@@ -422,6 +431,9 @@ function refuseSecrets(scan: SecretScan): void {
     `Export refused: ${String(scan.lines)} line(s) carry secret-shaped content (${patterns}), ` +
       `and a corpus that leaves this machine must not carry a credential. Nothing was written. ` +
       `The lines: ${shown}${more}. Entries are immutable, so the text cannot be edited out; ` +
-      `check whether each match is a real credential, and rotate any that is.`,
+      `check whether each match is a real credential, and rotate any that is. ` +
+      `There is no override flag, by decision: a false positive here is the event that decision ` +
+      `waits for rather than a flag to go looking for, so report it -- the export stays refused ` +
+      `until one is built.`,
   );
 }

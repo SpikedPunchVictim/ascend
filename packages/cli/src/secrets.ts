@@ -9,6 +9,24 @@
  * silently differs from the store. The owner's decision (2026-09-28, on asc-4a6.2): a match
  * REFUSES the export. It fails as a false positive, never as a leak.
  *
+ * **There is no escape, by decision (asc-42i1).** When this fires on a false positive -- a fixture
+ * that looks like a key -- that store can never be exported again: entries are immutable, so the
+ * text cannot be edited out, and there is no override flag to pass. The owner decided (d) on
+ * 2026-09-28: build no escape until one actually fires, because the refusal already prints the
+ * pattern names and line ids that any escape would key on.
+ *
+ * The options a later fix would choose between are kept HERE rather than only on the bead, and
+ * that is a measured choice: `bd search` excludes closed issues by default (its own help says so),
+ * so `bd search "recognise secret shapes"` returns nothing for the closed `asc-4a6.2` -- the rule
+ * `dogfood/0013` records after a closed ruling was missed for exactly this reason. A closed bead
+ * is not a durable place for the thing a future reader needs.
+ *
+ *   (a) `--allow-secret-pattern`, repeatable and per-pattern, the pattern named in the output;
+ *   (b) `--allow-secret-in <line id>`, narrower, but longer to type;
+ *   (c) an invalidation annotation on the entry, excluding it from the export.
+ *
+ * No detector is needed for the trigger: the refusal is self-announcing, and it now says so.
+ *
  * **What a report may say.** A pattern NAME and a count of LINES, as `homePathLines` counts lines,
  * plus where each line is (an entry or annotation id, a type or scheme name) so the operator can
  * find it. Never the matched text, never a prefix or a hash of it: a report that quotes a secret

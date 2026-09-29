@@ -863,6 +863,22 @@ export interface InvalidationRow {
  * label, or the same label with a different reason) always writes a second row. Recording the
  * BYTE-IDENTICAL invalidation twice is the other case, and it is idempotent rather than an error --
  * see `RecordedInvalidation.created`.
+ *
+ * **Nothing on this write path un-strikes an entry, by decision (asc-k6p.2), and the asymmetry is
+ * worth stating where the state is created.** An entry struck in error stays struck. The two shapes
+ * of mistake part company here: a wrong LABEL is recoverable, because re-invalidating with a truer
+ * one writes a row that outranks the first for every latest-wins reader -- the same rule the
+ * paragraph above states, and the reason a retraction is not needed for that shape. A wrong ENTRY
+ * is not recoverable at all: every member of `INVALIDATION_LABELS` strikes, so no later invalidation
+ * can restore the entry to the population, and re-striking it only changes why it is excluded.
+ *
+ * Retraction was deferred rather than overlooked. Measured 2026-09-28: `asc invalidate --help` and
+ * `asc --help` contain zero occurrences of retract, withdraw, undo or reinstate, and no command
+ * writes an un-invalidation. The owner decided the same date to keep it unbuilt until a real
+ * mistaken invalidation exists -- one hypothetical instance is not a category, the same test the
+ * label vocabulary was chosen by (see `INVALIDATION_LABELS`). So the trigger is a report rather than
+ * a search: `asc-k6p.2` reopens when someone records an invalidation in error and says so, and the
+ * command's own help is what tells them to.
  */
 export function recordInvalidation(
   db: DatabaseSync,

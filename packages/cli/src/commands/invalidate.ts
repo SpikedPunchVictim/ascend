@@ -40,6 +40,25 @@
  * correction is not enough if there is no way to read it back short of hand-written SQL against
  * `annotations`; this reports `listInvalidations`, newest first. `--list` reads and the other flags
  * write, so the two are refused together rather than one silently winning.
+ *
+ * **A mistake cannot be withdrawn, by decision (asc-k6p.2).** There is no `--uninvalidate`, no
+ * retraction annotation and no edit path back: `asc invalidate --help` and `asc --help` each contain
+ * zero occurrences of retract, withdraw, undo or reinstate (measured 2026-09-28). The owner decided
+ * on the same date to keep it that way until a real mistaken invalidation exists -- the test that
+ * admitted only three labels, applied to a mechanism instead of a word. The two shapes of mistake
+ * are not equally stuck, and the difference is what a later design has to answer for:
+ *
+ *   - **A wrong label** on an entry that really did stop counting has a remedy today. Invalidating
+ *     again with a truer label writes a second row, and the view's `invalidated` column takes the
+ *     later claim -- struck `wrong_subject` then `wrong_value`, the view reads `wrong_value`
+ *     (measured 2026-09-28), while `--list` still returns both.
+ *   - **A wrong entry** -- one that should never have been struck -- has none. Every label in the
+ *     vocabulary strikes, so no second invalidation can un-strike, and the entry is excluded from
+ *     analysis for good.
+ *
+ * **The second shape is the trigger, and it arrives as a report rather than as a search.** That is
+ * why the `description` below says so: the person who has just realised the mistake is the one
+ * reading this command's help, and nothing else would tell them that saying so reopens the question.
  */
 
 import { Args, Flags } from '@oclif/core';
@@ -115,7 +134,9 @@ interface WrittenInvalidation extends RecordedInvalidation {
 export default class Invalidate extends BaseCommand {
   static override description =
     'Strike entries under the reserved invalidation scheme, recording why they stopped counting. ' +
-    'Entries are immutable and are never edited or deleted.';
+    'Entries are immutable and are never edited or deleted. A strike recorded in error cannot be ' +
+    'withdrawn either -- retraction is deliberately unbuilt (asc-k6p.2), and reporting one is what ' +
+    'reopens that decision.';
 
   static override examples = [
     // `--superseded-by` is REFUSED for any label but `superseded` (the store enforces it, and the
