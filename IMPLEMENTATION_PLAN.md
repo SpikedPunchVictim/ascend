@@ -88,7 +88,8 @@ error naming field, expected type, and corrected command; `asc init` gitignores 
 `asc-865` closed: `asc-0j0`, `asc-z73`, `asc-2jf`, `asc-fso`, `asc-uy7`, `asc-l00`, and the P1 defect
 found in E3's own output, `asc-865.1`, now fixed (see below). **E4 (`asc-baj`) In Progress — E4.1
 and E4.2 complete, including the six `asc types` subcommands; E4.3 next.** **E12 (`asc-i5tj`, the
-git-native JSONL store) Not Started — specified below, `EV-32` in hand.** The stages are specified
+git-native JSONL store) In Progress — E12.1 and E12.2 as built, `EV-32` and `EV-33` in hand; E12.3
+next.** The stages are specified
 below; cold start is already measured and needs no fast path. 343 tests pass, `align check` is green,
 and the CLI suite drives the built binary rather than the handler.
 
@@ -1006,9 +1007,124 @@ as the store itself.
   kinds, the `.gitattributes` emission, rollover at the 5,000-record threshold, and `(recorded_at,
   id)` read ordering. No index, no CLI wiring. Green when the spike's S1–S4 fixtures round-trip
   through it line-for-line.
+  - **As built (2026-09-29, `packages/store/src/jsonl-files.ts`).** The acceptance sentence above is
+    not literally executable: the spike's layouts are `records.jsonl` / `records/<day>.jsonl` under a
+    flat `types.jsonl` (`spike/git-layout/run.mjs:65-69,115`), which is NOT the layout this stage
+    implements, so its fixture FILES cannot round-trip through this layer as files.
+    **The criterion was not met in substance either, and the first version of this note claimed it
+    was.** That claim — "rewritten in substance rather than in letter" — was refuted by a review: the
+    spike's record generators are pure, layout-independent data and ARE replayable, and for a
+    `merge=union` layout "round-trip" means *survives a MERGE*, which is where the design's whole risk
+    lives. The substitute (scenario structures plus a real-corpus round trip) never performed one. The
+    gap was not academic: a real merge duplicates a shared derived record, and the reader returned it
+    twice. What exists now is `spike/git-layout/merge-replay.mjs` — it writes a tree WITH the layer,
+    merges it with real git, and reads it back WITH the layer: **exit 0, 0 conflicts, the shared
+    record twice on disk, 3 distinct records read, none lost and none duplicated.** The same run also
+    refuted a simpler story: git's union merge emits an identical line ONCE when both sides add it as
+    one aligned region, and TWICE when they interleaved it with their own work differently — so the
+    duplication is positional, and a reader cannot delegate this to git.
+  - **Two deviations from the text above, both evidence-driven.** (1) `<type_name>`/`<scheme>` path
+    segments are a readable slug plus a 12-hex digest of the name, not the name and not an assumption
+    that it is canonical: `requireName` (`annotations.ts:394`) refuses only the empty string and the
+    reserved name, so a scheme name is ANY string and the real corpus holds `hand-denial`. A refusing
+    guard threw on this project's own store the first time it saw real data; a percent-encoding draft
+    replaced it and was not injective (`'\uD800'` and `'�'` encode to the same bytes), not
+    bounded (29 CJK characters → a 261-byte directory → ENAMETOOLONG mid-write), and not case-safe
+    (`Review`/`review` are one directory on APFS and two on Linux). (2) `(recorded_at, id)` ordering is
+    applied to annotations as well as entries -- they partition by name exactly as entries do, so a
+    union merge can reorder them, and nothing about an annotation's meaning depends on file order. The
+    bead named entries only; this applies its rule by its own reason.
+  - **Nine findings from an adversarial review, all fixed.** The review ran on the same model as the
+    authoring session and its findings were recorded through `ReportFindings`, so they are countable
+    rather than prose. Two were false greens (reversing the reader's file sort, and deleting the head
+    cache, each left the suite green), and each was fixed by making its test able to fail — then
+    verified by re-running the mutation and watching it fail. The others: `merge=union` duplicates a
+    shared record and the reader did not dedupe; the partition segment's three defects above; a bare
+    `catch` swallowing EACCES so an unreadable partition vanished; a record file directly under
+    `entries/` never being opened; and a non-positive `maxRecordsPerFile` silently starting at 0002.
 - **E12.2 — the index.** Build `index.db` from a JSONL tree; store the fingerprint; on open, hash →
   compare → rebuild-wholesale or use. The invariant under test: **an index holding anything the
   JSONL does not is a failure**, asserted by deleting and rebuilding.
+  - **As built (2026-09-29, `packages/store/src/jsonl-index.ts`), 21 tests.** Deliverables: a content
+    `treeFingerprint(root)`; `buildIndex(root, dbPath, { now })` — a fresh store, migrated, replayed
+    from the tree line by line and published atomically; and `openIndex(root, dbPath, { now })` —
+    fingerprint → match, return; differ, rebuild wholesale. Shared with the reader: one traversal
+    (`recordFiles`) decides which files exist for BOTH the reader and the fingerprint, and the
+    line→row mappers moved into `replay.ts` so `asc import` and the index cannot drift into two
+    spellings of one record.
+  - **The drift that sharing prevents is guarded by a test of the RELATION, not of either side.**
+    `packages/cli/test/import-vs-index.test.ts` runs both drivers over one corpus — the index build
+    from a laid-out tree, `asc import` as the real binary in a real project — and compares every
+    observable row of the two stores. Neither driver's own suite can catch a divergence between them
+    (each is green on its own), and the failure mode is not a crash: it is two stores that both report
+    success, hold different rows, and disagree about `asc kappa` while every count looks plausible.
+    **Verified by mutation, twice**, watching it fail both times: collapsing the two annotation passes
+    into one timestamp (caught, via the store's own "already has a pass at this timestamp" refusal) and
+    dropping one `note` in the index's replay only (caught by the row comparison, with no error
+    raised — the silent-value class this file exists for). `entry_types.created_at` is excluded by
+    name for the reason below; `asc import` is driven into a store with NO starter types, because an
+    `init`ed target carries four `entry_types` rows the tree does not and the comparison would fail
+    over a difference that is not a divergence.
+  - **Five decisions taken here, each recorded with its reason rather than assumed.**
+    (1) **The index is opened READ-ONLY.** This is what makes the bead's invariant structural rather
+    than conventional: if no caller can hold a writable handle, then no write can land in the index
+    that is not first in the JSONL, because the only thing that writes the index is a rebuild *from*
+    the tree. The test asserts the refusal (`attempt to write a readonly database`) rather than
+    relying on callers to behave. Precedent: `openStore`'s own `readOnly` doc — the permission is
+    defensible because the handle has been shown unable to mutate.
+    (2) **The fingerprint lives in the index's own `meta` table, not a sidecar file**, because a
+    sidecar can desync from the index it describes — a fresh fingerprint beside a stale index is
+    exactly the false-green this stage exists to prevent. Written LAST, and the whole build is
+    published by `renameSync` from a temp file, so a build that dies half-way leaves the previous
+    index untouched rather than a partial one claiming to be current. Probed before adopting:
+    `node:sqlite`'s `close()` checkpoints and removes the `-wal`, so the renamed file is complete and
+    self-contained (no residual `-wal`/`-shm`), and it still reads back as `journal_mode = wal`.
+    (3) **The fingerprint is over the record files' BYTES, keyed by relative path**, not over the
+    parsed records. EV-32 measured the cost this buys and the reason it must be content rather than
+    mtime; hashing bytes keeps that cost on a cache HIT, which is the path that runs on every command.
+    The price is conservatism: a re-partition or a union-merge concatenation changes the bytes and
+    forces a rebuild even though the record SET is unchanged. That is the correct direction to be
+    wrong in. **EV-33 re-measured it in-process: 0.01 s at 7.84 MB and 0.04 s at 71.13 MB warm**
+    (0.20–0.24 s cold), against EV-32's 0.05/0.24 measured by invoking a hasher as a process.
+    (4) **A non-ascend file at the index path is REFUSED, not overwritten**, while an ascend file
+    whose fingerprint disagrees is rebuilt. `openIndex` never repairs an index, only replaces it —
+    and the existing `ForeignStoreError` guard exists precisely so ascend does not write into a file
+    it did not create. The cost of refusing is one `rm`, and the index is derived, so that is cheap.
+    (5) **Three claims a line makes are verified against the store's own answer, and a disagreement is
+    refused rather than silently taken.** `registerScheme` numbers from the store's history (so a
+    line's `version` can be reinterpreted), `registerScheme` computes `scheme_hash` from the spec it
+    was handed (so a line's `scheme_hash` can too), and `recordEntry` writes the hash of the resolved
+    definition (so a line's `type_hash` can). Each would produce an index holding something the JSONL
+    does not, invisibly — the row count and every query still work. This is the narrow version of the
+    merge guard `asc-98e1` owns; the wide net is E12.5.
+  - **A constraint the package's own guard imposed, and it changed the API.** The first draft of
+    `replayType` called `new Date()` for `entry_types.registered_at`, and `recorder.test.ts`'s "reads
+    no clock and draws no randomness, in any module" scan caught it — the guard working exactly as
+    designed. The clock is injected at the command boundary (`BaseCommand.now()`), so both functions
+    take `IndexOptions.now`. It is required rather than optional so there is one signature, and
+    documented as consulted only when a build actually happens.
+  - **The measurement EV-32 explicitly left open, now taken (`docs/evidence/EV-33.md`).** EV-32 timed
+    the rebuild through `asc import` as a *proxy* and guessed it was an upper bound; it is not, by
+    about **1.2×** (user time 45.4 s real vs 38.1 s proxy at 10×). **EV-32's absolute 10× figure is
+    not reproducible on this machine today** — its own proxy re-run on the same corpus shape takes
+    63.19/67.98 s where EV-32 recorded 40.27 s — which is why both arms were re-run same-day rather
+    than cited. The architectural decisions are unchanged and rest on firmer numbers: cold build
+    **2.97 s at 6,387 entries** and **~75 s at 63,870**; cache-hit open **0.01 s / 0.05 s**; index
+    **2.86×** its JSONL at both sizes.
+  - **One thing EV-32 could not have seen, and it is a design input for E12.3.** A rebuild is ~75 s at
+    10×, and `openIndex` on a fingerprint miss rebuilds with **no signal, no progress and no warning**.
+    A user running a read would sit through it unable to tell "working" from "hung". At EV-32's 3.02 s
+    this was invisible, and the cache-hit path (0.05 s) is fine in isolation — the defect is the
+    *silence*, not either number. E12.3 must settle it before the index is on a read path: either the
+    build becomes an explicit command a read will not run, or a rebuild announces itself first.
+  - **One column the tree cannot determine, and it is not ignored.** `entry_types.created_at` is taken
+    from the caller by `registerType` and is carried by no `TypeLine`, so a rebuilt index stamps it
+    with the build time (the injected `now`) and is therefore not a *pure* function of the tree. This
+    is already true of `asc import` (its module doc says so) and it is the same shape as `dogfood/0031`,
+    which filed the neighbouring gap as `asc-i5tj.6`. It does not weaken the invariant — a timestamp is
+    not a record the JSONL is missing — but the equivalence test has to exclude it, and excluding a
+    column silently is how a real divergence gets hidden. So it is excluded by name, with the reason in
+    the test.
 - **E12.3 — the read layer.** Extract the storage-neutral interface the store package does not have
   today (every public function currently takes `db: DatabaseSync`), with the SQLite index as the one
   implementation behind it. `align check` must stay green — this is the structural change most likely
@@ -1021,7 +1137,14 @@ as the store itself.
   passes exactly the resolution that loses a record), `asc-8uzh` (per-record size limit, byte-bounded
   rollover).
 
-**Status: Not Started.** `EV-32` is in hand; E12.1 is next.
+**Status: E12.1 and E12.2 as built** (2026-09-29) — the record layer exists (37 tests) and the derived
+index exists (21 tests); `pnpm quality-gate` green end to end; `align` green with no `store -> cli` edge.
+E12.1 is validated by a real-git merge replay, not only by its own suite, and E12.2 by
+`docs/evidence/EV-33.md`, which re-times the real build path and records a correction to EV-32. Two
+plan-level findings came out of E12.1 and are filed as beads rather than fixed here (they are format
+questions, not layer questions): a scheme name is any string, and a type line carries no version of its
+own. **E12.2 surfaces one design input E12.3 must settle: a rebuild is ~75 s at 10× and is currently
+silent, so no read may trigger one without saying so.** **E12.3 is next.**
 
 ---
 

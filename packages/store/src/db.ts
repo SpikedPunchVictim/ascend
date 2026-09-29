@@ -199,6 +199,18 @@ export class StoreBusyError extends Error {
 export interface OpenOptions {
   /** The `.ascend` directory. Created if missing. */
   readonly dir: string;
+  /**
+   * The database file's name inside `dir`. Defaults to `STORE_FILE`.
+   *
+   * It exists for the DERIVED INDEX (E12.2), which lives in the same directory as the JSONL tree
+   * it is built from and must not be confused with the store itself: during the transition
+   * `.ascend/ascend.db` is the source of truth and `.ascend/index.db` is a rebuildable cache, and
+   * two files that meant the same thing under two names is how one of them gets read as the other.
+   *
+   * Nothing else should pass this. It is a name within `dir`, not a path -- the directory is what
+   * `dir` is for, and `assertNotForeign`'s message quotes the joined path either way.
+   */
+  readonly file?: string;
   readonly busyTimeoutMs?: number;
   /** Run pending migrations on open. Default true. */
   readonly migrate?: boolean;
@@ -646,7 +658,7 @@ function assertNotForeign(db: DatabaseSync, file: string, inMemory: boolean): vo
 export function openStore(options: OpenOptions): Store {
   const { dir, busyTimeoutMs = DEFAULT_BUSY_TIMEOUT_MS, readOnly = false } = options;
   const inMemory = dir === ':memory:';
-  const file = inMemory ? ':memory:' : join(dir, STORE_FILE);
+  const file = inMemory ? ':memory:' : join(dir, options.file ?? STORE_FILE);
 
   // A read-only open must not create the thing it is opening: a mistyped path would
   // otherwise leave a directory behind, which is the same failure `union.ts` refuses

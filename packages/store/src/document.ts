@@ -33,6 +33,7 @@ import {
   type PropertySpec,
   type PropertyType,
   type TypeGuidance,
+  type TypeSpec,
 } from '@ascend/core';
 import { describeValue, fieldError, isJsonObject } from './json-fields.js';
 import type { TypeVersionRow } from './registry.js';
@@ -53,6 +54,24 @@ export interface TypeDocument extends TypeGuidance {
   readonly prose?: Readonly<Record<string, string>>;
   /** The identity this document claims. Recomputed and checked on import. */
   readonly type_hash?: string;
+}
+
+/**
+ * The identity-bearing part of a document: what gets registered and hashed.
+ *
+ * Prose is deliberately absent. Type-level `description` and `record_when` would be dropped by
+ * `definitionShape` anyway, and passing them here as well as in the registration options would be
+ * two paths to the same column -- the one that silently wins being whichever the store happens to
+ * read last.
+ *
+ * It lives here rather than in the CLI because three callers need it and all three are below the
+ * CLI: `asc types import` and `asc import` register documents, and the derived index replays a
+ * `type` line back through `registerType` (E12.2). A second spelling of "the part of a document
+ * that is identity" is the class of defect that would make two stores disagree about whether they
+ * hold the same definition while both reporting success.
+ */
+export function documentSpec(document: TypeDocument): TypeSpec {
+  return { name: document.name, properties: document.properties };
 }
 
 /** Only the guidance fields of a document, in document order, for the store. */

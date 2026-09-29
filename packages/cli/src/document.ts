@@ -44,10 +44,10 @@
  * the ones that exist.
  */
 
-import type { TypeSpec } from '@ascend/core';
 import {
   documentFromRow,
   documentGuidance,
+  documentSpec,
   orderedDocument,
   parseDocument,
   parseDocuments,
@@ -64,20 +64,15 @@ import {
  * reader parses `type` lines too and `align` forbids `store -> cli`. That module carries the full
  * rationale.
  */
-export { documentFromRow, documentGuidance, orderedDocument, parseDocument, parseDocuments };
+export {
+  documentFromRow,
+  documentGuidance,
+  documentSpec,
+  orderedDocument,
+  parseDocument,
+  parseDocuments,
+};
 export type { TypeDocument };
-
-/**
- * The identity-bearing part of a document: what gets registered and hashed.
- *
- * Prose is deliberately absent. Type-level `description` and `record_when` would be dropped
- * by `definitionShape` anyway, and passing them here as well as in the registration options
- * would be two paths to the same column -- the one that silently wins being whichever the
- * store happens to read last.
- */
-export function documentSpec(document: TypeDocument): TypeSpec {
-  return { name: document.name, properties: document.properties };
-}
 
 /**
  * Check the document's claimed identity against what its contents actually hash to.

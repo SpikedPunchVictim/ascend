@@ -59,6 +59,10 @@
 
 import { canonicalJson, nonJsonReason, sha256Hex } from '@ascend/core';
 import type { DatabaseSync } from 'node:sqlite';
+// Type-only, and it must stay that way: `jsonl.ts` imports `schemeHash` from this module, so a VALUE
+// import here would close a runtime cycle between the two. `annotationPassGroups` only needs the
+// line's shape, which a type import supplies and erases.
+import type { AnnotationLine } from './jsonl.js';
 import { toFtsMatch } from './search.js';
 import { wrapPredicate } from './statements.js';
 
@@ -586,6 +590,74 @@ function registerSchemeUnchecked(
     if (hasOpenTransaction()) db.exec('ROLLBACK');
     throw error;
   }
+}
+
+/**
+ * One PASS of annotation lines: the unit `recordAnnotations` writes and `asc kappa` compares.
+ *
+ * `scheme`/`schemeVersion`/`createdAt`/`createdBy` are not decoration on the group -- they ARE the
+ * pass identity, which is why they are the key below rather than a label hung on the result.
+ */
+export interface AnnotationPassGroup {
+  readonly scheme: string;
+  readonly schemeVersion: number;
+  readonly createdAt: string;
+  readonly createdBy: string | null;
+  readonly lines: readonly AnnotationLine[];
+}
+
+/**
+ * Group annotation lines into the passes they were recorded under, preserving stream order.
+ *
+ * **This exists because an annotation is written as part of a PASS and never as an independent row.**
+ * `recordAnnotations` stamps one `created_at`/`created_by` onto every row of a single call, and that
+ * stamp -- with the scheme and its version -- is what a pass IS. So anything replaying a corpus,
+ * whether `asc import` or the derived index, has to put the lines back into those groups and issue
+ * one call per group with the group's own timestamp. Restoring row by row would stamp every
+ * annotation with the moment of the replay and collapse every pass a scheme ever ran into one:
+ * `asc kappa` would still run, but it would be comparing a scheme against itself, and no row count
+ * would show it.
+ *
+ * **The key is all four of `(scheme, scheme_version, created_at, created_by)`, and spelled once,
+ * here.** Three would normally be enough -- `recordAnnotations` stamps one `created_by` onto every
+ * row of a call and refuses a second pass sharing a scheme-version's timestamp, so two genuine
+ * passes cannot share the first three. The fourth is kept as a refusal to trust that guarantee
+ * against a file that did not come from `recordAnnotations` at all: a hand-edited or concatenated
+ * stream could claim one `created_at` for two `created_by` values, and grouping by three fields
+ * would silently pick one of them for the merged call. Splitting into two calls instead makes the
+ * second meet the store's own "already has a pass at this timestamp" refusal, which is the right
+ * outcome for data that is not a single pass. Two replay paths with two spellings of this key would
+ * group one corpus two ways, and the resulting stores would disagree about kappa while both
+ * reporting success. Callers holding a line's coordinates do not need them here: a pass is a
+ * property of the lines, not of where they were read from.
+ */
+export function annotationPassGroups(
+  annotations: readonly AnnotationLine[],
+): readonly AnnotationPassGroup[] {
+  const groups = new Map<string, AnnotationPassGroup & { lines: AnnotationLine[] }>();
+
+  for (const line of annotations) {
+    const key = JSON.stringify([
+      line.scheme,
+      line.scheme_version,
+      line.created_at,
+      line.created_by,
+    ]);
+    const existing = groups.get(key);
+    if (existing === undefined) {
+      groups.set(key, {
+        scheme: line.scheme,
+        schemeVersion: line.scheme_version,
+        createdAt: line.created_at,
+        createdBy: line.created_by,
+        lines: [line],
+      });
+    } else {
+      existing.lines.push(line);
+    }
+  }
+
+  return [...groups.values()];
 }
 
 /** ISO-8601 UTC, enforced for the reason `recorder.ts` gives: these columns are compared as text. */

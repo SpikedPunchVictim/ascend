@@ -48,7 +48,9 @@
 
 import { Args, Flags } from '@oclif/core';
 import {
+  annotationPassGroups,
   annotationRows,
+  entryFromLine,
   entryIds,
   findEntry,
   listSchemes,
@@ -203,7 +205,8 @@ export default class ImportCorpus extends BaseCommand {
             throw versionMismatch(entry, where, resolved, preexisting.has(entry.type_name));
           }
 
-          recordFromLine(store, entry);
+          const { request, context } = entryFromLine(entry);
+          recordEntry(store.db, request, context);
           rows.push({
             kind: 'entry',
             name: entry.type_name,
@@ -248,13 +251,13 @@ export default class ImportCorpus extends BaseCommand {
         // the module doc and `annotationPassGroups`. One `recordAnnotations` call per group, and
         // one report row per call: `recordAnnotations` is a pass-level write, so a report that gave
         // it one row per annotation would be reporting a write that never happened at that grain.
-        for (const group of annotationPassGroups(annotations)) {
+        for (const group of annotationPassGroups(annotations.map((parsed) => parsed.line))) {
           const result = recordAnnotations(
             store.db,
             {
               scheme: group.scheme,
               schemeVersion: group.schemeVersion,
-              annotations: group.lines.map(({ line }) => ({
+              annotations: group.lines.map((line) => ({
                 id: line.id,
                 entryId: line.entry_id,
                 label: line.label,
@@ -645,115 +648,6 @@ function refuseUnknownAnnotationSchemes(
       `scheme_version)\` is a foreign key to \`annotation_schemes(name, version)\` (schema.ts), so ` +
       `restoring one of these would fail on that constraint with no context. Nothing was written.`,
   );
-}
-
-/**
- * One pass of annotations, grouped and ready for one `recordAnnotations` call.
- *
- * `lines` preserves each annotation's position in the stream -- the group does not re-sort them --
- * because nothing about restoring a pass requires a different order than the one it was written
- * in, and `recordAnnotations` does not care what order its `annotations` array arrives in.
- */
-interface AnnotationPassGroup {
-  readonly scheme: string;
-  readonly schemeVersion: number;
-  readonly createdAt: string;
-  readonly createdBy: string | null;
-  readonly lines: readonly (ParsedLine & { line: AnnotationLine })[];
-}
-
-/**
- * Group the stream's annotation lines into passes.
- *
- * `(scheme, scheme_version, created_at)` is the pass identity `RecordedAnnotations` documents, but
- * the grouping key here is all four of `(scheme, scheme_version, created_at, created_by)`. The
- * store's own guarantee is why three would normally be enough: `recordAnnotations` stamps one
- * `created_by` onto every row of a call and refuses a second pass sharing a scheme-version's
- * timestamp, so two genuine passes can never share the first three fields. The fourth is kept
- * anyway as a refusal to trust that guarantee blindly against a file that did not necessarily come
- * from `recordAnnotations` at all -- a hand-edited or concatenated stream could claim the same
- * `created_at` for two different `created_by` values, and grouping by three fields would silently
- * pick one of them for the merged call. Grouping by four instead keeps such a file split into two
- * calls, and the second one meets the store's own "already has a pass at this timestamp" refusal --
- * which is the correct outcome for data that is not a real single pass, not a bug in the grouping.
- *
- * A `Map`, keyed by the composite as one JSON string, because `insertion order of first key` is
- * exactly "the order groups are first seen in the stream", and JS `Map`s preserve that -- so the
- * groups come out in stream order with no separate sort.
- */
-interface MutableAnnotationPassGroup {
-  scheme: string;
-  schemeVersion: number;
-  createdAt: string;
-  createdBy: string | null;
-  lines: (ParsedLine & { line: AnnotationLine })[];
-}
-
-function annotationPassGroups(
-  annotations: readonly (ParsedLine & { line: AnnotationLine })[],
-): readonly AnnotationPassGroup[] {
-  const groups = new Map<string, MutableAnnotationPassGroup>();
-
-  for (const parsed of annotations) {
-    const { line } = parsed;
-    const key = JSON.stringify([
-      line.scheme,
-      line.scheme_version,
-      line.created_at,
-      line.created_by,
-    ]);
-    const existing = groups.get(key);
-    if (existing === undefined) {
-      groups.set(key, {
-        scheme: line.scheme,
-        schemeVersion: line.scheme_version,
-        createdAt: line.created_at,
-        createdBy: line.created_by,
-        lines: [parsed],
-      });
-    } else {
-      existing.lines.push(parsed);
-    }
-  }
-
-  return [...groups.values()];
-}
-
-/**
- * Restore one entry, verbatim.
- *
- * `recordEntry` is the only writer of entries and is used rather than a direct INSERT, so a
- * restored row passes the same validation a recorded one does: an entry the definition would not
- * accept is refused here instead of becoming a row the read path later fails on.
- *
- * Every optional field is omitted rather than passed as `null`. The store's `requireNonEmpty`
- * treats a present-but-empty value as an error, so passing the nulls through would turn "not
- * recorded" into a refusal -- and `exactOptionalPropertyTypes` is on besides, where an explicit
- * `undefined` is a different type from an absent key.
- */
-function recordFromLine(store: Store, entry: EntryLine): void {
-  const request = {
-    type: entry.type_name,
-    version: entry.type_version,
-    properties: entry.properties,
-    na: entry.na,
-  };
-
-  recordEntry(store.db, request, {
-    id: entry.id,
-    recordedAt: entry.recorded_at,
-    source: entry.source,
-    ascendVersion: entry.ascend_version,
-    schemaVersion: entry.schema_version,
-    ...(entry.run_id === null ? {} : { runId: entry.run_id }),
-    ...(entry.workflow === null ? {} : { workflow: entry.workflow }),
-    ...(entry.actor === null ? {} : { actor: entry.actor }),
-    ...(entry.cwd === null ? {} : { cwd: entry.cwd }),
-    ...(entry.repo === null ? {} : { repo: entry.repo }),
-    ...(entry.git_sha === null ? {} : { gitSha: entry.git_sha }),
-    ...(entry.branch === null ? {} : { branch: entry.branch }),
-    ...(entry.evidence_text === null ? {} : { evidenceText: entry.evidence_text }),
-  });
 }
 
 /** The key a type version is looked up by: its name and its content hash. */

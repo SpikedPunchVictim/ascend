@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { EVENT_KINDS, eventFieldType, type NormalizedEvent } from '@ascend/core';
 import {
+  FINDING_LENSES,
   createDeriver,
   createNormalizer,
   defaultTranscriptRoot,
@@ -36,6 +37,7 @@ interface Sweep {
   readonly deriverUnverdictable: number;
   readonly streams: number;
   readonly contexts: readonly NormalizedEvent[];
+  readonly findings: readonly NormalizedEvent[];
 }
 
 async function sweep(): Promise<Sweep> {
@@ -51,10 +53,12 @@ async function sweep(): Promise<Sweep> {
   let streams = 0;
   let lastSeq = -1;
   const contexts: NormalizedEvent[] = [];
+  const findings: NormalizedEvent[] = [];
 
   const take = (event: NormalizedEvent): void => {
     byKind[event.kind] = (byKind[event.kind] ?? 0) + 1;
     if (event.kind === 'model.context') contexts.push(event);
+    if (event.kind === 'review.finding') findings.push(event);
     if (!Object.hasOwn(EVENT_KINDS, event.kind)) undeclared.add(event.kind);
     for (const field of Object.keys(event)) {
       if (eventFieldType(event.kind, field) === undefined) undeclared.add(`${event.kind}.${field}`);
@@ -96,6 +100,7 @@ async function sweep(): Promise<Sweep> {
     deriverUnverdictable: deriver.counters.unverdictable,
     streams,
     contexts,
+    findings,
   };
 }
 
@@ -166,18 +171,26 @@ describe.skipIf(!available)('the normalizer against the real corpus', () => {
     expect(result.measured).toBeGreaterThan(result.derived.length);
   }, 180_000);
 
-  it('has NEVER seen a review finding, which is the only thing it can say', async () => {
-    const result = await once();
-    // The zero is the assertion, and it is deliberately the SHAPE of the zero that is checked:
-    // both counters are asserted, so the day either is non-zero this goes red and names which.
+  it('reads review findings from real work, which this corpus could not previously say', async () => {
+    // THIS TEST WAS A TRIPWIRE, AND IT FIRED ON 2026-09-29. Its previous form asserted
+    // `byKind['review.finding'] === 0`, from a measurement of 2026-09-26: `ReportFindings` had been
+    // called 0 times across 1,236 transcript files and 637,258 records, so the branch's only
+    // evidence was the fixtures in `normalize.test.ts`. By 2026-09-28 it had been called 33 times
+    // (358 findings) -- but every one of those calls was in an EPHEMERAL probe project, which ingest
+    // skips by design, so the `reported` route had still never fired on real work. That gap is what
+    // the `on_skill` nudge (`handlers/review-finding-nudge.yaml`) exists to close, and it closed
+    // here: a session in this project reported a review's findings rather than writing prose.
     //
-    // What this does NOT establish, and the distinction is the whole reason this test is worded
-    // this way: it is not evidence that the `review.finding` branch works. Measured 2026-09-26,
-    // `ReportFindings` has been called 0 times across 1,236 transcript files and 637,258
-    // records, so this branch has never been reached by a real corpus at all -- the fixtures in
-    // `normalize.test.ts` are its entire evidence, and a green run here means the corpus had
-    // nothing to say rather than that the code agrees with it.
-    expect(result.byKind['review.finding'] ?? 0).toBe(0);
+    // So the zero is replaced by the positive claim the old wording explicitly said it could not
+    // make -- that the branch reads real findings, and reads them into the declared vocabulary.
+    // Asserting the events AND the counter is deliberate: they are two routes to one claim, and a
+    // disagreement between them is the kind of silence this file exists to break.
+    const result = await once();
+    expect(result.findings.length).toBeGreaterThan(0);
+    const slugs = FINDING_LENSES.map((lens) => lens.slug);
+    for (const finding of result.findings) {
+      expect(slugs).toContain(finding['category']);
+    }
     expect(result.counters.offVocabularyFindings).toBe(0);
   }, 180_000);
 });

@@ -17,7 +17,14 @@
  */
 
 import { canonicalName, GUIDANCE_FIELDS, type Bump, type Rename } from '@ascend/core';
-import { findType, listTypes, registerType, updateTypeProse, type Store } from '@ascend/store';
+import {
+  findType,
+  listTypes,
+  registerType,
+  typeRegistrationOptions,
+  updateTypeProse,
+  type Store,
+} from '@ascend/store';
 import { documentGuidance, documentSpec, type TypeDocument } from './document.js';
 
 /** What registering a document did, in the terms a caller cares about. */
@@ -60,11 +67,7 @@ export function registerDocument(
 ): DocumentRegistration {
   const guidance = documentGuidance(document);
   const result = registerType(store.db, documentSpec(document), {
-    registeredAt: options.registeredAt,
-    ...(Object.keys(guidance).length === 0 ? {} : { guidance }),
-    ...(document.description === undefined ? {} : { description: document.description }),
-    ...(document.record_when === undefined ? {} : { recordWhen: document.record_when }),
-    ...(document.prose === undefined ? {} : { prose: document.prose }),
+    ...typeRegistrationOptions(document, options.registeredAt),
     ...(options.dryRun ? { dryRun: true } : {}),
   });
 

@@ -117,6 +117,7 @@ export { typeFilterScope } from './type-filter.js';
 
 export {
   AnnotationError,
+  annotationPassGroups,
   annotationPasses,
   annotationRows,
   INVALIDATION_LABELS,
@@ -136,6 +137,7 @@ export {
   type AnnotationContext,
   type AnnotationInput,
   type AnnotationPass,
+  type AnnotationPassGroup,
   type AnnotationPassRow,
   type AnnotationRow,
   type InvalidationLabel,
@@ -164,6 +166,7 @@ export type { EntryState } from './sql.js';
 export {
   documentFromRow,
   documentGuidance,
+  documentSpec,
   orderedDocument,
   parseDocument,
   parseDocuments,
@@ -189,6 +192,32 @@ export {
   type SchemeLine,
   type TypeLine,
 } from './jsonl.js';
+
+export {
+  GITATTRIBUTES_BODY,
+  GITATTRIBUTES_NAME,
+  MAX_BYTES_PER_FILE,
+  MAX_RECORDS_PER_FILE,
+  openRecordWriter,
+  readRecordTree,
+  recordFiles,
+  writeGitattributes,
+  type RecordFile,
+  type RecordWriter,
+  type RecordWriterOptions,
+} from './jsonl-files.js';
+
+export {
+  buildIndex,
+  FINGERPRINT_KEY,
+  INDEX_FILE,
+  openIndex,
+  treeFingerprint,
+  type IndexOptions,
+  type OpenedIndex,
+} from './jsonl-index.js';
+
+export { entryFromLine, typeRegistrationOptions } from './replay.js';
 
 export {
   profileType,
