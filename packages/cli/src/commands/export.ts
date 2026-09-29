@@ -35,7 +35,7 @@
  * Locally the store sits next to the very directories it names -- an absolute `cwd`, a
  * dash-encoded project label -- so it discloses nothing the filesystem around it does not already
  * show. The leak materialises the moment the corpus LEAVES the machine, and this command is the
- * one place that happens. `--redact` rewrites `corpusLines(store)`'s own result before either
+ * one place that happens. `--redact` rewrites `corpusLines(store.db)`'s own result before either
  * output path below reads it, so the default JSONL and `--json` can never disagree about which
  * lines they carry. `--redact-name` and `--redact-map` are refused outright without `--redact`,
  * rather than silently doing nothing: a caller who typed `--redact-name` alone and got an
@@ -51,30 +51,8 @@
  */
 
 import { Flags } from '@oclif/core';
-import {
-  annotationRows,
-  entryIds,
-  findEntry,
-  listSchemes,
-  listTypes,
-  schemeVersions,
-  typeVersions,
-  type AnnotationRow,
-  type RecordedEntry,
-  type SchemeSummary,
-  type Store,
-} from '@ascend/store';
 import { BaseCommand, OUTPUT_FLAGS } from '../base.js';
-import {
-  annotationLine,
-  entryLine,
-  orderedLine,
-  schemeLine,
-  serializeCorpus,
-  typeLine,
-  type AnnotationLine,
-  type CorpusLine,
-} from '../corpus.js';
+import { corpusLines, orderedLine, serializeCorpus, type CorpusLine } from '../corpus.js';
 import { refusal, usageError } from '../errors.js';
 import {
   buildRedactionMap,
@@ -173,7 +151,10 @@ export default class ExportCorpus extends BaseCommand {
     }
 
     await this.withProject(({ store, root }) => {
-      const rawLines = corpusLines(store);
+      // `store.db` rather than the store: `corpusLines` takes the SQL port, like every other reader
+      // in that package, and the composition itself now lives there -- see its own module doc for
+      // why the second caller (the JSONL migration) moved it out of this file.
+      const rawLines = corpusLines(store.db);
       // Before redaction and before anything reaches stdout, redacted or not: redaction rewrites
       // identity and leaves a secret exactly where it was, so a --redact export needs the check
       // as much as a plain one.
@@ -300,109 +281,6 @@ export default class ExportCorpus extends BaseCommand {
       }
     }
   }
-}
-
-/**
- * Every type version, then every entry, then every scheme version, then every annotation.
- *
- * The order is the contract: `import` registers definitions in the order it reads them, so a
- * stream whose types (or schemes) were sorted differently would mint different version numbers --
- * and `annotations` carries foreign keys to both `entries` and `annotation_schemes` (`schema.ts`),
- * so it has to reach `import` after both. Types and schemes each go in name order -- so two
- * exports of one registry differ only where the registry does, which is what makes a diff of them
- * mean something -- with each name's versions oldest-first. Entries go in `(recorded_at, id)`, the
- * same order `pages.ts` pages in, and annotations go in `(scheme, scheme_version, created_at, id)`
- * -- see `annotationLines` for why the timestamp alone is not enough.
- */
-function corpusLines(store: Store): readonly CorpusLine[] {
-  const types = listTypes(store.db)
-    .map((summary) => summary.name)
-    .sort()
-    .flatMap((name) => typeVersions(store.db, name))
-    .map(typeLine);
-
-  const schemes = listSchemes(store.db)
-    .map((summary) => summary.name)
-    .sort()
-    .flatMap((name) => schemeVersions(store.db, name));
-
-  return [
-    ...types,
-    ...entries(store).map(entryLine),
-    ...schemes.map(schemeLine),
-    ...annotationLines(store, schemes),
-  ];
-}
-
-/**
- * Every entry of every type, hydrated and validated.
- *
- * An id that `entryIds` listed and `findEntry` cannot produce would be a store that disagrees with
- * itself, so it is a refusal naming the id rather than a skipped row: a corpus that is quietly one
- * entry short is the failure this command exists to prevent.
- */
-function entries(store: Store): readonly RecordedEntry[] {
-  const found: RecordedEntry[] = [];
-
-  for (const summary of listTypes(store.db)) {
-    for (const id of entryIds(store.db, summary.name)) {
-      const entry = findEntry(store.db, id);
-      if (entry === undefined) {
-        throw refusal(
-          `the store lists an entry with id ${id} under '${summary.name}' and then cannot read ` +
-            `it back, so the export would be missing a row. Nothing was written. This is a ` +
-            `problem with the store rather than with your input.`,
-        );
-      }
-      found.push(entry);
-    }
-  }
-
-  // Sorted here rather than by the query, because the rows come from one query per type and the
-  // order that matters spans all of them.
-  return found.sort(
-    (left, right) =>
-      left.recordedAt.localeCompare(right.recordedAt) || left.id.localeCompare(right.id),
-  );
-}
-
-/**
- * Every annotation of every scheme version, in `(scheme, scheme_version, created_at, id)` order.
- *
- * `annotationRows` already orders one scheme-version's rows by `(created_at, entry_id)` -- the
- * order a rater's label list reads well in -- but that is not enough to make a *stream*
- * byte-stable, because two annotations of one pass can share a `created_at` (the pass IS its
- * timestamp; see `annotations.ts`) with nothing but `entry_id` breaking the tie, and this stream's
- * own determinism promise is keyed on `id`, not on which entry happened to be labelled. So the
- * rows are read scheme-version by scheme-version and then re-sorted here, by the id `orderedLine`
- * asserts stability over -- the same reason `export.ts`'s own `entries` function sorts across
- * queries rather than trusting any one of them.
- */
-function annotationLines(
-  store: Store,
-  schemes: readonly SchemeSummary[],
-): readonly AnnotationLine[] {
-  const rows: { readonly scheme: string; readonly version: number; readonly row: AnnotationRow }[] =
-    [];
-
-  for (const summary of schemes) {
-    for (const row of annotationRows(store.db, {
-      scheme: summary.name,
-      version: summary.version,
-    })) {
-      rows.push({ scheme: summary.name, version: summary.version, row });
-    }
-  }
-
-  rows.sort(
-    (left, right) =>
-      left.scheme.localeCompare(right.scheme) ||
-      left.version - right.version ||
-      left.row.createdAt.localeCompare(right.row.createdAt) ||
-      left.row.id.localeCompare(right.row.id),
-  );
-
-  return rows.map(({ scheme, version, row }) => annotationLine(row, scheme, version));
 }
 
 /** How many locations a refusal lists before it summarises the rest as a count. */

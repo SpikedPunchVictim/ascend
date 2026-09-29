@@ -7,8 +7,11 @@ import {
   buildIndex,
   documentSpec,
   INDEX_FILE,
+  INVALIDATION_LABELS,
+  listInvalidations,
   openRecordWriter,
   parseCorpus,
+  RESERVED_SCHEME,
   schemeHash,
   serializeCorpus,
   specHash,
@@ -109,10 +112,20 @@ const REVIEW_SPEC = { labels: ['good', 'bad'], rules: [] };
  * ANNOTATION PASSES under one scheme version with different timestamps -- because the pass is the unit
  * `annotationPassGroups` folds on, and a corpus with one pass cannot tell a correct grouping from one
  * that collapses every pass a scheme ever ran into a single call.
+ *
+ * And invalidations, which are the case this fixture exists to reach. An invalidation is NOT a
+ * `kind`: it rides as a scheme line under the reserved name plus annotations, so a corpus holding
+ * only the four kinds is green for invalidations BY CONSTRUCTION -- there would be nothing to
+ * diverge, since neither arm would write the reserved scheme at all.
  */
 function corpus(): readonly CorpusLine[] {
   const noteHash = specHash(documentSpec(NOTE));
   const todoHash = specHash(documentSpec(TODO));
+
+  // The store's own reserved shape: its closed vocabulary and NO rules. `restoreInvalidationScheme`
+  // admits the reserved name only when the spec hashes to exactly this, so a fixture that invented a
+  // rule or dropped a label would be refused by BOTH arms -- green-looking, and testing nothing.
+  const invalidationSpec = { labels: [...INVALIDATION_LABELS], rules: [] };
 
   const entry = (
     n: number,
@@ -162,6 +175,38 @@ function corpus(): readonly CorpusLine[] {
     created_at: createdAt,
   });
 
+  // An invalidation, which is not a `kind` at all: it rides as a scheme line under the reserved name
+  // plus annotations filed under it. Built here rather than reusing `annotation` above, which
+  // hardcodes the `review` scheme and a `null` reason -- and the reason is the field `dogfood/0034`
+  // found the import path does not check, so this fixture carries one and stays out of that defect's
+  // way rather than becoming a second, accidental test of it.
+  const invalidation = (
+    n: number,
+    entryId: string,
+    label: string,
+    createdAt: string,
+    value?: Record<string, unknown>,
+  ): CorpusLine => ({
+    kind: 'annotation',
+    id: ID(200 + n),
+    entry_id: entryId,
+    scheme: RESERVED_SCHEME,
+    scheme_version: 1,
+    label,
+    // Absent, never `null`, when the invalidation supersedes nothing -- `AnnotationLine.value`'s own
+    // rule, and the one both restore paths spell out separately.
+    ...(value === undefined ? {} : { value }),
+    // `recordInvalidation` inserts directly, but BOTH restore paths go through `recordAnnotations`,
+    // so an invalidation restored from a corpus is one of a PASS. Each of these carries its own
+    // timestamp and is therefore a pass of one line -- which is also how they arise in practice,
+    // `recordInvalidation` striking one entry per call -- and it keeps the read-back order a function
+    // of `created_at` rather than of the order the two drivers happened to insert in.
+    confidence: null,
+    note: `reason ${String(n)}`,
+    created_by: 'ann',
+    created_at: createdAt,
+  });
+
   return [
     { kind: 'type', document: NOTE },
     { kind: 'type', document: TODO },
@@ -173,6 +218,18 @@ function corpus(): readonly CorpusLine[] {
       spec: REVIEW_SPEC,
       scheme_hash: schemeHash(REVIEW_SPEC),
     },
+    // The reserved name's own scheme line, with the store's own spec and therefore its own hash.
+    // `restoreInvalidationScheme` admits the name only when `schemeHash(spec)` is the store's, so
+    // this line is not decoration -- without it, or with a spec one label wide, BOTH arms refuse the
+    // whole corpus and the test fails on its fixture rather than on anything under test.
+    {
+      kind: 'scheme',
+      name: RESERVED_SCHEME,
+      version: 1,
+      created_at: '2026-09-05T09:00:00.000Z',
+      spec: invalidationSpec,
+      scheme_hash: schemeHash(invalidationSpec),
+    },
     entry(1, 'note', noteHash, { body: 'first' }),
     // An `na` and an evidence string, so the columns that are easy to carry on one path and drop on
     // the other are populated. `body` is N/A and NOT also measured, which is the store's own rule:
@@ -183,6 +240,16 @@ function corpus(): readonly CorpusLine[] {
     annotation(1, ID(1), 'good', '2026-09-03T09:00:00.000Z'),
     annotation(2, ID(2), 'bad', '2026-09-03T09:00:00.000Z'),
     annotation(3, ID(3), 'good', '2026-09-04T09:00:00.000Z'),
+    // Three invalidations, one per entry, each its own timestamp -- so each is its own single-line
+    // PASS, which is how they are stored in practice (`recordInvalidation` strikes one entry per
+    // call) and which keeps the reading order below a function of `created_at` alone rather than of
+    // insertion order. The middle one carries a value and the others do not: `superseded` names the
+    // entry that replaced it, and `listInvalidations` derives `supersededBy` from that column, so a
+    // driver that dropped it would leave an invalidation pointing at nothing while every row still
+    // differed only in a column no count reads.
+    invalidation(1, ID(1), 'wrong_value', '2026-09-05T09:00:00.000Z'),
+    invalidation(2, ID(2), 'superseded', '2026-09-06T09:00:00.000Z', { superseded_by: ID(3) }),
+    invalidation(3, ID(3), 'wrong_subject', '2026-09-07T09:00:00.000Z'),
   ];
 }
 
@@ -287,11 +354,35 @@ describe('asc import and buildIndex agree about what a corpus means', () => {
     // A non-empty comparison, so two empty dumps cannot pass this by being equal.
     const expected = observable(imported);
     expect(expected.entries).toHaveLength(3);
-    expect(expected.annotations).toHaveLength(3);
+    // Three `review` annotations and three invalidations, which are rows in the same table.
+    expect(expected.annotations).toHaveLength(6);
     expect(expected.entry_types).toHaveLength(2);
-    expect(expected.annotation_schemes).toHaveLength(1);
+    // `review` and the reserved name, which reaches this table through `restoreInvalidationScheme`
+    // rather than `registerScheme`.
+    expect(expected.annotation_schemes).toHaveLength(2);
 
     expect(observable(indexed)).toEqual(expected);
+
+    // And the invalidations read back AS INVALIDATIONS, not merely as rows. `listInvalidations` is
+    // what decides that a `superseded` line names the entry that replaced it, and it is the reader
+    // `asc invalidate --list` puts in front of a person -- so a driver that wrote a `value_json`
+    // neither of them can read would agree with the other arm row for row and still be broken.
+    const invalidations = (db: DatabaseSync): readonly string[] =>
+      [ID(1), ID(2), ID(3)].map((id) => JSON.stringify(listInvalidations(db, id)));
+    const fromImport = invalidations(imported);
+    const fromIndex = invalidations(indexed);
+    // Three entries struck, one entry per invalidation: asserted so three empty lists cannot pass
+    // this by agreeing, and so a corpus where every invalidation landed on ONE entry reads as the
+    // different store it is.
+    expect(fromImport.filter((rows) => rows !== '[]')).toHaveLength(3);
+    expect(fromIndex).toEqual(fromImport);
+
+    // The whole-set read as well, which takes no entry id and so sorts and filters differently --
+    // it is the path whose ORDER the store documents as `created_at DESC, rowid DESC`, and the only
+    // place a driver that lost that ordering would show up.
+    expect(JSON.stringify(listInvalidations(indexed))).toBe(
+      JSON.stringify(listInvalidations(imported)),
+    );
 
     imported.close();
     indexed.close();

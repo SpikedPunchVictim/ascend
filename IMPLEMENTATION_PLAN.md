@@ -1276,7 +1276,24 @@ as the store itself.
     at all; it is a scheme line plus annotations, so nothing that compares *kinds* can see it). The
     check to add is the one `EV-34` used on the real corpus: the invalidation annotations as rows,
     **and** per entry through `listInvalidations()`, which is what "still strikes the same entries"
-    means. **Status:** Not started.
+    means. **Status:** In Progress (2026-09-29). The operation exists as `migrateStoreToTree`
+    (`packages/store/src/migrate.ts`, 9 tests) and the equivalence fixture carries three invalidations
+    now. Two facts only building it could establish:
+    - **`corpusLines` moved out of the CLI into the store** (`packages/store/src/corpus-lines.ts`),
+      because the migration needs the same lines for the same reason `asc export` does and a second
+      spelling would let a store migrate into a tree its own export does not reproduce. `export.ts`
+      loses 130 lines and keeps its behaviour; `corpus.ts`'s shim re-exports it, so no other importer
+      changed.
+    - **The archive convention is the CALLER's**, not the function's: `migrateStoreToTree` takes
+      `archiveDir` and refuses one inside the record directory (the layout's `.gitignore` work
+      un-ignores the record subtree, so a database left there gets committed). Nothing names
+      `.ascend-archived/` yet — **that, and a production caller, are what remains**: the operation has
+      no command surface, which is the one thing this stage did not wire.
+
+    Also established by writing it: the write is **verified by reading the tree back before anything
+    is archived**, compared as SETS of canonical lines (`readRecordTree` imposes its own order on
+    entries and annotations, so a sequence comparison would report a difference where there is none),
+    and every refusal fires **before any write** so a failed migration strands no half-tree.
   - **E12.4b — the write path.** Every writer appends to the tree and maintains the index by the
     decision above. **Success:** a write is visible in the tree and in the index, and a read
     immediately after a write is a cache hit (`0.05 s`) rather than a refusal. **Tests:** both

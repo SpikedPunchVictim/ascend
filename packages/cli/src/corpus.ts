@@ -90,6 +90,7 @@
  */
 export {
   annotationLine,
+  corpusLines,
   entryLine,
   orderedLine,
   parseCorpus,

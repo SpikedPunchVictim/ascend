@@ -229,6 +229,15 @@ export {
 
 export { entryFromLine, typeRegistrationOptions } from './replay.js';
 
+export { corpusLines } from './corpus-lines.js';
+
+export {
+  migrateStoreToTree,
+  type DroppedTable,
+  type MigrationOptions,
+  type MigrationReport,
+} from './migrate.js';
+
 export {
   profileType,
   TOP_K,
