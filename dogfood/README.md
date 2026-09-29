@@ -70,8 +70,12 @@ context; the depth lives in the numbered files.
 | [0027](0027-2026-09-28-a-store-with-invalidations-cannot-be-restored.md) | `asc import` refused the reserved `invalidation` scheme line from the store's own export, so no store with an invalidation could be restored from its backup | `asc-ax8c` (P1, fixed) | the first whole-store export → import, as step one of `asc-o3tn` — nobody was looking for it |
 | [0028](0028-2026-09-28-the-recording-path-is-reachable-only-by-discovery.md) | a session can only record if it discovers the command, and the artifacts it reads teach one the allowlist denies: `asc record` occurs 0 times in the brief, and the shipped hook script's own invocation is `node …/bin.js` — the form one session was denied 4 times before it stopped | `asc-uftd`, `asc-l38f` (P2, open) | a pre-registered measurement (`asc-4so.3`) whose prediction held while the written *reason* for it turned out to be false — nobody was looking |
 | [0029](0029-2026-09-28-prose-defined-onto-a-version-nobody-reads.md) | `asc types define` resolves a document's version by shape and reports `prose-updated` for a write onto a version nobody reads: a stale-shape document landed on `review_finding` version 1 (0 entries) while version 2 (112 entries) is what every reader by name shows | `asc-w0b2` (P3, open) | a probe written to check whether a prose edit had reached the live store, after misreading one `instr()` column as a flag — nobody was looking for it |
+| [0030](0030-2026-09-29-a-scheme-name-is-any-string.md) | a scheme name is any string, so no layout may assume it is a path segment: `requireName` refuses only the empty string and the reserved name, and 3 of the store's 7 live scheme names are outside `[a-z0-9_]` — the refusing guard threw on the project's own corpus | `asc-i5tj.5` (P2, open; the remedy was corrected the same day — percent-encoding was not injective, bounded, or case-safe) | the first run of the new record layer against this project's own `asc export` corpus — nobody was looking for it |
+| [0031](0031-2026-09-29-a-type-line-carries-no-version.md) | a `TypeLine` carries no version, so "keep FILE order" does not prevent the renumbering it exists to prevent: `merge=union` reorders before the reader sees it, and the version is read from the order | `asc-i5tj.6` (P1, open) | writing the same 10,263-line corpus forward and reversed, read back byte-for-byte, to confirm the ordering rule — nobody was looking for the type/scheme half |
+| [0032](0032-2026-09-29-a-union-merge-duplicates-a-shared-record.md) | a `merge=union` merge is clean and STILL duplicates a shared derived record — positionally, once when both sides align the line and twice when they interleave it — and the reader did not dedupe: merge exit 0, 0 conflicts, 4 raw lines, 3 distinct records read | `asc-i5tj.7`, `asc-i5tj.13` (P1, fixed in the working tree) | an adversarial review of E12.1 on the same model as the authoring session, which also refuted the plan's claim that the acceptance criterion had been met "in substance" — two halves measured, the join assumed |
+| [0033](0033-2026-09-29-a-tripwire-fired-because-the-work-got-done.md) | a tripwire test written to say "I have nothing to say" went red because the gap it named closed: the real corpus reached 18 `review.finding` events, and 18 = 2 calls x 9 findings — the first of those calls was REFUSED by the harness, so the deriver counts attempted findings | `asc-2uov` (P2, open) | the quality gate, run after fixing a review's findings — nobody was looking for it |
 
-Twenty-nine findings, each with its own mechanism. The mechanism is the part that repeats even when
+Thirty-three findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
 > Rows 0016 and 0017 were added 2026-09-26; 0016 had been written but never indexed, and the
@@ -87,6 +91,12 @@ the findings do not, so each record states its own explicitly.
 > instances in two days is what turns a class from a note into something to look for, which is why
 > the record states the cheap detector: for every report, check that the headline count equals the
 > sum of the counts that decompose it.
+>
+> **Adding 0030-0033, the detector was run first.** `grep -c '^| \[0'` returned 29 against a
+> sentence saying twenty-nine, so the two agreed before the edit; four rows were added with no blank
+> line among them, and the sentence and the count were both moved to thirty-three and re-checked.
+> Recording the procedure because the three previous instances were all found *after* the fact, and a
+> detector that is only ever run afterwards has not been shown to work.
 >
 > **Adding 0029, the count held and the table was still wrong.** The sentence said twenty-eight and
 > `grep -c '^| \[0'` returned 28 — correct on the number, while the row added for 0028 carried a
