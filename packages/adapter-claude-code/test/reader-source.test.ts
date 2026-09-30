@@ -1,7 +1,8 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 /**
  * "Read-only on ~/.claude/projects" is the adapter's most important promise and
@@ -32,6 +33,19 @@ import { describe, expect, it } from 'vitest';
  */
 
 const SRC = fileURLToPath(new URL('../src', import.meta.url));
+
+/** Planted trees this file builds, removed after each test. */
+const dirs: string[] = [];
+
+const tempDir = (): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'ascend-reader-source-'));
+  dirs.push(dir);
+  return dir;
+};
+
+afterEach(() => {
+  while (dirs.length > 0) rmSync(dirs.pop() as string, { recursive: true, force: true });
+});
 
 const FS_SPECIFIERS = new Set(['node:fs', 'node:fs/promises']);
 
@@ -133,11 +147,29 @@ function writeCapableImports(source: string): string[] {
   return offenders;
 }
 
-const sourceFiles = (): string[] =>
-  readdirSync(SRC, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
-    .map((entry) => entry.name)
+/**
+ * Every `.ts` file under `root`, RECURSIVELY, as a path relative to `root`, sorted.
+ *
+ * Recursive, and that is a correction rather than a preference. The flat walk this replaced used
+ * `withFileTypes` and kept only `entry.isFile()`, so a module moved into `src/<anything>/`
+ * disappeared from the scan without a word -- the file the read-only promise most depends on would
+ * have stopped being judged while this suite reported green. Measured 2026-09-30, in this package's
+ * REAL tree: with `src/planted-probe/offender.ts` holding `import { writeFileSync } from 'node:fs'`,
+ * this file reported `11 passed` and the real assertion's `offenders` was `[]`. `{ recursive: true }`
+ * is this repository's idiom for a src scan (`writer-callers.test.ts`,
+ * `index-build-is-explicit.test.ts`); the enumerated list below is what still forces a new file to
+ * be acknowledged, and it now sees nested ones too.
+ *
+ * Takes a ROOT rather than closing over `SRC` so the walk can be pointed at a planted tree and
+ * shown to reach into a subdirectory -- the property the test below pins.
+ */
+const sourceFilesUnder = (root: string): string[] =>
+  readdirSync(root, { recursive: true })
+    .map((name) => String(name).split('\\').join('/'))
+    .filter((name) => name.endsWith('.ts'))
     .sort();
+
+const sourceFiles = (): string[] => sourceFilesUnder(SRC);
 
 const read = (name: string): string => readFileSync(join(SRC, name), 'utf8');
 
@@ -214,6 +246,26 @@ describe('the check is not vacuous', () => {
       'transcript-file.ts',
       'transcript-root.ts',
     ]);
+  });
+
+  it('reaches a file in a subdirectory, so a new directory cannot escape the scan', () => {
+    // The failure this pins was MEASURED, not imagined: with `src/planted-probe/offender.ts`
+    // holding `import { writeFileSync } from 'node:fs'`, this whole file reported `11 passed` and
+    // the real assertion's `offenders` was `[]` -- the flat walk never saw the file. A guard that
+    // stops covering new code without saying so is the "reports success wrongly" class.
+    const root = tempDir();
+    mkdirSync(join(root, 'nested'));
+    writeFileSync(join(root, 'top.ts'), "import { readFileSync } from 'node:fs';\n");
+    writeFileSync(join(root, 'nested', 'deep.ts'), "import { writeFileSync } from 'node:fs';\n");
+
+    expect(sourceFilesUnder(root)).toEqual(['nested/deep.ts', 'top.ts']);
+
+    // Judged the way the real assertion judges: the deep file is named as the offender, by its
+    // nested path, so the failure message would say where a stray write appeared.
+    const offenders = sourceFilesUnder(root).flatMap((name) =>
+      writeCapableImports(readFileSync(join(root, name), 'utf8')).map((api) => `${name}: ${api}`),
+    );
+    expect(offenders).toEqual(['nested/deep.ts: writeFileSync']);
   });
 
   it('actually finds fs imports to judge', () => {

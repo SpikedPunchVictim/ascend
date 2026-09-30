@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -686,10 +686,27 @@ describe('a property named `constructor` is an ordinary property', () => {
 describe('exactly one write path, and no ambient clock', () => {
   const SRC = fileURLToPath(new URL('../src', import.meta.url));
 
-  const sources = (): { file: string; source: string }[] =>
-    readdirSync(SRC)
+  /**
+   * Every `.ts` file under `root`, RECURSIVELY, as a path relative to `root`.
+   *
+   * Recursive, and that is a correction rather than a preference. The flat walk this replaced read
+   * only the top level, so a module moved into `src/<anything>/` left both invariants in this block
+   * uncovered while the suite stayed green -- the "reports success wrongly" class. Measured
+   * 2026-09-30, in this package's REAL tree: with `src/planted-probe/offender.ts` holding both
+   * `INSERT INTO entries` and `Date.now()`, "writes entries from exactly one module" and "reads no
+   * clock" each reported `1 passed`. `{ recursive: true }` is this repository's idiom for a src scan
+   * (`writer-callers.test.ts`, `index-build-is-explicit.test.ts`).
+   *
+   * Takes a ROOT rather than closing over `SRC` so the walk can be pointed at a planted tree and
+   * shown to reach into a subdirectory -- the property the test in this block pins.
+   */
+  const sourcesUnder = (root: string): { file: string; source: string }[] =>
+    readdirSync(root, { recursive: true })
+      .map((name) => String(name).split('\\').join('/'))
       .filter((name) => name.endsWith('.ts'))
-      .map((name) => ({ file: name, source: readFileSync(join(SRC, name), 'utf8') }));
+      .map((name) => ({ file: name, source: readFileSync(join(root, name), 'utf8') }));
+
+  const sources = (): { file: string; source: string }[] => sourcesUnder(SRC);
 
   /**
    * Remove comments, so prose ABOUT a banned token is not read as the token itself.
@@ -862,6 +879,27 @@ describe('exactly one write path, and no ambient clock', () => {
     // by schema.test.ts:205-225. Recorded here so the omission reads as a decision.
     expect(scan('UPDATE entries SET source = ? WHERE id = ?;', WRITE)).toEqual([]);
     expect(scan('DELETE FROM entries WHERE id = ?;', WRITE)).toEqual([]);
+  });
+
+  it('reaches a file in a subdirectory, so a new directory cannot go unjudged', () => {
+    // The failure this pins was MEASURED, not imagined: with `src/planted-probe/offender.ts`
+    // holding both `INSERT INTO entries` and `Date.now()`, this block's two assertions above both
+    // stayed green -- the flat walk never read the file, so both invariants had stopped covering
+    // it while the suite reported success.
+    const root = tempDir();
+    mkdirSync(join(root, 'nested'));
+    writeFileSync(join(root, 'top.ts'), 'const ok = 1;\n');
+    writeFileSync(
+      join(root, 'nested', 'deep.ts'),
+      'db.prepare("INSERT INTO entries (id) VALUES (?)");\nconst t = Date.now();\n',
+    );
+
+    const found = new Map(sourcesUnder(root).map(({ file, source }) => [file, source]));
+    expect([...found.keys()].sort()).toEqual(['nested/deep.ts', 'top.ts']);
+
+    // Both guards fire on the nested file they would never have read.
+    expect(scan(found.get('nested/deep.ts') ?? '', WRITE)).toEqual([1]);
+    expect(scan(found.get('nested/deep.ts') ?? '', CLOCK)).toEqual([2]);
   });
 
   it('writes entries from exactly one module', () => {

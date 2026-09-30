@@ -94,8 +94,20 @@ context; the depth lives in the numbered files.
 | [0045](0045-a-surface-that-projects-a-column-its-own-filter-cannot-name.md) | `asc explore <type> --filter` cannot name the `invalidated` column the same command prints one line earlier: the predicate is evaluated over a projection of the type's own columns (`type-filter.ts`), and `invalidated` is a value the map COMPUTES, so `--filter "invalidated is not null"` died with *"no such column: invalidated"* — while `--group-by` and `--select` both REFUSE the same name with a message listing the four declared properties, so the one door that leaks is the one whose error text ends *"If the statement was not one you wrote, this is a bug in ascend"*. **3,144 of 6,601 entries (47.6%) had stopped counting and no invocation could select one of them by that fact**; for `decision` it was 1 of 95 | `asc-bqb5` (P2, fixed in the working tree) | trying to inventory the struck entries of one type, to decide what `asc-9xi0` should move on the read path — the help is truthful, so nothing read for a contradiction turns this up |
 | [0046](0046-a-preview-that-mints-an-id-it-will-not-use.md) | `asc record --dry-run` reports an entry id that **cannot** be written: `record.ts:692` mints `merged.id ?? randomUUID()` and the dry run is a separate call, so three dry runs and three real runs of byte-identical content gave six distinct ids and the store held exactly the three real ones — while `--dry-run --json` returns a row shaped like the write's (`type_hash`, `recorded_at`, `states`, `dry_run:true`) with nothing saying the `id` is a specimen, and the one obvious use of a previewed id is a command that takes ids. Scoped to a MINTED id: a document naming one round-trips exactly (`11111111-…` on both arms) | `asc-mw1u` (P3, open) | dry-running three `decision` documents before writing them to an immutable store, and reading the two outputs while they were adjacent — the dry run was being read for its **warnings**; nobody was looking at the ids |
 
-Forty-six findings, each with its own mechanism. The mechanism is the part that repeats even when
+| [0047](0047-a-guard-that-stops-at-the-top-level.md) | three source-scanning guards enumerate a package's `src/` tree with a single **non-recursive** `readdirSync`, so the first subdirectory added under any of those trees is not read and the guard keeps reporting success — proven by planting a real `src/planted-probe/offender.ts` in each real tree: `INSERT INTO entries` + `Date.now()` + `node:sqlite` in the store's, `writeFileSync` in the adapter's, and the four guards still reported **`1 passed` ×3 and `11 passed`**; after `{ recursive: true }` the same plant fails 6 assertions. The bead names two guards; the sweep found **3 of 7** flat, the third (`sql-port.test.ts`) unnamed | `asc-y9ut` (P2, fixed in the working tree) | placing a module for `asc-i5tj` where `readdirSync(SRC)` sat one line from the file being moved — nobody was looking for a guard defect, and the class was only counted on the second pass, by asking what else lists a `src/` tree |
+
+Forty-seven findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
+
+> **Adding 0047, the detector ran first and agreed a twelfth time.** `grep -c '^| \[0'` returned 46
+> against a sentence saying Forty-six before the edit; the row was added flush, the sentence moved to
+> forty-seven, and the count re-run — **47**. `ls dogfood/ | grep -E '^[0-9]{4}-' | wc -l` returns
+> **48**, which is 47 records plus `0000-template.md` — the same trap 0046's and 0045's notes record,
+> and again the two are reconciled by NUMBER rather than by arithmetic: the numbers on disk are
+> `0001`–`0047` and the numbers indexed are `0001`–`0047`, with no gap on either side and neither set
+> repeating another. 0047 is also the third record in a row to be filed for a bead that had been
+> sitting unrecorded — filing the bead is not enough, and the lag is where a mechanism stops being
+> taught.
 
 > **Adding 0046 and 0045, the detector ran first and agreed an eleventh time.** `grep -c '^| \[0'`
 > returned 44 against a sentence saying Forty-four before the edit; the two rows were added flush, the

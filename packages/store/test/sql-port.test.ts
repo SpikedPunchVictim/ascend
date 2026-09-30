@@ -1,8 +1,9 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { SqlDatabase, SqlStatement } from '../src/sql-port.js';
 
 /**
@@ -31,6 +32,19 @@ import type { SqlDatabase, SqlStatement } from '../src/sql-port.js';
  */
 
 const SRC = fileURLToPath(new URL('../src', import.meta.url));
+
+/** Planted trees this file builds, removed after each test. */
+const dirs: string[] = [];
+
+const tempDir = (): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'ascend-sql-port-'));
+  dirs.push(dir);
+  return dir;
+};
+
+afterEach(() => {
+  while (dirs.length > 0) rmSync(dirs.pop() as string, { recursive: true, force: true });
+});
 
 /**
  * Remove comments, so PROSE about the driver is not read as an import of it.
@@ -62,21 +76,37 @@ const stripComments = (source: string): string =>
 const DRIVER_IMPORT = /\bimport\b[\s\S]*?from\s*['"]node:sqlite['"]/;
 
 /**
- * Every module in `src/` that imports the driver, by file name, sorted.
+ * Every module under `root` that imports the driver, by path relative to `root`, sorted.
+ *
+ * RECURSIVE, and that is a correction rather than a preference. The flat walk this replaced read only
+ * the top level, so a module moved into `src/<anything>/` left this file's whole claim -- that "a new
+ * module cannot reach for `node:sqlite` without failing the first test" -- quietly false. Measured
+ * 2026-09-30, in this package's REAL tree: with `src/planted-probe/offender.ts` importing
+ * `node:sqlite`, the test below reported `1 passed`. `{ recursive: true }` is this repository's idiom
+ * for a src scan (`writer-callers.test.ts`, `index-build-is-explicit.test.ts`).
+ *
+ * Takes a ROOT rather than closing over `SRC` so the walk can be pointed at a planted tree and shown
+ * to reach into a subdirectory -- the property the control test pins.
  *
  * A FRESH regex is built per file rather than the pattern being hoisted, and that is a correction
  * rather than a style choice: `.test()` on a `g` regex advances `lastIndex`, so a hoisted one would
  * answer for the first file and then skip ahead in the next, reporting a file that does import the
  * driver as one that does not. `recorder.test.ts` names the same trap for the same reason.
  */
-function driverImporters(): string[] {
-  return readdirSync(SRC)
+function driverImportersUnder(root: string): string[] {
+  return readdirSync(root, { recursive: true })
+    .map((name) => String(name).split('\\').join('/'))
     .filter((name) => name.endsWith('.ts'))
     .filter((name) => {
-      const source = stripComments(readFileSync(join(SRC, name), 'utf8'));
+      const source = stripComments(readFileSync(join(root, name), 'utf8'));
       return new RegExp(DRIVER_IMPORT.source, 'g').test(source);
     })
     .sort();
+}
+
+/** The same walk over the package's real `src/`. */
+function driverImporters(): string[] {
+  return driverImportersUnder(SRC);
 }
 
 describe('the store names the driver in exactly one module', () => {
@@ -84,6 +114,20 @@ describe('the store names the driver in exactly one module', () => {
     // `db.ts` is asserted by NAME rather than by count, so a second import landing in a new file is
     // a failure that says which file, and moving the driver out of `db.ts` is a failure too.
     expect(driverImporters()).toEqual(['db.ts']);
+  });
+
+  it('reaches a module in a subdirectory, so a new one cannot reach for the driver unseen', () => {
+    // The failure this pins was MEASURED, not imagined: `src/planted-probe/offender.ts` importing
+    // `node:sqlite` left the assertion above green, because the flat walk never read the file. The
+    // port's whole claim is that "a new module cannot reach for `node:sqlite` without failing the
+    // first test" -- and a module in a subdirectory could.
+    const root = tempDir();
+    mkdirSync(join(root, 'nested'));
+    writeFileSync(join(root, 'db.ts'), "import { DatabaseSync } from 'node:sqlite';\n");
+    writeFileSync(join(root, 'nested', 'deep.ts'), "import { DatabaseSync } from 'node:sqlite';\n");
+    writeFileSync(join(root, 'clean.ts'), "import { join } from 'node:path';\n");
+
+    expect(driverImportersUnder(root)).toEqual(['db.ts', 'nested/deep.ts']);
   });
 
   it('publishes the port, so a caller outside the package can name it', () => {

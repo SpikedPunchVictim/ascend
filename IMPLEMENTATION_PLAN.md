@@ -1981,6 +1981,41 @@ as the store itself.
   intact. Final gate **green**: 124 files / **2879** passed, 2 skipped (+47); typecheck 0, lint 0,
   `format:check` 0, `align` green (parse, architecture, security all 0 violations).
 
+- **E12.9 — a guard that stops at the top level (`asc-y9ut`, P2, done 2026-09-30).** Three
+  source-scanning guards enumerated a package's `src/` tree with a single non-recursive `readdirSync`,
+  so the first subdirectory added under any of those trees would have been read by nobody while the
+  guards stayed green — the "reports success wrongly" class, because a scan that sees less is
+  indistinguishable from a scan whose subjects are clean. The bead named two:
+  `store/test/recorder.test.ts` (the one-write-path and no-ambient-clock guards over `store/src`) and
+  `adapter-claude-code/test/reader-source.test.ts` (the adapter's read-only promise). **A sweep of
+  every `readdirSync` over a package `src/` tree in `packages/*/test` found 3 of 7 flat** — the third,
+  `store/test/sql-port.test.ts`, carries the claim that `db.ts` and nowhere else names `node:sqlite`,
+  and the bead did not name it. Nobody was looking for a third.
+
+  *Measured, not assumed*, which is the whole point of the stage: a real
+  `src/planted-probe/offender.ts` was written into each real tree — `INSERT INTO entries` + `Date.now()`
+  + `import { DatabaseSync } from 'node:sqlite'` into the store's, `import { writeFileSync } from
+  'node:fs'` into the adapter's — and only the guards claiming to cover that tree were run. **Before**
+  the fix all four reported green with the violations sitting in the tree (`1 passed` ×3 and
+  `11 passed`); **after** `{ recursive: true }` on the three walkers the same plant fails six
+  assertions, including `reader-source.test.ts`'s enumerated-file list — the mechanism that forces a
+  new file to be acknowledged, and therefore exactly as blind as the walk it guards.
+
+  *The permanent tests plant a temp directory, never `src/`* — `writer-callers.test.ts`'s recorded
+  reasoning, that a planted file would make the real assertion fail for a reason that is not a defect.
+  Three new tests, one per guard, each asserting the walk reaches a nested file; bind checked **by
+  mutation**: deleting `, { recursive: true }` from the three walkers and nothing else fails exactly
+  those 3 of 60.
+
+  *Recorded as `dogfood/0047`*, under the class `dogfood/0039` already named — a report true about what
+  it read and false about what it claims. **The class is closed at three instances and not as a
+  class**: the recursion is written three times and nothing enforces it, so a fourth coverage guard can
+  be flat again. Two structural remedies were considered and not taken, and the record says why.
+
+  *Tests*: the suite moved **2879 → 2882 (+3)**. Full gate **green**: 124 files / **2882** passed,
+  2 skipped; typecheck 0, lint 0, `format:check` 0, `align` green (parse, architecture, security all 0
+  violations).
+
 **Status: E12.1 and E12.2 built; E12.3 built as the seam and its settlement** (2026-09-29) — the record
 layer exists (37 tests), the derived index exists (26 tests after `asc-i5tj.3.1`), the store names a SQL
 port instead of the driver (3 tests, one module may import `node:sqlite`, pinned by name), and
