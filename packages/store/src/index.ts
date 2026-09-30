@@ -210,6 +210,7 @@ export {
   MAX_RECORDS_PER_FILE,
   openRecordWriter,
   readRecordTree,
+  readRecordTreeAndFingerprint,
   recordFiles,
   writeGitattributes,
   type RecordFile,

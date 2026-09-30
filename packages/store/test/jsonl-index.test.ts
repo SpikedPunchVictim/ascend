@@ -11,7 +11,44 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+/**
+ * The trap that stands in for the race, and the only reason this file mocks `node:fs`.
+ *
+ * A build that reads the tree twice can be caught by watching the reads: the second read of a record
+ * file *is* the second traversal, and this makes that read do what a racing writer does -- append a
+ * record that the already-read lines do not contain. Nothing a correct build does can reach it.
+ * Declared through `vi.hoisted` because the mock factory below is hoisted above every import and
+ * would otherwise read the binding before it exists.
+ */
+const trap = vi.hoisted(() => ({
+  path: null as string | null,
+  line: '',
+  armed: false,
+  seen: false,
+  fires: 0,
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    default: actual,
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+      const target = args[0];
+      if (trap.armed && typeof target === 'string' && target === trap.path) {
+        if (trap.seen) {
+          trap.fires += 1;
+          actual.appendFileSync(target, trap.line);
+        } else {
+          trap.seen = true;
+        }
+      }
+      return actual.readFileSync(...args);
+    },
+  };
+});
 import {
   annotationRows,
   buildIndex,
@@ -436,6 +473,43 @@ describe('a build is published whole, or not at all', () => {
     expect(
       store.db.prepare('SELECT value FROM meta WHERE key = ?').get('abandoned_writer'),
     ).toBeUndefined();
+  });
+
+  it('reads each record file once, so there is no instant between two of its own traversals', () => {
+    // `asc-tyl7`: the build read the tree, then re-read the same files to fingerprint them, and an
+    // append landing between the two was absent from what was replayed and present in what was
+    // stamped -- 4.2% of races in `EV-38`, permanent, and readable.
+    //
+    // The interleave cannot be produced from in-process test code, so it is produced here by
+    // watching the reads themselves: the second read of any record file is the second traversal, and
+    // that is where the trap arms. Nothing about a correct build can reach it. The mutation check
+    // this test was verified with -- putting `treeFingerprint(root)` back beside `readRecordTree`
+    // -- is recorded with the fix, because a trap that never fires passes silently.
+    const root = tree(WHOLE_CORPUS);
+    const partition = recordFiles(root).find((file) => file.kind === 'entry');
+    expect(partition).toBeDefined();
+    if (partition === undefined) return;
+
+    trap.path = join(root, partition.relative);
+    trap.line = serializeCorpus([entry(99)]);
+    trap.armed = true;
+    trap.seen = false;
+    trap.fires = 0;
+    try {
+      build(root);
+    } finally {
+      trap.armed = false;
+    }
+
+    // The assertion the fix is: a build never reaches its own second traversal, because there is
+    // none. A trap that never fires proves nothing on its own -- the mutation check in `dogfood/0045`
+    // is what makes it a measurement rather than a decoration.
+    expect(trap.fires).toBe(0);
+    // And the read still succeeds, which is the whole point: the index a build publishes answers.
+    const store = openIndex(root, join(root, INDEX_FILE));
+    expect(
+      store.db.prepare('SELECT value FROM meta WHERE key = ?').get('index_fingerprint'),
+    ).toEqual({ value: treeFingerprint(root) });
   });
 
   it('leaves the previous index untouched when the tree cannot be read', () => {

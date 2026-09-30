@@ -1739,6 +1739,137 @@ as the store itself.
   part of `asc index build`: the index is derived and a read path that rewrites the tree is a writer.
   Full measurement in `docs/evidence/EV-37.md`.
 
+- **E12.7 — a build and a writer at once (`asc-tyl7`, P1, measured 2026-09-30).** A build publishes by
+  `renameSync` and takes no lock, and EV-35's *build, then write* ruling put a build on the write path,
+  so the two can overlap. `EV-38` measured it with two real processes on a copy of this tree: the
+  defect is **not** the rename but a gap **inside** `buildIndex` — it reads the tree with
+  `readRecordTree` and then re-reads the same files with `treeFingerprint`, so an append landing
+  between the two is absent from what is replayed and present in what is stamped. **4.2% of races
+  publish an index that reports current while missing the writer's record** (window 165 ms of a 3.9 s
+  build; random-timing n=24 agreed at 1/24), the omission survives every later write, and a read
+  returns it happily. The other ~96% leave the index stale — a refusal, the safe direction — but
+  `writeLines` reported `stale: false` for a replay that had gone to a replaced inode. The owner chose
+  the shape from `EV-38`'s options: close the window by construction, and make the writer's report
+  honest.
+
+  **Stage 1 — one traversal.** *Goal*: a build's fingerprint describes exactly the lines it replays.
+  The per-file fold moves into one helper shared by `treeFingerprint` and a new fused read, so the fold
+  cannot drift between them and **the fingerprint's value is unchanged** (no forced rebuild).
+  *Tests*: an append placed between the two traversals must land in one of them and not the other —
+  the red test drives `writeLines` from inside a traversal to make the interleaving deterministic, and
+  the existing equivalence suite (`matches a from-scratch build after a sequence of appends to the
+  tree`, `builds the same index when deleted and rebuilt`) must stay green.
+  *Status*: **Complete (2026-09-30).** What was planned did not survive contact: `writeLines` cannot be
+  driven from *inside* a build's traversal, so no in-process test can produce the interleave — the
+  suite is blind to this defect by construction, the same way `dogfood/0044`'s trigger was. What was
+  built instead is a **read trap**: `jsonl-index.test.ts` mocks `node:fs` and turns the *second* read
+  of any record file into a racing append, which is exactly and only what a second traversal is. It
+  asserts `trap.fires === 0`. The mutation check is the evidence that the trap is a measurement and
+  not a decoration — with `treeFingerprint(root)` put back beside `readRecordTree`, it reports
+  `expected 1 to be +0` — and a trap that never fires passes silently, so the check is recorded with
+  the fix rather than described here. The seam itself is pinned in `jsonl-files.test.ts` by three
+  tests, including one that performs the *old* two-call sequence and asserts the two describe
+  different instants (the hazard as an executable fact). Verified end to end on this repo's own tree:
+  22 files, the fingerprint the new code computes is byte-identical to the old formula's
+  (`1ba57791e9469e44…`), so no existing index is invalidated; `asc index build` then `asc types brief`
+  on the real binary, exit 0. Gate green at 124 files / **2831** passed (+4).
+
+  **Stage 2 — the writer's report.** *Goal*: a write whose replay went to a replaced inode says so.
+  After the transaction, compare the stamp the write put there against the stamp the **path** now
+  holds (a fresh by-path read, not the handle — the handle is the whole problem). *Tests*: a write
+  that commits into an index a build has replaced reports not-current; one that does not, reports
+  current.
+  *Status*: **Complete (2026-09-30).** One helper, `indexAtPathCarries`, asked after the handle is
+  closed and **by path**. `writeProducedLines` throws `IndexStaleError` — it has no `stale` field and
+  its contract is refuse-never-proceed, so a refusal naming the truth (*"the file at that path was
+  replaced while this write held it, so the records are in the JSONL and not in the index"*) is the
+  honest report; `writeLines` returns `stale: true`, and `WriteReport.stale`'s doc now states both
+  causes rather than only the pre-write one. The test drives the **real `buildIndex`** from inside the
+  write's own transaction — the body is the injection point, so the race is deterministic instead of
+  timed — and it was red first: `expected function to throw an error, but it didn't`. Two things the
+  writing of it found:
+  - **A bare `renameSync` over `index.db` is NOT the race.** With the sidecars left alone the write's
+    frames reach the file at the path anyway (its `-wal` is at the path and is recovered onto whatever
+    sits there — `dogfood/0044`'s mechanism, seen from the other side), so a stamp comparison cannot
+    see it, and the index left behind is the *other* tree's rows plus this write's, stamped current.
+    Only a publication that removes `-wal`/`-shm` first — which `buildIndex` has done since `asc-pwv7`
+    — produces the orphan this fixes. **Named as a limitation, not fixed**: detecting that mixture
+    needs more than a stamp, and the only writers of that path are builds, which no longer do it.
+  - **`writeLines`' branch of this is unmeasured**, for the reason `EV-38` already gives: it has no
+    caller outside tests and no injection point, so its post-check is shared code verified through
+    `writeProducedLines`. Stated rather than implied.
+  Gate green at 124 files / **2832** passed.
+
+  **Stage 3 — the class, and what is deliberately not fixed.** `EV-38` names two members it argued
+  about and did not measure: `openIndex` (hashes then reads the stamp — argued to be a point-in-time
+  answer rather than a published artifact, and reads cannot afford a full parse per open) and
+  `writeLines`' own fingerprint-then-append (a two-writer race, which can produce the same permanent
+  omission). *Goal*: each is either measured and fixed, or recorded as a decision with its reason, so
+  neither is left looking like an oversight.
+  *Status*: **Complete (2026-09-30) — two decisions, neither fixed, and the second is no longer merely
+  argued.** The interleaving EV-38 labelled *argued* is written out and checked against the code, and
+  it holds — `replayInto` (`:690-702`) stamps in the same transaction as the replay, so the stamp left
+  behind is the last replayer's, and that is what makes this reachable:
+  ```
+  1. writer 1  before = T0; index stamp T0  -> current, branch (a)
+  2. writer 1  appends its line             -> tree T1
+  3. writer 2  before = T1; index stamp T0  -> NOT current, branch (b): append, report stale, replay nothing
+  4. writer 2  appends its line             -> tree T2
+  5. writer 1  treeFingerprint (135 ms)     -> T2, which INCLUDES writer 2's line
+  6. writer 1  replays its OWN line, stamps T2 -> index carries writer 1's line, not writer 2's, and
+                                                 the stamp equals the tree. A read succeeds.
+  ```
+  The window is writer 1's second `treeFingerprint` — the same traversal-length window as Stage 1's
+  4.2%, and `writeLines` is the only function with that shape. **Not fixed, and the fixes considered
+  and rejected:** a third traversal comparing the stamp against a fresh fingerprint *narrows* the
+  window rather than closing it (nothing stops a move after the check) and costs another 135 ms per
+  write; replaying from the tree closes it and turns every write into a mini-build; taking the index
+  lock across the append is what `writeProducedLines` already does — and that is the reason this is
+  acceptable to leave: `writeLines` has no caller outside tests, and the real write path's version of
+  this race does not produce an omission, it produces a *build* (`:534-536`, writer 2 sees a
+  not-current index and builds), which is the orphan race Stage 1 and Stage 2 close. `openIndex` is a
+  decision for the reason `EV-38` gives and one more: the answer it returns is *as of* the hash it
+  took, which is what a read of a derived index is, whereas `buildIndex` PERSISTS an artifact
+  certifying a tree. The three-way distinction — persisted claim (defect), as-of answer (not), and a
+  report about a handle (defect, fixed in Stage 2) — is the shape of the class.
+
+  **Stage 4 — records and the gate.** `EV-38` (written), the `dogfood/` record for what a build racing
+  a writer hands a user, the `evidence_record` and `decision` entries, and the gate.
+  *Status*: **Complete (2026-09-30) — with one item deliberately not done, and the reason.** **No
+  `dogfood/` record was written.** The convention's own test is *"did anyone ask the question first?"*,
+  and here the bead named both the question and the experiment, so the finding belongs in
+  `docs/evidence/EV-38.md` and a dogfood record of it would be the ask-first case wearing the other
+  series' clothes. The one thing the fix work handed over unasked — that a rename leaving the sidecars
+  in place is *not* the orphan, and that `buildIndex`'s `rmSync` pair is load-bearing for a second
+  reason — is **the same mechanism `dogfood/0044` already records** (a `-wal` recovered onto whatever
+  file sits beside it), so `0045` would have been a duplicate, and the series is worth more without it.
+  It lives in Stage 2's status above and in the code comment on `indexAtPathCarries`, which is where
+  the next person to touch that line will be.
+
+  Store entries, recorded with `asc record` against this repo's own tree — which also exercised the
+  fixed write path end to end:
+  - `evidence_record` **`0bdcc6be-e72e-4739-bd3e-9d9ae114e0c6`** — EV-38: question, method, the
+    verbatim measurement blocks, arms `{stale 23/24, false-green 1/24}`, decision, confidence.
+  - `decision` **`5fba1dba-e938-4658-b8ac-b9fae438735b`** — the fix shape: one traversal plus an honest
+    writer report, against the lock and the no-rename build, with the measured reason each lost.
+  - `decision` **`6dd91d44-b285-46ce-8686-62346b8cefc4`** — `openIndex` stays an as-of read, and the
+    persisted-claim / as-of-answer / report-about-a-handle split the class turns on.
+  - `decision` **`d76e50bd-4d9b-474b-b818-a050cdf2086b`** — `writeLines`' two-writer omission left
+    unfixed, with the interleaving and the three rejected fixes.
+  - **A mistake, recorded rather than smoothed over:** the first `asc record` wrote an entry and a JSON
+    field probe on its output printed `None None`, which was read as a failure — so the command was run
+    again and the store held two identical `evidence_record`s. Entries are immutable and cannot be
+    deleted, so the duplicate `a0f7557f-ab66-42d5-abda-12ed4834ab09` was struck with
+    `asc invalidate --label superseded --superseded-by 0bdcc6be…`
+    (`inv-d5ad43478903fc5cf25e1d764ceae928c374f588548724ae6c6d87af6257f50c`). The probe was wrong, not
+    the write — a tooling mistake worth one line, since it is a second instance of the shape
+    `dogfood/0041` records: a strike is written and **no read path consults it**, so the duplicate still
+    counts in every listing (`asc-9xi0`, open). Verified rather than repeated: `asc types list` reports
+    **43** `evidence_record` entries and the struck id is **still present** in `entries` (1 row), so the
+    strike removed nothing from the count.
+  Final gate **green**: 124 files / **2832** passed, 2 skipped; `align` verdict green (parse,
+  architecture, security all 0 violations).
+
 **Status: E12.1 and E12.2 built; E12.3 built as the seam and its settlement** (2026-09-29) — the record
 layer exists (37 tests), the derived index exists (26 tests after `asc-i5tj.3.1`), the store names a SQL
 port instead of the driver (3 tests, one module may import `node:sqlite`, pinned by name), and

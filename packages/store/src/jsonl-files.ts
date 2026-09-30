@@ -82,6 +82,7 @@
  * a merge conflict.
  */
 
+import { createHash, type Hash } from 'node:crypto';
 import {
   appendFileSync,
   mkdirSync,
@@ -472,8 +473,16 @@ export function recordFiles(root: string): readonly RecordFile[] {
  * Which files exist, and in what order, is `recordFiles`' question -- see its doc for the third
  * guard direction (a record file at the top of a partitioned kind) and for why the order is not a
  * string sort.
+ *
+ * `onFile` is offered so a caller can fold the bytes into a hash **as this traversal reads them**;
+ * it is the seam `readRecordTreeAndFingerprint` uses and the only reason a caller may observe the
+ * bytes at all. It is called before parsing, so a file whose lines are then refused has already
+ * been offered -- harmless, because a refusal throws and the caller's hash is discarded with it.
  */
-export function readRecordTree(root: string): readonly CorpusLine[] {
+export function readRecordTree(
+  root: string,
+  onFile?: (relative: string, bytes: Buffer) => void,
+): readonly CorpusLine[] {
   const types: TypeLine[] = [];
   const schemes: SchemeLine[] = [];
   const entries: EntryLine[] = [];
@@ -481,7 +490,11 @@ export function readRecordTree(root: string): readonly CorpusLine[] {
 
   for (const { relative, kind: expected, partition } of recordFiles(root)) {
     const segments = relative.split('/');
-    const text = readFileSync(join(root, ...segments), 'utf8');
+    const bytes = readFileSync(join(root, ...segments));
+    // Handed out as read, before parsing, so a caller that hashes them hashes exactly the bytes
+    // these lines came from -- `readRecordTreeAndFingerprint` is the only such caller.
+    onFile?.(relative, bytes);
+    const text = bytes.toString('utf8');
     for (const parsed of parseCorpus(text, relative)) {
       if (parsed.line.kind !== expected) {
         throw new Error(
@@ -514,6 +527,43 @@ export function readRecordTree(root: string): readonly CorpusLine[] {
     ...inRecordedOrder(dedupeByIdentity(entries)),
     ...inRecordedOrder(dedupeByIdentity(annotations)),
   ];
+}
+
+/**
+ * Fold one record file into a tree fingerprint, in the order the files are traversed.
+ *
+ * There are two callers -- `treeFingerprint`, which folds without parsing, and
+ * `readRecordTreeAndFingerprint`, which folds as it parses -- and this exists so they cannot fold
+ * differently. A fingerprint that disagrees with the tree it certifies is the defect `asc-tyl7`
+ * measured (`EV-38`): an index that reports current while missing a record.
+ */
+export function foldRecordFile(hash: Hash, relative: string, bytes: Buffer): void {
+  hash.update(`${relative}\u0000${String(bytes.byteLength)}\u0000`, 'utf8');
+  hash.update(bytes);
+  hash.update('\u0000', 'utf8');
+}
+
+/**
+ * Read the tree, and fingerprint **the bytes this read actually read**, in one traversal.
+ *
+ * A caller that reads the tree and then fingerprints it separately has described two instants and
+ * published them as one: an append landing between the two is absent from the lines (what is
+ * replayed) and present in the fingerprint (what is stamped), which is an index that certifies a
+ * tree it does not contain, permanently and with a successful read. Fusing them is what removes
+ * the gap by construction, rather than by a lock held for a whole build.
+ *
+ * The fingerprint value is `treeFingerprint`'s on a quiescent tree -- same files, same order, same
+ * fold -- so no existing index is invalidated by reading this way.
+ */
+export function readRecordTreeAndFingerprint(root: string): {
+  readonly lines: readonly CorpusLine[];
+  readonly fingerprint: string;
+} {
+  const hash = createHash('sha256');
+  const lines = readRecordTree(root, (relative, bytes) => {
+    foldRecordFile(hash, relative, bytes);
+  });
+  return { lines, fingerprint: hash.digest('hex') };
 }
 
 /** Where the writer currently stands in one directory: which file, and its size so far. */

@@ -156,6 +156,42 @@ describe('a produced write keeps the tree and the index in step', () => {
     expect(typeVersions(openIndex(root, dbPath).db, 'note')).toEqual(indexBefore);
   });
 
+  it('refuses when the index it committed into was replaced while the write held it (asc-tyl7)', () => {
+    // `buildIndex` takes no lock and publishes by `renameSync`, so a build can replace `index.db`
+    // between this write's open and its commit. On POSIX the open handle survives the rename, so the
+    // whole replay -- and the stamp with it -- goes into an inode nothing is at, while the file left
+    // at `dbPath` is the build's. EV-38 measured the sibling shape on `writeLines`, which reported
+    // `stale: false` for a replay it had just discarded; `writeProducedLines` has no such field, so
+    // its honest report is the refusal it already uses everywhere else.
+    //
+    // The race is made deterministic rather than simulated: the body runs INSIDE the transaction,
+    // with the write's handle already open, so replacing the path from there is exactly the moment a
+    // concurrent build's rename arrives at.
+    const { root, dbPath } = built();
+
+    expect(() =>
+      writeProducedLines(root, dbPath, OPTS, (produce) => {
+        produce.type(V2, { registeredAt: AT });
+        // The REAL publication, not a hand-written rename: a build of this same tree, run while this
+        // write holds the index open. Its stamp is the tree BEFORE the append above lands, so it is
+        // the same shape a build that read the tree a moment ago produces.
+        buildIndex(root, dbPath, OPTS);
+        return undefined;
+      }),
+    ).toThrow(IndexStaleError);
+
+    // The records ARE in the tree -- the write happened, and nothing may pretend otherwise -- and the
+    // index at the path does not carry them, which is what the refusal says.
+    expect(
+      readRecordTree(root).some((line) => line.kind === 'type' && line.document.version === 2),
+    ).toBe(true);
+    expect(() => openIndex(root, dbPath)).toThrow(IndexStaleError);
+
+    // And the remedy the refusal names is the remedy: a rebuild makes it whole.
+    buildIndex(root, dbPath, OPTS);
+    expect(versions(root, dbPath)).toEqual([1, 2]);
+  });
+
   it('refuses a database ascend did not create, before it appends anything', () => {
     const root = scratch();
     const dbPath = join(root, INDEX_FILE);

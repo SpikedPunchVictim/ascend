@@ -17,7 +17,9 @@ import {
   MAX_RECORDS_PER_FILE,
   openRecordWriter,
   readRecordTree,
+  readRecordTreeAndFingerprint,
   serializeCorpus,
+  treeFingerprint,
   writeGitattributes,
   type AnnotationLine,
   type CorpusLine,
@@ -387,6 +389,58 @@ describe('read order is imposed, never inherited from the file', () => {
  * correct about -- and the reader is this module. A `git`-spawning test in this package would also
  * make the layer's suite depend on a binary the layer never calls.
  */
+/**
+ * The tree read and the tree's fingerprint, from ONE traversal.
+ *
+ * The defect these exist against is `asc-tyl7` (`EV-38`, 4.2% of races against a writer): a build
+ * read the tree, then re-read the same files to hash them, so an append landing between the two was
+ * absent from what was replayed and present in what was stamped -- an index certifying a tree it did
+ * not contain, permanently, with a read that answers happily.
+ *
+ * **These tests pin the seam, and the interleave itself is not reachable from an in-process
+ * suite.** Nothing in this file can put an append *between* two traversals of a build, so the race
+ * is measured with two real processes in `EV-38` and the property is pinned here as the contract a
+ * second traversal would break: the fingerprint belongs to the bytes the lines came from, and a
+ * tree that moves afterwards does not move it.
+ */
+describe('the fingerprint belongs to the bytes the read read', () => {
+  it('fingerprints what it read, not the tree that stands there afterwards', () => {
+    const root = scratch();
+    roundTrip(root, [TYPE, entry(1, { seconds: 10 })]);
+    const asRead = treeFingerprint(root);
+
+    const { lines, fingerprint } = readRecordTreeAndFingerprint(root);
+    // The tree moves after the read -- a writer appending the way a real one does.
+    openRecordWriter(root).append(entry(2, { seconds: 20 }));
+
+    expect(fingerprint).toBe(asRead);
+    expect(treeFingerprint(root)).not.toBe(asRead);
+    expect(lines).toHaveLength(2);
+  });
+
+  it('holds the same value a separate fingerprint does, so no index is invalidated by reading this way', () => {
+    const root = scratch();
+    roundTrip(root, [TYPE, SCHEME, entry(1, { seconds: 10 }), entry(2, { seconds: 20 })]);
+
+    expect(readRecordTreeAndFingerprint(root).fingerprint).toBe(treeFingerprint(root));
+  });
+
+  it('a read and a fingerprint taken separately describe two instants, which is the shape it replaces', () => {
+    const root = scratch();
+    roundTrip(root, [TYPE, entry(1, { seconds: 10 })]);
+    const asRead = treeFingerprint(root);
+
+    // Exactly the two calls `buildIndex` used to make, with an append between them.
+    const lines = readRecordTree(root);
+    openRecordWriter(root).append(entry(2, { seconds: 20 }));
+    const asStamped = treeFingerprint(root);
+
+    expect(lines).toHaveLength(2);
+    expect(asStamped).not.toBe(asRead);
+    expect(lines.some((line) => line.kind === 'entry' && line.id === uuid(2))).toBe(false);
+  });
+});
+
 describe('a union merge duplicates a shared line, and the reader closes that', () => {
   it('reads a byte-identical duplicated record once, because identical bytes are one record', () => {
     const root = scratch();

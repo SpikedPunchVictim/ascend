@@ -159,7 +159,12 @@ import { basename, dirname, join } from 'node:path';
 import { annotationPassGroups, recordAnnotations, registerNamedScheme } from './annotations.js';
 import { ForeignStoreError, openStore, STORE_FILE, withTransaction, type Store } from './db.js';
 import { documentSpec, type TypeDocument } from './document.js';
-import { readRecordTree, recordFiles, openRecordWriter } from './jsonl-files.js';
+import {
+  foldRecordFile,
+  readRecordTreeAndFingerprint,
+  recordFiles,
+  openRecordWriter,
+} from './jsonl-files.js';
 import type { CorpusLine, EntryLine, SchemeLine } from './jsonl.js';
 import { produceLines, type Producers } from './line-producers.js';
 import { recordEntry } from './recorder.js';
@@ -199,10 +204,7 @@ export function treeFingerprint(root: string): string {
   const hash = createHash('sha256');
 
   for (const { relative } of recordFiles(root)) {
-    const bytes = readFileSync(join(root, relative));
-    hash.update(`${relative}\u0000${String(bytes.byteLength)}\u0000`, 'utf8');
-    hash.update(bytes);
-    hash.update('\u0000', 'utf8');
+    foldRecordFile(hash, relative, readFileSync(join(root, relative)));
   }
 
   return hash.digest('hex');
@@ -288,8 +290,12 @@ export function buildIndex(root: string, dbPath: string, options: IndexOptions):
   // `.tmp` removal or the `renameSync` below.
   assertNoLegacyStore(root);
 
-  const lines = readRecordTree(root);
-  const fingerprint = treeFingerprint(root);
+  // ONE traversal, and the fingerprint comes out of it. Reading the tree and then fingerprinting it
+  // separately describes two instants and publishes them as one: an append between them is absent
+  // from `lines` and present in `fingerprint`, so the index certifies a tree it does not contain --
+  // and does it permanently, with a read that succeeds. Measured at 4.2% of races against a writer
+  // (window 165 ms of a 3.9 s build) in `EV-38`, `asc-tyl7`.
+  const { lines, fingerprint } = readRecordTreeAndFingerprint(root);
 
   const dir = dirname(dbPath);
   const staging = `${basename(dbPath)}.tmp`;
@@ -396,6 +402,23 @@ export function openIndex(root: string, dbPath: string): Store {
   return openIndexStore(dbPath);
 }
 
+/**
+ * Whether the index the name points AT carries `fingerprint`, asked after a writer closed its handle.
+ *
+ * **This is asked by path and never through the handle the replay went into, which is the entire
+ * point.** `buildIndex` takes no lock and publishes by `renameSync`, so a build can replace `index.db`
+ * while a write holds it open: the write's frames land in the old inode, the build's file sits at the
+ * path, and a report read from the write's own handle describes a database nobody can reach. Asked
+ * by path, the answer is about the file that exists. Measured, and the reason `writeProducedLines`
+ * refuses: `EV-38` (`asc-tyl7`).
+ *
+ * A path that no longer holds an index at all answers no, the same as a mismatched stamp: in both
+ * cases the records are in the tree and the index at this path does not carry them.
+ */
+function indexAtPathCarries(dbPath: string, fingerprint: string): boolean {
+  return storedFingerprint(dbPath) === fingerprint;
+}
+
 /** What a guarded write did, and what it refused to do. */
 export interface WriteReport {
   /** Lines appended to the tree. */
@@ -403,7 +426,16 @@ export interface WriteReport {
   /** The tree's fingerprint AFTER the append, which the index carries when `stale` is false. */
   readonly fingerprint: string;
   /**
-   * The index was not current for the tree before this write, so it was left exactly as it was.
+   * The index at `dbPath` is not current for this tree, so the records are in the JSONL and the index
+   * does not carry them.
+   *
+   * Two ways that happens, and the second is why this is asked again after the write: the index was
+   * not current BEFORE the append -- so it was left exactly as it was -- or the index was replaced at
+   * that path while this write held it open, in which case the replay and its stamp went into an
+   * inode no name points at and the file left behind is a build's. The first is a state a project is
+   * routinely in; the second is a race. Both mean the same thing to a caller -- do not trust this
+   * index, run `asc index build` -- which is why they share one field rather than making every caller
+   * learn a second one it would not branch on.
    *
    * Reported rather than thrown, because the write itself SUCCEEDED -- the records are in the JSONL,
    * which is the store. A caller that can say so should, since the next read will refuse and the
@@ -458,6 +490,14 @@ export function writeLines(
     // `buildIndex` relies on when it publishes by `renameSync`, and the one the tests assert by
     // looking for `-wal`/`-shm` residue.
     store.db.close();
+  }
+
+  // After the close, and by path: `replayInto` succeeded against a handle, and a handle is not a
+  // name. If a build replaced the file at `dbPath` while this write held it, every frame above went
+  // into an inode nothing points at -- so the honest answer is `stale`, however current the index was
+  // when the write started. See `indexAtPathCarries`.
+  if (!indexAtPathCarries(dbPath, fingerprint)) {
+    return { lines: lines.length, fingerprint, stale: true };
   }
 
   return { lines: lines.length, fingerprint, stale: false };
@@ -530,8 +570,9 @@ export function writeProducedLines<Result>(
     buildIndex(root, dbPath, options);
 
   const store = openIndexWritable(dbPath);
+  let written: ProducedWrite<Result>;
   try {
-    return withTransaction(store.db, () => {
+    written = withTransaction(store.db, () => {
       // Inside the lock, and read from OUR handle rather than by reopening the file: a check-then-act
       // whose check happens outside `BEGIN IMMEDIATE` describes a moment another writer can undo.
       const tree = treeFingerprint(root);
@@ -550,6 +591,23 @@ export function writeProducedLines<Result>(
   } finally {
     store.db.close();
   }
+
+  // **The commit is not the end of the question, because a handle is not a name.** `buildIndex` takes
+  // no lock and publishes by `renameSync`, so a build can replace `dbPath` between the open above and
+  // the close just now -- and on POSIX the replay and its stamp then live in an inode nothing points
+  // at, while the file left behind is the build's. Every field this function would return would be
+  // false about the index a read will open, which is the one thing its contract promises. So it is
+  // asked by path, after the close, and a mismatch is the same refusal a stale index gets: the
+  // records are in the tree (they are -- the append above ran) and `asc index build` is the remedy.
+  if (!indexAtPathCarries(dbPath, written.fingerprint)) {
+    throw new IndexStaleError(
+      dbPath,
+      'the file at that path was replaced while this write held it, so the records are in the JSONL ' +
+        'and not in the index',
+    );
+  }
+
+  return written;
 }
 
 /**
