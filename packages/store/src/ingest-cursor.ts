@@ -135,6 +135,17 @@ export function readIngestCursor(dir: string): IngestCursor {
  * not finish. Recording a partially-read or never-opened file here would make a later run skip
  * exactly the bytes it never derived from -- the one way this module could turn a missing read into
  * a wrong answer instead of merely a slow one.
+ *
+ * **And the obligation runs the other way too, which is the half that was missing (`asc-n4eg`).**
+ * This function REPLACES the cursor, so a caller must pass the rows it SKIPPED BY RELYING ON as
+ * well as the rows it read -- otherwise a run that skipped 1,079 files and read one writes a
+ * one-row cursor, discarding the rows that made every skip legal, and the next run has nothing to
+ * skip against. Measured on the live store before the fix: rows 1,080 -> 1 across two consecutive
+ * runs, with the skipped run's own warning reporting "1079 transcript file(s) unchanged ... and
+ * were skipped without being opened". The SQL version could not lose them, because it was one
+ * `INSERT ... ON CONFLICT DO UPDATE` per file and a row nobody mentioned was untouched; the
+ * replace-a-file contract is what needs saying out loud. A caller doing a FULL read carries
+ * nothing, because its rows already are the whole cursor.
  */
 export function writeIngestCursor(dir: string, cursor: IngestCursor): void {
   const path = cursorPath(dir);

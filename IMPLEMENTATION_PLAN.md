@@ -1543,6 +1543,18 @@ as the store itself.
       The `.gitignore` entry for the sidecar is the one part deferred to E12.4d: `.ascend/` is still
       ignored wholesale today, so a rule for the future layout would be a rule nobody can verify.
 
+      **And moving it to a file changed its semantics, which was measured rather than argued
+      (`dogfood/0042`, `asc-n4eg`, fixed 2026-09-29).** `recordIngestCursor` was one
+      `INSERT … ON CONFLICT DO UPDATE` per file, so a row for a file a run did not mention was
+      untouched; `writeIngestCursor` replaces the whole file, while the caller still passed only the
+      files it read that run. The cursor collapsed to one run's work: on the live corpus, rows
+      **1080 → 1** across two runs, the skip run reporting *"1079 transcript file(s) unchanged since
+      the last ingest … and were skipped without being opened"* and then writing a one-row cursor —
+      so every run was either a 16 s full read or a 1 s skip, alternating, forever. Fixed by carrying
+      the rows the run relied on into the write, with this run's rows last. The suite was green
+      throughout because every cursor test runs against a one-or-two-file corpus, where a kept cursor
+      and an emptied one have the same row count.
+
       **The store's half of the flip landed first, as its own commit, because it is additive and
       independently green (2026-09-29).** The approved plan had stages A–F as one commit, on the
       argument that every intermediate state is a store that reads one source and writes the other —

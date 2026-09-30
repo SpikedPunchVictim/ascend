@@ -133,6 +133,7 @@ import {
   readIngestCursor,
   writeIngestCursor,
   writeProducedLines,
+  type IngestCursorRow,
   type Producers,
   type RecordedEntry,
   type SqlDatabase,
@@ -477,14 +478,30 @@ export default class IngestClaudeCode extends BaseCommand {
                 ]),
               );
 
+        // The rows this run is about to rely on, carried into the write below (`asc-n4eg`).
+        // `readFiles` holds only the files streamed in THIS run, and `writeIngestCursor` replaces
+        // the whole file -- so a run that skipped 1,079 files and read one wrote back a one-row
+        // cursor, discarding the rows that made the skip legal, and the next run had nothing to
+        // skip against. Empty exactly when `knownFiles` is: a full read read everything, so its
+        // `readFiles` already IS the whole cursor and there is nothing to carry.
+        const carriedFiles = knownFiles === undefined ? [] : cursor.files;
+
         const sweep = await this.sweep(root, includeEphemeral, knownFiles, loaded.typed, specFor);
-        const writes = this.write(projectRoot, store, sweep.entries, dryRun, sweep.readFiles, {
-          specFor,
-          // The union, not the current set: a handler removed from `handlers/` and later restored
-          // was still run over these files, and its entries are still in the store.
-          applied: [...applied, ...loaded.typed.map(({ handler }) => handler.hash)],
-          types: new Set(loaded.typed.map(({ handler }) => handler.type)),
-        });
+        const writes = this.write(
+          projectRoot,
+          store,
+          sweep.entries,
+          dryRun,
+          sweep.readFiles,
+          carriedFiles,
+          {
+            specFor,
+            // The union, not the current set: a handler removed from `handlers/` and later restored
+            // was still run over these files, and its entries are still in the store.
+            applied: [...applied, ...loaded.typed.map(({ handler }) => handler.hash)],
+            types: new Set(loaded.typed.map(({ handler }) => handler.type)),
+          },
+        );
 
         const derivedNames = new Set(DERIVED_TYPES.map((spec) => spec.name));
         const handlerTypes = [...new Set(loaded.typed.map(({ handler }) => handler.type))].filter(
@@ -654,6 +671,7 @@ export default class IngestClaudeCode extends BaseCommand {
     entries: readonly DerivedEntry[],
     dryRun: boolean,
     readFiles: readonly CursorUpdate[],
+    carriedFiles: readonly IngestCursorRow[],
     handlers: {
       readonly specFor: (type: string) => TypeSpec | undefined;
       readonly applied: readonly string[];
@@ -843,8 +861,12 @@ export default class IngestClaudeCode extends BaseCommand {
     // One write covers the files and the handlers they were read through, so the two cannot
     // disagree about which run read what; they used to be two writes to two places with a rule
     // saying the second had to sit beside the first.
+    //
+    // `carriedFiles` first and this run's rows last: a file that BOTH was carried and was read
+    // again (it changed) has one current stat and not a history, and `writeIngestCursor` keeps the
+    // last row it is given for a path.
     writeIngestCursor(store.dir, {
-      files: readFiles.map((file) => ({ ...file, ingestedAt: recordedAt })),
+      files: [...carriedFiles, ...readFiles.map((file) => ({ ...file, ingestedAt: recordedAt }))],
       handlers: handlers.applied,
     });
 

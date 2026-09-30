@@ -1057,6 +1057,48 @@ describe('asc ingest claude-code: incremental cursor (asc-4dm.4)', () => {
     expect(Object.values(rows).every((outcome) => outcome === 'none')).toBe(true);
   });
 
+  it('keeps the rows it skipped ON, so a later run still has something to skip against (asc-n4eg)', () => {
+    const dir = project();
+    const corpus = transcripts(dir);
+
+    // A SECOND file, and this is the whole reason the defect was invisible here: `readFiles` holds
+    // only the files streamed in this run, and `writeIngestCursor` replaces the file, so a run that
+    // skips everything writes back an EMPTY cursor. With one file in the corpus that is a cursor of
+    // one row either way -- the size is identical whether the rows are kept or thrown away, which
+    // is why every existing test in this block passes over the bug.
+    writeFileSync(
+      join(corpus, 's-2.jsonl'),
+      `${JSON.stringify({
+        sessionId: 's-2',
+        uuid: 'u-second',
+        timestamp: '2026-01-02T03:04:20.000Z',
+        ...RECORD_AT,
+        userFeedback: 'the second file',
+      })}\n`,
+    );
+
+    const first = asc(['ingest', 'claude-code'], dir);
+    expect(first.status).toBe(0);
+    const firstCursor = cursorRows(dir);
+    expect(firstCursor).toHaveLength(2);
+
+    const second = asc(['ingest', 'claude-code'], dir);
+    expect(second.status).toBe(0);
+    expect(second.stderr).toContain('2 transcript file(s) unchanged since the last ingest');
+
+    // The rows the skip was made FROM are still in the file. This is the assertion the defect
+    // needed and the reason it is stated as an equality rather than a count: a cursor that kept the
+    // wrong row would still be two rows long.
+    expect(cursorRows(dir)).toEqual(firstCursor);
+
+    // And the third run is what the file is FOR: it skips again, because the rows it matched
+    // against survived the run that used them.
+    const third = asc(['ingest', 'claude-code'], dir);
+    expect(third.status).toBe(0);
+    expect(third.stderr).toContain('2 transcript file(s) unchanged since the last ingest');
+    expect(cursorRows(dir)).toEqual(firstCursor);
+  });
+
   it('re-reads exactly the file that changed, leaving an untouched sibling skipped as unchanged', () => {
     const dir = project();
     const corpus = transcripts(dir);
