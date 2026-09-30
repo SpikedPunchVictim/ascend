@@ -1336,7 +1336,7 @@ describe('asc import', () => {
     const file = stream(
       target,
       'bad.jsonl',
-      '{"kind":"type","name":"x","properties":[]}\nnot json\n',
+      '{"kind":"type","name":"x","version":1,"properties":[]}\nnot json\n',
     );
 
     const run = asc(['import', file], target);
@@ -1356,7 +1356,7 @@ describe('asc import', () => {
     const file = stream(
       target,
       'blank-first.jsonl',
-      '\n{"kind":"type","name":"x","properties":[]}\nnot json\n',
+      '\n{"kind":"type","name":"x","version":1,"properties":[]}\nnot json\n',
     );
 
     const run = asc(['import', file], target);

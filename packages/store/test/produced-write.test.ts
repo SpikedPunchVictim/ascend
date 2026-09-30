@@ -82,11 +82,14 @@ const V3: TypeSpec = { name: 'note', properties: [BODY, TITLE, PINNED] };
 /**
  * The v2 shape as a LINE, for the one fixture that cannot be made through the write path.
  *
- * A `TypeLine` carries no version of its own, so this is the same bytes the write path would append
- * for v2 -- which is what makes the hand append a faithful stand-in for the tree-only edit a
- * checkout, a merge or a hand edit leaves behind.
+ * This is the same bytes the write path would append for v2 -- including the `version` the line
+ * states (asc-i5tj.6) -- which is what makes the hand append a faithful stand-in for the tree-only
+ * edit a checkout, a merge or a hand edit leaves behind.
  */
-const V2_LINE: TypeLine = { kind: 'type', document: { name: 'note', properties: [BODY, TITLE] } };
+const V2_LINE: TypeLine = {
+  kind: 'type',
+  document: { name: 'note', version: 2, properties: [BODY, TITLE] },
+};
 
 /** A tree holding `note` v1, with a current index built for it. */
 function built(): { readonly root: string; readonly dbPath: string } {
@@ -125,7 +128,7 @@ describe('a produced write keeps the tree and the index in step', () => {
     const dbPath = join(root, INDEX_FILE);
     openRecordWriter(root).append({
       kind: 'type',
-      document: { name: 'note', properties: [BODY] },
+      document: { name: 'note', version: 1, properties: [BODY] },
     });
 
     const out = writeProducedLines(root, dbPath, OPTS, (produce) =>
@@ -158,7 +161,7 @@ describe('a produced write keeps the tree and the index in step', () => {
     const dbPath = join(root, INDEX_FILE);
     openRecordWriter(root).append({
       kind: 'type',
-      document: { name: 'note', properties: [BODY] },
+      document: { name: 'note', version: 1, properties: [BODY] },
     });
 
     const stranger = new DatabaseSync(dbPath);
@@ -305,7 +308,7 @@ describe('a preview of a produced write', () => {
     const dbPath = join(root, INDEX_FILE);
     openRecordWriter(root).append({
       kind: 'type',
-      document: { name: 'note', properties: [BODY] },
+      document: { name: 'note', version: 1, properties: [BODY] },
     });
 
     expect(() =>
@@ -323,7 +326,7 @@ describe('a preview of a produced write', () => {
     const dbPath = join(root, INDEX_FILE);
     openRecordWriter(root).append({
       kind: 'type',
-      document: { name: 'note', properties: [BODY] },
+      document: { name: 'note', version: 1, properties: [BODY] },
     });
 
     const stranger = new DatabaseSync(dbPath);

@@ -235,6 +235,8 @@ export {
 
 export { entryFromLine, typeRegistrationOptions } from './replay.js';
 
+export { rewriteTree, type RewrittenFile, type RewriteResult } from './rewrite.js';
+
 export { corpusLines } from './corpus-lines.js';
 
 export {

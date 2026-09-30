@@ -1724,6 +1724,20 @@ as the store itself.
   `asc-98e1` (id-set superset of each parent — EV-31 measured that the markers-and-parse half alone
   passes exactly the resolution that loses a record), `asc-8uzh` (per-record size limit, byte-bounded
   rollover).
+- **E12.6 — the version a type line states about itself (`asc-i5tj.6`, done 2026-09-30).** A
+  `TypeLine` carried no version, so a type's version was read from the line's POSITION — and
+  `.ascend/.gitattributes` is `*.jsonl merge=union`, a writer that interleaves without asking, so the
+  *"no writer may interleave them"* rule the layout rested on was one no code could enforce. The hole
+  was measured first and is narrow: reordering a multi-version type that has **zero** entries is
+  silently renumbered with exit 0, because an entry's `type_hash` catches a renumber everywhere an
+  entry references the moved version. Two owner decisions, taken before the work: **every type line
+  states its own `version`** (and existing trees are rewritten once), and **a version-less type line
+  is a hard parse error naming the rewrite** — one rule, no order-dependent fallback. `version` is
+  outside `documentSpec`, so it moves no `type_hash` and invalidates no entry; the corpus line
+  REQUIRES it while the `asc types define`/`export` *document* keeps it optional, because the two
+  share a type and only one of them is a stored registration. `asc store rewrite` is a command, not
+  part of `asc index build`: the index is derived and a read path that rewrites the tree is a writer.
+  Full measurement in `docs/evidence/EV-37.md`.
 
 **Status: E12.1 and E12.2 built; E12.3 built as the seam and its settlement** (2026-09-29) — the record
 layer exists (37 tests), the derived index exists (26 tests after `asc-i5tj.3.1`), the store names a SQL
@@ -1750,6 +1764,14 @@ whole migration; two things the format cannot carry, filed as `asc-i5tj.14`), an
 question, by the owner's decision above, which reverses `EV-32`'s "no incremental path" on `EV-33`'s
 measurement. Plan-level findings from E12.1 are still beads rather than edits here (a scheme name is any
 string; a type line carries no version of its own), because they are format questions and not layer ones.
+**E12.6 settled the second of those two, measured 2026-09-30 (`EV-37`)**: a type line states its own
+`version`, readers sort by `(name, version)`, and a version-less line is refused naming
+`asc store rewrite`, which upgraded this repo's own tree in one run — 1 of 22 record files changed, the
+other 21 byte-identical, 17 lines numbered `note`/`review_finding`/`verification_run` v1+v2 and eleven
+more at v1. The plan's own Stage 2 placed the "a stated version must continue the sequence" check inside
+`registerType`; **that placement is overturned by a red test** and recorded in `EV-37`, because the
+registry cannot see the target store's history and the message it produced blamed the caller's
+well-formed file. The check lives at the two call sites that can see both sides instead.
 
 ---
 

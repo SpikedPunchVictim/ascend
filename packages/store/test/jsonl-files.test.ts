@@ -119,6 +119,7 @@ const TYPE: TypeLine = {
   kind: 'type',
   document: {
     name: 'note',
+    version: 1,
     properties: [{ name: 'body', type: 'text' }],
     description: 'a note',
   },
@@ -178,6 +179,45 @@ function fileShape(path: string): string {
   const [kind, , file] = path.split('/');
   return `${kind ?? ''}/<partition>/${file ?? ''}`;
 }
+
+/**
+ * A type line states its own version (`asc-i5tj.6`).
+ *
+ * A type's version used to be read from LINE ORDER alone -- `registerType` mints `latest + 1`
+ * (`registry.ts:584`) -- while `.ascend/.gitattributes` sets `merge=union`, which reorders lines.
+ * So two clones could merge the same line SET in different ORDER and number the same content
+ * differently, silently, wherever no entry referenced the moved version to catch it.
+ *
+ * These tests are the defect and its fix: that a version is READ OFF THE LINE, that a line without
+ * one is refused rather than positionally guessed, and that a reordered file reads as an ordered
+ * one.
+ */
+describe('a type line carries its own version', () => {
+  it('round-trips the version rather than deriving it from position', () => {
+    const root = scratch();
+    const versioned: TypeLine = { kind: 'type', document: { ...TYPE.document, version: 7 } };
+    const { read } = roundTrip(root, [versioned]);
+    expect((read[0] as TypeLine).document.version).toBe(7);
+  });
+
+  it('refuses a type line with no version, and names the rewrite', () => {
+    const root = scratch();
+    mkdirSync(join(root, 'types'), { recursive: true });
+    writeFileSync(
+      join(root, 'types', '0001.jsonl'),
+      `${JSON.stringify({
+        kind: 'type',
+        name: 'note',
+        properties: [{ name: 'body', type: 'text' }],
+        type_hash: 'a'.repeat(64),
+      })}\n`,
+    );
+    // The message must NAME the remedy: a tree written before this field existed is exactly the
+    // case this refusal will meet in the wild, and "no version" alone tells the reader nothing.
+    expect(() => readRecordTree(root)).toThrow(/no version/);
+    expect(() => readRecordTree(root)).toThrow(/asc store rewrite/);
+  });
+});
 
 describe('the record layer writes one file per kind, partitioned by name', () => {
   it('files each kind where the layout says, and creates the directories it needs', () => {
@@ -287,34 +327,49 @@ describe('read order is imposed, never inherited from the file', () => {
     expect(ab).toHaveLength(2);
   });
 
-  it('keeps type and scheme lines in FILE order, because that order is what numbers versions', () => {
-    const root = scratch();
-    const second: SchemeLine = { ...SCHEME, version: 2, created_at: at(500) };
+  it('orders type and scheme lines by (name, version), so a reordered file reads as an ordered one', () => {
+    // Both keys, both kinds: a second name covers the name key, a second version the version key.
+    // No entries and no annotations, which is the window `asc-i5tj.6` measured -- with none present
+    // the entry-level `type_hash` guard has nothing to catch, and before this sort the version came
+    // from the line's POSITION alone.
+    const todo: TypeLine = { kind: 'type', document: { ...TYPE.document, name: 'todo' } };
+    const noteV2: TypeLine = { kind: 'type', document: { ...TYPE.document, version: 2 } };
+    const schemeV2: SchemeLine = { ...SCHEME, version: 2, created_at: at(500) };
 
-    // Written newest-first, so a reader that sorted by version or by created_at would reverse
-    // them -- and registration order is what defines the version numbers an import reproduces.
-    const { read } = roundTrip(root, [second, SCHEME]);
+    const ordered = [TYPE, noteV2, todo, SCHEME, schemeV2];
+    const reversed = [...ordered].reverse();
+
+    // The invariant, before the spelling of it: the same lines read the same way whichever order the
+    // file holds them in. A `merge=union` is free to produce either, and asks no one.
+    expect(roundTrip(scratch(), reversed).read).toEqual(roundTrip(scratch(), ordered).read);
+
+    const { read } = roundTrip(scratch(), reversed);
+    const types = read.filter((line): line is TypeLine => line.kind === 'type');
     const schemes = read.filter((line): line is SchemeLine => line.kind === 'scheme');
 
-    expect(schemes).toEqual([second, SCHEME]);
+    // The spelling, so that a reader which reversed BOTH orders consistently -- and would therefore
+    // satisfy the invariant above -- is still caught.
+    expect(types).toEqual([TYPE, noteV2, todo]);
+    expect(schemes).toEqual([SCHEME, schemeV2]);
   });
 
-  it('reads files in numeric order, so 0002 follows 0001 and not the reverse', () => {
+  it('reads a tree whose files hold the wrong order as though they held the right one', () => {
     const root = scratch();
     const writer = openRecordWriter(root, { maxRecordsPerFile: 1 });
-    // Two DISTINGUISHABLE scheme lines, not two copies of one: file order is meaning for this kind,
-    // and a reader that walked 0002 first would renumber the versions. Identical lines would make
-    // the reversal undetectable, which is how the first version of this test passed while asserting
-    // only the write ORDER -- reversing the reader's sort left it green.
+    // Wrong by FILE, deliberately: `0001.jsonl` holds v2 and `0002.jsonl` holds v1. A union merge
+    // can leave exactly this, because it concatenates both sides and sorts neither.
     const first: SchemeLine = { ...SCHEME, version: 1 };
     const second: SchemeLine = { ...SCHEME, version: 2 };
-    writer.append(first);
     writer.append(second);
+    writer.append(first);
 
     expect(writer.written).toEqual(['schemes/0001.jsonl', 'schemes/0002.jsonl']);
     const schemes = readRecordTree(root).filter(
       (line): line is SchemeLine => line.kind === 'scheme',
     );
+    // The file walk still visits 0001 and then 0002 -- `0001` before `0002` is what `recordFiles`
+    // promises, and the sort is applied in memory, never by rewriting the files (`ORDER`) -- but the
+    // ANSWER is registration order regardless. Without the sort this reads `[second, first]`.
     expect(schemes).toEqual([first, second]);
   });
 });

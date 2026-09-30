@@ -246,7 +246,10 @@ describe('a migration refuses the states it cannot migrate, before writing anyth
     const archiveDir = scratch();
 
     // A tree, but no migration: `openRecordWriter` appends to what it finds.
-    openRecordWriter(dir).append({ kind: 'type', document: { name: 'other', properties: [] } });
+    openRecordWriter(dir).append({
+      kind: 'type',
+      document: { name: 'other', version: 1, properties: [] },
+    });
 
     expect(() => migrateStoreToTree({ dir, archiveDir })).toThrow(/already holds a record tree/);
     expect(existsSync(join(archiveDir, STORE_FILE))).toBe(false);

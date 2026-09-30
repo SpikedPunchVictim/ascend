@@ -75,6 +75,7 @@ const NOTE: TypeLine = {
   kind: 'type',
   document: {
     name: 'note',
+    version: 1,
     properties: [{ name: 'body', type: 'text' }],
     description: 'a note',
   },
@@ -178,7 +179,7 @@ describe('a write keeps a current index current', () => {
     // entry is not refused for naming a type the index has not registered yet.
     const todo: TypeLine = {
       kind: 'type',
-      document: { name: 'todo', properties: [{ name: 'body', type: 'text' }] },
+      document: { name: 'todo', version: 1, properties: [{ name: 'body', type: 'text' }] },
     };
     const todoEntry: EntryLine = {
       ...entry(3),

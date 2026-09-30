@@ -90,6 +90,10 @@ const ID = (n: number): string => `0192f000-0000-7000-8000-${String(n).padStart(
  * line always carries one" -- so a fixture that omitted it would spell a document no export could
  * produce, and the import arm would fail on the fixture rather than on anything under test. The hash
  * is over `documentSpec`, which is the identity-bearing part; prose is deliberately outside it.
+ *
+ * `version` is stated for the same reason and on the same terms (asc-i5tj.6): the importer refuses
+ * a type line that does not state one, so a fixture omitting it would fail on the fixture too. It is
+ * not part of `documentSpec` either, so stating it changes no hash.
  */
 function type(document: TypeDocument): TypeDocument {
   return { ...document, type_hash: specHash(documentSpec(document)) };
@@ -97,12 +101,14 @@ function type(document: TypeDocument): TypeDocument {
 
 const NOTE: TypeDocument = type({
   name: 'note',
+  version: 1,
   properties: [{ name: 'body', type: 'text' }],
   description: 'a note',
 });
 
 const TODO: TypeDocument = type({
   name: 'todo',
+  version: 1,
   properties: [
     { name: 'body', type: 'text' },
     { name: 'due', type: 'timestamp' },

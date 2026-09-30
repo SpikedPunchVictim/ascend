@@ -619,7 +619,33 @@ function parseAnnotationLine(where: string, raw: Record<string, unknown>): Annot
  * the caller's editor shows, and it is handed back with the line rather than left for a caller to
  * reconstruct from an array it has filtered (`ParsedLine`).
  */
-export function parseCorpus(text: string, source: string): readonly ParsedLine[] {
+/**
+ * How strict the corpus parser is about a rule a tree written earlier cannot satisfy.
+ *
+ * Exactly one rule, and exactly one caller: `rewriteTree` (`rewrite.ts`) upgrades a tree written
+ * before a type line carried its own `version`, and it has to READ such a tree to do it. The
+ * alternative was a second, hand-written parser in the rewrite, which is a second answer to "is
+ * this line valid" -- the thing this file exists to prevent. So the parser stays the only parser and
+ * the one difference is named here, at the one call site that asks for it.
+ *
+ * `readRecordTree` passes nothing, so every ordinary reader is strict.
+ */
+export interface CorpusParseOptions {
+  /**
+   * Read a `type` line that states no `version`.
+   *
+   * A tree written before `asc-i5tj.6` holds those, and they cannot be refused by a reader whose
+   * whole job is to upgrade them. Nothing else is relaxed: the document still goes through
+   * `parseDocument`'s full key allowlist and validation.
+   */
+  readonly allowVersionlessTypeLines?: boolean;
+}
+
+export function parseCorpus(
+  text: string,
+  source: string,
+  options: CorpusParseOptions = {},
+): readonly ParsedLine[] {
   const lines: ParsedLine[] = [];
 
   for (const [index, raw] of text.split('\n').entries()) {
@@ -644,10 +670,25 @@ export function parseCorpus(text: string, source: string): readonly ParsedLine[]
       // The `kind` key is removed before the document parser sees it, so that a corpus line and a
       // type document are parsed by ONE function with one key allowlist -- a second parser is a
       // second answer to "is this definition valid", and the two would drift.
-      lines.push({
-        where,
-        line: { kind: 'type', document: parseDocument(JSON.stringify(withoutKind(parsed)), where) },
-      });
+      const document = parseDocument(JSON.stringify(withoutKind(parsed)), where);
+      // A stored registration knows its own number, so the line states it -- which is what stops
+      // the number from being read off the line's POSITION. `merge=union` reorders lines without
+      // asking and no code can prevent it, so before this field existed two clones could number
+      // the same content differently (asc-i5tj.6). This is the same rule `parseSchemeLine` already
+      // enforced for a scheme (`requiredWholeNumber` above): the asymmetry was the defect.
+      //
+      // Refused rather than defaulted, deliberately. `parseDocument` accepts an absent version
+      // because `types define` registers a definition its author has not numbered yet -- but a
+      // corpus line is never that. A fallback to line order would be the very rule being retired,
+      // and it would retire it only for the trees that happened to be written after this change.
+      if (document.version === undefined && options.allowVersionlessTypeLines !== true) {
+        throw new Error(
+          `${where} is a type definition with no version, and a corpus line always states one. ` +
+            `Run \`asc store rewrite\` once to upgrade this tree; it assigns each line the version ` +
+            `line order gives it today, which is the rule this field replaces.`,
+        );
+      }
+      lines.push({ where, line: { kind: 'type', document } });
       continue;
     }
     if (kind === 'entry') {

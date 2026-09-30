@@ -143,6 +143,7 @@ const NOTE: TypeLine = {
   kind: 'type',
   document: {
     name: 'note',
+    version: 1,
     properties: [{ name: 'body', type: 'text' }],
     description: 'a note',
   },
@@ -152,6 +153,7 @@ const TODO: TypeLine = {
   kind: 'type',
   document: {
     name: 'todo',
+    version: 1,
     properties: [{ name: 'body', type: 'text' }],
   },
 };

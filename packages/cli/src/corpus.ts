@@ -8,7 +8,7 @@
  * corpus, hand labels and kappa passes included, not only what a trigger cannot protect.
  *
  * ```jsonl
- * {"kind":"type","name":"decision","properties":[…],"type_hash":"…"}
+ * {"kind":"type","name":"decision","version":1,"properties":[…],"type_hash":"…"}
  * {"kind":"entry","id":"…","type_name":"decision","type_version":1,"type_hash":"…", …}
  * {"kind":"scheme","name":"risk","version":1,"created_at":"…","spec":{"labels":[…],"rules":[…]},"scheme_hash":"…"}
  * {"kind":"annotation","id":"…","entry_id":"…","scheme":"risk","scheme_version":1,"label":"high", …}
@@ -36,16 +36,25 @@
  * always writes definitions before the rows that depend on them, and `import` refuses to restore
  * either kind of row whose definition is not in the file.
  *
- * **`type_hash`, `type_version`, and now `scheme_hash` are carried and CHECKED, never trusted.**
- * `type_hash` is a pure function of the canonical shape (`specHash`), so a matching hash is
- * evidence the definition survived the trip rather than something that makes two corpora
- * comparable -- which is exactly the argument `document.ts` makes for the same field, and the
+ * **`type_hash`, `type_version`, `scheme_hash`, and a type line's own `version` are carried and
+ * CHECKED, never trusted.** `type_hash` is a pure function of the canonical shape (`specHash`), so a
+ * matching hash is evidence the definition survived the trip rather than something that makes two
+ * corpora comparable -- which is exactly the argument `document.ts` makes for the same field, and the
  * check is `registerDocument`'s. An entry's `type_version` is corroborating evidence of the same
  * kind: `import` resolves the version by HASH and refuses if the file claims a different number,
  * because the two disagreeing means the file is describing an entry that was not recorded against
  * the definition it names. `scheme_hash` is `schemeHash` (`@ascend/store`) applied to the exact
  * same argument: a scheme line's `spec` is what `import` recomputes the hash from, and a claimed
  * `scheme_hash` that disagrees is refused rather than trusted, by `verifySchemeLine`.
+ *
+ * A TYPE LINE's own `version` is a claim of the same kind, added by `asc-i5tj.6`. It says which
+ * registration the line is, so a reader no longer reads the number off the line's POSITION -- and
+ * the position is not a reader's to rely on, because `merge=union` reorders a file without asking.
+ * `import` refuses a line whose claim is not the number its target mints, which is what stops a
+ * multi-version type with no entries from being silently renumbered by such a merge. A type line
+ * stating no `version` is refused by the corpus parser rather than defaulted to its position, so
+ * the retired rule has no fallback path left; a tree written before the field existed is upgraded
+ * once by `asc store rewrite`.
  *
  * **`recorded_at` and `id` are restored verbatim, and so is everything else in the row.** That is
  * the whole point: a restored corpus is the same corpus, not a re-recording of it. The one column

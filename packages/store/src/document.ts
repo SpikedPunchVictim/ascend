@@ -81,6 +81,22 @@ export interface TypeDocument extends TypeGuidance {
    * prevent. Absence is the only way to say "not retired", and a hand-written `"status": "active"`
    * is told so by name.
    */
+  /**
+   * Which registration of this name the document describes.
+   *
+   * **Optional here, required on a corpus line.** A corpus line IS a stored registration, so it
+   * always knows its number. A *document* is a definition someone is asking to register
+   * (`asc types define`), and its author has not been assigned one yet -- so the corpus parser is
+   * what refuses the absence (`jsonl.ts`), which is the same split `type_hash` already has: a
+   * document without a hash is accepted, and a corpus line without one is a finding.
+   *
+   * This is not decoration and it is not identity. It is outside `documentSpec`, so two documents
+   * differing only in this field hash the same -- which is what lets a line state its version
+   * without invalidating every entry recorded against that version. Until it existed, a type's
+   * number came from LINE ORDER alone (`registerType` mints `latest + 1`), and `merge=union`
+   * reorders lines, so two clones could number the same content differently (`asc-i5tj.6`).
+   */
+  readonly version?: number;
   readonly status?: 'deprecated';
   /** The identity this document claims. Recomputed and checked on import. */
   readonly type_hash?: string;
@@ -143,6 +159,13 @@ export function documentFromRow(row: TypeVersionRow): TypeDocument {
     // existed. That is not tidiness: the tree of every project already written would otherwise be
     // rewritten to add `"status":"active"` to every line, for a fact the format defines as absent.
     ...(row.status === 'deprecated' ? { status: 'deprecated' as const } : {}),
+    // Emitted unconditionally, which DOES change the bytes of every line already written -- the
+    // one-time cost `asc` accepted when it decided line order would stop carrying this fact
+    // (`asc-i5tj.6`). It is worth the rewrite because the alternative is not a stable byte but an
+    // unstable MEANING: `merge=union` reorders lines, so a version read from position is a version
+    // two clones can number differently. Unlike `status` there is no absent form to fall back to --
+    // every stored registration has a number, so every line states it.
+    version: row.version,
     type_hash: row.typeHash,
   };
 }
@@ -164,8 +187,11 @@ export function orderedDocument(document: TypeDocument): Record<string, unknown>
     ...(document.prose === undefined ? {} : { prose: document.prose }),
     // Beside `type_hash`, and in the same relationship to it: both are facts ABOUT the definition
     // rather than parts of it -- the hash a check on the way in, the status a fact about whether the
-    // type is still being recorded. Kept out of `documentSpec`, so neither is identity.
+    // type is still being recorded, the version which registration this is. Kept out of
+    // `documentSpec`, so none of the three is identity and re-stating a version cannot change a
+    // `type_hash`.
     ...(document.status === undefined ? {} : { status: document.status }),
+    ...(document.version === undefined ? {} : { version: document.version }),
     ...(document.type_hash === undefined ? {} : { type_hash: document.type_hash }),
   };
 }
@@ -178,6 +204,7 @@ const KNOWN_KEYS = [
   ...GUIDANCE_FIELDS,
   'prose',
   'status',
+  'version',
   'type_hash',
 ] as const;
 const KNOWN_PROPERTY_KEYS = [
@@ -337,6 +364,20 @@ export function parseDocument(text: string, source: string): TypeDocument {
     fieldError(source, 'prose', 'an object of strings, keyed by property name', prose);
   }
 
+  // Checked here for the same reason `status` is: a corpus line is hand-editable text, and a
+  // hand-edit that turns the number into `"1"` or `1.5` would otherwise be a version that compares
+  // oddly rather than a finding. The field is NOT required here -- `asc types define` registers a
+  // definition its author has not numbered yet, and requiring it would break a working command.
+  // What requires it of a STORED line is the corpus parser (`jsonl.ts`), which knows the line is a
+  // registration and therefore knows it has a number.
+  const version = raw['version'];
+  if (
+    version !== undefined &&
+    (typeof version !== 'number' || !Number.isInteger(version) || version < 1)
+  ) {
+    fieldError(source, 'version', 'a whole number of at least 1', version);
+  }
+
   const hash = raw['type_hash'];
   if (hash !== undefined && typeof hash !== 'string') {
     fieldError(source, 'type_hash', 'a string', hash);
@@ -349,6 +390,7 @@ export function parseDocument(text: string, source: string): TypeDocument {
     ...(recordWhen === undefined ? {} : { record_when: recordWhen }),
     ...guidance,
     ...(status === undefined ? {} : { status: 'deprecated' as const }),
+    ...(version === undefined ? {} : { version }),
     ...(prose === undefined ? {} : { prose: prose as Record<string, string> }),
     ...(hash === undefined ? {} : { type_hash: hash }),
   };

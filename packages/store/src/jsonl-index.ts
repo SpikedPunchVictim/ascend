@@ -817,6 +817,26 @@ function replayType(store: Store, document: TypeDocument, now: string): void {
     );
   }
 
+  // **A line states which registration it is, and a replay checks the claim rather than deriving
+  // the number from the line's position.** The reader sorts type lines by `(name, version)`
+  // (`jsonl-files.ts`), so this fires exactly when a name's versions are not the sequence
+  // `1, 2, 3…` a replay mints: a registration is missing from the tree, or two lines claim one
+  // number with different shapes. Both are trees whose numbering has a hole in it, and minting the
+  // next number for the line after the hole would renumber every version past it -- which is the
+  // silent renumbering this field exists to stop (`asc-i5tj.6`). It is next to the hash check above
+  // because it is the same kind of statement: the line says something about itself, and the store
+  // computes the same thing independently.
+  if (document.version !== undefined && document.version !== registered.version) {
+    throw new Error(
+      `the type line for '${document.name}' states version ${String(document.version)}, but the ` +
+        `lines for '${document.name}' replayed before it had already reached version ` +
+        `${String(registered.version)}. A tree numbers a name's registrations 1, 2, 3… in order, so ` +
+        `this line does not continue the sequence: the tree is missing a registration, or two of ` +
+        `its lines claim the same number. Nothing was indexed. Restore the tree from a source that ` +
+        `holds the whole history rather than editing it by hand.`,
+    );
+  }
+
   // **A retirement has no version of its own, so it rides on a REPEAT of a pair the tree already
   // holds, and this is where that repeat is read.** `registerType` cannot see the field: it takes a
   // spec, and a spec is identity only. Measured 2026-09-29, before this line existed: `asc types

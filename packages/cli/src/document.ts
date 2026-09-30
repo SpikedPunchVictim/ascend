@@ -9,6 +9,7 @@
  * ```jsonc
  * {
  *   "name": "review_completed",
+ *   "version":     1,                                 // which registration this is (asc-i5tj.6)
  *   "properties": [{ "name": "review_kind", "type": "enum", "enum_values": ["approved"] }],
  *   "description":  "prose about the type",          // not identity
  *   "record_when":  "prose telling a model when",     // not identity
@@ -20,6 +21,15 @@
  *   "type_hash":    "…64 hex…"                        // checked on import, never trusted
  * }
  * ```
+ *
+ * **`version` is optional here and required on a corpus line**, and the split is the one `type_hash`
+ * already has. A *corpus* line is a stored registration, so it always knows its number and the
+ * parser refuses one that omits it (`jsonl.ts`). A *document* is a definition someone is proposing,
+ * and `asc types define` registers one whose author has not numbered it yet -- so requiring it here
+ * would break a working command. `asc types export` writes it because it exports a registered
+ * version, and a document that carries it is making the same kind of claim `type_hash` is: recompute
+ * nothing, but refuse a disagreement. A hand-written definition carries neither, and a document
+ * edited after an export must drop both.
  *
  * **The spec fields are core's `TypeSpec` verbatim** (`name`, `properties`, and the first two
  * prose fields), so this format is the spec plus two keys rather than a parallel vocabulary

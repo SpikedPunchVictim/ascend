@@ -104,6 +104,7 @@ const ID = (n: number): string => `0192f000-0000-7000-8000-${String(n).padStart(
 // widens to `string` and stops being a `PropertySpec`.
 const NOTE: TypeDocument = {
   name: 'note',
+  version: 1,
   properties: [{ name: 'body', type: 'text' }],
   description: 'a note',
 };

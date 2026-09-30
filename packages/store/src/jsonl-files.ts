@@ -21,10 +21,13 @@
  * .ascend/.gitattributes                    *.jsonl merge=union
  * ```
  *
- * `types/` and `schemes/` are FLAT and append-only because their file order IS meaning:
- * registration order is what defines a type's and a scheme's version numbers, and an import
- * reproduces those numbers from the order it reads. Reordering them would silently renumber
- * versions, so no reader may sort them and no writer may interleave them.
+ * `types/` and `schemes/` are FLAT, one file per kind, and append-only: a line is a registration,
+ * and a registration is added, never edited in place or dropped. Their file order USED to be
+ * meaning too -- registration order defined the version numbers -- and no reader might sort them.
+ * That is no longer true, and the change is the point: a line states its own `version`, so a reader
+ * sorts by `(name, version)` and a reordered file reads identically. `merge=union` reorders lines
+ * without asking and no code can prevent it, so an order that carried meaning was an order two
+ * clones could disagree about (`asc-i5tj.6`).
  *
  * `entries/` and `annotations/` are PARTITIONED BY NAME, which is what keeps two branches that
  * touch different types from colliding, and what makes `merge=union` safe on a file both branches
@@ -46,8 +49,12 @@
  *
  * The rule is derived from the same distinction as the layout -- does file order carry meaning?
  *
- * - **type, scheme lines keep FILE ORDER.** Order is meaning (version numbers), so it is preserved
- *   and files are read in numeric order (`0001` before `0002`).
+ * - **type, scheme lines sort by `(name, version)`.** A version is unique within a name and the
+ *   corpus parser refuses a duplicated registration, so this is total, and a reordered file reads
+ *   as an ordered one. This replaced *"keep FILE ORDER"* for the reason the layout section gives:
+ *   order WAS carrying the version numbers, and a union merge rewrites it without asking. Files are
+ *   still read in numeric order -- the sort is what makes which file a line landed in stop
+ *   mattering.
  * - **entry lines sort by `(recorded_at, id, then the serialized line)**.** `recorded_at, id` is
  *   the order the bead names. The third key is not decoration: an entry's id is derived and
  *   content-addressed for derived entries, so ONE id legitimately carries TWO contents (the
@@ -93,6 +100,8 @@ import {
   type AnnotationLine,
   type CorpusLine,
   type EntryLine,
+  type SchemeLine,
+  type TypeLine,
 } from './jsonl.js';
 
 /**
@@ -210,8 +219,9 @@ function directoryOf(line: CorpusLine, where: string): readonly string[] {
   }
 }
 
-/** `0001.jsonl`, zero-padded so numeric and byte order agree -- which is what makes file order
- *  meaningful for type and scheme lines without a numeric sort at read time. */
+/** `0001.jsonl`, zero-padded so numeric and byte order agree -- the order a reader walks the files
+ *  in. Which file a registration line sits in no longer decides its version, but the walk still has
+ *  to be total and reproducible. */
 function fileName(index: number): string {
   return `${String(index).padStart(4, '0')}.jsonl`;
 }
@@ -285,6 +295,54 @@ function dedupeByIdentity(lines: readonly OrderableLine[]): readonly OrderableLi
     kept.push(line);
   }
   return kept;
+}
+
+/** A registration line: the two kinds whose version numbers this file is about. */
+type HeaderLine = TypeLine | SchemeLine;
+
+/**
+ * The version a stored header line states.
+ *
+ * The corpus parser already refuses a header line that states none, so this cannot throw on a tree
+ * this reader accepted -- it exists so the sort compares `number`s rather than `number | undefined`.
+ * A default would be worse than a throw: reading a version-less line as `0` would put it first and
+ * look like a legitimate order, which is the silent renumbering this whole change removes.
+ */
+function storedVersion(line: HeaderLine): number {
+  const version = line.kind === 'type' ? line.document.version : line.version;
+  if (version === undefined) {
+    throw new Error(
+      `a ${line.kind} line reached the reader with no version, which the corpus parser refuses. ` +
+        `That is a reader bug rather than a tree one, and sorting it as 0 would hide it.`,
+    );
+  }
+  return version;
+}
+
+/**
+ * Header lines in `(name, version)` order, so a reordered file reads as an ordered one.
+ *
+ * A version is unique within a name and the corpus parser refuses a duplicated registration, so
+ * this is a total order and the result does not depend on where a line landed. It replaces *"keep
+ * FILE ORDER"* in `ORDER` above for the reason the layout doc gives: file order WAS carrying the
+ * version numbers, and a union merge rewrites order without asking, so an order that carried
+ * meaning was an order two clones could disagree about (`asc-i5tj.6`).
+ *
+ * It covers both kinds rather than the type kind alone. A scheme line already stated its version
+ * while a type line did not -- that asymmetry is the defect this closes, and sorting only the kind
+ * that changed would leave the rule half-true.
+ */
+function inVersionOrder(lines: readonly HeaderLine[]): readonly HeaderLine[] {
+  const keyed = lines.map((line) => ({
+    line,
+    name: line.kind === 'type' ? line.document.name : line.name,
+    version: storedVersion(line),
+  }));
+  keyed.sort((a, b) => {
+    if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+    return a.version - b.version;
+  });
+  return keyed.map((entry) => entry.line);
 }
 
 /**
@@ -416,8 +474,8 @@ export function recordFiles(root: string): readonly RecordFile[] {
  * string sort.
  */
 export function readRecordTree(root: string): readonly CorpusLine[] {
-  const types: CorpusLine[] = [];
-  const schemes: CorpusLine[] = [];
+  const types: TypeLine[] = [];
+  const schemes: SchemeLine[] = [];
   const entries: EntryLine[] = [];
   const annotations: AnnotationLine[] = [];
 
@@ -451,8 +509,8 @@ export function readRecordTree(root: string): readonly CorpusLine[] {
   }
 
   return [
-    ...types,
-    ...schemes,
+    ...inVersionOrder(types),
+    ...inVersionOrder(schemes),
     ...inRecordedOrder(dedupeByIdentity(entries)),
     ...inRecordedOrder(dedupeByIdentity(annotations)),
   ];

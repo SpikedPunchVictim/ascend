@@ -186,10 +186,23 @@ export default class ImportCorpus extends BaseCommand {
         const preexisting = namesRegistered(db);
         const preexistingSchemes = schemeNamesRegistered(db);
 
-        for (const { line } of types) {
+        for (const { where, line } of types) {
           const result = registerDocumentVia(produce, db, line.document, {
             registeredAt: this.now(),
           });
+          // The claim is checked here, the way a scheme line's is just below, rather than inside
+          // `registerType`: the store mints a number and knows nothing about what the caller
+          // claimed, so only a caller holding `preexisting` can tell "this file is damaged" apart
+          // from "this project numbered the same name differently" -- and telling those apart is
+          // what this whole block exists for (`versionMismatch`).
+          //
+          // `parseCorpus` refuses a type line with no version, so `claimed` is a number here; the
+          // guard states that rather than asserting it, so this cannot quietly become a no-op if
+          // that parse rule is ever relaxed (asc-i5tj.6).
+          const claimed = line.document.version;
+          if (claimed !== undefined && result.version !== claimed) {
+            throw typeVersionMismatch(line, where, result.version, preexisting.has(result.name));
+          }
           rows.push({
             kind: 'type',
             name: result.name,
@@ -230,11 +243,11 @@ export default class ImportCorpus extends BaseCommand {
         }
 
         // Schemes, in stream order -- oldest version of each name first, the same replay `export`
-        // relies on for types. Each scheme line makes its OWN version claim (unlike a type
-        // document, which carries none), so the check that the store minted the claimed number is
-        // made right here, immediately after the call that could disagree with it -- there is no
-        // need for a `versionsByHash`-style map built after the fact, because there is exactly one
-        // scheme production per line and its return value already IS the resolution by hash.
+        // relies on for types. Each scheme line makes its OWN version claim, and so does each type
+        // line (since `asc-i5tj.6`), so the check that the store minted the claimed number is made
+        // immediately after the call that could disagree with it -- there is no need for a
+        // `versionsByHash`-style map built after the fact, because there is exactly one production
+        // per line and its return value already IS the resolution by hash.
         for (const { where, line: scheme } of schemes) {
           // `produce.scheme` restores the reserved invalidation scheme as itself rather than
           // registering it as a user's -- `registerScheme` refuses that name (dogfood/0027), and
@@ -372,6 +385,51 @@ function versionMismatch(
       `before the restore, so those numbers came from the stream and the entry disagrees with it. ` +
       `Re-export the corpus rather than editing, filtering or concatenating the file: nothing was ` +
       `written.`,
+  );
+}
+
+/**
+ * Refuse a type line whose version number is not the one this restore mints for its definition.
+ *
+ * Mirrors `schemeVersionMismatch` below, for the reason `asc-i5tj.6` gives: a corpus type line
+ * states its own version, so a line that disagrees with what the target mints is refused rather
+ * than silently renumbered. Before the line carried a number there was nothing to disagree with --
+ * the store minted whatever the replay order implied, and only an entry's `type_hash` could catch
+ * the result, which left a multi-version type with no entries silently renumberable. The same
+ * two-case split applies here as for schemes and for the same reason; see `versionMismatch`'s
+ * longer comment for the argument in full rather than a second statement of it.
+ */
+function typeVersionMismatch(
+  line: TypeLine,
+  where: string,
+  minted: number,
+  preexistingName: boolean,
+): Error {
+  const claimed = String(line.document.version);
+  const hash = String(line.document.type_hash);
+  const name = line.document.name;
+  const identity = `type '${name}' (${where}) claims version ${claimed}`;
+
+  if (preexistingName) {
+    // The name is spelled unquoted here, matching `versionMismatch`'s type-case wording rather than
+    // `schemeVersionMismatch`'s -- the two are read side by side by whoever meets this, and a
+    // caller grepping for the type they just imported should find the same phrase either way.
+    return refusal(
+      `${identity}, and this restore registers that definition (type_hash ${hash}) as version ` +
+        `${String(minted)} -- because this project already held its own ${name}, so the corpus's ` +
+        `numbers and this project's are not the same numbers. The definition is not restored under ` +
+        `a different version: the version decides which definition an entry was recorded against, ` +
+        `so changing it would store a different row rather than restore this one. Nothing was ` +
+        `written. Restore this corpus into a project that does not already hold a different ` +
+        `${name}.`,
+    );
+  }
+
+  return refusal(
+    `${identity} with type_hash ${hash}, but the definitions in this stream register that hash as ` +
+      `version ${String(minted)} -- and this project held no ${name} before the restore, so those ` +
+      `numbers came from the stream and this line disagrees with it. Re-export the corpus rather ` +
+      `than editing, filtering or concatenating the file: nothing was written.`,
   );
 }
 
