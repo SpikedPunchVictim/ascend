@@ -1375,6 +1375,30 @@ describe('asc record -- the review_after advisory (asc-bli.5)', () => {
     expect(advisories(recordOne(dir))).toBe(1);
   });
 
+  it('counts what stands, so a strike moves the point back (asc-9xi0)', () => {
+    // The plan put this down as a risk to re-read rather than assume: `countAfter` is
+    // `countBefore + rows.length`, which is only the true post-write count while `countBefore` is
+    // the LIVE count. New rows are never struck, so the addition is right either way -- but the
+    // BASELINE it adds to is the whole question, and a strike is what tells the two apart.
+    const dir = guided(2);
+
+    const first = asc(['record', 'probe', '--prop=note=a', '--json'], dir);
+    expect(advisories(first)).toBe(0);
+    const id = (JSON.parse(first.stdout) as { rows: { id: string }[] }).rows[0]!.id;
+
+    // The second live entry reaches 2, and speaks.
+    expect(advisories(asc(['record', 'probe', '--prop=note=b'], dir))).toBe(1);
+
+    // Strike one of the two. A raw count would still read 2, and the next write would be silent.
+    expect(
+      asc(['invalidate', id, '--label=wrong_value', '--reason=x was a duplicate'], dir).status,
+    ).toBe(0);
+
+    // 1 stands; writing the next one reaches 2 again, so the advisory is owed again -- and it is
+    // the honest answer. The entry that reached the point first no longer counts as evidence.
+    expect(advisories(asc(['record', 'probe', '--prop=note=c'], dir))).toBe(1);
+  });
+
   it('never speaks for a type that declares no review_after', () => {
     const dir = project();
     for (let i = 0; i < 3; i++) {

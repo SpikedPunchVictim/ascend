@@ -68,6 +68,7 @@ export {
   listTypes,
   registeredNames,
   registerType,
+  struckEntryCount,
   UnusableDefinitionError,
   UnusableProseError,
   specHash,

@@ -11,6 +11,7 @@ import {
   openStore,
   propertyValueMatches,
   recordEntry,
+  recordInvalidation,
   registerType,
   SCHEMA_VERSION,
   searchEntries,
@@ -567,14 +568,63 @@ describe('searchScope reports what a search could have looked over', () => {
 
   it('counts the type and the indexed part of it separately', () => {
     withTwoTypes((store) => {
-      expect(searchScope(store.db, 'note')).toEqual({ entries: 2, indexed: 2 });
-      expect(searchScope(store.db, 'bare')).toEqual({ entries: 1, indexed: 0 });
+      expect(searchScope(store.db, 'note')).toEqual({ entries: 2, indexed: 2, struck: 0 });
+      expect(searchScope(store.db, 'bare')).toEqual({ entries: 1, indexed: 0, struck: 0 });
     });
   });
 
   it('reports a type with no entries as zero and zero', () => {
     withTwoTypes((store) => {
-      expect(searchScope(store.db, 'nothing_here')).toEqual({ entries: 0, indexed: 0 });
+      expect(searchScope(store.db, 'nothing_here')).toEqual({ entries: 0, indexed: 0, struck: 0 });
+    });
+  });
+
+  /**
+   * `asc-9xi0`: a strike moves the counts, and `searchScope` is where a count is an ANSWER.
+   *
+   * Two of the three numbers here move and one must not, which is the whole shape of the decision.
+   * A caller reads `struck` beside `entries` to know how much of what it just read still stands;
+   * `entries` and `indexed` stay RAW because they answer "how much is there to look over", and
+   * `assistReason` keys `type-empty` on `entries === 0` -- a live `entries` would report an
+   * all-struck type as "no entries yet", which would be a lie about a type holding 300 rows.
+   */
+  it('reports the struck count beside the raw total, moving neither of the other two', () => {
+    withTwoTypes((store) => {
+      recordEntry(store.db, { type: 'note' }, context('n3', 'a third note'));
+      recordInvalidation(store.db, {
+        entryId: 'n1',
+        label: 'wrong_value',
+        reason: 'the tests were not missing; the runner never collected them',
+        createdAt: AT,
+      });
+
+      // `entries` 3 and `indexed` 3: what was recorded and what a search can read. `struck` 1: how
+      // much of that has stopped standing. The strike is a fact ABOUT the total, not a subtraction
+      // from it -- subtracting here would make an all-struck type report as one never used.
+      expect(searchScope(store.db, 'note')).toEqual({ entries: 3, indexed: 3, struck: 1 });
+    });
+  });
+
+  it('still reports the entries of a fully struck type, so an assist cannot call it empty', () => {
+    withTwoTypes((store) => {
+      recordInvalidation(store.db, {
+        entryId: 'n1',
+        label: 'superseded',
+        reason: 'n2 records the same finding after the suite was rewritten',
+        supersededBy: 'n2',
+        createdAt: AT,
+      });
+      recordInvalidation(store.db, {
+        entryId: 'n2',
+        label: 'superseded',
+        reason: 'n1 records the finding; this one was the duplicate',
+        supersededBy: 'n1',
+        createdAt: AT,
+      });
+
+      // Every entry struck, and the raw counts are untouched, which is what keeps
+      // `assistReason`'s "no entries yet" for a type that has two.
+      expect(searchScope(store.db, 'note')).toEqual({ entries: 2, indexed: 2, struck: 2 });
     });
   });
 
@@ -591,7 +641,7 @@ describe('searchScope reports what a search could have looked over', () => {
       expect(() => recordEntry(store.db, { type: 'note' }, context('empty', ''))).toThrow(
         /evidenceText is empty/,
       );
-      expect(searchScope(store.db, 'note')).toEqual({ entries: 0, indexed: 0 });
+      expect(searchScope(store.db, 'note')).toEqual({ entries: 0, indexed: 0, struck: 0 });
     });
   });
 });
@@ -673,7 +723,64 @@ describe('propertyValueMatches finds values that exist, and only those', () => {
   it('returns the values that occur, with the count of entries carrying each', () => {
     withRunners((store) => {
       expect(propertyValueMatches(store.db, { type: 'run', terms: ['run'], limit: 5 })).toEqual([
-        { property: 'runner', value: 'npm_run_build', entries: 2 },
+        { property: 'runner', value: 'npm_run_build', entries: 2, struck: 0 },
+      ]);
+    });
+  });
+
+  /**
+   * `asc-9xi0`: **a row is data, so this stays raw and MARKS instead.** No value is removed from
+   * the list -- a struck entry still holds the value it holds, and dropping it would answer a
+   * question the caller did not ask. What changes is that a group carried by a struck entry says so,
+   * because "2 entries carry `npm_run_build`" and "1 entry carries `npm_run_build`, and that entry
+   * was struck" are different facts about what the type's evidence supports.
+   *
+   * The count is a COUNT and not a boolean, and this is the case that decides it: a value carried by
+   * three entries of which one is struck is neither "marked" nor "unmarked".
+   */
+  it("counts how many of a value's entries are struck, without dropping the value", () => {
+    withRunners((store) => {
+      recordInvalidation(store.db, {
+        entryId: 'r1',
+        label: 'wrong_value',
+        reason: 'the runner was recorded from the wrong package',
+        createdAt: AT,
+      });
+
+      expect(propertyValueMatches(store.db, { type: 'run', terms: ['run'], limit: 5 })).toEqual([
+        { property: 'runner', value: 'npm_run_build', entries: 2, struck: 1 },
+      ]);
+    });
+  });
+
+  it('reports a value every one of whose entries is struck as fully struck', () => {
+    withRunners((store) => {
+      recordInvalidation(store.db, {
+        entryId: 'r3',
+        label: 'wrong_value',
+        reason: 'the suite was run from the wrong checkout',
+        createdAt: AT,
+      });
+
+      expect(propertyValueMatches(store.db, { type: 'run', terms: ['cargo'], limit: 5 })).toEqual([
+        { property: 'runner', value: 'cargo test', entries: 1, struck: 1 },
+      ]);
+    });
+  });
+
+  it('reports zero struck for a value no entry of which was struck', () => {
+    withRunners((store) => {
+      recordInvalidation(store.db, {
+        entryId: 'r3',
+        label: 'wrong_value',
+        reason: 'the suite was run from the wrong checkout',
+        createdAt: AT,
+      });
+
+      // The other group is untouched, so the column reads a real 0 rather than being absent --
+      // a group whose `struck` was omitted would be indistinguishable from an older payload.
+      expect(propertyValueMatches(store.db, { type: 'run', terms: ['run'], limit: 5 })).toEqual([
+        { property: 'runner', value: 'npm_run_build', entries: 2, struck: 0 },
       ]);
     });
   });
@@ -694,7 +801,7 @@ describe('propertyValueMatches finds values that exist, and only those', () => {
     withRunners((store) => {
       expect(
         propertyValueMatches(store.db, { type: 'run', terms: ['npm_run_build'], limit: 5 }),
-      ).toEqual([{ property: 'runner', value: 'npm_run_build', entries: 2 }]);
+      ).toEqual([{ property: 'runner', value: 'npm_run_build', entries: 2, struck: 0 }]);
     });
   });
 
@@ -714,7 +821,7 @@ describe('propertyValueMatches finds values that exist, and only those', () => {
       expect(all.map((hit) => hit.value)).toEqual(['npm_run_build', 'cargo test']);
       expect(
         propertyValueMatches(store.db, { type: 'run', terms: ['run', 'cargo'], limit: 1 }),
-      ).toEqual([{ property: 'runner', value: 'npm_run_build', entries: 2 }]);
+      ).toEqual([{ property: 'runner', value: 'npm_run_build', entries: 2, struck: 0 }]);
     });
   });
 
@@ -781,8 +888,8 @@ describe('a type named under a non-canonical spelling (asc-pw2)', () => {
 
   it('searchScope reports the same counts under any spelling of the type', () => {
     withCamel((store) => {
-      expect(searchScope(store.db, 'reviewKind')).toEqual({ entries: 1, indexed: 1 });
-      expect(searchScope(store.db, 'review_kind')).toEqual({ entries: 1, indexed: 1 });
+      expect(searchScope(store.db, 'reviewKind')).toEqual({ entries: 1, indexed: 1, struck: 0 });
+      expect(searchScope(store.db, 'review_kind')).toEqual({ entries: 1, indexed: 1, struck: 0 });
     });
   });
 
@@ -798,7 +905,9 @@ describe('a type named under a non-canonical spelling (asc-pw2)', () => {
         terms: ['npm'],
         limit: 5,
       });
-      expect(byRaw).toEqual([{ property: 'runner', value: 'npm_run_build', entries: 1 }]);
+      expect(byRaw).toEqual([
+        { property: 'runner', value: 'npm_run_build', entries: 1, struck: 0 },
+      ]);
       expect(byCanonical).toEqual(byRaw);
     });
   });

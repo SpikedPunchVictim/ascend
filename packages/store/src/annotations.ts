@@ -64,56 +64,16 @@ import type { SqlDatabase } from './sql-port.js';
 // line's shape, which a type import supplies and erases.
 import type { AnnotationLine } from './jsonl.js';
 import { toFtsMatch } from './search.js';
+import { standsSql } from './sql.js';
 import { wrapPredicate } from './statements.js';
 
-/**
- * The scheme name ascend reserves for itself.
- *
- * `ARCHITECTURE.md` states that invalidation is an annotation scheme rather than an edit, and the
- * `entries_are_immutable` trigger says so in its own message ("invalidation is an annotation scheme,
- * not an edit"). That sentence is only true of the code if the name cannot be taken by a
- * user-defined scheme whose rules mean something else, so registering under it is refused -- and the
- * refusal names the bead that will implement it, because a reservation with no work behind it is
- * indistinguishable from a typo.
- */
-export const RESERVED_SCHEME = 'invalidation';
-
-/**
- * The invalidation vocabulary. Closed, and deliberately short: the rule for admitting a label was
- * "no category without a real instance already in the corpus", and only these three had one when
- * asc-88m was written. `superseded` covers a later entry measuring the same thing better,
- * `wrong_subject` covers an entry that should never have been recorded about this subject at all,
- * and `wrong_value` covers a right subject whose PRIMARY MEASUREMENT is unusable. A fourth
- * label some future finding actually needs is a cheap, well-supported addition -- schemes are
- * versioned for exactly this -- so nothing here is pre-guessed against a case that has not
- * happened yet.
- *
- * **`wrong_value` is narrower than "some field is wrong", and the narrowing is deliberate
- * (`asc-y7p`).** Every label here strikes the WHOLE ENTRY -- an annotation names an `entry_id` and
- * nothing finer -- so a label may only be applied when the entry has stopped counting as a whole.
- * ARCHITECTURE.md (:219, :568) states the same rule from the other side: invalidation is for an
- * entry that "measured the wrong thing".
- *
- * The case that fixed this wording is the one it EXCLUDES. `asc-k6p.3` proposed `wrong_value` for
- * ten `user_correction` entries whose `evidence_text` carries the AskUserQuestion harness preamble
- * instead of the user's words (`dogfood/0005`). The earlier wording -- "a wrong or contaminated
- * recorded value" -- described them exactly, and applying it would still have been wrong: their
- * four declared properties are all true, the correction really happened, and `asc-m4u`'s fix
- * already ruled in code that such an entry stands (`derive.ts`: "THE ENTRY IS STILL EMITTED ...
- * the event's identity is fine, only its prose is absent"). Striking them would make any
- * invalidation-honouring count report nine corrections where nineteen occurred -- a new wrong
- * number written to suppress an old one, which is the failure invalidation exists to prevent.
- *
- * So: one contaminated field on an entry that otherwise stands is NOT `wrong_value`, and currently
- * has no label. Field-scoped invalidation is the obvious generalisation and is deliberately not
- * built, by the same rule that admitted only three labels -- one real instance is not yet a
- * category. `asc-y7p` holds the case, and a second instance of a different shape is what should
- * reopen it.
- */
-export const INVALIDATION_LABELS = ['wrong_subject', 'wrong_value', 'superseded'] as const;
-
-/** One label from the closed invalidation vocabulary. See `INVALIDATION_LABELS`. */
-export type InvalidationLabel = (typeof INVALIDATION_LABELS)[number];
+// `RESERVED_SCHEME`, `INVALIDATION_LABELS` and `InvalidationLabel` live in `reserved.js` and are
+// re-exported here, so every existing importer of this module keeps working unchanged. They moved
+// because `sql.js` needs the name and this module needs `sql.js`'s predicate back; the reasoning is
+// on `reserved.ts`, along with the prose for all three. The import below is what this module uses
+// itself; the `export` is the re-export, and the two are not the same statement.
+import { INVALIDATION_LABELS, RESERVED_SCHEME, type InvalidationLabel } from './reserved.js';
+export { INVALIDATION_LABELS, RESERVED_SCHEME, type InvalidationLabel };
 
 /**
  * The invalidation scheme's shape: the closed vocabulary above, and NO rules.
@@ -918,6 +878,20 @@ export interface RecordedInvalidation {
 export interface InvalidationRow {
   readonly entryId: string;
   readonly label: InvalidationLabel;
+  /**
+   * Why the entry stopped counting. Never empty, and never whitespace-only: three guards hold that
+   * across the three doors -- `recordInvalidation` for a live invalidation, and
+   * `requireInvalidationReason` (`jsonl.ts`) for both a corpus line and a hand-edit.
+   *
+   * **Stays `string` while a store written before `asc-4wx6` can hold a NULL**, which is stated here
+   * rather than left to be rediscovered by whoever reads one. The cast in `listInvalidations` was
+   * false before that fix and is true after it only for trees that never carried a reasonless row:
+   * a pre-fix `asc import` could store one, and `asc export` would then have written it into a
+   * git-tracked tree. This store measured 0 such rows. `string | null` was the honest alternative
+   * and was declined, because it would put the check back on every reader forever for a shape at
+   * most one store can hold -- and such a tree now fails to BUILD (`asc index build`, `asc import`),
+   * naming the line and the hand-edit, so it announces itself rather than reading back quietly.
+   */
   readonly reason: string;
   readonly supersededBy: string | null;
   readonly createdBy: string | null;
@@ -1227,12 +1201,21 @@ export function listInvalidations(db: SqlDatabase, entryId?: string): readonly I
 
     return {
       entryId: row.entry_id,
-      // Only `recordInvalidation` writes this scheme, and it refuses every label outside
-      // `INVALIDATION_LABELS` before the insert -- so the cast asserts an invariant this module
-      // itself enforces, not one a caller's data could violate.
+      // Not "only `recordInvalidation` writes this scheme" -- `asc import` restores it through
+      // `recordAnnotations` too (asc-4wx6). The invariant is about the VOCABULARY, and two guards
+      // hold it on the two doors: `restoreInvalidationScheme` refuses a reserved-scheme line whose
+      // spec is not the store's, and `recordAnnotations` refuses a label outside the spec's
+      // vocabulary. So a row under this scheme can only ever carry a label `INVALIDATION_LABELS`
+      // names -- the cast asserts something enforced, not something assumed.
       label: row.label as InvalidationLabel,
-      // Same reasoning: `recordInvalidation` refuses an empty (or all-whitespace) reason before it
-      // ever prepares the insert, so `note` is never NULL for a row this scheme wrote.
+      // This one needed a THIRD guard, and until `asc-4wx6` it did not have one: `recordInvalidation`
+      // refuses an empty (or all-whitespace) reason, but that is one writer of two, and
+      // `recordAnnotations`' note gate refuses only the empty STRING. So an absent reason became SQL
+      // NULL and a whitespace-only one was stored verbatim, both with `asc import` exiting 0, and
+      // this cast read back a `null` its declared type says cannot exist. The guard is now in the
+      // corpus parser (`requireInvalidationReason`, `jsonl.ts`), which is the door `asc import`,
+      // `asc index build` and every hand-edit already pass through. A pre-fix tree could still hold
+      // a NULL here and this store measured none; see the residual risk on `InvalidationRow.reason`.
       reason: row.note as string,
       supersededBy,
       createdBy: row.created_by,
@@ -1518,6 +1501,12 @@ export function schemeCensus(
  * beside the old ones rather than replacing them. The caller passes a handler's prefix and reads
  * off which versions still have open entries, so a version it no longer runs can be named instead
  * of silently counted twice. Compared with `substr`, not `LIKE`: a handler name may hold `_`.
+ *
+ * **The `NOT EXISTS` is `standsSql`, shared rather than spelled here** (asc-9xi0). This was the one
+ * read path that already applied a strike, and it carried its own copy of the predicate; now that
+ * `listTypes`, `entryCount` and `explore --struck` ask the same question, the copy is the thing
+ * that would have drifted. The predicate returns a fully-quoted string with no bind parameters, so
+ * the parameter list below is one shorter than it was.
  */
 export function openEntriesByVersion(
   db: SqlDatabase,
@@ -1529,12 +1518,10 @@ export function openEntriesByVersion(
       `SELECT substr(e.id, ? + 1, ?) AS version, count(*) AS n
          FROM entries AS e
         WHERE substr(e.id, 1, ?) = ?
-          AND NOT EXISTS (
-            SELECT 1 FROM annotations AS a WHERE a.entry_id = e.id AND a.scheme = ?
-          )
+          AND ${standsSql('e')}
         GROUP BY version`,
     )
-    .all(prefix.length, width, prefix.length, prefix, RESERVED_SCHEME) as unknown as {
+    .all(prefix.length, width, prefix.length, prefix) as unknown as {
     version: string;
     n: number;
   }[];

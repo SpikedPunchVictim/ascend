@@ -59,6 +59,14 @@ export interface PageOptions {
    * that predicate is corpus-wide, over the raw `entries` table, because it runs before any one
    * type is chosen.
    */
+  /**
+   * Narrow to entries that have stopped counting (`asc-bqb5`).
+   *
+   * The store's own invalidation predicate (`struckSql`, `sql.ts`), not a second spelling of it --
+   * `asc-9xi0` collapsed every reader onto one definition so two surfaces cannot come to disagree
+   * about which rows have stopped counting. Composes with `filter`: both narrow one scope.
+   */
+  readonly struck?: boolean;
   readonly filter?: string;
 }
 
@@ -176,8 +184,15 @@ export function pageEntries(db: SqlDatabase, options: PageOptions): PageResult {
   // with `no such column` against the raw table. `typeFilterScope` filters over a projection of
   // THIS type's rows with declared properties as bare columns instead, and still refuses
   // (`PredicateError`) a filter carrying a second statement rather than silently truncating it.
-  const filterClause =
-    options.filter === undefined ? '' : ` AND id IN (${typeFilterScope(db, type, options.filter)})`;
+  // `asc-bqb5`: the scope is built when EITHER narrowing is present, because `--struck` alone is a
+  // scope over the same projection -- and a `--struck --filter` pair is one scope, not two clauses
+  // that could disagree.
+  const narrowed = options.filter !== undefined || options.struck === true;
+  const filterClause = !narrowed
+    ? ''
+    : ` AND id IN (${typeFilterScope(db, type, options.filter ?? null, {
+        struck: options.struck === true,
+      })})`;
 
   // `scopeFingerprint`'s `CursorScope` (`@ascend/core`) is a fixed two-field shape -- `type` and
   // `order` -- and widening a pure core type for one store-layer feature is a bigger change than
@@ -188,7 +203,13 @@ export function pageEntries(db: SqlDatabase, options: PageOptions): PageResult {
   // (`spec.ts`) only ever produces `[a-z0-9_]`, so a `\u0000` separator cannot collide with a
   // real canonical type name, and this string is never compared to anything but another value
   // built the same way.
-  const fingerprintScope = options.filter === undefined ? type : `${type}\u0000${options.filter}`;
+  // `--struck` joins the fingerprint for the reason the filter does: a cursor from a page of the
+  // type's rows must not resume into rows a struck page never queried. The marker is the flag's own
+  // name, so the two kinds of scope cannot collide with each other or with a type name.
+  const fingerprintScope =
+    options.filter === undefined && options.struck !== true
+      ? type
+      : `${type}\u0000${options.filter ?? ''}\u0000${options.struck === true ? 'struck' : ''}`;
   const scope = scopeFingerprint({ type: fingerprintScope, order: CURSOR_ORDER });
 
   let position: Cursor | undefined;

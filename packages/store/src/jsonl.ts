@@ -26,6 +26,7 @@
  */
 
 import {
+  RESERVED_SCHEME,
   schemeHash,
   type AnnotationRow,
   type SchemeRule,
@@ -606,6 +607,53 @@ function parseAnnotationLine(where: string, raw: Record<string, unknown>): Annot
 }
 
 /**
+ * An invalidation states a reason, and this is the one gate that can hold that for every writer.
+ *
+ * `asc-4wx6`. `recordInvalidation` (`annotations.ts`) refuses a reason that is empty or all
+ * whitespace, and `INVALIDATION_SCHEME_SPEC` gives the scheme no rules, so that refusal is the only
+ * thing standing between a strike and a bare label. It is one writer of two. `asc import` restores
+ * the reserved scheme through `recordAnnotations`, whose only note gate is the EMPTY STRING --
+ * so an ABSENT reason became SQL NULL and a whitespace-only one was stored verbatim, both with
+ * `asc import` exiting 0, and `listInvalidations` then cast that column to `string` and read back a
+ * `null` its own type said was impossible.
+ *
+ * **Refused here rather than in `recordAnnotations`, because the parser is the door every path
+ * already goes through.** `asc import` parses the file; `asc index build` parses the tree; a
+ * hand-edit is read by the next one of either. One rule, all three writers, and no second place to
+ * teach. `recordAnnotations` is also the wrong shape for it: a note is required for exactly one
+ * scheme, and that function is general over all of them -- its caller passing a scheme would make
+ * the requirement a parameter, and a parameter can be passed wrongly. This sits beside the `type`
+ * branch's version refusal above, which is the same shape for the same reason: a line a tree written
+ * earlier cannot satisfy, refused at the one place all readers share.
+ *
+ * **The message names a HAND EDIT, because nothing automated can repair this.** A version can be
+ * assigned from line order, which is why that refusal names `asc store rewrite` -- but a missing
+ * reason is not reconstructible from anything in the tree, and `asc store rewrite` inherits this
+ * refusal (it reads through this same parser with only the version rule relaxed), so it can never
+ * get past the line to fix it. Stamping a placeholder reason on would be a missing value wearing a
+ * value's clothes, which is the exact thing `INVALIDATION_SCHEME_SPEC`'s empty rule set refuses. The
+ * only honest repair is a person reading the entry and saying why it stopped counting.
+ */
+function requireInvalidationReason(where: string, line: AnnotationLine): void {
+  if (line.scheme !== RESERVED_SCHEME) return;
+  // `optionalText` collapses an absent key and a JSON `null` to the same `null`, so one condition
+  // covers both shapes an export can carry. Trimming matches `recordInvalidation`'s own test, so the
+  // parser and the writer agree on what "a reason" means rather than each having a definition.
+  if (line.note !== null && line.note.trim() !== '') return;
+
+  throw new Error(
+    `${where} is an '${RESERVED_SCHEME}' annotation with no reason. Invalidation is the store's ` +
+      `only durable claim about why an entry stopped counting, so a strike whose reason is absent ` +
+      `(or only whitespace) is a silent, unexplained demotion -- the thing the scheme exists to ` +
+      `prevent. No automated pass can supply it: there is nothing in the tree a missing reason ` +
+      `could be reconstructed from, and \`asc store rewrite\` reads through this same refusal, so ` +
+      `the line has to be repaired by hand. Give the annotation a 'note' saying why the entry ` +
+      `stopped counting, or remove the line and re-record the strike with \`asc invalidate\` so the ` +
+      `reason is taken from the person who knows it.`,
+  );
+}
+
+/**
  * Parse a corpus stream.
  *
  * Blank lines are skipped rather than refused: a file that ends with a newline has one, and a
@@ -700,7 +748,11 @@ export function parseCorpus(
       continue;
     }
     if (kind === 'annotation') {
-      lines.push({ where, line: parseAnnotationLine(where, parsed) });
+      const line = parseAnnotationLine(where, parsed);
+      // The one scheme a corpus line must carry a reason for; every other scheme's note is
+      // optional and stays that way. The rule and its reasoning are on the function.
+      requireInvalidationReason(where, line);
+      lines.push({ where, line });
       continue;
     }
 

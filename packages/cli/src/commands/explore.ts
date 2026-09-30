@@ -708,6 +708,13 @@ export default class Explore extends BaseCommand {
         '"...=1" both match; "...=\'false\'" silently matches ZERO rows instead of failing, ' +
         'because it compares a string to an integer. Never quote a boolean.',
     }),
+    struck: Flags.boolean({
+      description:
+        'Narrow to entries that have stopped counting (an invalidation). Applies to the default ' +
+        'map, --page, --sample and --group-by, and composes with --filter (refused with --dump, ' +
+        'like --filter). This is the door to the half `asc types list` counts out of its `entries`: ' +
+        'explore itself profiles everything recorded, struck rows included.',
+    }),
     'group-by': Flags.string({
       description:
         'One or two comma-separated declared properties to cross-tabulate instead of profiling. ' +
@@ -792,6 +799,7 @@ export default class Explore extends BaseCommand {
     const selectRaw = this.optionalFlag(flags.select);
     const selectNames = selectRaw === undefined ? undefined : parseSelect(selectRaw);
     const filter = this.optionalFlag(flags.filter);
+    const struck = this.flagValue(flags.struck);
     const groupByRaw = this.optionalFlag(flags['group-by']);
     const groupKeys = groupByRaw === undefined ? undefined : parseGroupBy(groupByRaw);
 
@@ -848,16 +856,21 @@ export default class Explore extends BaseCommand {
           'writes the whole type, in chunks of one stable order, as entries. To dump part of a ' +
           'type, narrow the type or read a page. Drop one of them.',
       );
-    } else if (filter !== undefined) {
+    } else if (filter !== undefined || struck) {
       // A dump is meant to be the complete, reproducible record of a type, read again later by
-      // someone who never saw the command line that produced it. A filtered dump would be
-      // indistinguishable on disk from a complete one, and its manifest has nowhere to carry the
-      // predicate that thinned it -- a different reason from the combinations just above, so it is
-      // its own branch rather than folded into that one message.
+      // someone who never saw the command line that produced it. A narrowed dump would be
+      // indistinguishable on disk from a complete one, and its manifest has nowhere to carry what
+      // thinned it -- a different reason from the combinations just above, so it is its own branch
+      // rather than folded into that one message.
+      //
+      // `--struck` is refused here for the identical reason (`asc-bqb5`), and it must be: a dump of
+      // the struck half is exactly as misleading on disk as a dump of a filtered half, and reaching
+      // it by the shorter flag would be the same defect with a smaller word.
+      const narrower = filter === undefined ? '--struck' : '--filter';
       throw usageError(
-        '--dump cannot be combined with --filter: a dump is the whole type, and its manifest has ' +
-          'nowhere to record the predicate that would have thinned it. Read a filtered page ' +
-          'instead: --page --filter .... Drop --filter, or drop --dump.',
+        `--dump cannot be combined with ${narrower}: a dump is the whole type, and its manifest ` +
+          `has nowhere to record what would have thinned it. Read a narrowed page instead: ` +
+          `--page ${narrower} .... Drop ${narrower}, or drop --dump.`,
       );
     }
 
@@ -1097,6 +1110,7 @@ export default class Explore extends BaseCommand {
               type: args.type,
               keys: groupKeys,
               ...(filter === undefined ? {} : { filter }),
+              struck,
             });
           } catch (error) {
             if (
@@ -1110,13 +1124,17 @@ export default class Explore extends BaseCommand {
           }
         })();
 
-        const { columns, rows } = buildGroupOutput(result, groupKeys, filter !== undefined);
+        const { columns, rows } = buildGroupOutput(
+          result,
+          groupKeys,
+          filter !== undefined || struck,
+        );
 
         this.emitBuilt(budget, {
           requested: rows.length,
           // The header rows state what the table IS (the population, and each axis's shape); a
           // budget that cannot afford them cannot afford a crosstab at all.
-          floor: headerRowCount(result, groupKeys, filter !== undefined),
+          floor: headerRowCount(result, groupKeys, filter !== undefined || struck),
           build: (keep) => rows.slice(0, keep),
           rowsOf: (kept) => kept.length,
           keysOf: (kept) => kept.map((row) => rowKey(row, groupKeys)),
@@ -1175,22 +1193,22 @@ export default class Explore extends BaseCommand {
         // and the id set it returns is intersected with the type's own projection. `entries` below
         // is intentionally the FILTERED population, not `projected`: sampling and every proportion
         // this mode reports must be computed over what the caller actually asked to draw from.
-        const entries =
-          filter === undefined
-            ? projected
-            : (() => {
-                let matched: readonly { readonly id: string }[];
-                try {
-                  matched = store.db
-                    .prepare(typeFilterScope(store.db, args.type, filter))
-                    .all() as unknown as { id: string }[];
-                } catch (error) {
-                  if (error instanceof PredicateError) throw filterUsageError(error);
-                  throw error;
-                }
-                const allowed = new Set(matched.map((row) => row.id));
-                return projected.filter((entry) => allowed.has(entry.id));
-              })();
+        const narrowed = filter !== undefined || struck;
+        const entries = !narrowed
+          ? projected
+          : (() => {
+              let matched: readonly { readonly id: string }[];
+              try {
+                matched = store.db
+                  .prepare(typeFilterScope(store.db, args.type, filter ?? null, { struck }))
+                  .all() as unknown as { id: string }[];
+              } catch (error) {
+                if (error instanceof PredicateError) throw filterUsageError(error);
+                throw error;
+              }
+              const allowed = new Set(matched.map((row) => row.id));
+              return projected.filter((entry) => allowed.has(entry.id));
+            })();
 
         // Rebuilt for each candidate size rather than truncated from the full draw, and that is the
         // design rather than an implementation detail. A stratified sample of 40 cut to 25 is not a
@@ -1239,7 +1257,7 @@ export default class Explore extends BaseCommand {
                 // before and after `--filter` -- the same two numbers `--page` states from
                 // `PageResult.unfiltered`, computed locally because `signatures` (unlike
                 // `pageEntries`) has no filter of its own (see above).
-                ...(filter === undefined
+                ...(!narrowed
                   ? {}
                   : { filter: { matched: entries.length, unfiltered: projected.length } }),
                 ...(trim === undefined ? {} : { trim }),
@@ -1283,6 +1301,7 @@ export default class Explore extends BaseCommand {
           type: args.type,
           ...(flags.cursor === undefined ? {} : { cursor: flags.cursor }),
           ...(filter === undefined ? {} : { filter }),
+          struck,
         };
 
         // A TRIMMED PAGE RE-QUERIES AT THE SMALLER LIMIT; IT DOES NOT SLICE. Slicing would leave the
@@ -1320,7 +1339,7 @@ export default class Explore extends BaseCommand {
                 // `page.total`/`page.unfiltered`: a filtered `count` (or here, `coverage.total`) of
                 // zero cannot say whether the filter excluded everything or the type holds nothing
                 // -- `unfiltered` is the fact that tells the two apart (`PageResult.unfiltered`).
-                ...(filter === undefined
+                ...(filter === undefined && !struck
                   ? {}
                   : { filter: { matched: page.total, unfiltered: page.unfiltered } }),
                 ...(trim === undefined ? {} : { trim }),
@@ -1336,7 +1355,10 @@ export default class Explore extends BaseCommand {
       // `typeFilterScope` call above all go through -- so it converts here the identical way.
       const profile = (() => {
         try {
-          return profileType(store.db, args.type, filter === undefined ? {} : { filter });
+          return profileType(store.db, args.type, {
+            ...(filter === undefined ? {} : { filter }),
+            struck,
+          });
         } catch (error) {
           if (error instanceof PredicateError) throw filterUsageError(error);
           throw error;

@@ -48,7 +48,7 @@ import type { SqlDatabase } from './sql-port.js';
 import { propertiesOf, valueExpr } from './properties.js';
 import { UnknownTypeError } from './recorder.js';
 import { registeredNames, typeVersions } from './registry.js';
-import { ENVELOPE_COLUMNS, ident, literal } from './sql.js';
+import { ENVELOPE_COLUMNS, ident, literal, struckSql } from './sql.js';
 import { wrapPredicateOverQuery } from './statements.js';
 
 /**
@@ -62,7 +62,12 @@ import { wrapPredicateOverQuery } from './statements.js';
  * refused (`PredicateError`) rather than silently truncated by `db.prepare`, exactly as
  * `wrapPredicate` already refuses one over the raw table for `annotate --scope`.
  */
-export function typeFilterScope(db: SqlDatabase, type: string, fragment: string): string {
+export function typeFilterScope(
+  db: SqlDatabase,
+  type: string,
+  fragment: string | null,
+  options: { readonly struck?: boolean } = {},
+): string {
   const canonical = canonicalName(type);
   const versions = typeVersions(db, canonical);
   if (versions.length === 0) {
@@ -79,9 +84,24 @@ export function typeFilterScope(db: SqlDatabase, type: string, fragment: string)
     ...properties.map((name) => `${valueExpr(name)} AS ${ident(name)}`),
   ].join(',\n         ');
 
+  // `struck` narrows the PROJECTION's own WHERE rather than joining `fragment` inside the wrap,
+  // and that placement is the point (`asc-bqb5`). `wrapPredicateOverQuery` evaluates the fragment
+  // over the subquery's COLUMNS, and the subquery projects envelope columns and declared properties
+  // -- `annotations` is not among them, so a struck predicate spelled there would be the very
+  // `no such column` this file exists to prevent, one layer in. Inside the projection the alias `e`
+  // is in scope, so the store's own `struckSql` runs against the table it names.
+  //
+  // The predicate is `struckSql`, not a second spelling of the invalidation EXISTS: `asc-9xi0`
+  // collapsed every reader onto one definition so two surfaces cannot come to disagree about which
+  // rows have stopped counting.
+  const struck = options.struck === true ? ` AND ${struckSql('e')}` : '';
   const projection =
     `SELECT ${projected}\n` +
-    `           FROM entries AS e WHERE e.type_name = ${literal(canonical)}`;
+    `           FROM entries AS e WHERE e.type_name = ${literal(canonical)}${struck}`;
 
+  // No fragment means the caller asked for the type's rows without a predicate -- `--struck` on its
+  // own. There is nothing to assert a single statement about, and `WHERE (1=1)` would be a predicate
+  // spelled here rather than by a caller, so the wrap is skipped and the projection is the scope.
+  if (fragment === null) return `SELECT id FROM (${projection})`;
   return wrapPredicateOverQuery(projection, fragment);
 }

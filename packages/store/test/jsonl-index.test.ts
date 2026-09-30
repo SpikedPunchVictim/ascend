@@ -57,6 +57,7 @@ import {
   ForeignStoreError,
   INDEX_FILE,
   IndexStaleError,
+  INVALIDATION_LABELS,
   listSchemes,
   listTypes,
   openIndex,
@@ -64,6 +65,7 @@ import {
   parseCorpus,
   readRecordTree,
   recordFiles,
+  RESERVED_SCHEME,
   schemeHash,
   serializeCorpus,
   specHash,
@@ -840,6 +842,43 @@ describe('a line whose claim the store would reinterpret is refused, not restore
     );
 
     expect(() => buildIndex(root, join(root, INDEX_FILE), OPTS)).toThrow(/scheme_hash/);
+  });
+
+  it('refuses an invalidation with no reason, which is a claim nothing downstream could complete', () => {
+    // `asc-4wx6`, and the build arm of it. The refusal is in the corpus parser, so a tree holding
+    // this line cannot be read -- which means it cannot be indexed either, and the failure is a
+    // refusal rather than an index that silently drops the strike. The tree is otherwise whole: the
+    // reserved scheme is registered with the store's own spec and the label is in the vocabulary, so
+    // the missing reason is the ONLY thing wrong with it and nothing else can be what fires.
+    const spec: SchemeSpec = { labels: [...INVALIDATION_LABELS], rules: [] };
+    const root = tree([
+      ...WHOLE_CORPUS,
+      {
+        kind: 'scheme',
+        name: RESERVED_SCHEME,
+        version: 1,
+        created_at: at(0),
+        spec,
+        scheme_hash: schemeHash(spec),
+      },
+      {
+        kind: 'annotation',
+        id: 'e'.repeat(64),
+        entry_id: entry(1).id,
+        scheme: RESERVED_SCHEME,
+        scheme_version: 1,
+        label: 'wrong_subject',
+        confidence: null,
+        note: null,
+        created_by: null,
+        created_at: at(1),
+      },
+    ]);
+
+    expect(() => buildIndex(root, join(root, INDEX_FILE), OPTS)).toThrow(/no reason/);
+    // And it is a refusal, not a short index: `buildIndex` publishes nothing here, so there is no
+    // file left claiming to describe a tree it read only part of.
+    expect(existsSync(join(root, INDEX_FILE))).toBe(false);
   });
 });
 

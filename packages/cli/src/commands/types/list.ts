@@ -1,7 +1,7 @@
 /**
  * `asc types list` -- what is registered in this project.
  *
- * The table shows a narrow slice (name, version, properties, entries, status) because
+ * The table shows a narrow slice (name, version, properties, entries, struck, status) because
  * that is what a person scans. The rows underneath carry the whole summary -- the full
  * `type_hash`, the prose -- so `--json` gives a script everything without a second call.
  *
@@ -9,6 +9,16 @@
  * and unused, which is the "dead rule" signal `asc doctor` reports (`asc-12a`), and it is
  * worth seeing before you have a dozen of them. It counts entries on ANY version, so a
  * type whose only entries predate a major bump does not read as dead.
+ *
+ * **`entries` is the LIVE count and `struck` sits beside it** (`asc-9xi0`). This is where you go
+ * for what still stands; `asc explore <type>` profiles everything recorded, struck rows included,
+ * and `asc explore <type> --struck` narrows to them. Nothing is hidden: the two columns add up to
+ * the total, so a reader who expected a bigger `entries` can see where the rest went.
+ *
+ * `struck` is a COLUMN on every row and an empty cell when nothing is struck -- the shape
+ * `review_after` already has, and for the reason `TASKS.md` #7 gives there: a set of columns that
+ * varies with the data is a set a script has to discover. The cost is one empty column on a table
+ * with no strikes, which is cheaper than a header that changes under a consumer.
  */
 
 import { listTypes } from '@ascend/store';
@@ -32,6 +42,9 @@ export default class TypesList extends BaseCommand {
         version: type.latestVersion,
         properties: type.propertyCount,
         entries: type.entryCount,
+        // Beside `entries`, which is what it is read against. Present on every row and empty when
+        // zero: a varying column set is one a script has to discover -- see the module comment.
+        struck: type.struckCount === 0 ? null : type.struckCount,
         // Beside `entries`, which is what it is read against. Omitted when undeclared (TASKS.md #7).
         ...(type.reviewAfter === null ? {} : { review_after: type.reviewAfter }),
         status: type.status,
@@ -44,7 +57,7 @@ export default class TypesList extends BaseCommand {
     );
 
     this.emit(format, {
-      columns: ['name', 'version', 'properties', 'entries', 'review_after', 'status'],
+      columns: ['name', 'version', 'properties', 'entries', 'struck', 'review_after', 'status'],
       rows,
     });
   }

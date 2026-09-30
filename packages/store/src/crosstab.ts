@@ -85,6 +85,11 @@ export interface GroupRequest {
    * that predicate is corpus-wide, over the raw `entries` table, because it runs before any one
    * type is chosen.
    */
+  /**
+   * Narrow to entries that have stopped counting (`asc-bqb5`) -- the store's own invalidation
+   * predicate, composed with `filter` over one scope. See `typeFilterScope` (`type-filter.ts`).
+   */
+  readonly struck?: boolean;
   readonly filter?: string;
   /** Distinct values kept per key before the remainder is withheld. Defaults to `TOP_K`. */
   readonly topK?: number;
@@ -435,10 +440,12 @@ export function groupEntries(db: SqlDatabase, request: GroupRequest): GroupResul
   // declared properties as bare columns instead, and still refuses (`PredicateError`) a fragment
   // that smuggles in a second statement. See that file's own comment for why `annotate --scope`
   // does not get the same treatment.
+  // `asc-bqb5`: any narrowing is a scope over the projection; `request.filter === undefined` alone
+  // no longer means "the whole type", because `struck` narrows without a predicate.
   const scope =
-    request.filter === undefined
+    request.filter === undefined && request.struck !== true
       ? 'SELECT id FROM entries'
-      : typeFilterScope(db, type, request.filter);
+      : typeFilterScope(db, type, request.filter ?? null, { struck: request.struck === true });
 
   const total = (
     db
@@ -452,7 +459,7 @@ export function groupEntries(db: SqlDatabase, request: GroupRequest): GroupResul
   // `profileType`: this is one plain `COUNT(*)`, not the filtered query again and not a whole map
   // built to answer a single number (`profileType` measured 7.4 ms against `findType`'s 26 us).
   const unfiltered =
-    request.filter === undefined
+    request.filter === undefined && request.struck !== true
       ? total
       : (
           db.prepare(`SELECT COUNT(*) AS n FROM entries WHERE type_name = ?`).get(type) as {

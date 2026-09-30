@@ -5,10 +5,14 @@ import type { PropertySpec, TypeSpec } from '@ascend/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   deprecateType,
+  entryCount,
   findType,
+  listTypes,
   openStore,
   recordEntry,
+  recordInvalidation,
   registerType,
+  struckEntryCount,
   UnusableDefinitionError,
   UnusableProseError,
   typeVersions,
@@ -1378,6 +1382,113 @@ describe('guidance (asc-bli.3): stored beside the shape, never inside it', () =>
         updateTypeProse(store.db, 'review_completed', 1, { guidance: { analysis_questions: [] } });
       }).toThrow(UnusableProseError);
       expect(findType(store.db, 'review_completed', 1)?.guidance).toEqual(GUIDANCE);
+    });
+  });
+});
+
+/**
+ * `asc-9xi0`: a struck entry stops being counted, and the struck count is shown beside.
+ *
+ * **The defect these tests close is that nothing read a strike.** `listInvalidations` had exactly
+ * one production caller -- `asc invalidate --list`, the command that WRITES strikes -- so every
+ * count of entries included every entry that had been struck, and a project could not tell "we have
+ * 4,428 verification runs" from "we have 1,428 and struck 3,000 of them".
+ *
+ * **`entryCount` changes MEANING in place rather than gaining a live sibling**, and the reason is
+ * the failure mode: a `liveEntryCount` beside a raw `entryCount` requires every surface to opt IN,
+ * and a surface we forgot would silently keep printing the total -- the exact defect class this bead
+ * exists to close. Moving the meaning makes a forgotten consumer print the new number, and the new
+ * required `struckCount` field makes the compiler name every literal that has to be revisited.
+ */
+describe('a strike stops an entry counting, and the struck count is shown beside it (asc-9xi0)', () => {
+  /** Three `note` entries, ids `e1`..`e3`, and their ids. */
+  const threeEntries = (store: Store): readonly string[] => {
+    registerType(store.db, spec([]), { registeredAt: AT });
+    return ['e1', 'e2', 'e3'].map((id) => {
+      recordEntry(
+        store.db,
+        { type: 'review_completed', properties: { count: 1, summary: id } },
+        { id, recordedAt: AT, ascendVersion: '0.0.0' },
+      );
+      return id;
+    });
+  };
+
+  const strike = (store: Store, entryId: string): void => {
+    recordInvalidation(store.db, {
+      entryId,
+      label: 'wrong_value',
+      reason: 'the measured value was contaminated by a retry',
+      createdAt: LATER,
+    });
+  };
+
+  const summary = (store: Store) => {
+    const found = listTypes(store.db).find((type) => type.name === 'review_completed');
+    if (found === undefined) throw new Error('review_completed is not registered');
+    return found;
+  };
+
+  it('counts every live entry and reports zero struck when nothing has been struck', () => {
+    withStore((store) => {
+      threeEntries(store);
+
+      expect(summary(store).entryCount).toBe(3);
+      expect(summary(store).struckCount).toBe(0);
+      expect(entryCount(store.db, 'review_completed')).toBe(3);
+      expect(struckEntryCount(store.db, 'review_completed')).toBe(0);
+    });
+  });
+
+  it('moves one entry from the live count to the struck count, from both readers', () => {
+    withStore((store) => {
+      const [first] = threeEntries(store);
+      strike(store, first as string);
+
+      // The listing and the function are documented as unable to disagree about a number
+      // (`entryCount`'s own comment), so every pair here is asserted rather than one of them.
+      expect(summary(store).entryCount).toBe(2);
+      expect(summary(store).struckCount).toBe(1);
+      expect(entryCount(store.db, 'review_completed')).toBe(2);
+      expect(struckEntryCount(store.db, 'review_completed')).toBe(1);
+    });
+  });
+
+  it('reads zero live and the full struck count for a type every one of whose entries is struck', () => {
+    // The shape `asc doctor`'s "dead type" check has to tell apart from "never recorded": both read
+    // a live count of 0, and only `struckCount` says which one it is.
+    withStore((store) => {
+      const ids = threeEntries(store);
+      for (const id of ids) strike(store, id);
+
+      expect(summary(store).entryCount).toBe(0);
+      expect(summary(store).struckCount).toBe(3);
+      expect(entryCount(store.db, 'review_completed')).toBe(0);
+      expect(struckEntryCount(store.db, 'review_completed')).toBe(3);
+    });
+  });
+
+  it('counts an entry once however many times it was struck', () => {
+    // An entry can be struck more than once -- re-invalidating with a different label writes a second
+    // row and both are kept (nothing un-strikes an entry, asc-k6p.2). A naive JOIN would count the
+    // entry once per strike row; the predicate is an EXISTS, so it stays one.
+    withStore((store) => {
+      const [first] = threeEntries(store);
+      strike(store, first as string);
+      strike(store, first as string);
+
+      expect(summary(store).entryCount).toBe(2);
+      expect(summary(store).struckCount).toBe(1);
+    });
+  });
+
+  it('leaves types with no entries at all reported as zero live and zero struck', () => {
+    // The third state, and the one the two counts above must not confuse with the full-strike one.
+    withStore((store) => {
+      registerType(store.db, spec([]), { registeredAt: AT });
+
+      expect(summary(store).entryCount).toBe(0);
+      expect(summary(store).struckCount).toBe(0);
     });
   });
 });

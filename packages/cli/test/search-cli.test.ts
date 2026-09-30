@@ -212,10 +212,16 @@ interface Envelope {
     readonly reason: string;
     readonly entries: number;
     readonly indexed: number;
+    // The struck count beside the raw `entries` (asc-9xi0). Declared here rather than left off
+    // because this is a hand-written mirror of the envelope: an unstated field would make the
+    // assertions below unverifiable by the compiler rather than wrong, which is the one failure
+    // mode a mirror has.
+    readonly struck: number;
     readonly values: readonly {
       readonly property: string;
       readonly value: string;
       readonly entries: number;
+      readonly struck: number;
     }[];
   };
 }
@@ -354,12 +360,97 @@ describe('asc search -- the zero-result assist', () => {
     // entirely and still be a property value the type holds hundreds of.
     const dir = fixture(2);
     const assist = search(dir, UNINDEXED.name, 'cargo').assist;
-    expect(assist?.values).toEqual([{ property: 'runner', value: 'cargo test', entries: 1 }]);
+    expect(assist?.values).toEqual([
+      { property: 'runner', value: 'cargo test', entries: 1, struck: 0 },
+    ]);
   });
 
   it('offers nothing when the term occurs nowhere at all', () => {
     const dir = fixture(2);
     expect(search(dir, SEARCHABLE.name, 'zzzqqq').assist?.values).toEqual([]);
+  });
+
+  /**
+   * `asc-9xi0`, through the real binary: a strike moves the assist's counts and marks its values.
+   *
+   * Three surfaces in one run, because the point of the decision is that a strike is visible without
+   * anything being hidden: the scope's `struck`, the coverage sentence leading with what stands, and
+   * the suggested value marked rather than dropped. The value stays in the list -- it is a row the
+   * type holds -- while the count says how much of it still stands.
+   */
+  it('counts a struck entry out of the coverage sentence and marks the value it carried', () => {
+    const dir = project();
+    const record = (evidence: string): string => {
+      const run = asc(
+        [
+          'record',
+          SEARCHABLE.name,
+          '--prop',
+          'runner=cargo test',
+          '--prop',
+          'note=n',
+          '--evidence',
+          evidence,
+          '--json',
+        ],
+        dir,
+      );
+      expect(run.status).toBe(0);
+      const id = (JSON.parse(run.stdout) as { rows: { id: string }[] }).rows[0]?.id;
+      if (typeof id !== 'string') throw new Error('recording reported no id');
+      return id;
+    };
+    const struck = record('deployment failed on disk 0');
+    record('deployment succeeded this time');
+
+    expect(
+      asc(
+        ['invalidate', struck, '--label=wrong_value', '--reason=the run measured a stale disk'],
+        dir,
+      ).status,
+    ).toBe(0);
+
+    // `cargo` occurs in no entry's evidence, so nothing is returned and the coverage sentence is
+    // the line on screen -- while `cargo test` is a value the type holds, which is exactly the
+    // shape a suggestion exists for.
+    const result = search(dir, SEARCHABLE.name, 'cargo');
+
+    // Raw and struck side by side: the type holds 2, and 1 of them stands.
+    expect(result.assist?.entries).toBe(2);
+    expect(result.assist?.struck).toBe(1);
+    // The suggestion is still offered, with the strike stated rather than the value withheld.
+    expect(result.assist?.values).toEqual([
+      { property: 'runner', value: 'cargo test', entries: 2, struck: 1 },
+    ]);
+  });
+
+  it('leaves the assist unmarked when nothing is struck', () => {
+    // The control arm, so the fields above are read as caused by the strike rather than by the
+    // fixture: the same two entries, no invalidation, `struck` zero on both.
+    const dir = project();
+    for (const evidence of ['deployment failed on disk 0', 'deployment succeeded this time']) {
+      const run = asc(
+        [
+          'record',
+          SEARCHABLE.name,
+          '--prop',
+          'runner=cargo test',
+          '--prop',
+          'note=n',
+          '--evidence',
+          evidence,
+          '--json',
+        ],
+        dir,
+      );
+      expect(run.status).toBe(0);
+    }
+
+    const result = search(dir, SEARCHABLE.name, 'cargo');
+    expect(result.assist?.struck).toBe(0);
+    expect(result.assist?.values).toEqual([
+      { property: 'runner', value: 'cargo test', entries: 2, struck: 0 },
+    ]);
   });
 
   it('offers the property values a RESULT SET does not cover', () => {
@@ -394,7 +485,7 @@ describe('asc search -- the zero-result assist', () => {
     expect(result.row_count).toBe(1);
     expect(result.assist?.reason).toBe('rows-returned');
     expect(result.assist?.values).toEqual([
-      { property: 'runner', value: 'cargo test', entries: 2 },
+      { property: 'runner', value: 'cargo test', entries: 2, struck: 0 },
     ]);
   });
 
@@ -416,7 +507,7 @@ describe('asc search -- the zero-result assist', () => {
     // assertion below would be about an empty list rather than about a match.
     const dir = fixture(3);
     expect(search(dir, SEARCHABLE.name, 'npm_run_build').assist?.values).toEqual([
-      { property: 'runner', value: 'npm_run_build', entries: 1 },
+      { property: 'runner', value: 'npm_run_build', entries: 1, struck: 0 },
     ]);
   });
 

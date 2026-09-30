@@ -139,7 +139,7 @@ describe('the output formats', () => {
     const run = asc(['types', 'list', '--csv'], project());
 
     expect(run.status).toBe(0);
-    expect(run.stdout.trim()).toBe('name,version,properties,entries,review_after,status');
+    expect(run.stdout.trim()).toBe('name,version,properties,entries,struck,review_after,status');
   });
 
   it('refuses two formats at once as a usage error', () => {

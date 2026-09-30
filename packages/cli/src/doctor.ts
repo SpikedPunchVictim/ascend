@@ -74,7 +74,16 @@ export function deadTypes(summaries: readonly TypeSummary[]): readonly DoctorFin
     check: 'dead_type',
     status: 'warn',
     subject: summary.name,
-    detail: `registered at v${String(summary.latestVersion)}, never recorded`,
+    // **Two different zeros, and only one of them is "never recorded"** (`asc-9xi0`). A type whose
+    // every entry has been struck also reads a live count of 0, and calling that "never recorded"
+    // sends a reader looking for entries that exist -- the whole class of confusion this bead is
+    // about. Both still warn: a type with nothing standing is worth the same second look either
+    // way, and the difference is in the reason, not the verdict.
+    detail:
+      summary.struckCount === 0
+        ? `registered at v${String(summary.latestVersion)}, never recorded`
+        : `registered at v${String(summary.latestVersion)}, every ${String(summary.struckCount)} ` +
+          `recorded entries struck`,
   }));
 }
 
@@ -225,16 +234,26 @@ export function briefSize(summaries: readonly TypeSummary[]): readonly DoctorFin
 /**
  * The store is gitignored and local-only, so `asc export` is its only backup -- and it leaves no
  * trace, so this cannot say whether one exists. It says that, and how much is at stake.
+ *
+ * **Takes both counts, and guards on their SUM** (`asc-9xi0`). `live` is what still counts, and a
+ * store can hold thousands of struck entries and no live ones -- guarding on `live === 0` alone
+ * would tell someone with 3,000 struck rows and no export that they have nothing to lose. Struck
+ * entries are still rows in a gitignored local store, so they are still at stake. When some are
+ * struck the subject spells both out, so the total is never the only number on screen.
  */
-export function exportStatus(entries: number): readonly DoctorFinding[] {
-  if (entries === 0) {
+export function exportStatus(live: number, struck: number): readonly DoctorFinding[] {
+  const total = live + struck;
+  if (total === 0) {
     return [{ check: 'export', status: 'ok', subject: ALL, detail: 'no entries to lose' }];
   }
   return [
     {
       check: 'export',
       status: 'info',
-      subject: `${String(entries)} entries`,
+      subject:
+        struck === 0
+          ? `${String(total)} entries`
+          : `${String(total)} entries (${String(live)} live, ${String(struck)} struck)`,
       detail:
         'cannot tell whether an export exists (asc export writes to stdout and records nothing); ' +
         'the store is local-only, so `asc export > corpus.jsonl` is its only backup',
@@ -248,12 +267,13 @@ export function runDoctor(
   profiles: readonly TypeProfile[],
 ): readonly DoctorFinding[] {
   const entries = summaries.reduce((sum, summary) => sum + summary.entryCount, 0);
+  const struck = summaries.reduce((sum, summary) => sum + summary.struckCount, 0);
   return [
     ...deadTypes(summaries),
     ...nearDuplicates(summaries),
     ...versionDrift(profiles),
     ...propertyStates(profiles),
     ...briefSize(summaries),
-    ...exportStatus(entries),
+    ...exportStatus(entries, struck),
   ];
 }

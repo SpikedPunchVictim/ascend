@@ -36,6 +36,7 @@ import {
   type TypeSpec,
 } from '@ascend/core';
 import type { SqlDatabase } from './sql-port.js';
+import { standsSql, struckSql } from './sql.js';
 import { refreshTypeViews } from './views.js';
 
 export interface RegisterTypeOptions {
@@ -729,13 +730,28 @@ export interface TypeSummary {
   readonly status: 'active' | 'deprecated';
   readonly propertyCount: number;
   /**
-   * Entries recorded against ANY version of this type.
+   * Entries recorded against ANY version of this type **that have not been struck**.
    *
    * Any version, not just the latest, because this is the denominator of "is this type
    * used at all" -- a type whose only entries are on v1 is used, and reporting 0 by
    * counting only the latest version's rows would file it as dead.
+   *
+   * **Live, not total** (`asc-9xi0`): an invalidation is the store's claim that an entry stopped
+   * counting, so a count that includes struck entries answers a question nobody asked. Read this
+   * with `struckCount` beside it -- the two together are the total, and a surface that shows one
+   * without the other is hiding rows rather than reporting them.
    */
   readonly entryCount: number;
+  /**
+   * Entries of this type that carry an invalidation, and so no longer count in `entryCount`.
+   *
+   * Always reported beside `entryCount` rather than instead of it, so that a reader can reconcile
+   * the two and nothing disappears in silence -- the rule `sql.ts`'s views follow for the same
+   * reason. A type reads `entryCount 0, struckCount 3` when everything was struck, which is
+   * different from `entryCount 0, struckCount 0`, which is a type nothing was ever recorded against.
+   * `asc doctor` is the surface that has to tell those apart.
+   */
+  readonly struckCount: number;
   readonly description: string | null;
   readonly recordWhen: string | null;
   /**
@@ -756,6 +772,7 @@ interface SummaryRowShape {
   property_count: number;
   version_count: number;
   entry_count: number;
+  struck_count: number;
   review_after: number | null;
 }
 
@@ -781,13 +798,16 @@ export function listTypes(db: SqlDatabase): readonly TypeSummary[] {
               t.description, t.record_when,
               json_array_length(t.spec_json, '$.properties') AS property_count,
               v.version_count, COALESCE(e.entry_count, 0) AS entry_count,
+              COALESCE(e.struck_count, 0) AS struck_count,
               json_extract(t.guidance_json, '$.review_after') AS review_after
          FROM entry_types AS t
          JOIN (SELECT name, MAX(version) AS max_version, COUNT(*) AS version_count
                  FROM entry_types GROUP BY name) AS v
            ON v.name = t.name AND v.max_version = t.version
-         LEFT JOIN (SELECT type_name, COUNT(*) AS entry_count
-                      FROM entries GROUP BY type_name) AS e
+         LEFT JOIN (SELECT type_name,
+                           SUM(CASE WHEN ${standsSql('e0')} THEN 1 ELSE 0 END) AS entry_count,
+                           SUM(CASE WHEN ${struckSql('e0')} THEN 1 ELSE 0 END) AS struck_count
+                      FROM entries AS e0 GROUP BY type_name) AS e
            ON e.type_name = t.name
         ORDER BY t.name ASC`,
     )
@@ -809,6 +829,7 @@ export function listTypes(db: SqlDatabase): readonly TypeSummary[] {
     // handled and stop looking.
     propertyCount: row.property_count,
     entryCount: row.entry_count,
+    struckCount: row.struck_count,
     description: row.description,
     recordWhen: row.record_when,
     reviewAfter: row.review_after,
@@ -816,13 +837,35 @@ export function listTypes(db: SqlDatabase): readonly TypeSummary[] {
 }
 
 /**
- * How many entries a type holds, across every version -- the same count `listTypes` reports as
- * `entryCount`, by the same definition, so `asc types list` and the `review_after` advisory
- * (asc-bli.5) cannot disagree about a number. One `COUNT(*)` over `idx_entries_type_time`.
+ * How many entries a type holds **that still count**, across every version -- the same count
+ * `listTypes` reports as `entryCount`, by the same definition, so `asc types list` and the
+ * `review_after` advisory (asc-bli.5) cannot disagree about a number. One `COUNT(*)` over
+ * `idx_entries_type_time`, narrowed by the shared `standsSql` predicate.
+ *
+ * **Struck entries are excluded** (`asc-9xi0`). A strike is the store's durable claim that an entry
+ * stopped counting, so including those rows would make this count answer a question nobody asked.
+ * Both callers above move together by construction: `listTypes`' derived table sums
+ * `CASE WHEN standsSql(...)`, which is this `WHERE`, and `struckEntryCount` below is its complement
+ * over the same rows. Read it with `struckEntryCount` when the total matters.
  */
 export function entryCount(db: SqlDatabase, typeName: string): number {
   const row = db
-    .prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?')
+    .prepare(`SELECT COUNT(*) AS n FROM entries AS e WHERE e.type_name = ? AND ${standsSql('e')}`)
+    .get(canonicalName(typeName)) as { n: number };
+  return row.n;
+}
+
+/**
+ * How many of a type's entries carry an invalidation, and so are excluded from `entryCount`.
+ *
+ * The other half of the pair, and asserted beside it: `entryCount + struckEntryCount` is every entry
+ * ever recorded against the type, which is what lets a reader reconcile a lowered count with the
+ * rows they can still see. Counts the ENTRY once however many times it was struck -- the `EXISTS`
+ * inside `struckSql`, not a join -- which is why a re-struck entry does not inflate this.
+ */
+export function struckEntryCount(db: SqlDatabase, typeName: string): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM entries AS e WHERE e.type_name = ? AND ${struckSql('e')}`)
     .get(canonicalName(typeName)) as { n: number };
   return row.n;
 }

@@ -109,9 +109,15 @@ function cellRow(cell: GroupResult['cells'][number], keys: readonly string[], to
 /**
  * The full `columns`/`rows` pair for a `GroupResult`, ready to hand to `Output` as-is.
  *
- * `filtered` is whether `--filter` was passed, not `result.total !== result.unfiltered` -- a
- * filter that matched everything leaves those two numbers equal, and that is exactly the case
- * (requirement 2 of the fix) that still owes the caller the acknowledgement that a filter ran.
+ * `filtered` is whether the population was NARROWED -- `--filter` or `--struck` (`asc-bqb5`), not
+ * `result.total !== result.unfiltered`. Two reasons it cannot be derived from the numbers: a filter
+ * that matched everything leaves those two equal, and that is exactly the case (requirement 2 of the
+ * fix) that still owes the caller the acknowledgement that a narrowing ran.
+ *
+ * **`--struck` reports through the same `filter` row rather than a second row of its own.** That
+ * row's job is to say which population the counts above it were computed over, which is the same
+ * fact whichever flag narrowed it; a `struck`-shaped twin would be a second way to state one thing,
+ * and a consumer would have to check for both to learn whether its numbers describe the whole type.
  */
 export function buildGroupOutput(
   result: GroupResult,

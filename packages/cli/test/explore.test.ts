@@ -1255,6 +1255,182 @@ describe('asc explore: a boolean property renders true/false, agreeing with --pa
  * names, the qualified proportion string, and that `--filter` narrows this the same as everything
  * else on the map.
  */
+/**
+ * `asc-bqb5` -- `--struck`, the door to the half `asc types list` counts out of its `entries`.
+ *
+ * **Why this flag exists at all**, measured rather than argued: `asc explore decision --filter
+ * "invalidated is not null"` fails with `no such column: invalidated`. That column is one this
+ * command PROJECTS into its own header (`the invalidated row`, asc-k6p.1) and its own filter
+ * language cannot name, so before this flag **no invocation could narrow an explore to the rows
+ * that have stopped counting**. `dogfood/0045` carries the finding.
+ *
+ * **The population, not the count.** explore's contract is the opposite of `asc types list`'s: it
+ * profiles everything recorded, struck rows included, and this flag selects the half of that
+ * population instead of changing what a number means. `--struck` therefore composes with `--filter`
+ * rather than replacing it, and reaches every mode `--filter` already reaches.
+ */
+describe('asc explore --struck: profile the rows that have stopped counting (asc-bqb5)', () => {
+  const record = (dir: string, id: string, outcome: 'ok' | 'bad' = 'ok'): void => {
+    const entry = { id, properties: { outcome } };
+    const run = asc(['record', SPEC.name, '-', '--json'], dir, JSON.stringify(entry));
+    expect(run.status, run.stderr).toBe(0);
+  };
+
+  const invalidate = (dir: string, id: string, label = 'wrong_value'): void => {
+    const run = asc(
+      ['invalidate', id, '--label', label, '--reason', `struck in a test: ${id}`],
+      dir,
+    );
+    expect(run.status, run.stderr).toBe(0);
+  };
+
+  it('profiles only the struck entries, so invalidated is 100% of the count', () => {
+    const dir = emptyProject();
+    for (const id of ['e1', 'e2', 'e3', 'e4']) record(dir, id);
+    invalidate(dir, 'e1');
+    invalidate(dir, 'e3');
+
+    const list = rows(asc(['explore', SPEC.name, '--struck', '--json'], dir).stdout);
+
+    // Two of four, and the whole of the population this map describes.
+    expect(find(list, 'count')?.value).toBe(2);
+    expect(find(list, 'invalidated')?.count).toBe(2);
+    expect(find(list, 'invalidated')?.tally).toBe('2 (100.0%)');
+  });
+
+  it('leaves the map without the flag profiling everything, struck rows included', () => {
+    // The control arm, and the decision this flag is the OTHER half of: explore does not move, and
+    // the struck rows are still in the population it profiles (the recorded decision at
+    // `profile.test.ts:910`, asc-88m).
+    const dir = emptyProject();
+    for (const id of ['e1', 'e2', 'e3', 'e4']) record(dir, id);
+    invalidate(dir, 'e1');
+    invalidate(dir, 'e3');
+
+    const list = rows(asc(['explore', SPEC.name, '--json'], dir).stdout);
+    expect(find(list, 'count')?.value).toBe(4);
+    expect(find(list, 'invalidated')?.count).toBe(2);
+  });
+
+  it('composes with --filter, narrowing the struck population rather than replacing it', () => {
+    const dir = emptyProject();
+    record(dir, 'e1', 'ok');
+    record(dir, 'e2', 'ok');
+    record(dir, 'e3', 'bad');
+    invalidate(dir, 'e1');
+    invalidate(dir, 'e2');
+
+    // Both struck entries are 'ok', so --struck alone is 2 and the filter alone selects three
+    // entries; the composition is the one entry in both.
+    const list = rows(
+      asc(['explore', SPEC.name, '--struck', '--filter', "outcome = 'bad'", '--json'], dir).stdout,
+    );
+    expect(find(list, 'count')?.value).toBe(0);
+
+    const ok = rows(
+      asc(['explore', SPEC.name, '--struck', '--filter', "outcome = 'ok'", '--json'], dir).stdout,
+    );
+    expect(find(ok, 'count')?.value).toBe(2);
+  });
+
+  it('narrows --page, and says so in its coverage', () => {
+    // `--page` is the one output that is a SUBSET of a population, so a wrong scope here is a page
+    // whose `coverage.total` describes a population the rows did not come from.
+    const dir = emptyProject();
+    for (const id of ['e1', 'e2', 'e3']) record(dir, id);
+    invalidate(dir, 'e2');
+
+    const run = asc(['explore', SPEC.name, '--page', '--struck', '--json'], dir);
+    expect(run.status, run.stderr).toBe(0);
+    const envelope = JSON.parse(run.stdout) as {
+      rows: readonly { id: string }[];
+      coverage: { shown: number; total: number };
+      filter?: { matched: number; unfiltered: number };
+    };
+
+    expect(envelope.rows.map((row) => row.id)).toStrictEqual(['e2']);
+    // The population the page was drawn from is the struck one -- not the type's three.
+    expect(envelope.coverage.total).toBe(1);
+  });
+
+  it('narrows --group-by', () => {
+    const dir = emptyProject();
+    record(dir, 'e1', 'ok');
+    record(dir, 'e2', 'bad');
+    record(dir, 'e3', 'bad');
+    invalidate(dir, 'e1');
+    invalidate(dir, 'e3');
+
+    const run = asc(['explore', SPEC.name, '--group-by', 'outcome', '--struck', '--json'], dir);
+    expect(run.status, run.stderr).toBe(0);
+    const envelope = JSON.parse(run.stdout) as { rows: readonly Record<string, unknown>[] };
+    // Cell rows only: the header rows state the population and carry no key value (`buildGroupOutput`).
+    const cells = envelope.rows.filter((row) => 'outcome' in row);
+
+    // Two cells, one per value the struck entries actually take: 'bad' once (e3) and 'ok' once (e1).
+    // A crosstab over all four entries would report 'bad' twice.
+    expect(cells.map((row) => `${String(row['outcome'])}:${String(row['count'])}`).sort()).toEqual([
+      'bad:1',
+      'ok:1',
+    ]);
+
+    // And the narrowing is disclosed, the way `--filter` already discloses its own: the header
+    // says which population the cell counts were computed over.
+    const filter = envelope.rows.find((row) => row['field'] === 'filter');
+    expect(filter?.['value']).toBe('matched 2 of 3 entries');
+  });
+
+  it('narrows --sample, so the share is of the struck population', () => {
+    const dir = emptyProject();
+    for (const id of ['e1', 'e2', 'e3']) record(dir, id);
+    invalidate(dir, 'e1');
+
+    const run = asc(
+      ['explore', SPEC.name, '--sample', 'random', '--limit', '1', '--struck', '--json'],
+      dir,
+    );
+    expect(run.status, run.stderr).toBe(0);
+    const envelope = JSON.parse(run.stdout) as {
+      coverage: { shown: number; total: number };
+      filter?: { matched: number; unfiltered: number };
+    };
+
+    expect(envelope.coverage.total).toBe(1);
+    // The population the sample was drawn FROM, stated the way `--filter` already states it: one
+    // struck of three recorded.
+    expect(envelope.filter?.matched).toBe(1);
+    expect(envelope.filter?.unfiltered).toBe(3);
+  });
+
+  it('reports an honest empty population for a type with no strikes, rather than an error', () => {
+    // Zero matches is an ANSWER: the caller asked which entries have stopped counting and the
+    // answer is none. An error here would send them looking for a broken command.
+    const dir = emptyProject();
+    for (const id of ['e1', 'e2']) record(dir, id);
+
+    const run = asc(['explore', SPEC.name, '--struck', '--json'], dir);
+    expect(run.status, run.stderr).toBe(0);
+    const list = rows(run.stdout);
+    expect(find(list, 'count')?.value).toBe(0);
+    // A bare `0`, not `0 (0.0%)`: a share of nothing is not a percentage (`bareShare`'s own guard),
+    // and the population here is genuinely zero.
+    expect(find(list, 'invalidated')?.tally).toBe('0');
+  });
+
+  it('refuses --dump with --struck, for the reason it refuses --filter', () => {
+    // A dump's manifest has nowhere to record the predicate that thinned it, so a dump of the
+    // struck half would be indistinguishable on disk from a complete one -- the same defect the
+    // --filter refusal names, and it must not be reachable by the shorter spelling.
+    const dir = emptyProject();
+    record(dir, 'e1');
+    const run = asc(['explore', SPEC.name, '--dump', join(dir, 'out'), '--struck'], dir);
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--struck');
+    expect(flatten(run.stderr)).toContain('--dump');
+  });
+});
+
 describe('asc explore: invalidated -- how much has stopped counting (asc-k6p.1)', () => {
   /** One entry, recorded with an explicit id so a later `asc invalidate` can name it. */
   const record = (dir: string, id: string, outcome: 'ok' | 'bad' = 'ok'): void => {

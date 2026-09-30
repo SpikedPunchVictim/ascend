@@ -12,11 +12,20 @@
  * The two callers differ only in where `annotations` lives -- `main` for a per-project view,
  * an ATTACHed schema for the union -- which is exactly the one parameter that function takes.
  *
+ * **`struckSql` / `standsSql` are here for the third version of the same reason** (`asc-9xi0`). Once
+ * a strike makes counts move, "has this entry stopped counting" is asked by `listTypes`, `entryCount`,
+ * `openEntriesByVersion` and the CLI's `explore --struck` -- and four spellings of one predicate is
+ * four answers waiting to disagree. `invalidatedColumnSql` and these are deliberately two functions
+ * and not one: that one exposes the latest LABEL for a reader who wants to know why, and these answer
+ * a yes/no about the entry, which is what a count needs.
+ *
  * Internal to the package: `views.ts` and `union.ts` use it, `index.ts` does not export it.
  */
 
 import { ENVELOPE_PROPERTY_NAMES, INVALIDATED_COLUMN_NAME } from '@ascend/core';
-import { RESERVED_SCHEME } from './annotations.js';
+// From `reserved.js` rather than `annotations.js`, and that is what keeps this module out of a
+// cycle: `annotations.js` imports `struckSql`/`standsSql` from here. See `reserved.ts`.
+import { RESERVED_SCHEME } from './reserved.js';
 
 /**
  * The four states a projected property can be in -- `@ascend/core`'s three, plus the one only a
@@ -96,6 +105,48 @@ export function invalidatedColumnSql(schema?: string): string {
     ` ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1) AS ${ident(INVALIDATED_COLUMN)}`
   );
 }
+
+/**
+ * Whether the entry `alias` names has been struck -- an invalidation under the reserved scheme.
+ *
+ * **The predicate is written once here because it is now asked in four places**, and the module's
+ * own reason for existing is that two spellings of one fact drift: `registry.ts` (`listTypes`,
+ * `entryCount`), `annotations.ts` (`openEntriesByVersion`), and -- through the public API -- the
+ * CLI's `explore --struck`. `openEntriesByVersion` carried an inline copy of this subquery before
+ * this bead, which was the duplication arriving; it is the same `EXISTS` it always was.
+ *
+ * `EXISTS` rather than a join, deliberately: an entry can carry more than one invalidation row (a
+ * re-strike with a different label writes a second, and nothing un-strikes an entry -- `asc-k6p.2`),
+ * and a join would count such an entry once per row. This answers the question the counts ask --
+ * "has this entry stopped counting" -- which is a yes or a no about the entry, not a tally of claims.
+ *
+ * **Only the presence of an invalidation matters, not its label or its age.** Every member of
+ * `INVALIDATION_LABELS` strikes (`annotations.ts`), and the store has no un-invalidation, so a
+ * latest-wins label read would be answering a question nobody asks here: an entry with rows under
+ * this scheme has stopped counting, full stop. That is also why this is not
+ * `invalidatedColumnSql` -- that one projects the LATEST LABEL into a view, for a reader who wants
+ * to know why, and it is deliberately not a filter (see its comment).
+ *
+ * `alias` must be the alias of an `entries` row in the enclosing query, and is interpolated through
+ * `ident` -- it is a column reference in generated SQL, not a value. The callers pass literals
+ * (`'e'`, `'e0'`), never anything a user supplies.
+ */
+function invalidationExistsSql(alias: string): string {
+  return (
+    `EXISTS (SELECT 1 FROM annotations AS inv` +
+    ` WHERE inv.entry_id = ${ident(alias)}.id AND inv.scheme = ${literal(RESERVED_SCHEME)})`
+  );
+}
+
+/** True for a row that has stopped counting: it carries an invalidation. See `invalidationExistsSql`. */
+export const struckSql = (alias: string): string => invalidationExistsSql(alias);
+
+/**
+ * True for a row that still counts: it carries no invalidation. The complement of `struckSql`, and
+ * the one the counts use, so that "how much do we still have that stands" is spelled the same way
+ * everywhere it is asked.
+ */
+export const standsSql = (alias: string): string => `NOT ${invalidationExistsSql(alias)}`;
 
 /**
  * The `_state` CASE for one property.

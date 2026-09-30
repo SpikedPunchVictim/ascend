@@ -1339,3 +1339,117 @@ describe('the warning prefix is not doubled', () => {
     expect(flatten(run.stderr)).toContain('second.json');
   });
 });
+
+/**
+ * `asc-9xi0`, the two surfaces where a person meets the count.
+ *
+ * **`asc types list` moves; `asc explore` does not.** `types list` answers "how much do we have that
+ * still stands", so a strike takes a row out of `entries` and puts it in `struck` beside it.
+ * `asc explore <type>` profiles the population it documents -- every recorded row, struck included
+ * -- and `--struck` is the door to the other half (`asc-bqb5`). The two printing different numbers
+ * for the same noun is deliberate, and both disclose the struck count so a reader can reconcile.
+ */
+describe('a strike moves the counts a person reads (asc-9xi0)', () => {
+  /** Record one `review_completed`, returning its id -- read back out of the store, not off stdout. */
+  const recordOne = (dir: string): string => {
+    const run = asc(['record', 'review_completed', '--prop=review_kind=approved', '--json'], dir);
+    expect(run.status).toBe(0);
+    const id = envelope(run.stdout)[0]?.['id'];
+    if (typeof id !== 'string') throw new Error('recording reported no id');
+    return id;
+  };
+
+  const strike = (dir: string, id: string): void => {
+    const run = asc(
+      ['invalidate', id, '--label=wrong_value', '--reason=measured with a contaminated run'],
+      dir,
+    );
+    expect(run.status).toBe(0);
+  };
+
+  const listRow = (dir: string, name: string): Record<string, unknown> => {
+    const found = envelope(asc(['types', 'list', '--json'], dir).stdout).find(
+      (row) => row['name'] === name,
+    );
+    if (found === undefined) throw new Error(`${name} is not listed`);
+    return found;
+  };
+
+  it('takes a struck entry out of entries and shows it in struck, on the same row', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+    const first = recordOne(dir);
+    recordOne(dir);
+
+    expect(listRow(dir, 'review_completed')).toMatchObject({ entries: 2, struck: null });
+
+    strike(dir, first);
+
+    // Both numbers, so nothing is hidden: 1 + 1 is the 2 the row reported a moment ago.
+    expect(listRow(dir, 'review_completed')).toMatchObject({ entries: 1, struck: 1 });
+  });
+
+  it('puts struck between entries and review_after, so the two counts are adjacent', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+    recordOne(dir);
+    const header = asc(['types', 'list'], dir).stdout.split('\n')[0] ?? '';
+
+    expect(header.indexOf('entries')).toBeLessThan(header.indexOf('struck'));
+    expect(header.indexOf('struck')).toBeLessThan(header.indexOf('review_after'));
+  });
+
+  it('reads zero live with a full struck column for a type every one of whose entries is struck', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+    const only = recordOne(dir);
+
+    strike(dir, only);
+
+    expect(listRow(dir, 'review_completed')).toMatchObject({ entries: 0, struck: 1 });
+  });
+
+  it('marks a reached review_after with the struck count beside the live one', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', { ...REVIEW_GUIDED, review_after: 1 })], dir);
+    const only = recordOne(dir);
+
+    // One live entry reaches a threshold of 1, so the marker is there with nothing struck.
+    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(
+      `review_completed [review_after 1 reached: 1 entries] -- ${REVIEW.record_when}`,
+    );
+
+    strike(dir, only);
+
+    // Now the count that moved is followed by what moved out of it, and the type has dropped BELOW
+    // its own threshold -- a level measured against what still stands, not against what was written.
+    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(
+      `review_completed -- ${REVIEW.record_when}`,
+    );
+  });
+
+  it('states the struck count beside a marker that is still reached', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', { ...REVIEW_GUIDED, review_after: 2 })], dir);
+    const first = recordOne(dir);
+    recordOne(dir);
+    recordOne(dir);
+
+    strike(dir, first);
+
+    // 2 live reaches 2, and the struck entry is stated beside it rather than silently absent.
+    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(
+      `review_completed [review_after 2 reached: 2 entries, 1 struck] -- ${REVIEW.record_when}`,
+    );
+  });
+
+  it('leaves the brief line byte-identical when nothing is struck', () => {
+    // The SessionStart payload's budget is a measured constraint (EV-16), so the struck count may
+    // not appear on a type that has none.
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', { ...REVIEW_GUIDED, review_after: 1 })], dir);
+    recordOne(dir);
+
+    expect(asc(['types', 'brief'], dir).stdout.trim()).not.toContain('struck');
+  });
+});

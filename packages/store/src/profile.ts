@@ -240,6 +240,11 @@ export interface ProfileOptions {
    * of the FILTERED `count` -- not the type's unfiltered total. Both fall out of narrowing every
    * subquery below by the same scope; neither is computed separately.
    */
+  /**
+   * Narrow to entries that have stopped counting (`asc-bqb5`) -- the store's own invalidation
+   * predicate, composed with `filter` over one scope. See `typeFilterScope` (`type-filter.ts`).
+   */
+  readonly struck?: boolean;
   readonly filter?: string;
 }
 
@@ -498,10 +503,13 @@ export function profileType(
 
   const topK = options.topK ?? TOP_K;
 
-  const scopeClause =
-    options.filter === undefined
-      ? ''
-      : ` AND e.id IN (${typeFilterScope(db, type, options.filter)})`;
+  // `asc-bqb5`: `struck` narrows without a predicate, so "no filter" no longer means "no scope".
+  const narrowed = options.filter !== undefined || options.struck === true;
+  const scopeClause = !narrowed
+    ? ''
+    : ` AND e.id IN (${typeFilterScope(db, type, options.filter ?? null, {
+        struck: options.struck === true,
+      })})`;
 
   const totals = db
     .prepare(
@@ -515,14 +523,13 @@ export function profileType(
   // filter -- `totals.n` already answers this -- and computed as one plain `COUNT(*)`, not a
   // second run of `scopeClause` or a second `profileType` call: the population before the filter
   // needs no projection at all, only a count of the type's own rows.
-  const unfiltered =
-    options.filter === undefined
-      ? totals.n
-      : (
-          db.prepare(`SELECT COUNT(*) AS n FROM entries WHERE type_name = ?`).get(type) as {
-            n: number;
-          }
-        ).n;
+  const unfiltered = !narrowed
+    ? totals.n
+    : (
+        db.prepare(`SELECT COUNT(*) AS n FROM entries WHERE type_name = ?`).get(type) as {
+          n: number;
+        }
+      ).n;
 
   const perVersion = new Map(
     (

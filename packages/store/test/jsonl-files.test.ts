@@ -829,3 +829,69 @@ describe("the spike's S1-S4 shapes round-trip", () => {
     expect(read).toHaveLength(20);
   });
 });
+
+describe('an invalidation states a reason, and the parser is where that is enforced', () => {
+  // `asc-4wx6`, measured in `spike/e12-invalidation-reason.mjs`. `recordInvalidation` refuses a
+  // reason that is empty or all whitespace, but it is not the only writer of the reserved scheme:
+  // `asc import` restores it through `recordAnnotations`, whose only note gate is the EMPTY STRING.
+  // So an absent reason became SQL NULL and a whitespace-only one was stored verbatim, both with
+  // `asc import` exiting 0 -- and `listInvalidations` cast that column to `string`, so its own type
+  // promised a reason the row did not have.
+  //
+  // The refusal goes in the corpus parser rather than in `recordAnnotations` because the parser is
+  // the one door every path already goes through: `asc import` parses the file, `asc index build`
+  // parses the tree. One rule, both writers. It sits beside the `type` branch's version refusal
+  // (`jsonl.ts`), which is the same shape for the same reason.
+
+  /** An invalidation annotation -- the reserved scheme, which is the only one that requires a reason. */
+  const strike = (n: number, note: string | null): AnnotationLine => ({
+    ...annotation(n, { scheme: 'invalidation' }),
+    note,
+  });
+
+  it('refuses an invalidation whose reason is absent', () => {
+    const root = scratch();
+    openRecordWriter(root).append(strike(1, null));
+
+    expect(() => readRecordTree(root)).toThrow(/reason/);
+  });
+
+  it('refuses an invalidation whose reason is only whitespace', () => {
+    const root = scratch();
+    openRecordWriter(root).append(strike(1, '   '));
+
+    expect(() => readRecordTree(root)).toThrow(/reason/);
+  });
+
+  it('names the line and what to do about it, since nothing can repair the line automatically', () => {
+    const root = scratch();
+    openRecordWriter(root).append(strike(1, null));
+
+    // The same coordinate the other refusals give, so an editor can jump to it -- and the two
+    // remedies that exist, because a missing reason cannot be reconstructed by any automated pass:
+    // `asc store rewrite` inherits this refusal and can only assign versions, never reasons.
+    expect(() => readRecordTree(root)).toThrow(/line 1/);
+    expect(() => readRecordTree(root)).toThrow(/asc invalidate/);
+  });
+
+  it('accepts an invalidation that states one, whitespace included in the middle', () => {
+    const root = scratch();
+    openRecordWriter(root).append(strike(1, 'superseded by a re-derived row'));
+
+    expect(readRecordTree(root)).toHaveLength(1);
+  });
+
+  it('still reads an annotation under any other scheme with no note at all', () => {
+    // The control arm, and it is load-bearing: `annotation()`'s default scheme is `review`, and
+    // a no-note annotation under a user's scheme is ordinary and must keep round-tripping. A rule
+    // keyed on `note === null` alone would refuse these, which is why the scheme is part of the
+    // condition rather than the note being checked on its own.
+    const root = scratch();
+    roundTrip(root, [annotation(1), annotation(2, { scheme: 'hand-denial' })]);
+
+    expect(readRecordTree(root)).toHaveLength(2);
+    expect(
+      readRecordTree(root).every((line) => line.kind !== 'annotation' || line.note === null),
+    ).toBe(true);
+  });
+});

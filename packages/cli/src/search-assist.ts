@@ -46,6 +46,14 @@ export interface AssistValue {
   readonly value: string;
   /** How many entries of this type carry this exact value. A measurement, never an estimate. */
   readonly entries: number;
+  /**
+   * How many of those entries have been struck (`asc-9xi0`). A COUNT, because a group aggregates
+   * entries -- a value carried by three entries of which one is struck is neither marked nor
+   * unmarked. The value is not withheld: this list's promise is that every row is a measurement of
+   * rows that exist, and a struck row exists. What the count changes is what the SUGGESTION is
+   * worth, which is the caller's judgement to make rather than this list's to make by omission.
+   */
+  readonly struck: number;
 }
 
 /**
@@ -77,6 +85,15 @@ export interface SearchAssist {
   readonly entries: number;
   /** How many of them the index holds -- everything the search could have matched. */
   readonly indexed: number;
+  /**
+   * How many of `entries` have stopped counting (`asc-9xi0`).
+   *
+   * `entries` stays the recorded total -- it is what `assistReason` tests for `type-empty`, and a
+   * type holding 300 rows is not an empty type however many of them were struck. This is the number
+   * the rendered coverage sentence leads with instead: for a caller who got nothing back, "how much
+   * of this type still stands" is the question being asked.
+   */
+  readonly struck: number;
   /**
    * Property values that actually occur in this type and contain a term of the query.
    *
@@ -125,10 +142,12 @@ export function buildAssist(
     reason: assistReason(scope, rowsReturned),
     entries: scope.entries,
     indexed: scope.indexed,
+    struck: scope.struck,
     values: values.map((hit) => ({
       property: hit.property,
       value: hit.value,
       entries: hit.entries,
+      struck: hit.struck,
     })),
   };
 }
@@ -144,7 +163,9 @@ export function buildAssist(
  * makes a reader distrust every other number on the line.
  */
 export function renderAssist(assist: SearchAssist): string {
-  const entries = `${String(assist.entries)} ${assist.entries === 1 ? 'entry' : 'entries'}`;
+  // Both sentences that state the type's size go through this, so the struck phrasing is defined
+  // once and the unstruck path keeps the bytes it always had (`standingPhrase`).
+  const standing = standingPhrase(assist);
   const returned = assist.reason === 'rows-returned';
   // No lead line when rows came back: the rows above are the answer, and this block is only what
   // they do not cover. Printing 'no matches.' under a result set would be the exact falsehood this
@@ -160,13 +181,13 @@ export function renderAssist(assist: SearchAssist): string {
     // The dead-end case, and the one worth the most words: a caller here will otherwise retry with
     // different words forever, because nothing they type can ever match.
     lines.push(
-      `This type has ${entries}, and the index holds none of them: the index covers`,
+      `This type has ${standing}, and the index holds none of them: the index covers`,
       `'evidence_text', and no entry of this type carries any. No query can match, so retrying`,
       `with different words will not help -- the type's properties are where its content is.`,
     );
   } else if (assist.reason === 'no-match') {
     lines.push(
-      `This type has ${entries}, of which the index holds ${String(assist.indexed)} --`,
+      `This type has ${standing}, of which the index holds ${String(assist.indexed)} --`,
       `only entries with evidence text are searchable, so a term absent from those cannot match`,
       `however it is spelled.`,
     );
@@ -180,8 +201,7 @@ export function renderAssist(assist: SearchAssist): string {
         : 'The query terms do occur as property values, which a search does not cover:',
     );
     for (const value of assist.values) {
-      const n = `${String(value.entries)} ${value.entries === 1 ? 'entry' : 'entries'}`;
-      lines.push(`  ${value.property} = ${JSON.stringify(value.value)}  (${n})`);
+      lines.push(`  ${value.property} = ${JSON.stringify(value.value)}  (${valuePhrase(value)})`);
     }
   } else if (returned) {
     // The reassuring half, and the reason this block is worth its cost on the rows>0 path: it says
@@ -199,4 +219,41 @@ export function renderAssist(assist: SearchAssist): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * The count of entries, phrased so it leads with what STANDS when anything has been struck, and
+ * reads exactly as it did before when nothing has (`asc-9xi0`).
+ *
+ * **The struck phrasing names all three numbers.** A caller reading "2 entries that stand" alone
+ * would take it for the type's size; the parenthetical gives the recorded total it was taken out of
+ * and what was taken out, so the standing count is one number on a line rather than the only one.
+ *
+ * **The index clause stays on the recorded total** (`of which the index holds N`), because the index
+ * does not know about strikes: it holds a document for every entry with evidence text, struck or
+ * not, and reporting a live share there would describe a search nobody runs.
+ */
+function standingPhrase(assist: SearchAssist): string {
+  const entries = `${String(assist.entries)} ${assist.entries === 1 ? 'entry' : 'entries'}`;
+  if (assist.struck === 0) return entries;
+  const live = assist.entries - assist.struck;
+  return (
+    `${String(live)} ${live === 1 ? 'entry' : 'entries'} that ${live === 1 ? 'stands' : 'stand'} ` +
+    `(${String(assist.entries)} recorded, ${String(assist.struck)} struck)`
+  );
+}
+
+/**
+ * One suggested value's parenthetical: today's bytes when nothing carrying it was struck, and the
+ * struck count added when something was.
+ *
+ * `-- all struck` when every entry carrying the value has been struck, because that is the shape a
+ * caller must not have to derive from two numbers: the suggestion is a value the type holds and no
+ * longer stands behind.
+ */
+function valuePhrase(value: AssistValue): string {
+  const n = `${String(value.entries)} ${value.entries === 1 ? 'entry' : 'entries'}`;
+  if (value.struck === 0) return n;
+  const all = value.struck === value.entries ? ' -- all struck' : '';
+  return `${n}, ${String(value.struck)} struck${all}`;
 }

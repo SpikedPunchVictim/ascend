@@ -920,6 +920,60 @@ describe('asc export | asc import', () => {
     expect(entries(target)).toEqual([]);
   });
 
+  it('refuses a reasonless invalidation, because nothing downstream can supply the reason', () => {
+    // `asc-4wx6`. `recordInvalidation` refuses an empty reason, but `asc import` restores the
+    // reserved scheme through `recordAnnotations`, whose only note gate is the empty STRING -- so a
+    // hand-edited export (or one written by a pre-fix ascend) reached the store with a NULL note and
+    // `import` exited 0. `listInvalidations` then cast that column to `string` and read back a
+    // `null` its own type said was impossible. The refusal is in the corpus parser now, so this is
+    // the door: the file is parsed before the store is opened, which is why the target is untouched.
+    const source = project();
+    const target = project();
+    corpus(source);
+    const [first] = entries(source);
+    expect(
+      asc(
+        ['invalidate', first?.id ?? '', '--label=wrong_subject', '--reason=a real reason'],
+        source,
+      ).status,
+    ).toBe(0);
+
+    const exported = asc(['export'], source).stdout.split('\n');
+    // The coordinate is read off the stream rather than assumed: it is the number the caller's
+    // editor shows, and it moves with however many lines the fixture happens to record.
+    const at =
+      exported.findIndex((text) => {
+        if (text === '') return false;
+        const row = JSON.parse(text) as Record<string, unknown>;
+        return row['kind'] === 'annotation' && row['scheme'] === 'invalidation';
+      }) + 1;
+    expect(at).toBeGreaterThan(0);
+
+    for (const note of [null, '   ']) {
+      const tampered = exported
+        .map((text) => {
+          if (text === '') return text;
+          const row = JSON.parse(text) as Record<string, unknown>;
+          if (row['kind'] !== 'annotation' || row['scheme'] !== 'invalidation') return text;
+          return JSON.stringify({ ...row, note });
+        })
+        .join('\n');
+
+      const run = asc(['import', stream(source, 'reasonless.jsonl', tampered)], target);
+      expect(run.status).toBe(1);
+      // The reason is named as the thing that is missing, and the line coordinate is on it, so an
+      // editor can jump to the line rather than hunt the file -- and the message says the repair is
+      // by hand, because there is no automated pass that could invent a reason.
+      expect(flatten(run.stderr)).toContain('no reason');
+      expect(flatten(run.stderr)).toContain(`line ${String(at)}`);
+      // Nothing at all made it in: the parse fails before the store is opened, so not the entries,
+      // not the scheme, not the other annotation.
+      expect(entries(target)).toEqual([]);
+      expect(schemeRows(target)).toEqual([]);
+      expect(annotationsOf(target)).toEqual([]);
+    }
+  });
+
   it('refuses a second restore, naming the ids it already holds and writing nothing', () => {
     const source = project();
     const target = project();

@@ -1870,6 +1870,117 @@ as the store itself.
   Final gate **green**: 124 files / **2832** passed, 2 skipped; `align` verdict green (parse,
   architecture, security all 0 violations).
 
+- **E12.8 — an invalidation, read as well as written (`asc-9xi0` + `asc-4wx6`, done 2026-09-30).** A
+  strike is the store's only durable claim about why an entry stopped counting
+  (`ARCHITECTURE.md:600`), and two defects meant the claim held in neither direction. **Written:**
+  `recordInvalidation` refuses an empty reason, but `asc import` reaches the reserved scheme through
+  `recordAnnotations`, whose only note gate was `note !== undefined && note === ''` — so an *absent*
+  note became SQL NULL and a *whitespace-only* note was stored verbatim, both exiting 0, and
+  `listInvalidations`' `reason: row.note as string` then read back a `null` the type says cannot
+  exist. **Read:** `listInvalidations` had exactly one caller, `asc invalidate --list` — the command
+  that *writes* strikes. Every other surface counted struck entries as ordinary.
+
+  This is the one entry in E12 whose repair moves a **number a person reads**, so it is worth stating
+  what the decision was and not only what was built. The owner's ruling, taken before the work
+  (**"a count is an answer; a row is data"**): *counts move* where they answer "how much do we still
+  have that stands"; *rows stay raw and MARK*; nothing is hidden, so the struck count sits beside
+  every count that moved; and the four raw doors — `asc query`, the `v_<type>_v<version>` views,
+  `unionEntries` and `explore`'s population — stay raw. Three recorded decisions survive untouched by
+  construction: `asc-88m`, `sql.ts`'s "invalidated rows are NOT filtered out of the view", and
+  `listTypes`' "deprecated types are NOT filtered out here".
+
+  **Stage 1 — a reasonless strike cannot enter.** The refusal went where E12.6 put its version rule:
+  the corpus parser, not the writer, so `asc index build`, `asc import` and `asc store rewrite`
+  inherit it and no writer can get behind it. `requireInvalidationReason` (`jsonl.ts`) is called from
+  the `annotation` branch beside the version check; `RESERVED_SCHEME` arrives through the already
+  type-only `annotations.ts` import, so no cycle. The message names the **hand-edit**, because there
+  is no automated repair — `store rewrite`'s whole reason for relaxing a rule is that it can repair
+  an old tree, and a missing reason is not reconstructible. Two false comments in `annotations.ts`
+  were corrected in place, including one that named the wrong writer.
+  *Measured*: `spike/e12-invalidation-reason.mjs` — the probe that found the defect — re-run, **both
+  arms refused**, and the probe now asserts the refusal *names the reason rule*, because its first run
+  after the fix reported a green produced by E12.6's version rule and not by this one. The
+  measurement's own tool became the regression check. Pre-flight: this repo's tree holds **3,144
+  invalidation lines, 0 reasonless** (0 absent, 0 whitespace-only), so the refusal cannot brick it.
+
+  **Stage 2 — one predicate, and the counts move.** `invalidationExistsSql` (private) with
+  `struckSql`/`standsSql` over it in `sql.ts` — the module that already exists so readers agree about
+  invalidation — replacing the predicate `openEntriesByVersion` had been re-spelling. `entryCount`
+  becomes live and gains `struckEntryCount`; `listTypes` carries both aggregates in its derived table
+  so the live number is literally `entryCount`'s expression; `TypeSummary` gains `struckCount`.
+  `entryCount`'s **meaning** moved rather than gaining a live sibling, and the reason is failure mode:
+  an opt-in name would leave every forgotten consumer silently printing the old total — the exact
+  defect class this entry exists to close — whereas a moved meaning makes a forgotten consumer print
+  the new number and the required `struckCount` field names every literal at compile time.
+  **One thing the plan did not foresee:** `annotations.ts -> sql.ts -> annotations.ts` is a cycle and
+  `align` refused it. Broken by moving the one constant both need, `RESERVED_SCHEME`, into the new
+  leaf module `packages/store/src/reserved.ts`, imported and re-exported by `annotations.ts` so every
+  existing importer is untouched — a real fix rather than an exemption.
+
+  **Stage 3 — the surfaces.** `asc types list` gains a `struck` column between `entries` and
+  `review_after` (null when zero, so the column set does not vary with the data). `asc types brief`'s
+  marker carries the struck count **inside the existing `review_after` marker and nowhere else**, so
+  for an unstruck type the bytes are identical and the SessionStart budget is untouched — and for a
+  struck type below its `review_after`, identical too, a limitation the doc comment states rather
+  than leaves to be discovered. `asc doctor` reads the live count and tells *"every S recorded
+  entries struck"* from *"never recorded"*, and `exportStatus(live, struck)` guards on the **sum**, so
+  an all-struck store is not told it has nothing to lose. The plan's named risk — that `record.ts`'s
+  advisory arithmetic assumed the count was the row count — was measured rather than assumed, and the
+  arithmetic holds: the baseline IS the live count, so a strike moves the `review_after` point back
+  and the advisory is owed again.
+
+  **Stage 4 — search marks a struck value.** `PropertyValueHit` gains `struck` as a **count, not a
+  boolean**, because a group aggregates entries and a value carried by two entries where one is
+  struck must say so: `(3 entries, 1 struck)`, `(1 entry, 1 struck -- all struck)`. `SearchScope`
+  gains `struck` with `entries` and `indexed` left **raw** and documented as such — `indexed` is what
+  a search can actually return, and `assistReason` keys `type-empty` on `entries === 0`, which would
+  falsely tell an all-struck type it has no entries. The coverage sentence leads with what stands:
+  *"This type has 94 entries that stand (95 recorded, 1 struck), of which the index holds 60"*.
+
+  **Stage 5 — the door to the other half.** `explore` keeps its whole population on purpose — its
+  `invalidated` row is a share *of* `count` (`asc-k6p.1`), so a live population would make that row
+  always zero — and gains `--struck` instead, threaded into the same scope `--filter` already owns so
+  the two compose as one predicate over one projection rather than two that could disagree. It
+  reaches the map, `--page`, `--sample` and `--group-by`; `--group-by` discloses the narrowing
+  through the existing `filter` coverage row, whose job is already "which population were these
+  counts computed over". `--dump --struck` is refused for exactly the reason `--dump --filter` is — a
+  dump's manifest has nowhere to record what thinned it — so the two share one check.
+
+  **The finding this turned up unasked, and the record it produced.** `asc explore decision --filter
+  "invalidated is not null"` → `no such column: invalidated`. The command prints an `invalidated` row
+  and cannot be asked to select the rows that row counts: the predicate is evaluated over the type's
+  own projection (`type-filter.ts`, `asc-56k`) and `invalidated` is a value the command *computes*,
+  not a column. **3,144 of 6,596 entries (47.7%) had stopped counting and no invocation could show
+  one of them by that fact.** Recorded as `dogfood/0045`, whose "nobody was looking for it" line is
+  inverted — I *was* looking, at struck rows, and the tool named the column and refused it.
+
+  `dogfood/0045` also carries **a correction to `dogfood/0034`**, which claims `asc import` enforces
+  *neither* of the two things `listInvalidations`' casts assume. That is wrong for the **label** half:
+  `restoreInvalidationScheme` (`annotations.ts:452`) refuses any scheme line whose `schemeHash`
+  differs from `INVALIDATION_SCHEME_SPEC`'s, so the closed label vocabulary *is* protected and only
+  the reason cast was false. The claim was corrected rather than left, because a record of false scope
+  is what a later reader cites to justify changing code that is already correct.
+
+  *Tests*: the suite moved **2832 → 2879 (+47)**, across `store/test/registry.test.ts`,
+  `store/test/search.test.ts`, `store/test/jsonl-files.test.ts`, `store/test/jsonl-index.test.ts`,
+  `cli/test/types.test.ts`, `cli/test/cli.test.ts`, `cli/test/record.test.ts`,
+  `cli/test/doctor.test.ts`, `cli/test/search-assist.test.ts`, `cli/test/search-cli.test.ts`,
+  `cli/test/corpus.test.ts` and `cli/test/explore.test.ts` — the last set driving the real binary
+  through record → invalidate → list/search/explore/doctor. Two of the Stage 3 suites were written
+  after their implementation, which is not a RED, so their binding was established **by mutation**
+  instead and the mutation is recorded rather than the claim: unmarking `struck` in
+  `list.ts`/`brief-text.ts` fails 3 of the 6; making `entryCount` raw fails the `record` advisory
+  test.
+
+  *Verified end to end on the built binary*, on this repo's store and on a scratch project carrying
+  the whole path: `asc index build` 0 (10,516 records); `verification_run` now reads **1440 live /
+  3000 struck** where it read 4440; `asc doctor` reads `6601 entries (3457 live, 3144 struck)`;
+  `asc search` leads with the standing count and marks the struck value; `explore probe` profiles all
+  3 (`33.3%`) while `--struck` profiles the 1 (`100.0%`); and `asc export | asc import` restores the
+  strike — the imported store reads back the same `entries 2, struck 1` and `invalidate --list`
+  intact. Final gate **green**: 124 files / **2879** passed, 2 skipped (+47); typecheck 0, lint 0,
+  `format:check` 0, `align` green (parse, architecture, security all 0 violations).
+
 **Status: E12.1 and E12.2 built; E12.3 built as the seam and its settlement** (2026-09-29) — the record
 layer exists (37 tests), the derived index exists (26 tests after `asc-i5tj.3.1`), the store names a SQL
 port instead of the driver (3 tests, one module may import `node:sqlite`, pinned by name), and

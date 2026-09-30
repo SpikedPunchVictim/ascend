@@ -57,6 +57,7 @@
  */
 
 import { canonicalName } from '@ascend/core';
+import { struckSql } from './sql.js';
 import type { SqlDatabase } from './sql-port.js';
 
 /** The FTS5 table migration 2 creates. Named here once so the SQL below cannot drift from it. */
@@ -274,13 +275,27 @@ export function countSearchMatches(
  * is what keeps this number an explanation of the search rather than a second opinion about the
  * table.
  *
+ * **`struck` is added beside the two raw counts and moves neither of them** (`asc-9xi0`). This is
+ * the surface where "a count is an answer" cuts the other way: `entries` and `indexed` answer *how
+ * much of this type is there to look over*, which a strike does not change -- the rows exist, the
+ * FTS documents exist, and a search still returns them. Making `entries` live would break the two
+ * claims this type was built for: it is `assistReason`'s trigger for `type-empty`
+ * (`entries === 0`), so a type whose every entry had been struck would be reported to a caller as
+ * never recorded, which is the same false statement `doctor.ts` was fixed to stop making.
+ *
+ * So the caller gets both: what is there, and how much of it still stands. A rendered assist leads
+ * with the standing count and shows the total beside it, which is a presentation decision and lives
+ * with the rendering (`search-assist.ts`) rather than here.
+ *
  * `docs/evidence/EV-15.md` has the corpus measurements this was built against.
  */
 export interface SearchScope {
-  /** Entries of this type, at any version. */
+  /** Entries of this type, at any version. RAW: struck entries are included. */
   readonly entries: number;
-  /** How many of them the index holds -- the searchable part. */
+  /** How many of them the index holds -- the searchable part. RAW: struck entries are included. */
   readonly indexed: number;
+  /** How many of `entries` carry an invalidation -- the part that has stopped counting. */
+  readonly struck: number;
 }
 
 export function searchScope(db: SqlDatabase, rawType: string): SearchScope {
@@ -296,14 +311,30 @@ export function searchScope(db: SqlDatabase, rawType: string): SearchScope {
         WHERE e.type_name = ?`,
     )
     .get(type) as { n: number };
-  return { entries: entries.n, indexed: indexed.n };
+  // The predicate is the store's own, not a second spelling of it: `asc-9xi0` moved every reader
+  // onto one definition precisely so two surfaces cannot come to disagree about what struck means.
+  const struck = db
+    .prepare(`SELECT COUNT(*) AS n FROM entries AS e WHERE e.type_name = ? AND ${struckSql('e')}`)
+    .get(type) as { n: number };
+  return { entries: entries.n, indexed: indexed.n, struck: struck.n };
 }
 
 /** One property value that occurs in a type, and how many of its entries carry it. */
 export interface PropertyValueHit {
   readonly property: string;
   readonly value: string;
+  /** Entries carrying this exact value. RAW: a struck entry still carries it. */
   readonly entries: number;
+  /**
+   * How many of those entries have been struck -- a COUNT, not a boolean (`asc-9xi0`).
+   *
+   * A group aggregates entries, so a value carried by three entries of which one is struck is
+   * neither marked nor unmarked, and a flag would have to round. The strike does not remove the
+   * group: this function's whole promise is that every row is a measurement of rows that exist, and
+   * a struck row exists. What it changes is what the suggestion is worth, and that is the caller's
+   * judgement to make from the count rather than this function's to make by omission.
+   */
+  readonly struck: number;
 }
 
 /**
@@ -348,7 +379,8 @@ export function propertyValueMatches(
 
   const rows = db
     .prepare(
-      `SELECT je.key AS property, je.value AS value, COUNT(*) AS entries
+      `SELECT je.key AS property, je.value AS value, COUNT(*) AS entries,
+              SUM(CASE WHEN ${struckSql('e')} THEN 1 ELSE 0 END) AS struck
          FROM entries AS e, json_each(e.properties_json) AS je
         WHERE e.type_name = ? AND je.type = 'text' AND (${where})
         GROUP BY je.key, je.value
