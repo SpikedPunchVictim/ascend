@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openStore, readIngestCursor, writeIngestCursor, type IngestCursor } from '../src/index.js';
+import { LEGACY_INGEST_CURSOR_DDL } from './legacy-store.js';
 
 /**
  * The ingest cursor, which is a JSON file beside the tree and not a table (`asc-i5tj.14`,
@@ -65,6 +66,11 @@ describe('a cursor that has never been written', () => {
     const dir = tempDir();
     const store = openStore({ dir });
     try {
+      // The fixture stands the table up itself, because the current schema no longer creates it
+      // (`asc-i5tj.14`). It is still worth asserting against: this is the store a pre-cutover user
+      // upgrading would have, and it is the one case where a real cursor exists on disk and must be
+      // ignored.
+      store.db.exec(LEGACY_INGEST_CURSOR_DDL);
       store.db
         .prepare(
           'INSERT INTO ingest_cursor (path, mtime_ms, size, ingested_at) VALUES (?, ?, ?, ?)',

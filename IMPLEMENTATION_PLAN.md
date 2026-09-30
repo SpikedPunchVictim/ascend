@@ -1526,10 +1526,17 @@ as the store itself.
       (`ingest-cursor.ts`, rewritten), holding the per-file rows and the handler ledger in ONE file so
       the two cannot disagree — they used to be two writes to two places with a rule saying the second
       had to sit beside the first. `index.db` stays a pure function of the tree, which is what keeps
-      deleting it safe. The `ingest_cursor` table is **kept**, not dropped by a migration 7: it still
-      holds a real store's progress, which is exactly the gap `migrateStoreToTree`'s report exists to
-      name, and it goes with the rest of the SQLite store in E12.4d. Full reasoning and both rejected
-      alternatives are the `decision` entry `61a1e2e9`.
+      deleting it safe. The `ingest_cursor` table was **kept at the time, not dropped by a migration
+      7**: it still holds a real store's progress, which is exactly the gap `migrateStoreToTree`'s
+      report exists to name. Full reasoning and both rejected alternatives are the `decision` entry
+      `61a1e2e9`. **Superseded 2026-09-30 (`asc-i5tj.4.3`, migration 4 deleted):** "kept" was right
+      about the report and wrong about the mechanism — the report is derived from `sqlite_master`
+      (`droppedTables`, `migrate.ts`), not from `MIGRATIONS`, so deleting migration 4 cannot silence
+      it. Driven end to end rather than argued: a legacy store holding 1,070 rows, `asc init`, still
+      reports *"the migration could not carry the ingest_cursor table: 1070 row(s)"*. What the table
+      had instead was a cost — a `DROP` migration would RAISE `SCHEMA_VERSION`, invalidating every
+      index on disk to remove a table nothing opens, so it was deleted outright and 5 and 6 kept
+      their numbers.
 
       **This landed as its own commit, BEFORE the flip, green while the world was still all-SQLite**
       (2026-09-29) — it is independently verifiable and it is a prerequisite rather than part of the
@@ -1611,11 +1618,25 @@ as the store itself.
     own tests that asserted SQLite-as-store are retargeted rather than deleted. **Success:** the owner
     ruling (*"JSONL is the store; SQLite does not coexist as a second source of truth"*) becomes
     checkable by a test that fails if a production module opens a non-derived database. **Status:**
-    In Progress (2026-09-29, uncommitted) — the **`asc init` half** landed with the flip rather than
+    Complete (2026-09-30, `asc-i5tj.4.3`) — the **`asc init` half** landed with the flip rather than
     here, and it had to: the starter types lived only in `ascend.db`, so after the flip a fresh
     project's index would be built from an EMPTY tree and the first `asc record` would fail
     `UnknownTypeError` while every flip test passed. What remains here is the retirement itself (the
     source scan over `openStore` callers, and the `ascend.db` file leaving this repo in E12.4e).
+    **The retirement landed 2026-09-30 (`asc-i5tj.4.3`), and the two things it named as remaining were
+    both already done or not real.** The source scan exists and is green — `store-names.test.ts` pins
+    the five modules allowed to call `openStore` and the four allowed to name `STORE_FILE`/`index.db`.
+    `.ascend/ascend.db` has already left this repo
+    (`.ascend-archived/2026-09-30T02-22-35-351Z/`). And "the store's own tests that asserted
+    SQLite-as-store are retargeted" named work that does not exist: a classification of all **133**
+    `openStore(` call sites across 21 `packages/store/test/*.ts` files found **zero** legacy-store
+    tests — their subject is live derived-index machinery, and they inherit the filename `ascend.db`
+    from `openStore`'s default without asserting the store lives there. So the retirement was two
+    concrete things instead: `MIGRATIONS`' `version: 4` (which created the never-read `ingest_cursor`
+    table) deleted, and six comments that still called a derived SQLite file "the store" corrected.
+    Verified by mutation (re-adding `version: 4` fails four assertions) and by driving the real
+    binary (a fresh `asc init` index has no `ingest_cursor`; a legacy store holding 1,070 rows is
+    still reported with its count).
   - **E12.4e — the cutover, on this repo.** Run it on `.ascend/` and drive the real loop on the real
     corpus: record, query, ingest, search. **Success:** `EV-34`'s numbers reproduce — 10,316 lines,
     0 lost, ~4.65 s end to end — and the two gaps are reported rather than absorbed. **Status:**

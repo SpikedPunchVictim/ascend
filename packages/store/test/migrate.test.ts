@@ -19,6 +19,7 @@ import {
   STORE_FILE,
   type CorpusLine,
 } from '../src/index.js';
+import { LEGACY_INGEST_CURSOR_DDL } from './legacy-store.js';
 
 /**
  * The migration: a store's corpus becomes a tree, and the store is moved aside.
@@ -35,7 +36,8 @@ import {
  * things the corpus cannot carry**, `ingest_cursor` and the `meta` keys: they are written with raw
  * SQL, because no writer for them exists any more (`asc-i5tj.14`) and a store being migrated holds
  * them as rows from before the cutover. What is under test is whether the migration NOTICES them,
- * and the table is now the only way to put one there.
+ * and standing the legacy table up is now part of building the fixture rather than something the
+ * schema does for it -- `LEGACY_INGEST_CURSOR_DDL` (`./legacy-store.js`) is where that shape lives.
  *
  * The one thing this file cannot exercise is the `-wal`/`-shm` half of the archive. A cleanly closed
  * database has neither -- `close()` checkpoints and removes them -- so the branch that moves them is
@@ -112,7 +114,10 @@ function seeded(): { readonly dir: string; readonly lines: readonly CorpusLine[]
     // JSON file beside the tree -- so a writer to call no longer exists. What a real store being
     // migrated still holds is exactly this: rows from before the cutover, which is the fact the
     // report below has to name. A fixture built through a writer would be testing a path that is
-    // gone.
+    // gone. `openStore` above no longer creates `ingest_cursor` either -- migration 4 was deleted
+    // with the const (`asc-i5tj.14`) -- so the fixture stands the retired shape up itself, from the
+    // one spelling of it both this file and `ingest-cursor.test.ts` share.
+    store.db.exec(LEGACY_INGEST_CURSOR_DDL);
     store.db
       .prepare('INSERT INTO ingest_cursor (path, mtime_ms, size, ingested_at) VALUES (?, ?, ?, ?)')
       .run('/home/someone/transcripts/session.jsonl', 1_000, 42, AT);

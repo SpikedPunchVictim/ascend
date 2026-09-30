@@ -37,7 +37,15 @@ import type { SqlDatabase } from './sql-port.js';
 /** The per-project store directory name. Gitignored; never committed. */
 export const STORE_DIR = '.ascend';
 
-/** The store file, inside STORE_DIR. */
+/**
+ * The pre-flip store's filename, inside `STORE_DIR`.
+ *
+ * It is not the store any more: since 2026-09-29 (`asc-i5tj.14`) the store is the JSONL tree in the
+ * same directory, and this file has either been moved into the archive or never existed. What still
+ * needs the name is `openStore`'s default -- the generic SQLite opener the DERIVED INDEX is built
+ * through -- and the two legacy paths that read a store from before the flip and move it aside
+ * (`migrate.ts`, `init.ts`).
+ */
 export const STORE_FILE = 'ascend.db';
 
 /** Milliseconds a writer waits for a lock before giving up. */
@@ -204,9 +212,9 @@ export interface OpenOptions {
    * The database file's name inside `dir`. Defaults to `STORE_FILE`.
    *
    * It exists for the DERIVED INDEX (E12.2), which lives in the same directory as the JSONL tree
-   * it is built from and must not be confused with the store itself: during the transition
-   * `.ascend/ascend.db` is the source of truth and `.ascend/index.db` is a rebuildable cache, and
-   * two files that meant the same thing under two names is how one of them gets read as the other.
+   * it is built from and must not be confused with the store itself: `.ascend/index.db` is a
+   * rebuildable cache of the tree in `.ascend/`, which is the source of truth (`asc-i5tj.14`).
+   * Two files that meant the same thing under two names is how one of them gets read as the other.
    *
    * Nothing else should pass this. It is a name within `dir`, not a path -- the directory is what
    * `dir` is for, and `assertNotForeign`'s message quotes the joined path either way.
@@ -654,7 +662,13 @@ function assertNotForeign(db: SqlDatabase, file: string, inMemory: boolean): voi
 }
 
 /**
- * Open (creating if needed) the store in `dir`, apply pragmas, migrate, and verify.
+ * Open (creating if needed) a SQLite file at `join(dir, options.file ?? STORE_FILE)`, apply pragmas,
+ * migrate, and verify.
+ *
+ * **The name is a leftover: this is not the store.** It is the generic opener the DERIVED INDEX is
+ * built through, and the one `migrate.ts` and `init.ts` use to read a store from before the flip
+ * before moving it aside. The store itself is the JSONL tree in `dir` (`asc-i5tj.14`); the default
+ * filename is the pre-flip one, which is why the const survived the flip.
  */
 export function openStore(options: OpenOptions): Store {
   const { dir, busyTimeoutMs = DEFAULT_BUSY_TIMEOUT_MS, readOnly = false } = options;

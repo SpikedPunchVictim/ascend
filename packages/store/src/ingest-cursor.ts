@@ -17,6 +17,15 @@
  * would require the derive path to be provably correct on a partial read, which nothing in this
  * codebase proves, so a changed file is always re-read from its first byte.
  *
+ * **The writer enforces and the reader trusts, and that asymmetry is safe rather than sloppy.** All
+ * four refusals live in `writeIngestCursor` (`assertRowIsAFileThatWasRead`); `parseRow` on the way
+ * back in checks only that each field has the right TYPE. It can be this cheap because the skip is a
+ * three-way match: a row is used only when its `mtimeMs` and `size` equal a real `stat`'s
+ * (`claude-code.ts`'s `knownFiles`), so a row the writer would have refused -- an empty path, a
+ * negative size, a stale pair of numbers -- matches nothing and degrades to the re-read that a
+ * missing row causes. The failure this module must not have is a WRONG skip, and no malformed row
+ * can produce one.
+ *
  * Time is injected, never read: `ingestedAt` is part of the row a caller hands in, matching
  * `registry.ts`'s own rule that this package never reads a clock.
  *
@@ -167,7 +176,8 @@ export function writeIngestCursor(dir: string, cursor: IngestCursor): void {
 }
 
 /**
- * The four checks the `ingest_cursor` table's constraints used to make (schema.ts migration 4).
+ * The four checks the `ingest_cursor` table's constraints used to make -- migration 4 of
+ * `schema.ts`, deleted along with the table it built (`asc-i5tj.14`).
  *
  * They belong to the writer now that there is no schema to hold them, and they are kept rather than
  * dropped with the table because each one refuses a row that could only come from a bug: an empty

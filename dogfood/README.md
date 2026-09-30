@@ -89,8 +89,18 @@ context; the depth lives in the numbered files.
 
 | [0040](0040-2026-09-29-a-canonical-form-that-stopped-at-the-top-level.md) | `orderedLine` pins the key order of a line's own fields but passes a scheme's nested `spec` through, while `parseSchemeRule` rebuilds each rule as `{label,kind,query}` — so one scheme had two canonical spellings and `migrateStoreToTree`'s read-back check saw the tree as *"10386 line(s) written, 10386 read, 3 missing and 3 that should not be there"*, refusing the cutover on a store where exactly the 3 rule-bearing schemes of 7 disagreed and the 4 rule-less ones agreed to the byte; **both** suite fixtures had `rules: []`, so no test had ever put a rule through the format | `asc-i5tj.16` (P1, fixed in the working tree) | the first real run of `asc init` on this repo's own 23 MB store — the plan's *not measured yet* item, and its first measurement was a refusal |
 
-Forty-two findings, each with its own mechanism. The mechanism is the part that repeats even when
+| [0043](0043-2026-09-30-a-rationale-nobody-checked.md) | the doc comment that licensed keeping the dead `ingest_cursor` table was **false, and false about a module it names**: it said `migrateStoreToTree`'s report "has to name" the table so dropping it would silence the gap, but `droppedTables` (`migrate.ts:266-297`) derives the list from `sqlite_master`, not from `MIGRATIONS` — falsified on the real binary, a legacy store holding 1,070 rows run through `asc init` still reports *"the migration could not carry the ingest_cursor table: 1070 row(s)"*. The behavior was ALREADY tested and green (`migrate.test.ts` asserts that exact report line), so only the sentence about the code was wrong — an anecdote, under `MIN_N` | `asc-sh2q` (P2, fixed in the working tree) | reading `schema.ts` while scoping `asc-i5tj.4.3`, and testing the comment's own claim instead of trusting it — nobody was looking for it |
+
+Forty-three findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
+
+> **Adding 0043, the detector ran first and agreed a ninth time.** `grep -c '^| \[0'` returned 42
+> against a sentence saying Forty-two before the edit; the row was added flush, the sentence moved to
+> forty-three, and the count re-run — **43**. `ls dogfood/ | grep -E '^[0-9]{4}-' | wc -l` returns
+> **44**, which is 43 records plus `0000-template.md` — the pattern matches the template too, which is
+> the trap in that second count, and it is why the two are reconciled by NUMBER rather than by
+> arithmetic: the numbers on disk are `0001`–`0043` and the numbers indexed are `0001`–`0043`, with no
+> gap on either side and neither set repeating another.
 
 > **Adding 0042, the detector ran first and agreed an eighth time.** `grep -c '^| \[0'` returned 41
 > against a sentence saying Forty-one before the edit; the row was added flush, the sentence moved to

@@ -103,7 +103,11 @@ function projectWith(
 ): ProjectSource {
   projectCount += 1;
   const label = `p${String(projectCount)}`;
-  // The real on-disk layout, from the constants rather than retyped: `<project>/.ascend/ascend.db`.
+  // What the union ATTACHes, built from the constants rather than retyped: a SQLite file at
+  // `<project>/.ascend/ascend.db`. That is not where the store lives any more (`asc-i5tj.14` -- the
+  // store is the JSONL tree beside it, and production attaches the derived `index.db`), but it is
+  // still the shape `attachStore` reads, so the fixture is a database built through `openStore`
+  // rather than a tree.
   const dir = join(tempDir(), label, STORE_DIR);
   const store = openStore({ dir });
   try {

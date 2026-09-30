@@ -161,10 +161,11 @@ import type { SqlDatabase } from './sql-port.js';
 /**
  * The index's file name inside the store directory.
  *
- * Deliberately not `STORE_FILE` (`ascend.db`). During the transition the two coexist -- the SQLite
- * store is still the source of truth and the index is a cache built from the JSONL tree -- and two
- * files that meant different things under the same name is how one of them gets read as the other.
- * The name is also the documentation: `index.db` says it may be deleted.
+ * Deliberately not `STORE_FILE` (`ascend.db`). The two lived side by side through the cutover, and
+ * two files that meant different things under the same name is how one of them gets read as the
+ * other. `ascend.db` is the pre-flip store -- moved into the archive by `asc init`, or never there
+ * at all (`asc-i5tj.14`) -- while the source of truth now is the JSONL tree, which the index is only
+ * ever a rebuilding of. The name is also the documentation: `index.db` says it may be deleted.
  */
 export const INDEX_FILE = 'index.db';
 

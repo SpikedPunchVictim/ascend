@@ -64,11 +64,16 @@ const SPEC: TypeSpec = {
 };
 
 /**
- * A migrated store in its own directory, holding `count` recorded entries.
+ * A SQLite file in the store's own directory, holding `count` recorded entries.
  *
- * The returned path is the PROJECT directory, and the store's `dir` is the `.ascend` inside it --
- * `openStore` takes the store's own directory, and `openProject` is what joins `STORE_DIR` on. The
- * distinction is the whole reason `storeFile` exists below rather than being written at each call.
+ * `openStore` still makes a file with ascend's schema and the real write paths still fill it; what it
+ * is NOT any more, since the flip (`asc-i5tj.14`), is the store -- the store is the JSONL tree beside
+ * it, and this file's live role is the derived index. What the suite is about, the read-only open
+ * refusing writes, is the same guarantee whichever file it is holding.
+ *
+ * The returned path is the PROJECT directory, and the file's `dir` is the `.ascend` inside it --
+ * `openStore` takes that directory, and `openProject` is what joins `STORE_DIR` on. The distinction
+ * is the whole reason `storeFile` exists below rather than being written at each call.
  */
 function populated(count = 0): string {
   const dir = scratch();

@@ -463,61 +463,6 @@ function rebuildAllTypeViews(db: SqlDatabase): void {
 }
 
 /**
- * The cursor `asc ingest claude-code` uses to skip a transcript file it has already read in
- * full (asc-4dm.4, migration 4).
- *
- * **Why a stored table and not something derived from `entries`.** Measured 2026-09-22 on the
- * real corpus: 977 `.jsonl` files on disk, and only 33 distinct `session_id`s have ever produced
- * an entry in this store. Deriving "already ingested" from `entries` could therefore skip at
- * most 33 of 977 files and would still read the other 944 on every run -- it would not touch the
- * cost this migration exists to remove. A fact about the FILE (its `mtime` and `size` the last
- * time it was fully read) is not recoverable from the entries it produced, so it has to be its
- * own row.
- *
- * **`path` is the primary key and it is the absolute transcript path**, not a session id: two
- * different roots (`--root` pointed elsewhere, or a corpus moved) can hold a file the OS calls
- * the same session, and this table must not conflate them.
- *
- * **This table can only make a run FASTER, never wrong.** Nothing here is read except to decide
- * whether to skip a whole file, and idempotency at `entries` (this file's own header comment,
- * point 2) does not depend on this table at all -- delete every row here, or open a store that
- * predates this migration, and `asc ingest claude-code` degrades to reading every file, exactly
- * as it always did. A missing, stale, or wrong row costs time, never correctness.
- *
- * No empty-string sentinels, matching the rest of this schema: `path` and `ingested_at` are
- * `NOT NULL` with a `CHECK` against `''` rather than allowing it to sit there meaning nothing.
- * `mtime_ms` and `size` are `CHECK (... >= 0)` for the same reason a negative byte count or
- * timestamp would be a value with no honest reading.
- *
- * **As of 2026-09-29 nothing reads or writes this table (`asc-i5tj.14`).** The cursor is
- * `${store}/ingest-cursor.json` now (`ingest-cursor.ts`), because a row holds an ABSOLUTE path to
- * a transcript in this machine's home directory and the tree is git-tracked and shared, and because
- * the derived index is rebuilt wholesale -- so rows kept there would be erased by a routine
- * operation. The four constraints above did not go with it: the writer makes the same four
- * refusals itself, and its own doc says why each one is kept.
- *
- * **The table stays, rather than being dropped by a migration, and that is deliberate.** It still
- * holds a store's real progress -- 1,070 rows in this repository -- which is a fact about the
- * pre-cutover world that `migrateStoreToTree`'s report has to name: the corpus format cannot carry
- * it, so it appears in the report's `dropped` list with its count, and dropping the table would
- * silence exactly the gap the operator needs to be told about. It is removed with the rest of the
- * SQLite store in E12.4d.
- */
-const INGEST_CURSOR = `
-CREATE TABLE ingest_cursor (
-  path        TEXT    NOT NULL PRIMARY KEY,
-  mtime_ms    INTEGER NOT NULL,
-  size        INTEGER NOT NULL,
-  ingested_at TEXT    NOT NULL,
-
-  CHECK (path <> ''),
-  CHECK (mtime_ms >= 0),
-  CHECK (size >= 0),
-  CHECK (ingested_at <> '')
-);
-`;
-
-/**
  * A type's guidance (asc-bli.1, migration 5): why it exists, what to ask of it, how to read it,
  * and `review_after` -- the entry count at which someone declared they meant to look at it.
  *
@@ -613,12 +558,40 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'rebuild per-type views to carry the invalidated column',
     run: rebuildAllTypeViews,
   },
-  {
-    version: 4,
-    name: 'ingest cursor for incremental claude-code ingest (asc-4dm.4)',
-    sql: INGEST_CURSOR,
-    marker: 'ingest_cursor',
-  },
+  // **Version 4 is absent, and 5 and 6 keep their numbers rather than closing the gap**
+  // (`asc-i5tj.14`, 2026-09-29).
+  //
+  // It created `ingest_cursor`: the per-file progress `asc ingest claude-code` used to skip a
+  // transcript it had already read in full (`asc-4dm.4`). That state is `${dir}/ingest-cursor.json`
+  // now (`ingest-cursor.ts`), for two reasons that are both about the schema this file describes.
+  // A row keys on an ABSOLUTE path into this machine's home directory while the tree is git-tracked
+  // and shared, so carrying it would put one developer's `~/` into everyone's checkout. And the
+  // index is DERIVED and rebuilt wholesale, so rows kept here would be erased by a checkout, a
+  // merge, or a hand edit, with nothing reporting it. The table's four CHECK refusals did not go
+  // with it: the writer makes the same four itself (`ingest-cursor.ts`), and its tests hold them.
+  //
+  // **Deleted, rather than dropped by a NEW migration.** A `DROP TABLE` is the one change a
+  // migration arm cannot carry a `marker` for -- a marker is a name the DDL ADDS, and a drop adds
+  // none -- so it could only be procedural, spending a version number this list reserves for a real
+  // schema change. It would also RAISE `SCHEMA_VERSION`, which is a cost with no matching benefit:
+  // every index already on disk sits at the current number, a read-only open refuses one below
+  // `SCHEMA_VERSION` (`db.ts`, `StaleStoreError`), and `recorder.ts` stamps that same number into
+  // every entry line. Removing a table nothing reads is not worth invalidating every index and
+  // re-versioning every entry -- and the one thing an in-place drop buys that deletion does not,
+  // clearing the table from an index that is never rebuilt, is a gitignored file any rebuild
+  // replaces anyway. Deletion is the edit the boundary a few lines above licenses: ascend has never
+  // been released, and no store has existed outside a test's temp directory.
+  //
+  // **What must not happen is renumbering 5 and 6.** A store in a temp directory is already at the
+  // current number, and lowering `SCHEMA_VERSION` below it makes `assertNotAhead` (`db.ts`) refuse
+  // it as a store written by a NEWER ascend -- `NewerSchemaError` on a file this build wrote itself.
+  // The gap is the price of leaving the ledger's meaning alone.
+  //
+  // **This does not silence the dropped-table report, which is what the comment that used to sit
+  // above the DDL claimed.** It said the table had to stay because `migrateStoreToTree`'s report
+  // "has to name" it. That report is derived from `sqlite_master` (`droppedTables`, `migrate.ts`),
+  // not from this list, so a legacy `ascend.db` still holding its 1,070 rows is still reported with
+  // its count. What stops is every NEW index being born with a table that can never hold a row.
   {
     version: 5,
     name: 'guidance prose and review_after on entry_types (asc-bli.1)',

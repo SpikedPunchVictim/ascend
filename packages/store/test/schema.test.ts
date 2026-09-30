@@ -450,9 +450,13 @@ describe('migration 3 -- rebuilding stale per-type views (asc-5ed)', () => {
   });
 });
 
-describe('migration 4 -- ingest_cursor for incremental claude-code ingest (asc-4dm.4)', () => {
-  /** A store on disk that has run migrations 1-3 only, i.e. one from before `ingest_cursor` existed. */
-  const buildPreMigration4Store = (dir: string): string => {
+describe('migration 4 is gone -- the cursor is a JSON file, not a table (asc-i5tj.14)', () => {
+  /**
+   * A store on disk that has run migrations 1-3 only, i.e. one from the era when `ingest_cursor`
+   * was the next thing to be added. The fixture is unchanged from when this block pinned that
+   * migration's arrival; what the assertions below make of it is inverted.
+   */
+  const buildVersion3Store = (dir: string): string => {
     const file = join(dir, STORE_FILE);
     const db = new DatabaseSync(file);
     try {
@@ -469,70 +473,55 @@ describe('migration 4 -- ingest_cursor for incremental claude-code ingest (asc-4
     return file;
   };
 
-  it('FAILS without the migration: a version-3 store has no ingest_cursor table at all', () => {
-    // This is the test that pins the defect this migration fixes -- run against the store as it
-    // stood one migration earlier, it demonstrates the table genuinely does not exist yet, the
-    // same shape as migration 3's own "before" assertion.
-    const dir = tempDir();
-    const file = buildPreMigration4Store(dir);
-
-    const before = new DatabaseSync(file);
-    try {
-      expect(userVersion(before)).toBe(3);
-      expect(() => before.prepare('SELECT * FROM ingest_cursor').all()).toThrow(
-        /no such table: ingest_cursor/,
-      );
-    } finally {
-      before.close();
-    }
+  it('leaves the gap: no migration holds version 4, and 5 and 6 keep their numbers', () => {
+    // The whole safety of the deletion rests on this. A store in a temp directory is already at
+    // SCHEMA_VERSION, so renumbering 5 and 6 down into the hole would put SCHEMA_VERSION below a
+    // file this build wrote -- and `assertNotAhead` (db.ts) would refuse it as the work of a NEWER
+    // ascend, `NewerSchemaError` on its own output. Stated as "4 is absent, 5 and 6 are above it"
+    // rather than as the exact list, so that appending a real migration 7 does not have to edit
+    // this test to keep it true. `SCHEMA_VERSION` itself IS pinned at its current value, because
+    // the claim being made is that THIS deletion did not move it.
+    expect(MIGRATIONS.map((m) => m.version)).not.toContain(4);
+    expect(MIGRATIONS.some((m) => m.version === 5)).toBe(true);
+    expect(MIGRATIONS.some((m) => m.version === 6)).toBe(true);
+    expect(SCHEMA_VERSION).toBe(6);
+    expect(HIGHEST_MARKED_VERSION).toBe(5);
   });
 
-  it('a writable open migrates the store and ingest_cursor becomes queryable', () => {
+  it('migrates a version-3 store forward, creating no ingest_cursor table on the way', () => {
     const dir = tempDir();
-    buildPreMigration4Store(dir);
+    buildVersion3Store(dir);
 
     const store = openStore({ dir });
     try {
-      expect(store.migrations.applied).toContain(
-        'ingest cursor for incremental claude-code ingest (asc-4dm.4)',
+      // The gap is not a wall: a version-3 store still reaches the current version, and the
+      // migrations it runs are the ones that remain.
+      expect(store.migrations.applied).toEqual(
+        MIGRATIONS.filter((m) => m.version > 3).map((m) => m.name),
       );
       expect(userVersion(store.db)).toBe(SCHEMA_VERSION);
-      expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(4);
 
-      // The same query that failed above now succeeds, and starts empty.
-      expect(store.db.prepare('SELECT * FROM ingest_cursor').all()).toEqual([]);
+      // The same query that used to succeed -- and return zero rows -- now has no table to reach.
+      expect(() => store.db.prepare('SELECT * FROM ingest_cursor').all()).toThrow(
+        /no such table: ingest_cursor/,
+      );
     } finally {
       store.close();
     }
   });
 
-  it('is a clean no-op on a brand-new store: it is created empty, not backfilled from anything', () => {
+  it('is a clean no-op on a brand-new store: the table is not created there either', () => {
+    // This is the assertion the deletion exists for. Before it, this query answered `0`: a table
+    // that could never hold a row, which is what sent a reader looking here for a cursor that had
+    // moved to `ingest-cursor.json` (`asc-i5tj.14`, dogfood/0042). The four CHECK refusals the
+    // table made are not re-asserted here -- they moved to the writer, and
+    // `ingest-cursor.test.ts`'s "the four refusals the table's constraints used to make" holds them.
     const store = openStore({ dir: tempDir() });
     try {
       expect(userVersion(store.db)).toBe(SCHEMA_VERSION);
-      expect(store.db.prepare('SELECT COUNT(*) AS n FROM ingest_cursor').get()?.['n']).toBe(0);
-    } finally {
-      store.close();
-    }
-  });
-
-  it('enforces its own constraints: no empty path, no negative mtime_ms or size', () => {
-    const store = openStore({ dir: tempDir() });
-    try {
-      expect(() =>
-        store.db
-          .prepare(
-            `INSERT INTO ingest_cursor (path, mtime_ms, size, ingested_at) VALUES ('', 1, 1, '2026-09-22T00:00:00Z')`,
-          )
-          .run(),
-      ).toThrow(/CHECK constraint failed/);
-      expect(() =>
-        store.db
-          .prepare(
-            `INSERT INTO ingest_cursor (path, mtime_ms, size, ingested_at) VALUES ('/a', -1, 1, '2026-09-22T00:00:00Z')`,
-          )
-          .run(),
-      ).toThrow(/CHECK constraint failed/);
+      expect(() => store.db.prepare('SELECT COUNT(*) AS n FROM ingest_cursor').get()).toThrow(
+        /no such table: ingest_cursor/,
+      );
     } finally {
       store.close();
     }
@@ -540,7 +529,12 @@ describe('migration 4 -- ingest_cursor for incremental claude-code ingest (asc-4
 });
 
 describe('migration 5 -- guidance_json on entry_types (asc-bli.1)', () => {
-  /** A store on disk that has run migrations 1-4 only, holding one registered type. */
+  /**
+   * A store on disk that has run every migration below 5, holding one registered type. That is
+   * migrations 1-3 since version 4 was deleted (`asc-i5tj.14`), so this fixture builds a
+   * version-3 store -- the filter asks for "everything before the guidance migration", which is
+   * the property the test needs, rather than a specific version number.
+   */
   const buildPreMigration5Store = (dir: string): string => {
     const file = join(dir, STORE_FILE);
     const db = new DatabaseSync(file);
@@ -563,13 +557,16 @@ describe('migration 5 -- guidance_json on entry_types (asc-bli.1)', () => {
       .prepare(`SELECT 1 FROM pragma_table_info('entry_types') WHERE name = 'guidance_json'`)
       .get() !== undefined;
 
-  it('FAILS without the migration: a version-4 store has no guidance_json column', () => {
+  it('FAILS without the migration: a store below version 5 has no guidance_json column', () => {
     const dir = tempDir();
     const file = buildPreMigration5Store(dir);
 
     const before = new DatabaseSync(file);
     try {
-      expect(userVersion(before)).toBe(4);
+      // 3, not 4: version 4 no longer exists, so the fixture's filter lands one version lower
+      // (`asc-i5tj.14`). The assertion still says what the test is about -- the store is genuinely
+      // BEFORE migration 5 -- and `hasGuidanceColumn` below is the shape that carries the meaning.
+      expect(userVersion(before)).toBe(3);
       expect(hasGuidanceColumn(before)).toBe(false);
       expect(() => before.prepare('SELECT guidance_json FROM entry_types').all()).toThrow(
         /no such column: guidance_json/,

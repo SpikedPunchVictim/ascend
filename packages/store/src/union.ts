@@ -75,7 +75,14 @@ import {
   stateCase,
 } from './sql.js';
 
-/** One project to read. `label` is what the caller calls it; `file` is the store's `.db`. */
+/**
+ * One project to read. `label` is what the caller calls it; `file` is the `.db` to ATTACH.
+ *
+ * Since the flip (`asc-i5tj.14`) that is the project's DERIVED INDEX, `.ascend/index.db` -- not the
+ * store, which is the JSONL tree beside it. The difference is why the caller checks the index is
+ * current for its tree before attaching (`query.ts`'s `expandAcross`): this interface attaches a
+ * rebuildable file, and a stale one answers with the corpus as it last looked.
+ */
 export interface ProjectSource {
   readonly label: string;
   readonly file: string;
