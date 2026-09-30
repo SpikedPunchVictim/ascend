@@ -83,10 +83,9 @@ export {
 export { indexName, refreshTypeViews, viewName, type RefreshReport } from './views.js';
 
 export {
-  appliedHandlerHashes,
-  ingestCursorRows,
-  recordAppliedHandlers,
-  recordIngestCursor,
+  readIngestCursor,
+  writeIngestCursor,
+  type IngestCursor,
   type IngestCursorRow,
 } from './ingest-cursor.js';
 

@@ -1491,6 +1491,42 @@ as the store itself.
       `buildIndex` is called. `writeLines`'s stale branch then stops being reachable from the CLI and
       becomes the re-check that makes "a write cannot slip past the guard" structural — which is why
       it stays, and why its test stays.
+
+      **There is a SIXTH write site, and the ingest cursor has to move before the flip can happen at
+      all (2026-09-29, `asc-i5tj.14`).** `asc ingest claude-code` is not in the five above: it calls
+      `recordEntry` (`claude-code.ts:738`) as well as `recordIngestCursor` (`:714`) and
+      `recordAppliedHandlers` (`:717`). After the flip the read handle is read-only, so those INSERTs
+      fail with *attempt to write a readonly database* — the command breaks outright, and it is the
+      one command `.claude/ascend-hook.sh` runs at **every SessionStart**.
+
+      Fixing that surfaced the real problem, which is that the cursor has no home in the new layout.
+      `EV-34` measured it: `ingest_cursor` is 1,070 rows in the live store and **0** in an index built
+      from the tree, and `ingest.applied_handlers` is a `meta` key present in the store and absent
+      from the index. Neither is one of the corpus format's four line kinds, so the index cannot
+      rebuild them — and the index is rebuilt wholesale whenever the tree has moved, which from E12.4
+      is a checkout, a merge or a hand edit. Rows kept there would be erased by a routine operation
+      with nothing reporting it.
+
+      So the cursor becomes a **gitignored JSON sidecar** at `.ascend/ingest-cursor.json`
+      (`ingest-cursor.ts`, rewritten), holding the per-file rows and the handler ledger in ONE file so
+      the two cannot disagree — they used to be two writes to two places with a rule saying the second
+      had to sit beside the first. `index.db` stays a pure function of the tree, which is what keeps
+      deleting it safe. The `ingest_cursor` table is **kept**, not dropped by a migration 7: it still
+      holds a real store's progress, which is exactly the gap `migrateStoreToTree`'s report exists to
+      name, and it goes with the rest of the SQLite store in E12.4d. Full reasoning and both rejected
+      alternatives are the `decision` entry `61a1e2e9`.
+
+      **This landed as its own commit, BEFORE the flip, green while the world was still all-SQLite**
+      (2026-09-29) — it is independently verifiable and it is a prerequisite rather than part of the
+      flip. The one thing it costs, stated in the code rather than discovered later: a file cannot
+      join the entry transaction, so the cursor is written AFTER the entries commit, and a run that
+      dies between the two under-claims and re-reads. That direction is chosen — the reverse would let
+      the cursor claim files the store holds no entries for, turning a missing read into a missing
+      entry. The `--dry-run` guarantee is correspondingly weaker than the rollback it replaced
+      (position rather than rollback) and `claude-code.ts`'s header now says so instead of keeping the
+      old claim.
+      The `.gitignore` entry for the sidecar is the one part deferred to E12.4d: `.ascend/` is still
+      ignored wholesale today, so a rule for the future layout would be a rule nobody can verify.
   - **E12.4c — the read path.** Production readers open `openIndex(root, indexFile)`; `openStore` on
     `.ascend/ascend.db` becomes unreachable from `src`. **Success:** the whole suite's reads go
     through the index and every existing read test passes unchanged — this is where E12.3's seam pays

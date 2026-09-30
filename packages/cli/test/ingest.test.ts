@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -984,19 +984,31 @@ describe('asc ingest claude-code', () => {
 });
 
 /**
- * `ingest_cursor`, read back directly (asc-4dm.4) -- the same discipline `stored()` already uses
- * for `entries`: a claim about what the cursor holds is only real if it survives a fresh
- * `DatabaseSync` connection, never taken from the command's own report of itself.
+ * The cursor, read back from the file it is (asc-4dm.4, `asc-i5tj.14`) -- the same discipline
+ * `stored()` already uses for `entries`: a claim about what the cursor holds is only real if it
+ * survives a fresh read of the thing on disk, never taken from the command's own report of itself.
+ *
+ * **This used to be a `SELECT` against `ingest_cursor` through a fresh `DatabaseSync`, and the
+ * change is the point of the test rather than an inconvenience.** The cursor is
+ * `.ascend/ingest-cursor.json` now, so this reads the JSON directly instead of calling the store's
+ * own `readIngestCursor` -- a reader validating its own writer is the shape this file's header
+ * refuses everywhere else, and the same reason `stored()` opens its own connection.
+ *
+ * Absence is `[]`, not an error: a project that has never been ingested has no cursor file at all,
+ * and that is the ordinary case rather than a broken one.
  */
 function cursorRows(dir: string): { path: string; mtimeMs: number; size: number }[] {
-  const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
-  try {
-    return db
-      .prepare('SELECT path, mtime_ms AS mtimeMs, size FROM ingest_cursor ORDER BY path')
-      .all() as { path: string; mtimeMs: number; size: number }[];
-  } finally {
-    db.close();
-  }
+  const path = cursorPath(dir);
+  if (!existsSync(path)) return [];
+  const { files } = JSON.parse(readFileSync(path, 'utf8')) as {
+    files: { path: string; mtimeMs: number; size: number }[];
+  };
+  return files.map(({ path: file, mtimeMs, size }) => ({ path: file, mtimeMs, size }));
+}
+
+/** Where the cursor lives, spelled once so a test that deletes it cannot delete another file. */
+function cursorPath(dir: string): string {
+  return join(dir, '.ascend', 'ingest-cursor.json');
 }
 
 /**
@@ -1079,10 +1091,11 @@ describe('asc ingest claude-code: incremental cursor (asc-4dm.4)', () => {
     const dry = asc(['ingest', 'claude-code', '--dry-run'], dir);
     expect(dry.status).toBe(0);
 
-    // The store (and its ingest_cursor table) exists after a dry run -- opening a store always
-    // migrates it, dry run or not -- but no row was committed: `withRollback` discarded it along
-    // with everything else the preview computed.
-    expect(cursorRows(dir)).toEqual([]);
+    // The store exists after a dry run -- opening a store always migrates it, dry run or not -- but
+    // the cursor FILE was never created: the preview returns before the write that makes it. Read as
+    // ABSENCE, which is the stronger claim; "an empty cursor" would also be produced by a preview
+    // that wrote the file and then recorded nothing in it.
+    expect(existsSync(cursorPath(dir))).toBe(false);
 
     const real = asc(['ingest', 'claude-code'], dir);
     expect(real.status).toBe(0);
@@ -1111,7 +1124,7 @@ describe('asc ingest claude-code: incremental cursor (asc-4dm.4)', () => {
     expect(stored(dir).entries).toBe(5);
   });
 
-  it('deleting the cursor rows reproduces a full read, with no duplicate entries', () => {
+  it('deleting the cursor file reproduces a full read, with no duplicate entries', () => {
     const dir = project();
     transcripts(dir);
 
@@ -1120,19 +1133,16 @@ describe('asc ingest claude-code: incremental cursor (asc-4dm.4)', () => {
     const firstStored = stored(dir);
     expect(cursorRows(dir)).toHaveLength(1);
 
-    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
-    try {
-      db.exec('DELETE FROM ingest_cursor');
-    } finally {
-      db.close();
-    }
-    expect(cursorRows(dir)).toEqual([]);
+    // The whole file, by `rm`, which is the operation a user actually has when this cache goes
+    // wrong -- and the one `readIngestCursor`'s refusal message tells them to perform.
+    rmSync(cursorPath(dir));
+    expect(existsSync(cursorPath(dir))).toBe(false);
 
     const second = asc(['ingest', 'claude-code'], dir);
     expect(second.status).toBe(0);
 
-    // No unchanged skip: with no cursor rows, the file cannot match one -- today's pre-asc-4dm.4
-    // behaviour, reproduced exactly.
+    // No unchanged skip: with no cursor, no file can match an entry in one -- today's
+    // pre-asc-4dm.4 behaviour, reproduced exactly.
     expect(second.stderr).not.toContain('unchanged since the last ingest');
     // Ordinary idempotency at `entries` absorbs the re-derivation: no duplicates.
     expect(stored(dir)).toEqual(firstStored);

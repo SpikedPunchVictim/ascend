@@ -11,9 +11,7 @@ import {
   openStore,
   readRecordTree,
   recordAnnotations,
-  recordAppliedHandlers,
   recordEntry,
-  recordIngestCursor,
   recordInvalidation,
   registerScheme,
   registerType,
@@ -31,12 +29,13 @@ import {
  * only other copy -- so a line lost on the way out is lost for good, and the archive is what makes
  * that recoverable rather than the read-back being what makes it safe.
  *
- * **No SQLite is opened directly to write the fixture.** The store is built through its own writers
+ * **The store's own writers build almost all of the fixture.** It is built through them
  * (`registerType`, `recordEntry`, `recordAnnotations`, `recordInvalidation`), so the migration is
- * exercised against a store that ascend would actually have produced. `ingest_cursor` and the
- * `meta` keys are written through their own writers for the same reason: what is under test is
- * whether the migration NOTICES them, and a fixture that faked the rows would be testing the
- * fixture.
+ * exercised against a store that ascend would actually have produced. **The exception is the two
+ * things the corpus cannot carry**, `ingest_cursor` and the `meta` keys: they are written with raw
+ * SQL, because no writer for them exists any more (`asc-i5tj.14`) and a store being migrated holds
+ * them as rows from before the cutover. What is under test is whether the migration NOTICES them,
+ * and the table is now the only way to put one there.
  *
  * The one thing this file cannot exercise is the `-wal`/`-shm` half of the archive. A cleanly closed
  * database has neither -- `close()` checkpoints and removes them -- so the branch that moves them is
@@ -96,9 +95,19 @@ function seeded(): { readonly dir: string; readonly lines: readonly CorpusLine[]
       createdAt: AT,
     });
 
-    // The two gaps, both through the writers that produce them in a real store.
-    recordIngestCursor(store.db, '/home/someone/transcripts/session.jsonl', 1_000, 42, AT);
-    recordAppliedHandlers(store.db, ['abc123']);
+    // The two gaps, and they are written through RAW SQL rather than through a writer, which the
+    // header above says this fixture does everywhere else. That is the change: since 2026-09-29
+    // (`asc-i5tj.14`) no code path in the product writes either of these -- the ingest cursor is a
+    // JSON file beside the tree -- so a writer to call no longer exists. What a real store being
+    // migrated still holds is exactly this: rows from before the cutover, which is the fact the
+    // report below has to name. A fixture built through a writer would be testing a path that is
+    // gone.
+    store.db
+      .prepare('INSERT INTO ingest_cursor (path, mtime_ms, size, ingested_at) VALUES (?, ?, ?, ?)')
+      .run('/home/someone/transcripts/session.jsonl', 1_000, 42, AT);
+    store.db
+      .prepare('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run('ingest.applied_handlers', '["abc123"]');
 
     return { dir, lines: corpusLines(store.db) };
   } finally {

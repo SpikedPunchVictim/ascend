@@ -19,29 +19,35 @@
  *
  *   - **A re-run reads only what changed, and that can never affect correctness (asc-4dm.4).**
  *     Idempotency is enforced at `entries`, by the event-keyed id above, not by anything this
- *     paragraph is about to describe -- so the stored cursor below (`ingest_cursor`, schema.ts
- *     migration 4) is purely an optimisation that decides whether a file is opened AT ALL, never
- *     what is derived from one that is. A file is recorded in the cursor only once it has been
- *     streamed to completion (never one skipped as ephemeral, a symlink, unreadable, or itself
- *     already unchanged -- `recordIngestCursor`'s own doc), and on the next run a file is skipped
+ *     paragraph is about to describe -- so the stored cursor below (`ingest-cursor.json`) is
+ *     purely an optimisation that decides whether a file is opened AT ALL, never what is derived
+ *     from one that is. A file is recorded in the cursor only once it has been streamed to
+ *     completion (never one skipped as ephemeral, a symlink, unreadable, or itself already
+ *     unchanged -- `writeIngestCursor`'s own doc), and on the next run a file is skipped
  *     WHOLE only when its `mtime` AND `size` both still match exactly what was recorded --
  *     otherwise it is re-read from its first byte. No byte offset is ever stored: an
  *     offset-resume would need the derive path to be provably correct on a partial read, which
  *     nothing here proves, so the one file that is still growing (this session's own transcript)
  *     simply never matches and is re-read whole every time, which is cheap. A missing, stale, or
- *     deleted cursor costs time, never correctness -- delete every `ingest_cursor` row and this
- *     command degrades exactly to reading every file, the behaviour it had before this paragraph
- *     was true. `--full` asks for exactly that degradation on purpose. Measured 2026-09-22 on
+ *     deleted cursor costs time, never correctness -- delete the cursor file and this command
+ *     degrades exactly to reading every file, the behaviour it had before this paragraph was
+ *     true. `--full` asks for exactly that degradation on purpose. Measured 2026-09-22 on
  *     this machine: 977 `.jsonl` files, 1.63 GiB, 7.965 s for a full read; only 33 of the
  *     `session_id`s in this store have ever produced an entry, which is why the cursor is a
  *     stored fact about the FILE and not something derived from `entries` -- deriving "already
  *     ingested" from entries could skip at most those 33 files and would still read the other
  *     944 every run.
- *   - **`--dry-run` cannot poison the cursor.** The cursor's writes sit inside the exact same
- *     transaction as the entry writes below (`write`) -- `withRollback` on a dry run in place of
- *     `withTransaction` on a real one -- so a preview's rollback discards them along with
- *     everything else. This is placement, not a conditional guarding the cursor write itself:
- *     nothing here asks "is this a dry run?" before deciding whether to write a cursor row.
+ *   - **`--dry-run` cannot poison the cursor, and the mechanism is no longer a rollback.** The
+ *     cursor is a file now (`.ascend/ingest-cursor.json`, `asc-i5tj.14`), so it cannot ride the
+ *     entry transaction and nothing a preview wrote there could be undone by one. What keeps a
+ *     preview safe is POSITION: `write` returns on its `dryRun` branch before the cursor write at
+ *     the end of the real branch, so a dry run never reaches the file. Stated plainly, that is
+ *     weaker than the guarantee it replaces -- the old shape had no conditional for a future edit
+ *     to move, and this one is correct because of where the return sits -- and it is said here
+ *     because the stronger claim is exactly what a reader would otherwise carry forward. What it
+ *     guards against is worth naming: a preview that wrote the cursor would make the NEXT real run
+ *     skip exactly the files whose entries were only ever proposed, and the recovery would be
+ *     `--full`.
  *   - **The `#2` disambiguation suffix is order-sensitive.** The deriver appends `#2` when a
  *     sweep repeats a per-event key. If a still-growing corpus gains a colliding record between
  *     two ingests, that entry's suffix shifts and the run writes one more entry rather than
@@ -60,9 +66,15 @@
  * the faster one, on both runs, so there is no trade to make. A rejection part-way through
  * therefore leaves the store exactly as it was.
  *
- * As of asc-4dm.4, the cursor rows land inside this same transaction (or its `withRollback`
- * counterpart on `--dry-run`) for exactly the same reason: a run that fails partway must not
- * leave a cursor claiming files were read that the store does not actually hold entries for.
+ * **The cursor no longer lands inside that transaction, and the order it lands in instead is the
+ * point** (`asc-i5tj.14`, 2026-09-29). It is a file, so it cannot share a transaction with the
+ * entries; it is written AFTER they commit. That direction is chosen rather than forced: a run that
+ * dies between the two leaves a cursor that UNDER-claims -- it names fewer files than the store
+ * holds entries for -- so the next run re-reads them, and a re-read proposes the same event-keyed
+ * ids, so it costs the time and nothing else. The reverse order would let the cursor claim files
+ * the store holds no entries for, which is the one way this cache turns a missing read into a
+ * missing entry. That is the same reason the old paragraph gave for putting the two in one
+ * transaction; only the mechanism available changed.
  *
  * **The entries are buffered before they are written**, because the corpus walk is async and
  * `withTransaction` takes a synchronous body. Measured: 1,489 entries for the corpus on this
@@ -108,16 +120,13 @@ import {
 import { canonicalJson, validateEntry, type TypeSpec } from '@ascend/core';
 import {
   DuplicateEntryError,
-  appliedHandlerHashes,
   openEntriesByVersion,
   findEntry,
   findType,
-  ingestCursorRows,
-  recordAppliedHandlers,
+  readIngestCursor,
   recordEntry,
-  recordIngestCursor,
-  withRollback,
   withTransaction,
+  writeIngestCursor,
   type RecordedEntry,
   type SqlDatabase,
   type Store,
@@ -413,7 +422,13 @@ export default class IngestClaudeCode extends BaseCommand {
       for (const failure of loaded.failures) {
         this.warn(`handler ${failure.path} was not run: ${failure.message}`);
       }
-      const applied = appliedHandlerHashes(project.store.db);
+      // One read of the cursor, used for both halves of what it holds: which handlers the files it
+      // names were read through (below), and the files themselves (`knownFiles`). Both come off the
+      // same object because they are one fact -- a file read before a handler existed was never
+      // offered to it -- and because two reads of a file that a concurrent ingest could replace
+      // between them would be two answers to one question.
+      const cursor = readIngestCursor(project.store.dir);
+      const applied = new Set(cursor.handlers);
       const unapplied = loaded.typed.filter(({ handler }) => !applied.has(handler.hash));
       if (!full && unapplied.length > 0) {
         this.logToStderr(
@@ -428,7 +443,7 @@ export default class IngestClaudeCode extends BaseCommand {
         full || unapplied.length > 0
           ? undefined
           : new Map(
-              ingestCursorRows(project.store.db).map((row): [string, FileStat] => [
+              cursor.files.map((row): [string, FileStat] => [
                 row.path,
                 { mtimeMs: row.mtimeMs, size: row.size },
               ]),
@@ -583,20 +598,24 @@ export default class IngestClaudeCode extends BaseCommand {
   }
 
   /**
-   * Write the derived entries, or report what writing them would do -- and, either way, persist
-   * the cursor rows for the files this run actually streamed (asc-4dm.4).
+   * Write the derived entries, or report what writing them would do (asc-4dm.4) -- and, on a real
+   * run, record the files this sweep actually streamed.
    *
    * A dry run asks the store the same question the real run does -- `findEntry` on the exact id
    * the real run would use -- so the two cannot report different outcomes. It is not a second
    * implementation of the decision, because a preview computed by a copy of the logic is a
    * preview of the copy.
    *
-   * **The cursor writes are unconditional inside the transaction body; only which transaction
-   * primitive wraps them depends on `dryRun`.** `withRollback` always undoes its body -- the same
-   * preview primitive `registerDocument`'s dry run already rests on -- so a `--dry-run` cannot
-   * poison the cursor by construction: there is no `if (!dryRun)` around `recordIngestCursor`
-   * for a future edit to delete by accident. This is D5 from asc-4dm.4, solved by which function
-   * is called rather than by a condition guarding the call inside it.
+   * **The entries are one transaction, and the cursor is one file written after it.** The cursor
+   * cannot join the transaction any more (`asc-i5tj.14`: it is `.ascend/ingest-cursor.json`, not a
+   * row), so the two halves are ordered by what a crash between them costs rather than by what
+   * would be tidy. Entries first: a run that dies before the cursor write leaves a cursor that
+   * under-claims, so the next run re-reads files it has already recorded -- slower, and correct,
+   * because a re-read proposes the same event-keyed ids and the store refuses the duplicates.
+   * The reverse would leave a cursor naming files the store has no entries for, and the next run
+   * would skip them: a missing read becoming a missing entry, which is the one failure this cache
+   * must not have. `--dry-run` returns before the cursor write, so a preview never reaches the
+   * file at all; this module's header says what that guarantee is and, just as importantly, is not.
    */
   private write(
     store: Store,
@@ -697,42 +716,31 @@ export default class IngestClaudeCode extends BaseCommand {
       valid.push(entry);
     }
 
-    // D5 (asc-4dm.4): one transaction primitive, chosen by `dryRun`, wraps BOTH the cursor writes
-    // and the entry writes/preview below -- `withRollback` always undoes its body, so a dry run's
-    // cursor rows vanish with everything else it computed, by the same mechanism that already
-    // makes `--dry-run` write nothing else. Nothing inside the body below asks "is this a dry
-    // run?" before deciding whether to call `recordIngestCursor`.
-    const transact = dryRun
-      ? <T>(body: () => T): T => withRollback(store.db, body)
-      : <T>(body: () => T): T => withTransaction(store.db, body);
-
-    transact(() => {
-      // Every file this sweep actually streamed to completion, cursor'd unconditionally -- see
-      // this method's own doc for why `dryRun` is decided ABOVE, in which wrapper runs this body,
-      // and never here.
-      for (const file of readFiles) {
-        recordIngestCursor(store.db, file.path, file.mtimeMs, file.size, recordedAt);
-      }
-      // Beside the cursor rows it vouches for, so a dry run's rollback discards both.
-      recordAppliedHandlers(store.db, handlers.applied);
-
-      if (dryRun) {
-        for (const entry of valid) {
-          // Same content check as the real run's `DuplicateEntryError` branch (`asc-90h`), so a
-          // preview cannot describe a collision as an ordinary "already present" the real run
-          // would not agree with.
-          const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
-          if (existing === undefined) {
-            tally(entry.type, 'written');
-          } else if (fingerprint(existing) === fingerprint(entry)) {
-            tally(entry.type, 'present');
-          } else {
-            collide(entry, existing);
-          }
+    if (dryRun) {
+      for (const entry of valid) {
+        // Same content check as the real run's `DuplicateEntryError` branch (`asc-90h`), so a
+        // preview cannot describe a collision as an ordinary "already present" the real run
+        // would not agree with.
+        const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
+        if (existing === undefined) {
+          tally(entry.type, 'written');
+        } else if (fingerprint(existing) === fingerprint(entry)) {
+          tally(entry.type, 'present');
+        } else {
+          collide(entry, existing);
         }
-        return;
       }
+      // Before the cursor write below, which is the whole of what keeps a preview from reaching
+      // the file. `asc-4dm.4`'s D5 was solved here by a rollback; a file cannot be rolled back, so
+      // it is solved by position instead, and this method's doc says what that costs.
+      return { counts, warnings, rejections, collisions, redactedCollisions };
+    }
 
+    // ONE transaction, all-or-nothing, as `asc record` promises for a batch. Measured twice on the
+    // real corpus (`asc-4dm.4`): 460 ms in one transaction against 678 ms with a transaction per
+    // entry, then 240 ms against 356 ms on a re-run. Atomic is also the faster of the two, so
+    // there is no trade to make, and a rejection part-way through leaves the store as it was.
+    withTransaction(store.db, () => {
       for (const entry of valid) {
         try {
           const { warnings: issues } = recordEntry(
@@ -790,6 +798,16 @@ export default class IngestClaudeCode extends BaseCommand {
           throw error;
         }
       }
+    });
+
+    // AFTER the entries commit, never before. `write`'s doc gives the direction argument -- a crash
+    // here under-claims the cursor and costs a re-read, where the reverse order would cost entries.
+    // One write covers the files and the handlers they were read through, so the two cannot
+    // disagree about which run read what; they used to be two writes to two places with a rule
+    // saying the second had to sit beside the first.
+    writeIngestCursor(store.dir, {
+      files: readFiles.map((file) => ({ ...file, ingestedAt: recordedAt })),
+      handlers: handlers.applied,
     });
 
     return { counts, warnings, rejections, collisions, redactedCollisions };

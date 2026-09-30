@@ -1,28 +1,57 @@
 /**
- * The `ingest_cursor` table (schema.ts migration 4): a stored, per-file record of what
- * `asc ingest claude-code` has already read in full, so a later run can skip a file whole
- * instead of streaming it again (asc-4dm.4).
+ * The ingest cursor: a per-file record of what `asc ingest claude-code` has already read in full,
+ * so a later run can skip a file whole instead of streaming it again (asc-4dm.4).
  *
- * **This module only ever causes a SKIP.** It has no opinion about what gets derived or
- * written -- that is `entries`' own idempotency, keyed on the event, and it holds regardless of
- * whether a single row here exists. A caller may delete every row, or run against a store that
- * predates migration 4, and the only visible effect is that the next `asc ingest claude-code`
- * reads every file instead of skipping the ones it already knows -- slower, never wrong. See
- * `INGEST_CURSOR`'s own doc (schema.ts) for the measurement that makes this a stored fact about
- * the FILE rather than something derived from `entries`.
+ * **This module only ever causes a SKIP.** It has no opinion about what gets derived or written --
+ * that is `entries`' own idempotency, keyed on the event, and it holds regardless of whether a
+ * single row here exists. A caller may delete the whole cursor, and the only visible effect is that
+ * the next `asc ingest claude-code` reads every file instead of skipping the ones it already
+ * knows -- slower, never wrong. See the 2026-09-22 measurement quoted in the ingest command: 977
+ * `.jsonl` files, 1.63 GiB, 7.965 s for a full read, and only 33 of the store's `session_id`s have
+ * ever produced an entry -- which is why this is a stored fact about the FILE rather than something
+ * derivable from `entries`.
  *
- * **Whole files, never an offset.** `recordIngestCursor` takes the file's `mtime` and `size` as
- * they were at the moment it was read to completion; a caller (the CLI) skips a file only when
- * BOTH still match on a later run. There is no per-line or per-byte position stored here, on
- * purpose: an offset-resume would require the derive path to be provably correct on a partial
- * read, which nothing in this codebase proves, so a changed file is always re-read from its
- * first byte.
+ * **Whole files, never an offset.** A row takes the file's `mtime` and `size` as they were at the
+ * moment it was read to completion; a caller (the CLI) skips a file only when BOTH still match on a
+ * later run. There is no per-line or per-byte position stored here, on purpose: an offset-resume
+ * would require the derive path to be provably correct on a partial read, which nothing in this
+ * codebase proves, so a changed file is always re-read from its first byte.
  *
- * Time is injected, never read: `ingestedAt` is a parameter, matching `registry.ts`'s own rule
- * that this package never reads a clock -- `recorder.test.ts` scans `src` for exactly that.
+ * Time is injected, never read: `ingestedAt` is part of the row a caller hands in, matching
+ * `registry.ts`'s own rule that this package never reads a clock.
+ *
+ * **It is a FILE beside the tree, not a row in the store (asc-i5tj.14, 2026-09-29).** Three
+ * properties left it no home anywhere else:
+ *
+ *   - **The corpus cannot carry it.** `TypeLine | EntryLine | SchemeLine | AnnotationLine` are the
+ *     four kinds, and neither this nor the handler ledger is one. `EV-34` measured the consequence
+ *     on the real store: `ingest_cursor` 1,070 rows in the database and **0** in an index built
+ *     from the tree, `ingest.applied_handlers` present in the store and absent from the index.
+ *   - **The tree is the wrong place on purpose.** A row holds an ABSOLUTE path to a transcript in
+ *     the user's home directory, plus its mtime and size. That is this machine's progress through
+ *     this machine's files -- not a record -- and the tree is git-tracked and shared, so carrying
+ *     it would put one developer's `~/` paths into everyone's checkout.
+ *   - **The index would erase it.** The index is derived and rebuilt wholesale, and from E12.4 the
+ *     write path builds one whenever the tree has moved -- a checkout, a merge, a hand edit. Rows
+ *     written there would be destroyed by a routine operation, with nothing reporting it.
+ *
+ * So it lives at `${dir}/ingest-cursor.json`, inside `.ascend/` and gitignored, and the index stays
+ * a pure function of the tree -- which is what keeps deleting it safe.
+ *
+ * **Both halves are one file, so they cannot disagree.** The rows and the ledger they were read
+ * through used to be two writes to two places, with the rule that the second had to happen beside
+ * the first. Here one write covers both.
+ *
+ * **The cost, stated rather than discovered: this write cannot join the entry transaction.** It is
+ * a file, not a statement, so it happens after the entries commit, and a run that dies between the
+ * two leaves a cursor that UNDER-claims -- the files it names were not all recorded, so the next
+ * run re-reads them. The reverse order would let a cursor claim files the store holds no entries
+ * for, which is the one way this module could turn a missing read into a wrong answer, so the order
+ * is the fix and not an accident.
  */
 
-import type { SqlDatabase } from './sql-port.js';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** One file's recorded cursor: what its stat was, the last time it was read in full. */
 export interface IngestCursorRow {
@@ -33,82 +62,154 @@ export interface IngestCursorRow {
 }
 
 /**
- * Every recorded cursor row, in no particular order -- a caller keys them by `path` itself
- * (`asc ingest claude-code` builds a `Map` from this).
+ * Everything the cursor holds: the files read in full, and the typed handlers they were read
+ * through (asc-tuur.3).
+ *
+ * The ledger is here rather than beside a set of rows because the two are one fact. A row says a
+ * file was READ, and a file read before a handler existed was never offered to it -- so a skip that
+ * is correct for the deriver would silently withhold every old transcript from a new handler. An
+ * EMPTY list means a full read, which is the same "absence costs time, never correctness" contract
+ * the rows keep.
  */
-export function ingestCursorRows(db: SqlDatabase): readonly IngestCursorRow[] {
-  const rows = db
-    .prepare(`SELECT path, mtime_ms AS mtimeMs, size, ingested_at AS ingestedAt FROM ingest_cursor`)
-    .all() as unknown as { path: string; mtimeMs: number; size: number; ingestedAt: string }[];
-  return rows.map((row) => ({
-    path: row.path,
-    mtimeMs: row.mtimeMs,
-    size: row.size,
-    ingestedAt: row.ingestedAt,
-  }));
+export interface IngestCursor {
+  readonly files: readonly IngestCursorRow[];
+  readonly handlers: readonly string[];
+}
+
+/** The cursor's file name inside the store directory. Gitignored: see this module's doc. */
+const CURSOR_FILE = 'ingest-cursor.json';
+
+/** Where the cursor lives, given the store directory (`.ascend/`). */
+function cursorPath(dir: string): string {
+  return join(dir, CURSOR_FILE);
 }
 
 /**
- * Record (or update) one file's cursor.
+ * The stored cursor, or an empty one when nothing has been recorded.
  *
- * `path` is the primary key, so a file read a second time -- because it changed, or because
- * `--full` forced it -- replaces its own row rather than accumulating a history. Callers must
- * write this ONLY for a file that was actually streamed to completion: never for one skipped as
- * ephemeral, a symlink, unreadable, or already unchanged, and never for one whose read did not
- * finish. Recording a partially-read or never-opened file here would make a later run skip
- * exactly the bytes it never derived from -- the one way this table could turn a missing read
- * into a wrong answer instead of merely a slow one.
+ * **Absence is the ordinary case and is not an error**: a project that has never been ingested, or
+ * whose cursor was deleted, reads every file, which is the degradation this module is allowed to
+ * cause. A file that is present and does NOT parse is the other case, and it is refused with the
+ * remedy in the message -- an unreadable cache silently treated as empty would report a full read
+ * as though it were a decision.
  */
-export function recordIngestCursor(
-  db: SqlDatabase,
-  path: string,
-  mtimeMs: number,
-  size: number,
-  ingestedAt: string,
-): void {
-  db.prepare(
-    `INSERT INTO ingest_cursor (path, mtime_ms, size, ingested_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT (path) DO UPDATE SET
-         mtime_ms = excluded.mtime_ms,
-         size = excluded.size,
-         ingested_at = excluded.ingested_at`,
-  ).run(path, mtimeMs, size, ingestedAt);
+export function readIngestCursor(dir: string): IngestCursor {
+  const path = cursorPath(dir);
+  if (!existsSync(path)) return { files: [], handlers: [] };
+
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    throw corrupt(path, error instanceof Error ? error.message : String(error));
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw corrupt(path, error instanceof Error ? error.message : String(error));
+  }
+
+  return parseCursor(parsed, path);
 }
 
-/** The `meta` key holding the typed handlers every cursor row has already been read through. */
-const APPLIED_HANDLERS = 'ingest.applied_handlers';
+/**
+ * Replace the cursor with `cursor`.
+ *
+ * **Written whole, once, and atomically**: a temp file plus a rename, so a caller that dies partway
+ * through leaves the previous cursor rather than half of this one. `EV-hooks` measured what the
+ * alternative costs in this repository already -- a truncated file that reports nothing wrong.
+ *
+ * A second entry for a path REPLACES the first, because a file read again (it changed, or `--full`
+ * forced it) has one current stat and not a history; two entries for one path would make the
+ * caller's lookup ambiguous. The last one wins, which is the caller's order of reading.
+ *
+ * Callers must pass a row ONLY for a file that was actually streamed to completion: never one
+ * skipped as ephemeral, a symlink, unreadable, or already unchanged, and never one whose read did
+ * not finish. Recording a partially-read or never-opened file here would make a later run skip
+ * exactly the bytes it never derived from -- the one way this module could turn a missing read into
+ * a wrong answer instead of merely a slow one.
+ */
+export function writeIngestCursor(dir: string, cursor: IngestCursor): void {
+  const path = cursorPath(dir);
+  const byPath = new Map<string, IngestCursorRow>();
+  for (const row of cursor.files) {
+    assertRowIsAFileThatWasRead(row);
+    byPath.set(row.path, row);
+  }
+
+  const body = {
+    files: [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path)),
+    handlers: [...new Set(cursor.handlers)].sort(),
+  };
+
+  mkdirSync(dir, { recursive: true });
+  const temporary = `${path}.ascend-tmp`;
+  writeFileSync(temporary, `${JSON.stringify(body, null, 2)}\n`);
+  renameSync(temporary, path);
+}
 
 /**
- * The hashes of the typed handlers (asc-tuur.3) the cursor's files have been read through.
+ * The four checks the `ingest_cursor` table's constraints used to make (schema.ts migration 4).
  *
- * The cursor says a file was READ, and a file read before a handler existed was never offered to
- * it -- so a skip that is correct for the deriver would silently withhold every old transcript
- * from a new handler. The caller compares its handlers' hashes against this set and reads every
- * file when one is new, which is the same "absence costs time, never correctness" contract the
- * cursor already keeps: an empty set means a full read, never a missed one.
+ * They belong to the writer now that there is no schema to hold them, and they are kept rather than
+ * dropped with the table because each one refuses a row that could only come from a bug: an empty
+ * path names no file, an empty `ingestedAt` says nothing recorded it, and a negative `mtimeMs` or
+ * `size` cannot be what a real `stat` returned. A cursor is a cache, and a cache that answers
+ * `skip` from a value that never could have been read is the one failure this module must not have.
  */
-export function appliedHandlerHashes(db: SqlDatabase): ReadonlySet<string> {
-  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(APPLIED_HANDLERS) as
-    { value: string } | undefined;
-  if (row === undefined) return new Set();
-  const parsed: unknown = JSON.parse(row.value);
-  if (!Array.isArray(parsed) || !parsed.every((one) => typeof one === 'string')) {
+function assertRowIsAFileThatWasRead(row: IngestCursorRow): void {
+  if (row.path === '') throw new Error('an ingest cursor entry has an empty path');
+  if (row.ingestedAt === '') {
+    throw new Error(`the ingest cursor entry for '${row.path}' has an empty ingestedAt`);
+  }
+  if (row.mtimeMs < 0 || row.size < 0) {
     throw new Error(
-      `meta ${APPLIED_HANDLERS} is ${row.value}, not a list of handler hashes -- the store was ` +
-        'edited by something other than asc ingest claude-code.',
+      `the ingest cursor entry for '${row.path}' has a negative mtimeMs (${String(row.mtimeMs)}) ` +
+        `or size (${String(row.size)}), which no file's stat can return`,
     );
   }
-  return new Set(parsed);
 }
 
-/**
- * Replace the applied set. Call it inside the same transaction as the cursor rows it vouches
- * for, so a dry run's rollback discards both together.
- */
-export function recordAppliedHandlers(db: SqlDatabase, hashes: Iterable<string>): void {
-  db.prepare(
-    `INSERT INTO meta (key, value) VALUES (?, ?)
-       ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-  ).run(APPLIED_HANDLERS, JSON.stringify([...new Set(hashes)].sort()));
+function corrupt(path: string, detail: string): Error {
+  return new Error(
+    `${path} is not a cursor that asc ingest claude-code wrote (${detail}). This file is a local ` +
+      'cache of which transcripts have already been read, so deleting it is safe: the next ' +
+      'ingest reads every transcript and writes a new one.',
+  );
+}
+
+function parseCursor(parsed: unknown, path: string): IngestCursor {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw corrupt(path, 'it is not a JSON object');
+  }
+
+  const { files, handlers } = parsed as { files?: unknown; handlers?: unknown };
+  if (!Array.isArray(files)) throw corrupt(path, 'it has no "files" list');
+  if (!Array.isArray(handlers)) throw corrupt(path, 'it has no "handlers" list');
+
+  return {
+    files: files.map((row) => parseRow(row, path)),
+    handlers: handlers.map((handler) => {
+      if (typeof handler !== 'string') throw corrupt(path, 'a handler hash is not a string');
+      return handler;
+    }),
+  };
+}
+
+function parseRow(row: unknown, path: string): IngestCursorRow {
+  if (typeof row !== 'object' || row === null || Array.isArray(row)) {
+    throw corrupt(path, 'a file entry is not a JSON object');
+  }
+
+  const { path: file, mtimeMs, size, ingestedAt } = row as Record<string, unknown>;
+  if (typeof file !== 'string' || typeof ingestedAt !== 'string') {
+    throw corrupt(path, 'a file entry is missing its path or its ingestedAt');
+  }
+  if (typeof mtimeMs !== 'number' || typeof size !== 'number') {
+    throw corrupt(path, `the entry for '${file}' is missing a numeric mtimeMs or size`);
+  }
+
+  return { path: file, mtimeMs, size, ingestedAt };
 }

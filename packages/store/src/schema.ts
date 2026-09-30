@@ -488,6 +488,20 @@ function rebuildAllTypeViews(db: SqlDatabase): void {
  * `NOT NULL` with a `CHECK` against `''` rather than allowing it to sit there meaning nothing.
  * `mtime_ms` and `size` are `CHECK (... >= 0)` for the same reason a negative byte count or
  * timestamp would be a value with no honest reading.
+ *
+ * **As of 2026-09-29 nothing reads or writes this table (`asc-i5tj.14`).** The cursor is
+ * `${store}/ingest-cursor.json` now (`ingest-cursor.ts`), because a row holds an ABSOLUTE path to
+ * a transcript in this machine's home directory and the tree is git-tracked and shared, and because
+ * the derived index is rebuilt wholesale -- so rows kept there would be erased by a routine
+ * operation. The four constraints above did not go with it: the writer makes the same four
+ * refusals itself, and its own doc says why each one is kept.
+ *
+ * **The table stays, rather than being dropped by a migration, and that is deliberate.** It still
+ * holds a store's real progress -- 1,070 rows in this repository -- which is a fact about the
+ * pre-cutover world that `migrateStoreToTree`'s report has to name: the corpus format cannot carry
+ * it, so it appears in the report's `dropped` list with its count, and dropping the table would
+ * silence exactly the gap the operator needs to be told about. It is removed with the rest of the
+ * SQLite store in E12.4d.
  */
 const INGEST_CURSOR = `
 CREATE TABLE ingest_cursor (
