@@ -24,9 +24,12 @@ node_modules/
 # Tooling caches
 .mast/
 
-# ascend corpus (local-only, never committed)
-.ascend/
-# archived stores and backups, kept beside the live one (local-only, never committed)
+# ascend's record tree is TRACKED, and these are the files inside `.ascend/` that are not:
+# `index.db` is derived from the tree and rebuilt by `asc index build`, `ascend.db` is the
+# pre-`asc-i5tj` store (an archived copy lives under `.ascend-archived/`), and the ingest cursor is
+# machine-local progress. Named individually rather than as `.ascend/`, which is what `asc init`
+# replaced on 2026-09-29 — ignoring the directory would leave every record uncommitted.
+# Archived stores and backups, kept beside the live one (local-only, never committed).
 .ascend-archived/
 
 # align machine-local files — telemetry (opt-in: ALIGN_TELEMETRY=1 / --telemetry / align.config.ts telemetry:true)
@@ -114,3 +117,10 @@ pnpm-debug.log*
 # precisely because re-litigating a measured decision requires re-running it.
 # ---------------------------------------------------------------------------
 spike/tmp/
+.ascend/index.db
+.ascend/index.db-wal
+.ascend/index.db-shm
+.ascend/ascend.db
+.ascend/ascend.db-wal
+.ascend/ascend.db-shm
+.ascend/ingest-cursor.json
