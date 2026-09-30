@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildIndex, INDEX_FILE } from '@ascend/store';
 
 /**
  * Typed handlers at ingest (asc-tuur.3): a `handlers/*.yaml` that declares `type:` has its rows
@@ -38,11 +39,19 @@ function asc(args: readonly string[], cwd: string) {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
-/** A project with a store, and optionally the shipped typed handler in its `handlers/`. */
+/**
+ * A project with a store, and optionally the shipped typed handler in its `handlers/`.
+ *
+ * The index is built from the empty tree for `ingest.test.ts`'s reason: the store is the tree now,
+ * which the command creates as it writes, but four of these tests run `--dry-run` and a preview
+ * needs an index that is already there rather than creating one.
+ */
 function project(withHandler = true): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-typed-'));
   dirs.push(dir);
-  mkdirSync(join(dir, '.ascend'));
+  const tree = join(dir, '.ascend');
+  mkdirSync(tree);
+  buildIndex(tree, join(tree, INDEX_FILE), { now: new Date().toISOString() });
   if (withHandler) addHandler(dir);
   return dir;
 }
@@ -147,7 +156,7 @@ function transcript(dir: string, name: string, records: readonly unknown[]): voi
 }
 
 function findings(dir: string) {
-  const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+  const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
   try {
     return db
       .prepare(

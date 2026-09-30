@@ -260,7 +260,7 @@ export function orderedLine(line: CorpusLine): Record<string, unknown> {
       name: line.name,
       version: line.version,
       created_at: line.created_at,
-      spec: line.spec,
+      spec: orderedSpec(line.spec),
       scheme_hash: line.scheme_hash,
     };
   }
@@ -277,6 +277,35 @@ export function orderedLine(line: CorpusLine): Record<string, unknown> {
     note: line.note,
     created_by: line.created_by,
     created_at: line.created_at,
+  };
+}
+
+/**
+ * A scheme's spec in canonical order, its NESTED rules included.
+ *
+ * **The nesting is why this exists, and it was found by a migration refusing to run.** `orderedLine`
+ * fixes the order of a line's own fields, and for every other kind the fields it passes through come
+ * from `JSON.parse` on both sides of a round trip -- so the writer's spelling and the reader's agree
+ * on nested order by construction. A scheme's `spec` is the exception: the store hands back
+ * `spec_json` exactly as it was registered, while `parseSchemeRule` REBUILDS each rule from named
+ * fields in its own order (`{ label, kind, query }`, the order `SCHEME_RULE_KEYS` lists them in). Two
+ * spellings of one scheme therefore serialized differently, which is not a cosmetic difference here:
+ * `migrateStoreToTree` compares the store's lines against the tree's as canonical text.
+ *
+ * Measured on this repository's own store: 10,386 line(s) written, 10,386 read, and
+ * *"3 missing and 3 that should not be there"* -- the 3 schemes that carry a rule (`by_kind`,
+ * `layer`, `rule-denial`), the 4 rule-less ones agreeing exactly. The migration refused and archived
+ * nothing, which is the right answer from a guard and a dead end for a cutover. See `dogfood/0040`.
+ *
+ * So the rule order is pinned HERE, in the one definition of a line's canonical bytes, rather than
+ * left to whatever each side happens to build. `{ kind, label, query }` is the order the store's own
+ * `spec_json` already holds, so **no bytes on disk change**: the reader is brought to the writer and
+ * not the other way round. `labels` needs no ordering because it is an array of strings.
+ */
+function orderedSpec(spec: SchemeSpec): Record<string, unknown> {
+  return {
+    labels: spec.labels,
+    rules: spec.rules.map((rule) => ({ kind: rule.kind, label: rule.label, query: rule.query })),
   };
 }
 

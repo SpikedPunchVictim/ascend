@@ -64,8 +64,8 @@
  * shape. `withRollback`'s own doc gives the rule -- *"a preview of registering three documents would
  * have each one rolled back before the next, so the second would compute its version as though the
  * first had never happened"* -- and this module is the caller that sentence was written about. So the
- * transaction belongs to `produceLines` and not to each production, the five single-production
- * functions are private, and the body is handed an object whose methods are the only way to produce
+ * transaction belongs to `produceLines` and not to each production, the single-production functions
+ * are private, and the body is handed an object whose methods are the only way to produce
  * anything at all. The mistake is not documented away; it is unspellable.
  *
  * **`result` is returned beside the lines rather than discarded.** The writers do more than write:
@@ -74,13 +74,15 @@
  * lines alone would force its caller to re-derive that, which is how a CLI loses the one warning it
  * was supposed to print.
  *
- * **A write that wrote nothing produces no lines.** Three of the five writers are idempotent by
+ * **A write that wrote nothing produces no lines.** Three of the six writers are idempotent by
  * design -- `registerType` and `registerScheme` answer `'unchanged'` for a shape the store already
  * holds, and `recordInvalidation` answers `created: false` for a claim already on record -- and each
  * of those answers means the export ALREADY carries the line. Emitting it again would append a
  * duplicate to the tree on every re-run, which is the one thing a `merge=union` file must not
  * accumulate. So the lines are empty in those cases, and the caller learns why from `result` rather
- * than from a line count.
+ * than from a line count. `deprecateType` is the fourth of the kind by a different vocabulary: it
+ * answers `0` for a family it has already retired, and `deprecationLines` reads that as the same
+ * "nothing to say".
  *
  * **`unchanged` is not the same question as "wrote nothing", and `typeLines` is where the two come
  * apart.** Prose is not part of a type's identity -- that is deliberate, and it is why `registerType`
@@ -90,12 +92,21 @@
  * edit: silent data loss. `pendingProseUpdate` (`registry.ts`) is that second question, it answers
  * `undefined` for the ordinary re-run, and `TypeProduction.proseUpdated` reports the distinction its
  * own `outcome` cannot. `replayType` asks it too, on the way back in, for the same reason.
+ *
+ * **A retirement is the second write with no version of its own, and `deprecate` is why it survives
+ * a rebuild.** `deprecateType` changes rows that already exist and mints nothing, so before this
+ * producer existed the one fact with no line to carry it was erased by every rebuild. Measured
+ * 2026-09-29 on a real store: `asc types deprecate review_completed` set the status, `asc index
+ * build` read the tree, and the type came back `active`. The mechanism is the one prose established
+ * -- a REPEAT of a `(name, version)` the tree already holds, read back in document order with
+ * `'deprecated'` applied where it appears -- and it is the same `deprecateType` call `replayType`
+ * makes on the way back in, so the line and the rebuild cannot disagree about what it means.
  */
 
-import type { TypeSpec } from '@ascend/core';
+import { canonicalName, type TypeSpec } from '@ascend/core';
 import {
   annotationRows,
-  registerScheme,
+  registerNamedScheme,
   recordAnnotations,
   recordInvalidation,
   RESERVED_SCHEME,
@@ -119,6 +130,8 @@ import {
   type RecordResult,
 } from './recorder.js';
 import {
+  deprecateType,
+  findType,
   pendingProseUpdate,
   registerType,
   typeVersions,
@@ -147,6 +160,24 @@ export interface Producers {
   scheme(name: string, spec: SchemeSpec, context: SchemeContext): RegisteredScheme;
   annotation(pass: AnnotationPass, context: AnnotationContext): RecordedAnnotations;
   invalidation(input: RecordInvalidationInput): RecordedInvalidation;
+  /** Retire a type. A sixth writer, and a sixth production -- see `deprecationLines`. */
+  deprecate(name: string): TypeDeprecation;
+}
+
+/**
+ * What retiring a type did, in the terms the caller decides with.
+ *
+ * `changed` is `deprecateType`'s own answer -- the rows its statement matched, which is ZERO both
+ * when every version was already retired and when there is no such type at all. Those are opposite
+ * answers to a caller (`asc types deprecate` refuses the second and reports the first as success
+ * with nothing to do), which is why the command reads the status itself before producing rather than
+ * reading a count here.
+ */
+export interface TypeDeprecation {
+  /** The name the store matched, canonicalized -- the same spelling `typeVersions` answers to. */
+  readonly name: string;
+  /** Rows the statement changed. Zero means nothing was retired. */
+  readonly changed: number;
 }
 
 /**
@@ -182,6 +213,7 @@ export function produceLines<Result>(
       scheme: (name, spec, context) => collect(schemeLines(db, name, spec, context)),
       annotation: (pass, context) => collect(annotationLines(db, pass, context)),
       invalidation: (input) => collect(invalidationLines(db, input)),
+      deprecate: (name) => collect(deprecationLines(db, name)),
     }),
   );
 
@@ -264,6 +296,40 @@ function typeLines(
 }
 
 /**
+ * The line `deprecateType` would append for this name, with nothing retired.
+ *
+ * **One line for the whole family, and it is the LATEST version's row.** `deprecateType`'s statement
+ * is `WHERE name = ?` -- retiring a type retires every version of it, which is what the command
+ * reports as `versions` -- and `deprecateType` is also what `replayType` calls on the way back in,
+ * so one line carries the whole change and the rebuild applies it the same way. A line per version
+ * would be N repeats of rows the tree already holds, in a `merge=union` file where nothing ever
+ * collapses a duplicate.
+ *
+ * The row is read AFTER the statement rather than before: the line's whole content is the retirement,
+ * and a `typeLine` built from the pre-retirement row would say `active` while retiring the type. That
+ * is the same ordering rule `typeLines` follows for prose, and for the same reason.
+ *
+ * Nothing changed means no line, like every other production here. It is reachable from a caller
+ * that did not ask first (a replayed corpus holding two retirement lines for one type), and the
+ * answer is `changed: 0` rather than a second identical line.
+ */
+function deprecationLines(db: SqlDatabase, name: string): ProducedLines<TypeDeprecation> {
+  const canonical = canonicalName(name);
+  const changed = deprecateType(db, canonical);
+
+  // Only worth a read when something moved. `changed: 0` is "no such type" or "already retired", and
+  // neither has a row to describe.
+  const latest = changed > 0 ? findType(db, canonical) : undefined;
+
+  return {
+    // `changed > 0` with no row is not a state the store can reach -- the statement just matched one
+    // -- so the guard is here to keep the type honest rather than to handle a case.
+    lines: latest === undefined ? [] : [typeLine(latest)],
+    result: { name: canonical, changed },
+  };
+}
+
+/**
  * The line `registerScheme` would append for this scheme, with nothing registered.
  *
  * Unlike `typeLines` this one needs no read: `RegisteredScheme` already carries the normalized spec,
@@ -278,7 +344,10 @@ function schemeLines(
   spec: SchemeSpec,
   context: SchemeContext,
 ): ProducedLines<RegisteredScheme> {
-  const result = registerScheme(db, name, spec, context);
+  // `registerNamedScheme`, not `registerScheme`: a corpus carries the store's own `invalidation`
+  // line, and the reserved name is refused by `registerScheme` on purpose (dogfood/0027). See that
+  // function for why the choice lives there and not here.
+  const result = registerNamedScheme(db, name, spec, context);
 
   return { lines: result.outcome === 'unchanged' ? [] : [schemeLine(result)], result };
 }

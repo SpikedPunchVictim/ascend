@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OUTPUT_CONTRACT_VERSION } from '@ascend/cli';
+import { emptyStore } from './helpers.js';
 
 /**
  * The CLI, driven as the real binary.
@@ -67,9 +68,7 @@ function asc(args: readonly string[], cwd: string): Run {
 
 /** A directory holding an `.ascend/` store, with nothing registered in it yet. */
 function project(): string {
-  const dir = scratch();
-  mkdirSync(join(dir, '.ascend'));
-  return dir;
+  return emptyStore(scratch());
 }
 
 describe('the entry point', () => {

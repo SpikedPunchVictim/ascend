@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -29,14 +29,19 @@ const bin = join(root, 'packages/cli/dist/bin.js');
  * in `annotations.test.ts` measured 1.866 s, asc-37es).
  *
  * Copying is sound because the store is LOCATION-INDEPENDENT, and that was measured rather than
- * assumed -- on the `annotations.test.ts` seed, which is built the same way: a seeded store is one
- * file, `.ascend/ascend.db`, 200 K, with no `-wal`/`-shm` left beside it; a scan of every table for
- * the seed directory's absolute path returned ZERO hits; `meta` holds only
- * `created_by_ascend_version` and `cwd_convention = project-relative`; and every entry carries
- * `cwd = '.'` with `repo`, `git_sha` and `branch` null. A copy into a different temporary directory
- * therefore says exactly what the original said. `viewLabel`'s read-only open of the copied
- * `.ascend/ascend.db` still sees the generated `v_note_v1` view, because the view travels in the
- * file.
+ * assumed -- on the `annotations.test.ts` seed, which is built the same way -- and RE-measured
+ * 2026-09-29 against the record tree, because what this paragraph used to cite described the SQLite
+ * store the flip retires (`asc-i5tj`): one file, `.ascend/ascend.db`, 200 K, no `-wal`/`-shm`, and
+ * `meta` holding `created_by_ascend_version` and `cwd_convention`. A fresh `asc init` now lays
+ * out a DIRECTORY: `.gitattributes` (20 bytes), `types/0001.jsonl` (the starter types, 6,952), and
+ * the DERIVED `index.db` (200,704 -- the SQLite schema itself, and exactly the file the old 200 K
+ * figure described); one `record` adds `entries/decision-<hash>/0001.jsonl` (468). A scan of
+ * every one of those files for the seed directory's absolute path returned
+ * ZERO hits; every entry carries `cwd = '.'` with `repo`, `git_sha` and `branch` null, visible in
+ * the line rather than inferred from a table; and the two `meta` keys are gone with the store,
+ * because no corpus line kind carries them. A copy into a different temporary directory therefore
+ * says exactly what the original said. `viewLabel`'s read-only open of the copied `index.db` still
+ * sees the generated `v_note_v1` view, because the view is derived and a build makes it again.
  *
  * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
  * producing what `asc init` produces. What is NOT changed is the part under test: every assertion
@@ -98,7 +103,7 @@ function rows(stdout: string): readonly Record<string, unknown>[] {
  * being tested for what it READS.
  */
 function invalidationRows(dir: string): readonly unknown[][] {
-  const file = join(dir, '.ascend', 'ascend.db');
+  const file = join(dir, '.ascend', 'index.db');
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     return (
@@ -128,7 +133,9 @@ function seeded(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-invalidate-'));
   dirs.push(dir);
   mkdirSync(join(dir, '.ascend'), { recursive: true });
-  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
+  cpSync(join(seedDir, '.ascend'), join(dir, '.ascend'), {
+    recursive: true,
+  });
   return dir;
 }
 
@@ -416,7 +423,7 @@ describe('asc invalidate: identity is the claim, not the moment', () => {
  * claim the view exposes -- is not asserted through a second command's rendering of it.
  */
 function viewLabel(dir: string, id: string): string | null {
-  const file = join(dir, '.ascend', 'ascend.db');
+  const file = join(dir, '.ascend', 'index.db');
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     const row = db.prepare('SELECT invalidated FROM v_note_v1 WHERE id = ?').get(id) as

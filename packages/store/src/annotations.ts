@@ -506,6 +506,32 @@ export function restoreInvalidationScheme(
 }
 
 /**
+ * Register a scheme line that NAMES its scheme: the reserved one restored as itself, any other as a
+ * caller's.
+ *
+ * A `scheme` line in the tree carries `invalidation` like any other name (dogfood/0027), so every
+ * reader of one faces the same choice, and `registerScheme`'s reserved-name refusal is what forces
+ * it. Two readers do: the producer that writes a line (`line-producers.ts`'s `schemeLines`) and the
+ * replay that indexes one (`jsonl-index.ts`'s `replayScheme`). One function rather than the same
+ * two-branch ternary in both, because which writer a name reaches is a rule about the STORE -- and
+ * because the two are the two halves of a round trip, which is the pair most able to drift into
+ * disagreeing about what "restore" means while both reporting success.
+ *
+ * It gives nothing to a stream that tries to carry its own rules under the reserved name:
+ * `restoreInvalidationScheme` refuses any shape but the one `recordInvalidation` writes.
+ */
+export function registerNamedScheme(
+  db: SqlDatabase,
+  name: string,
+  spec: SchemeSpec,
+  context: SchemeContext,
+): RegisteredScheme {
+  return name === RESERVED_SCHEME
+    ? restoreInvalidationScheme(db, spec, context)
+    : registerScheme(db, name, spec, context);
+}
+
+/**
  * The body of `registerScheme`, minus the reserved-name refusal.
  *
  * `requireName` is what makes `'invalidation'` unregisterable by a caller's own rules, and that

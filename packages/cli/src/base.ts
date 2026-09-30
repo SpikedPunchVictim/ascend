@@ -11,10 +11,13 @@
  *   2. **The error boundary.** `catch` maps anything thrown to a message on stderr and
  *      an exit code (`errors.ts`). Command bodies therefore throw instead of exiting,
  *      which is what keeps them callable from a test.
- *   3. **The store's lifetime.** `withProject` opens the store for the project
- *      containing the working directory and closes it in a `finally`. A command cannot
- *      leak a handle by forgetting, because the leak is not reachable from where the
- *      command is written.
+ *   3. **The store's lifetime.** Three doors, and which one a command uses says what it does
+ *      with the project. `withProject` opens the derived index read-only for a command that
+ *      reads, and closes it in a `finally`. `withProjectRoot` resolves the root and opens
+ *      nothing, for a command that writes -- the write takes its own locked handle. And
+ *      `withQueryProject` allows for there being no project at all, which only `asc query` does.
+ *      A command cannot leak a handle by forgetting, because the leak is not reachable from where
+ *      the command is written.
  */
 
 import { Command, Flags } from '@oclif/core';
@@ -23,8 +26,8 @@ import { render, type Output, type OutputFormat } from './output.js';
 import {
   openProject,
   openQueryProject,
+  requireProjectRoot,
   type Project,
-  type ProjectOptions,
   type QueryProject,
 } from './project.js';
 
@@ -165,16 +168,17 @@ export abstract class BaseCommand extends Command {
   }
 
   /**
-   * Open the store for the project containing the working directory, run `body`, close it.
+   * Open the index for the project containing the working directory, run `body`, close it.
    *
    * Working directory rather than a flag: the store is per-project, and the project is
    * the one you are standing in. `project.ts` walks up from here.
+   *
+   * **The handle is read-only and may refuse** (`IndexStaleError`). Both are the flip: a command
+   * that reads is handed a derived index that is current or an error naming `asc index build`, and
+   * a command that WRITES does not come here at all -- see `withProjectRoot` below for why.
    */
-  protected async withProject<T>(
-    body: (project: Project) => Promise<T> | T,
-    options: ProjectOptions = {},
-  ): Promise<T> {
-    const project = openProject(process.cwd(), this.ascendVersion(), options);
+  protected async withProject<T>(body: (project: Project) => Promise<T> | T): Promise<T> {
+    const project = openProject(process.cwd());
     try {
       return await body(project);
     } finally {
@@ -183,6 +187,28 @@ export abstract class BaseCommand extends Command {
       // precisely so concurrent callers serialise rather than fail.
       project.store.close();
     }
+  }
+
+  /**
+   * Resolve the project root for the working directory, run `body` with it, and close nothing.
+   *
+   * **The write path's door, and it never opens an index.** A command that writes hands this root
+   * to `writeProducedLines`, which opens its own handle writable, takes one `BEGIN IMMEDIATE` across
+   * the produce, the append and the replay, and closes it -- so the root is the whole of what a
+   * write needs from its project and a handle opened here would be a second connection to a file
+   * another transaction is about to move.
+   *
+   * **It also exists so the remedy for a stale index can run.** `asc index build` reaches its
+   * project through here rather than through `withProject`: through `withProject` it would open the
+   * index, be refused for staleness, and be unable to fix the thing it was invoked to fix
+   * (`finding 4`).
+   *
+   * A root is a `string` and not a `Project`, which is the same discipline `withQueryProject` states
+   * from the other side: the narrower value makes the store handle unreachable in code that must not
+   * have one, rather than merely unused.
+   */
+  protected async withProjectRoot<T>(body: (root: string) => Promise<T> | T): Promise<T> {
+    return await body(requireProjectRoot(process.cwd()));
   }
 
   /**
@@ -198,7 +224,7 @@ export abstract class BaseCommand extends Command {
    * command is written.
    */
   protected async withQueryProject<T>(body: (project: QueryProject) => Promise<T> | T): Promise<T> {
-    const project = openQueryProject(process.cwd(), this.ascendVersion());
+    const project = openQueryProject(process.cwd());
     try {
       return await body(project);
     } finally {

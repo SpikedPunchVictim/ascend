@@ -39,6 +39,16 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * **The comparison is on observable ROWS, not on reports.** Both arms are asked what they wrote by
  * reading the database back, so a divergence in a column neither driver prints can still surface.
  *
+ * **After the flip the two arms are the SAME PATH, and the file kept its subject by changing what
+ * it proves: not "two drivers agree" but "a rebuild reproduces what an import wrote".** Arm A is the
+ * index `asc import` leaves behind -- which the write path builds from the lines it appended, so it
+ * is already the tree's own output. Arm B is `buildIndex` over a tree laid out from the same
+ * corpus. That makes the assertion stronger than agreement between two independent drivers: it says
+ * the record an import writes is EXACTLY the record the tree reproduces, so a rebuild is lossless
+ * for a corpus that came through `asc import`. The sharing it used to check is now structural (there
+ * is one line format and one index build) and the risk it exists for has moved with it -- see
+ * `dogfood/0032` for why "both halves measured, the join assumed" is the shape worth keeping.
+ *
  * **`entry_types.created_at` is excluded by name.** It comes from the caller (`registerType` takes it)
  * and is carried by no `TypeLine`, so an import stamps the moment of the import and an index build
  * stamps the moment of the build. That difference is real, expected, and not a divergence in any
@@ -339,10 +349,12 @@ describe('asc import and buildIndex agree about what a corpus means', () => {
     const lines = corpus();
     const flat = `${serializeCorpus(lines)}\n`;
 
-    // Arm A: the real `asc import`, in a real project, driven as a subprocess.
+    // Arm A: the real `asc import`, in a real project, driven as a subprocess. The file it leaves is
+    // the index the write path built from the lines it appended -- the tree is the store, and this is
+    // its derived reader.
     const projectDir = project();
     importCorpus(projectDir, flat);
-    const imported = new DatabaseSync(join(projectDir, '.ascend', 'ascend.db'), { readOnly: true });
+    const imported = new DatabaseSync(join(projectDir, '.ascend', 'index.db'), { readOnly: true });
 
     // Arm B: the index build, over a tree laid out from the SAME lines.
     const treeDir = scratch('asc-import-vs-index-tree-');

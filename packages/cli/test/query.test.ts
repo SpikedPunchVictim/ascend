@@ -121,8 +121,8 @@ function squashed(text: string): string {
   return text.replace(/\s+/g, '');
 }
 
-/** The store file as a path this process can compare against SQLite's own resolution of it. */
-const storeFile = (projectDir: string): string => join(projectDir, '.ascend', 'ascend.db');
+/** The store's index as a path this process can compare against SQLite's own resolution of it. */
+const storeFile = (projectDir: string): string => join(projectDir, '.ascend', 'index.db');
 
 /**
  * Read one row out of a store's file through a connection that is not `asc`'s.
@@ -462,14 +462,17 @@ describe('--across', () => {
     expect(notes).toContain(squashed(`${second} attached as 'proj_1'`));
   });
 
-  it('accepts the .ascend/ascend.db spelling a shell would complete', () => {
+  it('accepts the .ascend/index.db spelling a shell would complete', () => {
+    // The file a tab-completion lands on, which is the index now: `projectDirOf` recognises the
+    // pair (`.ascend/`, `index.db`) and reads the project out of it, so a match that names the file
+    // attaches as the project rather than as a path to a database nobody has.
     const { parent } = neighbourhood(2);
     const result = asc(
       [
         'query',
         'SELECT (SELECT count(*) FROM proj_1.entries) AS b',
         '--across',
-        `${parent}/*/.ascend/ascend.db`,
+        `${parent}/*/.ascend/index.db`,
         '--json',
       ],
       parent,
@@ -625,19 +628,28 @@ describe('--across', () => {
   it('refuses a foreign project with the union\'s own message, not SQLite\'s raw "no such table" (asc-4og)', () => {
     // The test above covers a match with no store FILE at all, which `attachStore` itself catches
     // before ATTACH ever runs. This one has a file -- a real SQLite database, just not one ascend
-    // wrote -- so the ATTACH succeeds and the only thing left to catch it is `requireStore`. Before
-    // this fix, a statement naming the alias directly (rather than reading a TYPE through the union,
-    // which is the only path that called `requireStore`) reached SQLite's own `no such table: f.
-    // entries`, true but naming ascend's schema instead of the actual problem -- and inconsistent
-    // with `asc query --across` on the union's own path, which already refused the identical project
-    // with `NotAnAscendStoreError`. Measured on the real binary, matching the bead's own repro
-    // (a project whose store holds one table named 'mine').
+    // wrote -- so the ATTACH would succeed and the only thing left to catch it is `requireStore`.
+    // Before this fix, a statement naming the alias directly (rather than reading a TYPE through the
+    // union, which is the only path that called `requireStore`) reached SQLite's own `no such table:
+    // f.entries`, true but naming ascend's schema instead of the actual problem -- and inconsistent
+    // with `asc query --across` on the union's own path, which already refused the identical project.
+    // Measured on the real binary, matching the bead's own repro (a project whose store holds one
+    // table named 'mine').
+    //
+    // **The foreign file is the INDEX, and the refusal that catches it is now the store's own.** The
+    // store's guard refuses a file it did not write the moment it is opened, which is BEFORE the
+    // ATTACH and therefore before `requireStore` -- so the message is `ForeignStoreError`'s, naming
+    // the tables it found and telling the caller to move the file aside, and the assertion below
+    // follows it. `assertCurrent` deliberately rethrows that error rather than reporting its project
+    // as merely stale (asc-63v), which is why it is this message and not a currency claim. The bug
+    // is still guarded the same way: SQLite's own wording is what must not reach the caller.
     const parent = scratch('asc-query-foreign-across-');
-    const foreignDb = join(parent, 'not-ascend', '.ascend', 'ascend.db');
+    const foreignDb = join(parent, 'not-ascend', '.ascend', 'index.db');
     mkdirSync(join(parent, 'not-ascend', '.ascend'), { recursive: true });
     const raw = new DatabaseSync(foreignDb);
     try {
       raw.exec('CREATE TABLE mine (id INTEGER PRIMARY KEY)');
+      raw.exec('CREATE TABLE other (id INTEGER PRIMARY KEY)');
     } finally {
       raw.close();
     }
@@ -650,7 +662,8 @@ describe('--across', () => {
     expect(result.status).toBe(1);
     const rendered = flatten(result.stderr);
     expect(rendered).toContain('is not an ascend store');
-    expect(rendered).toContain("it has no 'entries' table");
+    expect(rendered).toContain('mine');
+    expect(rendered).toContain('Move that file aside');
     // The bug this closes: SQLite's own wording must not be what the caller sees instead.
     expect(rendered).not.toContain('no such table');
   });
@@ -679,12 +692,26 @@ describe('--across', () => {
   });
 });
 
-describe('a store written by a newer ascend', () => {
-  it('is refused by asc query rather than read, which is what the read-only open used to skip', () => {
+describe('an index written by a newer ascend', () => {
+  it('is refused by asc query rather than read, and the remedy is a rebuild', () => {
     // asc-bcv.9 (B5), and the consequence is a CLI-level one. `asc query` opens read-only, and the
     // ahead-of-build guard lived inside `migrate`, which the read-only path skips -- so this command
     // read a store from a future ascend and reported whatever the running build made of it.
     // Measured before the fix (/tmp/probe-b5.mjs): exit 0, printing `0`.
+    //
+    // **The harm is still closed and the message changed, both because of what the file is.** What
+    // the test pins is that a read REFUSES rather than reporting the future store as data, and that
+    // has not moved: measured 2026-09-29, exit 1 with an empty stdout. What moved is which refusal.
+    // The versioned file is the INDEX now, which is derived -- so `openIndexReadOnly` cannot read it,
+    // reports no fingerprint, and the read arrives at the currency branch: "not an index ascend can
+    // read ... run `asc index build`". That is the honest answer for a cache, and the rebuild the
+    // message names is lossless and is the fix. The `assertNotAhead` guard still runs on every open
+    // (`openStore` reaches it) and still refuses the file; it is simply no longer the *message* a
+    // caller sees here, and a separate one about upgrading ascend would now be advice about a
+    // derived file that can be replaced instead.
+    //
+    // The test drives the rebuild too, because "the refusal is fine" is only true if the remedy it
+    // names works on the state that produced it.
     const dir = project();
     const raw = new DatabaseSync(storeFile(dir));
     raw.exec('PRAGMA user_version = 99');
@@ -693,12 +720,16 @@ describe('a store written by a newer ascend', () => {
     const result = asc(['query', 'SELECT count(*) AS n FROM entries'], dir);
 
     expect(result.status).toBe(1);
-    expect(flatten(result.stderr)).toContain('this store is at schema version 99');
-    // The fix it names, which is the opposite advice to a store that is BEHIND -- the reason the
-    // store has two error classes rather than one.
-    expect(flatten(result.stderr)).toContain('Upgrade ascend');
+    const rendered = flatten(result.stderr);
+    expect(rendered).toContain('is not current for this tree');
+    expect(rendered).toContain('asc index build');
     // Nothing was printed as data, because nothing was read.
     expect(result.stdout.trim()).toBe('');
+
+    // The named remedy, run: the future index is replaced from the tree, and the read then works.
+    expect(asc(['index', 'build'], dir).status).toBe(0);
+    const after = asc(['query', 'SELECT count(*) AS n FROM entries'], dir);
+    expect(after.status, after.stderr).toBe(0);
   });
 });
 
@@ -969,8 +1000,12 @@ describe('the store file is where the tests say it is', () => {
     // macOS `tmpdir()` is a symlink under `/var`, and `--across` reports SQLite's RESOLVED path.
     // This pins that the two agree on the real file rather than merely looking similar, which is
     // what makes `storeFile()` usable in the assertions above.
+    //
+    // The file is the INDEX. It is the only SQLite file a command opens now, which is why the
+    // retarget was one line: everything these assertions are about -- resolution, and the SQLite
+    // header -- belongs to the file that is opened, not to the one that used to be the store.
     const dir = project();
-    expect(realpathSync(storeFile(dir)).endsWith('ascend.db')).toBe(true);
+    expect(realpathSync(storeFile(dir)).endsWith('index.db')).toBe(true);
     expect(readFileSync(storeFile(dir)).subarray(0, 6).toString()).toBe('SQLite');
   });
 });

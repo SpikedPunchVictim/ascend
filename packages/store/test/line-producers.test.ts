@@ -15,6 +15,7 @@ import {
   registerScheme,
   registerType,
   serializeCorpus,
+  typeVersions,
   type CorpusLine,
   type EntryLine,
   type Store,
@@ -351,6 +352,62 @@ describe('a type producer', () => {
     // emitting one here would append a duplicate on every re-run of a script that registers its own
     // definitions. The tree is a `merge=union` file; duplicates accumulate rather than collapse.
     expect(produced.result.outcome).toBe('unchanged');
+    expect(produced.lines).toEqual([]);
+    expect(bytesOf(corpusLines(store.db))).toEqual(before);
+  });
+});
+
+describe('a deprecation producer', () => {
+  it('returns the same bytes the export produces for the same retirement, once it is made', () => {
+    const store = seeded();
+    const before = bytesOf(corpusLines(store.db));
+
+    const produced = produceLines(store.db, (produce) => produce.deprecate('note'));
+    deprecateType(store.db, 'note');
+
+    // The retirement is a LINE, and this is the equivalence every other producer here earns: the
+    // bytes the producer hands the tree are the bytes the export reads back out of the store. A
+    // status the row carried and `documentFromRow` did not was exactly the defect (2026-09-29): the
+    // index said `deprecated`, the tree had nothing, and a rebuild gave the type back `active`.
+    expect(produced.result.changed).toBe(1);
+    expectSameLines(store, before, produced.lines);
+  });
+
+  it('emits a repeat of a version the tree already holds, so no version is minted', () => {
+    const store = seeded();
+    const registration = bytesOf(corpusLines(store.db));
+
+    const produced = produceLines(store.db, (produce) => produce.deprecate('note'));
+
+    // One line, and it is a SECOND line for version 1 rather than a line for version 2 -- which is
+    // the whole mechanism. `deprecateType` mints nothing (a retirement is not a shape change), so the
+    // only way the fact can reach the tree is a repeat of a pair the tree already carries, exactly as
+    // a prose edit is (`typeLines`, and `replayType`'s `pendingProseUpdate` on the way back in).
+    const line = produced.lines[0] as { document: { name: string; status?: string } };
+    expect(produced.lines).toHaveLength(1);
+    expect(produced.lines[0]?.kind).toBe('type');
+    expect(line.document.name).toBe('note');
+    expect(line.document.status).toBe('deprecated');
+    // The identity is untouched: `documentSpec` is name and properties, so a retirement cannot
+    // invalidate an entry recorded under the type. Asserted rather than argued, because the failure
+    // would be silent -- a retirement that minted a version would leave `type_hash` different from
+    // the one three thousand entries were recorded against.
+    expect(typeVersions(store.db, 'note').map((row) => row.version)).toEqual([1]);
+    expect(bytesOf(corpusLines(store.db))).toEqual(registration);
+  });
+
+  it('produces no line for a type that is already retired', () => {
+    const store = seeded();
+    deprecateType(store.db, 'note');
+    const before = bytesOf(corpusLines(store.db));
+
+    const produced = produceLines(store.db, (produce) => produce.deprecate('note'));
+
+    // `deprecateType` answers the same `0` for this and for an unknown name, and both mean the same
+    // thing to a producer: there is nothing this write added, so there is no line. A caller that
+    // needs to tell the two apart reads the status itself (`asc types deprecate` does, and that is
+    // why its refusal names the types that exist).
+    expect(produced.result.changed).toBe(0);
     expect(produced.lines).toEqual([]);
     expect(bytesOf(corpusLines(store.db))).toEqual(before);
   });

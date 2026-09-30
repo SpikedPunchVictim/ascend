@@ -935,7 +935,7 @@ export default class Explore extends BaseCommand {
       // a boolean would cost 280x for an answer it throws away.
       const noSuchType = (): Error =>
         refusal(
-          `There is no entry type named '${args.type}' in this project. ${knownNames(store)}`,
+          `There is no entry type named '${args.type}' in this project. ${knownNames(store.db)}`,
         );
 
       // `typeFilterScope` (used inside `pageEntries`, `groupEntries`, and directly below for

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -63,7 +63,10 @@ function squashed(text: string): string {
 }
 
 /**
- * A project directory whose store file is a database ascend did not create.
+ * A project directory whose INDEX file is a database ascend did not create.
+ *
+ * The index, not the store: after the flip that is the SQLite file every read opens, so it is the
+ * file a foreign-database guard has to refuse.
  *
  * `.git` is a plain directory for the same reason the other suites make one: it is what the project
  * walk looks for, and a test that relied on being inside this repository instead would pass or fail
@@ -74,7 +77,7 @@ function foreignProject(): { readonly dir: string; readonly file: string } {
   dirs.push(dir);
   mkdirSync(join(dir, '.git'));
   mkdirSync(join(dir, '.ascend'));
-  const file = join(dir, '.ascend', 'ascend.db');
+  const file = join(dir, '.ascend', 'index.db');
   const db = new DatabaseSync(file);
   try {
     db.exec('CREATE TABLE mine (id INTEGER PRIMARY KEY)');
@@ -124,6 +127,12 @@ describe('every command refuses a store file ascend did not create', () => {
       // The harm. Nothing was migrated, nothing was written, not even the header.
       expect(tablesIn(file)).toEqual(['mine', 'other']);
       expect(readFileSync(file).equals(before)).toBe(true);
+      // And, for `asc init` above all, nothing was written BESIDE it either. Checked rather than
+      // left to the sentence above, which was false until 2026-09-29: `init` wrote
+      // `.ascend/.gitattributes` and a `.gitignore` before the fused write refused. Both are
+      // harmless in themselves, and both are files a command that refused has no business leaving.
+      expect(readdirSync(dir).sort()).toEqual(['.ascend', '.git']);
+      expect(readdirSync(join(dir, '.ascend'))).toEqual(['index.db']);
     },
   );
 
@@ -153,7 +162,7 @@ describe('what must still work', () => {
     mkdirSync(join(dir, '.git'));
 
     expect(asc(['init'], dir).status).toBe(0);
-    expect(tablesIn(join(dir, '.ascend', 'ascend.db'))).toContain('entries');
+    expect(tablesIn(join(dir, '.ascend', 'index.db'))).toContain('entries');
   });
 
   it('keeps working in a project ascend set up itself', () => {

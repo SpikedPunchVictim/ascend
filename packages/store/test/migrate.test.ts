@@ -70,7 +70,18 @@ function seeded(): { readonly dir: string; readonly lines: readonly CorpusLine[]
       { name: 'note', properties: [{ name: 'body', type: 'text' }] },
       { registeredAt: AT },
     );
-    registerScheme(store.db, 'review', { labels: ['good', 'bad'], rules: [] }, { createdAt: AT });
+    // A rule, not `rules: []`. With no rules this fixture migrated cleanly while the real store did
+    // not: the store hands back `spec_json` as registered, `parseSchemeRule` rebuilds each rule in
+    // its own key order, and the read-back comparison in `verify` sees two spellings of one line.
+    // Measured on the real store at 10,386 lines: *"3 missing and 3 that should not be there"*, the
+    // 3 rule-bearing schemes and none of the rule-less ones (`dogfood/0040`). A fixture whose scheme
+    // has no rules cannot be wrong in that way, which is exactly why it was.
+    registerScheme(
+      store.db,
+      'review',
+      { labels: ['good', 'bad'], rules: [{ label: 'good', kind: 'sql', query: '1=1' }] },
+      { createdAt: AT },
+    );
     recordEntry(
       store.db,
       { type: 'note' },

@@ -108,7 +108,7 @@ interface StoredEntry {
 }
 
 function stored(dir: string, where = '1 = 1', ...params: string[]): readonly StoredEntry[] {
-  const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'), { readOnly: true });
+  const db = new DatabaseSync(join(dir, '.ascend', 'index.db'), { readOnly: true });
   try {
     return db
       .prepare(`SELECT * FROM entries WHERE ${where} ORDER BY recorded_at, id`)
@@ -119,7 +119,7 @@ function stored(dir: string, where = '1 = 1', ...params: string[]): readonly Sto
 }
 
 function count(dir: string, sql: string): number {
-  const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'), { readOnly: true });
+  const db = new DatabaseSync(join(dir, '.ascend', 'index.db'), { readOnly: true });
   try {
     return (db.prepare(sql).get() as { n: number }).n;
   } finally {
@@ -135,7 +135,7 @@ function count(dir: string, sql: string): number {
  * function producing the name could not notice the name changing.
  */
 function view(dir: string, name: string, where = '1 = 1'): readonly Record<string, unknown>[] {
-  const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'), { readOnly: true });
+  const db = new DatabaseSync(join(dir, '.ascend', 'index.db'), { readOnly: true });
   try {
     return db.prepare(`SELECT * FROM ${name} WHERE ${where}`).all();
   } finally {

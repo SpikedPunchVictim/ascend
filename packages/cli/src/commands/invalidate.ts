@@ -65,15 +65,16 @@ import { Args, Flags } from '@oclif/core';
 import {
   INVALIDATION_LABELS,
   listInvalidations,
-  recordInvalidation,
-  withRollback,
-  withTransaction,
+  previewProducedLines,
+  writeProducedLines,
   type InvalidationLabel,
+  type Producers,
   type RecordedInvalidation,
   type SqlDatabase,
 } from '@ascend/store';
 import { BaseCommand } from '../base.js';
 import { usageError } from '../errors.js';
+import { storePaths } from '../project.js';
 
 /**
  * The handle this command reads `annotations.created_at` back through.
@@ -261,10 +262,13 @@ export default class Invalidate extends BaseCommand {
     // is stored only when the claim is new. `storedCreatedAt` below reports what actually landed.
     const createdAt = this.now();
 
-    await this.withProject(({ store }) => {
-      const strike = (): readonly WrittenInvalidation[] =>
+    await this.withProjectRoot((root) => {
+      // Read through the TRANSACTION's handle, not one opened on the way in: the handle a command
+      // holds before the write is read-only after the flip, and `storedCreatedAt` is a read of what
+      // the write above just did -- which only exists inside this lock.
+      const strike = (produce: Producers, db: SqlDatabase): readonly WrittenInvalidation[] =>
         entryIds.map((entryId) => {
-          const recorded = recordInvalidation(store.db, {
+          const recorded = produce.invalidation({
             entryId,
             label,
             reason,
@@ -272,10 +276,17 @@ export default class Invalidate extends BaseCommand {
             ...(actor === undefined ? {} : { createdBy: actor }),
             createdAt,
           });
-          return { entryId, ...recorded, createdAt: storedCreatedAt(store.db, recorded.id) };
+          return { entryId, ...recorded, createdAt: storedCreatedAt(db, recorded.id) };
         });
 
-      const written = dryRun ? withRollback(store.db, strike) : withTransaction(store.db, strike);
+      // A batch of strikes is ONE fused write, which is what makes the reserved scheme's own line
+      // appear once rather than once per claim: each production sees the one before it, because the
+      // whole sequence runs inside the same rollback (`line-producers.ts` measured the alternative --
+      // `expected [ 2, 2 ] to deeply equal [ 2, 1 ]`, a duplicate in a `merge=union` file).
+      const { tree, index: indexFile } = storePaths(root);
+      const written = dryRun
+        ? previewProducedLines(tree, indexFile, strike)
+        : writeProducedLines(tree, indexFile, { now: createdAt }, strike).result;
 
       if (dryRun) this.warn('dry run: nothing was written.');
 

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -23,12 +23,20 @@ const bin = join(root, 'packages/cli/dist/bin.js');
  * The fixture store, built ONCE for this file and copied per test.
  *
  * `project()` used to spawn the binary twice for EVERY test -- `init` and `types define` -- and
- * those runs were the file's fixed cost, not the tests. Measured 2026-09-28 (asc-37es): a seeded
- * store is ONE file, `.ascend/ascend.db`, 217,088 bytes, with no `-wal`/`-shm` left beside it; a
- * scan of every table for the seed directory's absolute path returned ZERO hits; and `meta` holds
- * only `created_by_ascend_version` and `cwd_convention = project-relative`. A copy into a different
- * temporary directory therefore says exactly what the original said -- checked rather than assumed,
- * by recording, exploring and redefining the type through the real binary against a copy.
+ * those runs were the file's fixed cost, not the tests. Measured 2026-09-28 (asc-37es), and
+ * RE-measured 2026-09-29 against the record tree, because what this paragraph used to cite
+ * described the SQLite store the flip retires (`asc-i5tj`): one file, `.ascend/ascend.db`,
+ * 217,088 bytes, no `-wal`/`-shm`, and `meta` holding `created_by_ascend_version` and
+ * `cwd_convention`. A fresh `asc init` now lays out a DIRECTORY: `.gitattributes` (20 bytes),
+ * `types/0001.jsonl` (the starter types, 6,952), and the DERIVED `index.db` (200,704 -- the SQLite
+ * schema itself, and exactly the file the 217,088-byte figure was). A scan of every one of those
+ * files for the seed directory's absolute path returned ZERO hits, as it did before. The two
+ * `meta` keys are gone with the store, because no corpus line kind carries them. A copy into a
+ * different temporary directory therefore says exactly what the original said -- and so does
+ * copying `.ascend/` WHOLE: the index travels with the tree and is still current there, because
+ * `treeFingerprint` hashes the record files' RELATIVE paths and never their absolute ones. Checked
+ * rather than assumed, by recording, exploring and redefining the type through the real binary
+ * against a copy.
  *
  * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
  * producing what `asc init` and `asc types define` produce -- including the starter types that
@@ -107,7 +115,9 @@ function project(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-explore-crosstab-'));
   dirs.push(dir);
   mkdirSync(join(dir, '.ascend'), { recursive: true });
-  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
+  cpSync(join(seedDir, '.ascend'), join(dir, '.ascend'), {
+    recursive: true,
+  });
   return dir;
 }
 

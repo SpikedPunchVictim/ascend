@@ -47,11 +47,18 @@ export default class IndexBuild extends BaseCommand {
     const { flags } = await this.parse(IndexBuild);
     const format = this.resolveFormat(flags);
 
-    // `withProject` resolves THIS project the way every command does -- walking up from the working
-    // directory for `.ascend/` -- and the only thing used from it is `root`. Its store handle is
-    // opened and closed around the build and never written through; the build reads the JSONL tree
-    // and writes `index.db`, neither of which is that handle.
-    await this.withProject(({ root }) => {
+    // `withProjectRoot` resolves THIS project the way every command does -- walking up from the
+    // working directory for `.ascend/` -- and hands back the root, which for a build is the whole
+    // of what it needs: `buildIndex` reads the JSONL tree and writes `index.db`, neither of which
+    // is an open handle.
+    //
+    // **It must not be `withProject`, and that is finding 4 rather than a preference.** The index
+    // this command exists to rebuild is stale (or absent) whenever anyone needs to run it, and
+    // `withProject` opens the index -- so a version built on it would be refused by the very state
+    // it was invoked to repair, and `asc index build` would be unrunnable in exactly the situation
+    // that calls for it. Opening nothing removes the possibility rather than relying on the refusal
+    // being survivable.
+    await this.withProjectRoot((root) => {
       const indexFile = join(root, STORE_DIR, INDEX_FILE);
       const built = buildIndex(join(root, STORE_DIR), indexFile, { now: this.now() });
 

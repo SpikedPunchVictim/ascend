@@ -93,21 +93,25 @@ import {
   annotationRows,
   listSchemes,
   matchingEntryIds,
-  recordAnnotations,
-  registerScheme,
+  openIndex,
+  previewProducedLines,
   schemeCensus,
   schemeHash,
-  withTransaction,
+  writeProducedLines,
   wrapPredicate,
+  type Producers,
+  type RegisteredScheme,
   type SchemeCensus,
   type SchemeSpec,
   type SchemeSummary,
+  type SqlDatabase,
 } from '@ascend/store';
 import { parseAssignments, parseRules } from '../annotation-rules.js';
 import { BaseCommand } from '../base.js';
 import { refusal, usageError } from '../errors.js';
 import { parseHoldoutFraction, splitHoldout } from '../holdout.js';
 import { renderProportion } from '../output.js';
+import { storePaths } from '../project.js';
 
 /**
  * The census that WOULD result, computed from the assignments in hand.
@@ -133,6 +137,37 @@ function censusOf(assigned: ReadonlyMap<string, string>, considered: number): Sc
       .map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count || (a.label < b.label ? -1 : 1)),
   };
+}
+
+/** What this run's single body produced, beyond what it wrote to the store. */
+interface RunOutcome {
+  /** The scheme version the pass was filed under -- what the report's `version` column is. */
+  readonly registered: RegisteredScheme;
+  /** The scheme's latest version as the transaction found it, or `undefined` if it is new. */
+  readonly existing: SchemeSummary | undefined;
+  /** The spec this run asked for, before `registerScheme` normalized it. */
+  readonly spec: SchemeSpec;
+  /** Entry id to label, as this run decided it inside the lock. */
+  readonly assigned: ReadonlyMap<string, string>;
+  /** How many entries the scope named -- the denominator the remainder is a remainder of. */
+  readonly considered: number;
+}
+
+/**
+ * Read the index through a handle opened NOW, and close it.
+ *
+ * A write's own handle is closed by the time it returns, and `writeProducedLines` may have rebuilt
+ * the index by `renameSync` on the way -- so a handle opened before a write can be reading an inode
+ * that no longer has a name. This is the read-after-write door: correct by construction rather than
+ * by remembering, because there is no handle to have kept.
+ */
+function withFreshIndex<T>(tree: string, indexFile: string, body: (db: SqlDatabase) => T): T {
+  const store = openIndex(tree, indexFile);
+  try {
+    return body(store.db);
+  } finally {
+    store.db.close();
+  }
 }
 
 export default class Annotate extends BaseCommand {
@@ -271,24 +306,27 @@ export default class Annotate extends BaseCommand {
       rules: parsed.rules.length > 0 ? parsed.rules : (existing?.spec.rules ?? []),
     });
 
-    await this.withProject(({ store }) => {
-      const schemeName = flags.scheme;
+    // `--backtest` never writes, so it keeps the READ door rather than the write one. Two reasons
+    // and they are not the same reason: it must not take a write lock for a command that changes
+    // nothing, and it must not make a stale index current just to grade a rule -- a read that builds
+    // is the cost `asc-i5tj.3.1` removed.
+    if (backtestScheme !== undefined) {
+      await this.withProject(({ store }) => {
+        const schemeName = flags.scheme;
 
-      // Through `wrapPredicate`, so a scope carrying a second statement is refused here rather than
-      // silently truncated by `prepare` -- the same guard a stored predicate gets.
-      const scopeStatement =
-        scope === undefined ? 'SELECT id FROM entries' : wrapPredicate('entries', scope);
-      const scopeIds = new Set(
-        (store.db.prepare(scopeStatement).all() as unknown as { id: string }[]).map(
-          (row) => row.id,
-        ),
-      );
+        // Through `wrapPredicate`, so a scope carrying a second statement is refused here rather than
+        // silently truncated by `prepare` -- the same guard a stored predicate gets.
+        const scopeStatement =
+          scope === undefined ? 'SELECT id FROM entries' : wrapPredicate('entries', scope);
+        const scopeIds = new Set(
+          (store.db.prepare(scopeStatement).all() as unknown as { id: string }[]).map(
+            (row) => row.id,
+          ),
+        );
 
-      // `--backtest` is handled here, before `allIds`/`assigned` are built, because none of that
-      // machinery is for it: a backtest never writes, so it needs only the rule's matches (computed
-      // exactly like `--dry-run`'s preview, in memory, then thrown away) and the hand scheme's
-      // latest pass, read back and graded by `@ascend/analysis`'s `backtest()`.
-      if (backtestScheme !== undefined) {
+        // A backtest never writes, so it needs only the rule's matches -- computed exactly as the
+        // write path computes them, in memory and thrown away -- and the hand scheme's latest pass,
+        // read back and graded by `@ascend/analysis`'s `backtest()`.
         const registeredNow = listSchemes(store.db);
         if (!registeredNow.some((entry) => entry.name === backtestScheme)) {
           throw refusal(
@@ -422,96 +460,162 @@ export default class Annotate extends BaseCommand {
             }));
           }),
         });
-        return;
-      }
+      });
+      return;
+    }
 
-      // Every entry that exists, scope or no scope -- fetched only when `--ids` might need to tell
-      // a nonexistent id apart from one this run's `--scope` excludes. Without a `--scope`,
-      // `scopeIds` already names every entry that exists, so there is no second question to ask and
-      // no second query to run.
-      const allIds =
-        rawIds.length === 0 || scope === undefined
-          ? scopeIds
-          : new Set(
-              (store.db.prepare('SELECT id FROM entries').all() as unknown as { id: string }[]).map(
-                (row) => row.id,
-              ),
-            );
+    await this.withProjectRoot((root) => {
+      const schemeName = flags.scheme;
+      const { tree, index: indexFile } = storePaths(root);
+      // Taken once, before the body, so every production in this run shares one timestamp rather
+      // than one per call.
+      const now = this.now();
 
-      const assigned = new Map<string, string>();
+      /**
+       * Everything that decides what this run writes, and the write itself, as ONE body.
+       *
+       * This is the whole of the asc-q4p fix, and it is a shape rather than a comment: the scope,
+       * the ids, the rule matches and the scheme's existing vocabulary are all reads that decide
+       * what `registerScheme` and `recordAnnotations` then write, and every one of them is taken
+       * through the TRANSACTION's handle -- inside `BEGIN IMMEDIATE` -- rather than through a handle
+       * opened on the way in. A read taken before the lock is a snapshot a concurrent `asc annotate`
+       * can invalidate between the read and the write, which is check-then-act across a transaction
+       * boundary. `annotations.test.ts` measures it: two `asc annotate` processes started without
+       * waiting for each other, each adding one label to the same scheme, and both labels must
+       * survive; asc-q4p records a longer four-run trace of the unfixed behaviour. `registerType`
+       * (`registry.ts`) is the reference for the same placement, measuring the race the other way --
+       * a version collision instead of a dropped label.
+       *
+       * It returns what the report needs as well as what it wrote, because a preview of this run has
+       * to be able to say what the real run would do -- `censusOf` over the assignment, and whether
+       * the shape is new -- without a second reading of the store.
+       */
+      const run = (produce: Producers, db: SqlDatabase): RunOutcome => {
+        // Through `wrapPredicate`, so a scope carrying a second statement is refused here rather than
+        // silently truncated by `prepare` -- the same guard a stored predicate gets. The scope is read
+        // through `db`, inside the lock, for the same reason every other read below is: it decides how
+        // many entries this run considers, and therefore what it writes and what it reports.
+        const scopeStatement =
+          scope === undefined ? 'SELECT id FROM entries' : wrapPredicate('entries', scope);
+        const scopeIds = new Set(
+          (db.prepare(scopeStatement).all() as unknown as { id: string }[]).map((row) => row.id),
+        );
 
-      if (rawIds.length === 0) {
-        // Rules in order, first match wins -- the order is the scheme's shape and is why
-        // `normalizeSpec` hashes the rule list as a list.
-        for (const rule of parsed.rules) {
-          for (const entryId of matchingEntryIds(store.db, rule)) {
-            if (scopeIds.has(entryId) && !assigned.has(entryId)) assigned.set(entryId, rule.label);
+        // Every entry that exists, scope or no scope -- fetched only when `--ids` might need to tell
+        // a nonexistent id apart from one this run's `--scope` excludes. Without a `--scope`,
+        // `scopeIds` already names every entry that exists, so there is no second question to ask and
+        // no second query to run.
+        const allIds =
+          rawIds.length === 0 || scope === undefined
+            ? scopeIds
+            : new Set(
+                (db.prepare('SELECT id FROM entries').all() as unknown as { id: string }[]).map(
+                  (row) => row.id,
+                ),
+              );
+
+        const assigned = new Map<string, string>();
+
+        if (rawIds.length === 0) {
+          // Rules in order, first match wins -- the order is the scheme's shape and is why
+          // `normalizeSpec` hashes the rule list as a list.
+          for (const rule of parsed.rules) {
+            for (const entryId of matchingEntryIds(db, rule)) {
+              if (scopeIds.has(entryId) && !assigned.has(entryId))
+                assigned.set(entryId, rule.label);
+            }
           }
-        }
-      } else {
-        for (const [entryId, label] of assignments.pairs) {
-          // An id outside the scope makes the report incoherent, not just incomplete: the entry is
-          // labelled while the scope that the remainder is computed over does not contain it, so
-          // `labelled + unclassified` would exceed `considered`. But "not in scope" is ambiguous
-          // between a typo and a real id the scope predicate excludes, and the two need different
-          // fixes -- so a nonexistent id is named as one, and only a real id that fails the scope
-          // predicate is told to drop it or widen --scope.
-          if (!scopeIds.has(entryId)) {
-            if (!allIds.has(entryId)) {
+        } else {
+          for (const [entryId, label] of assignments.pairs) {
+            // An id outside the scope makes the report incoherent, not just incomplete: the entry is
+            // labelled while the scope that the remainder is computed over does not contain it, so
+            // `labelled + unclassified` would exceed `considered`. But "not in scope" is ambiguous
+            // between a typo and a real id the scope predicate excludes, and the two need different
+            // fixes -- so a nonexistent id is named as one, and only a real id that fails the scope
+            // predicate is told to drop it or widen --scope.
+            if (!scopeIds.has(entryId)) {
+              if (!allIds.has(entryId)) {
+                throw refusal(
+                  `entry '${entryId}' does not exist, so there is nothing to annotate under ` +
+                    `'${label}'. Check the id -- 'asc query' lists what is actually recorded.`,
+                );
+              }
               throw refusal(
-                `entry '${entryId}' does not exist, so there is nothing to annotate under ` +
-                  `'${label}'. Check the id -- 'asc query' lists what is actually recorded.`,
+                `entry '${entryId}' exists but is excluded by this run's scope ` +
+                  `${scope === undefined ? '(every entry)' : `'${scope}'`}, so it cannot be ` +
+                  `annotated by a run whose remainder is computed over that scope. Drop it from ` +
+                  `--ids, or widen --scope.`,
               );
             }
-            throw refusal(
-              `entry '${entryId}' exists but is excluded by this run's scope ` +
-                `${scope === undefined ? '(every entry)' : `'${scope}'`}, so it cannot be ` +
-                `annotated by a run whose remainder is computed over that scope. Drop it from ` +
-                `--ids, or widen --scope.`,
-            );
+            // Refused here rather than left to the store's identical check, and the reason is
+            // `--dry-run`: a preview writes nothing, so a duplicate that only the write refused would
+            // let a dry run report a census for a pass the real run then rejects. The store keeps its
+            // own check as the backstop for a pass written through the API.
+            if (assigned.has(entryId)) {
+              throw refusal(
+                `entry '${entryId}' is named twice in this pass, under '${String(assigned.get(entryId))}' ` +
+                  `and '${label}'. One pass gives one label per entry -- ` +
+                  `\`asc kappa\` pairs two raters by entry id and cannot rank two labels for one ` +
+                  `entry. Name it once, or write the two labels as two passes.`,
+              );
+            }
+            assigned.set(entryId, label);
           }
-          // Refused here rather than left to the store's identical check, and the reason is
-          // `--dry-run`: a preview writes nothing, so a duplicate that only the write refused would
-          // let a dry run report a census for a pass the real run then rejects. The store keeps its
-          // own check as the backstop for a pass written through the API.
-          if (assigned.has(entryId)) {
-            throw refusal(
-              `entry '${entryId}' is named twice in this pass, under '${String(assigned.get(entryId))}' ` +
-                `and '${label}'. One pass gives one label per entry -- ` +
-                `\`asc kappa\` pairs two raters by entry id and cannot rank two labels for one ` +
-                `entry. Name it once, or write the two labels as two passes.`,
-            );
-          }
-          assigned.set(entryId, label);
         }
-      }
 
-      if (rawRules.length > 0 && assigned.size === 0 && scopeIds.size > 0) {
-        this.warn(
-          `no rule matched any of the ${String(scopeIds.size)} entries in scope, so the whole ` +
-            `scope is unclassified. That remainder is the signal a taxonomy is incomplete, not a ` +
-            `failure -- but an empty pass is not written, so the scheme's next version is all this ` +
-            `run changed.`,
+        if (rawRules.length > 0 && assigned.size === 0 && scopeIds.size > 0) {
+          this.warn(
+            `no rule matched any of the ${String(scopeIds.size)} entries in scope, so the whole ` +
+              `scope is unclassified. That remainder is the signal a taxonomy is incomplete, not a ` +
+              `failure -- but an empty pass is not written, so the scheme's next version is all this ` +
+              `run changed.`,
+          );
+        }
+
+        const existing = listSchemes(db).find((scheme) => scheme.name === schemeName);
+        const spec = nextSpec(existing);
+
+        // The two writers, in order: the scheme's version exists before the pass that names it.
+        // `produce` rather than `registerScheme`/`recordAnnotations` directly, because the lines this
+        // run appends to the tree are collected from these calls and nowhere else -- a direct call
+        // would write rows the tree never receives (`writeProducedLines` states it at length).
+        const scheme = produce.scheme(schemeName, spec, { createdAt: now });
+
+        produce.annotation(
+          {
+            scheme: schemeName,
+            schemeVersion: scheme.version,
+            annotations: [...assigned].map(([entryId, label]) => ({
+              id: randomUUID(),
+              entryId,
+              label,
+            })),
+          },
+          { createdAt: now, ...(flags.actor === undefined ? {} : { createdBy: flags.actor }) },
         );
-      }
 
-      const now = this.now();
+        return { registered: scheme, existing, spec, assigned, considered: scopeIds.size };
+      };
 
       if (dryRun) {
         this.warn('dry run: nothing was written.');
 
-        // Read here, outside any transaction -- a preview writes nothing, so there is no write for
-        // a concurrent run to invalidate the input of, unlike the real write below (asc-q4p).
-        const existing = listSchemes(store.db).find((scheme) => scheme.name === schemeName);
-        const spec = nextSpec(existing);
+        // The SAME body the real run uses, under a rollback, with the tree and the index left
+        // exactly as they were -- so a preview cannot report an outcome the run would not produce.
+        // It refuses a stale index rather than building one: `asc annotate --dry-run` against a
+        // checkout that moved the tree now says `asc index build` instead of spending a rebuild on
+        // a preview.
+        const previewed = previewProducedLines(tree, indexFile, run);
 
-        // The version is OMITTED rather than predicted. Mirroring `registerScheme`'s arithmetic here
-        // would be a second implementation of "which version comes next", and a preview that
-        // disagreed with the run it previews is worse than one that declines to guess. `outcome`
-        // answers the question a caller had -- whether the shape is new -- using the store's own
-        // `schemeHash` on the store's own value.
-        const wouldMatch = existing !== undefined && schemeHash(spec) === schemeHash(existing.spec);
-        const preview = censusOf(assigned, scopeIds.size);
+        // The version is still OMITTED rather than predicted. Mirroring `registerScheme`'s
+        // arithmetic here would be a second implementation of "which version comes next", and a
+        // preview that disagreed with the run it previews is worse than one that declines to guess.
+        // `outcome` answers the question a caller had -- whether the shape is new -- using the
+        // store's own `schemeHash` on the store's own value.
+        const wouldMatch =
+          previewed.existing !== undefined &&
+          schemeHash(previewed.spec) === schemeHash(previewed.existing.spec);
+        const preview = censusOf(previewed.assigned, previewed.considered);
 
         this.emit(format, {
           columns: [
@@ -539,57 +643,28 @@ export default class Annotate extends BaseCommand {
         return;
       }
 
-      const registered = withTransaction(store.db, () => {
-        // `existing` is read HERE, inside the transaction `withTransaction` opens with `BEGIN
-        // IMMEDIATE`, rather than before it. That placement is the entire fix for asc-q4p: the
-        // vocabulary union below is a read that decides what `registerScheme` writes, and a read
-        // taken before the write lock is a snapshot a concurrent `asc annotate` can invalidate
-        // between the read and the write -- check-then-act across a transaction boundary. The test
-        // in `annotations.test.ts` measures it: two `asc annotate` processes started without
-        // waiting for each other, each adding one label to the same scheme, and both labels must
-        // survive. asc-q4p records a longer four-run trace of the unfixed behaviour; it is that
-        // bead's measurement, not this one's. `registerType` (`registry.ts`) is the reference for
-        // this placement and measures the same race the other way -- a version collision instead of
-        // a dropped label -- with the fix in the same place: the read joins the transaction that
-        // commits it.
-        const existing = listSchemes(store.db).find((scheme) => scheme.name === schemeName);
-        const spec = nextSpec(existing);
+      const { registered } = writeProducedLines(tree, indexFile, { now }, run).result;
 
-        // One transaction, so a pass is never registered into a version that the write then fails
-        // against. `registerScheme` joins this transaction rather than nesting into it.
-        const scheme = registerScheme(store.db, schemeName, spec, { createdAt: now });
-
-        recordAnnotations(
-          store.db,
-          {
-            scheme: schemeName,
-            schemeVersion: scheme.version,
-            annotations: [...assigned].map(([entryId, label]) => ({
-              id: randomUUID(),
-              entryId,
-              label,
-            })),
-          },
-          { createdAt: now, ...(flags.actor === undefined ? {} : { createdBy: flags.actor }) },
-        );
-
-        return scheme;
-      });
-
-      // Read back out of SQLite. The numbers reported are the numbers stored -- not the ones the
-      // assignment loop was holding, which is the only way a report can catch its own write having
-      // dropped a row. The pass filter is this run's timestamp, so the census is about this pass
-      // rather than about everything the scheme has ever said.
+      // Read back out of SQLite -- from a FRESH handle, opened after the write. The write's own
+      // handle is closed by the time it returns, and it may have rebuilt the index by `renameSync`,
+      // so a handle opened before the write could be reading a replaced inode. The numbers reported
+      // are the numbers stored -- not the ones the assignment loop was holding, which is the only way
+      // a report can catch its own write having dropped a row -- and they are read from the index the
+      // tree was just replayed into, so the round trip through the lines is what is being reported.
       //
-      // The scope goes with it, because it is the body the remainder is a remainder OF. Leaving it
-      // out was measured: a scoped run reported `considered: 6, unclassified: 4` for a scope of two
-      // entries, which is the number this command exists to report, wrong.
-      const census = schemeCensus(store.db, {
-        scheme: schemeName,
-        version: registered.version,
-        pass: now,
-        ...(scope === undefined ? {} : { scope }),
-      });
+      // The pass filter is this run's timestamp, so the census is about this pass rather than about
+      // everything the scheme has ever said. The scope goes with it, because it is the body the
+      // remainder is a remainder OF. Leaving it out was measured: a scoped run reported
+      // `considered: 6, unclassified: 4` for a scope of two entries, which is the number this command
+      // exists to report, wrong.
+      const census = withFreshIndex(tree, indexFile, (db) =>
+        schemeCensus(db, {
+          scheme: schemeName,
+          version: registered.version,
+          pass: now,
+          ...(scope === undefined ? {} : { scope }),
+        }),
+      );
 
       this.emit(format, {
         columns: [

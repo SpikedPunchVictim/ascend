@@ -85,6 +85,34 @@ function gitignore(dir: string): string {
 }
 
 /**
+ * Exactly what `asc init` adds to a `.gitignore`: the derived and machine-local files inside
+ * `.ascend/`, named one per line.
+ *
+ * **`.ascend/` itself is NOT ignored any more and that is the epic** (E12.4): the JSONL tree under
+ * it is the store, so a checkout that ignored the directory would carry no records at all. What is
+ * ignored is the index and its WAL/SHM (a pure function of the tree), the legacy database a project
+ * part-way through the cutover still holds, and the ingest cursor (absolute paths into one
+ * machine's home directory).
+ *
+ * Spelled out rather than imported from the command, for the reason the other readers here are:
+ * a test that asked the command what it would write could not notice the answer changing.
+ */
+const DERIVED_IGNORES = [
+  '.ascend/index.db',
+  '.ascend/index.db-wal',
+  '.ascend/index.db-shm',
+  '.ascend/ascend.db',
+  '.ascend/ascend.db-wal',
+  '.ascend/ascend.db-shm',
+  '.ascend/ingest-cursor.json',
+];
+
+/** A `.gitignore` holding `extra`'s lines and then the derived ones, in that order. */
+function ignoring(...extra: readonly string[]): string {
+  return `${[...extra, ...DERIVED_IGNORES].join('\n')}\n`;
+}
+
+/**
  * Is there a `.git` at `dir` or anywhere above it?
  *
  * Used to state the precondition the "no repository" test rests on, rather than assuming it. The
@@ -134,7 +162,7 @@ function outcomeOf(run: Run, action: string, target?: string): unknown {
 
 /** The registry, read from the store rather than from the command's report. */
 function registry(dir: string): readonly { name: string; version: number; record_when: string }[] {
-  const file = join(dir, '.ascend', 'ascend.db');
+  const file = join(dir, '.ascend', 'index.db');
   if (!existsSync(file)) return [];
   const db = new DatabaseSync(file, { readOnly: true });
   try {
@@ -148,7 +176,7 @@ function registry(dir: string): readonly { name: string; version: number; record
 
 /** Every name a view is generated for, which is the other half of "the types were installed". */
 function viewCount(dir: string): number {
-  const file = join(dir, '.ascend', 'ascend.db');
+  const file = join(dir, '.ascend', 'index.db');
   if (!existsSync(file)) return 0;
   const db = new DatabaseSync(file, { readOnly: true });
   try {
@@ -170,7 +198,7 @@ describe('asc init', () => {
     const run = asc(['init'], dir);
 
     expect(run.status).toBe(0);
-    expect(gitignore(dir)).toBe('.ascend/\n');
+    expect(gitignore(dir)).toBe(ignoring());
     expect(registry(dir).map((row) => row.name)).toEqual(STARTERS);
     expect(registry(dir).every((row) => row.version === 1)).toBe(true);
     // Views, not just rows: a type row whose view failed to build is a type that cannot be
@@ -213,7 +241,7 @@ describe('asc init', () => {
     const again = asc(['init', '--json'], dir);
     expect(again.status).toBe(0);
     expect(outcomeOf(again, 'store')).toBe('already present');
-    expect(outcomeOf(again, 'gitignore')).toBe('already ignores it');
+    expect(outcomeOf(again, 'gitignore')).toBe('already correct');
     expect(outcomeOf(again, 'type', 'decision')).toBe('unchanged');
     expect(registry(dir)).toEqual(before);
 
@@ -231,15 +259,25 @@ describe('asc init', () => {
     const dir = repo();
     asc(['init'], dir);
 
-    const file = join(dir, '.ascend', 'ascend.db');
-    const db = new DatabaseSync(file);
-    try {
-      db.prepare(
-        `UPDATE entry_types SET record_when = 'stale wording' WHERE name = 'decision'`,
-      ).run();
-    } finally {
-      db.close();
-    }
+    // The TREE, not the index. Writing the index would be the easier fixture and a dishonest one:
+    // the index is derived, so a rebuild erases it, and the state under test -- a project whose
+    // stored prose disagrees with this build's starters -- is only reachable where the store is.
+    // (It was written that way until 2026-09-29, and passed, which is the point: a fixture that
+    // edits the derived copy cannot tell a reader of the tree from a reader of the index.)
+    const types = join(dir, '.ascend', 'types', '0001.jsonl');
+    writeFileSync(
+      types,
+      readFileSync(types, 'utf8')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => {
+          const parsed = JSON.parse(line) as { name?: string; record_when?: string };
+          return parsed.name === 'decision'
+            ? JSON.stringify({ ...parsed, record_when: 'stale wording' })
+            : line;
+        })
+        .join('\n') + '\n',
+    );
 
     const again = asc(['init', '--json'], dir);
     expect(outcomeOf(again, 'type', 'decision')).toBe('prose-updated');
@@ -287,8 +325,8 @@ describe('asc init', () => {
     writeFileSync(join(dir, '.gitignore'), 'node_modules/\n*.log');
 
     const run = asc(['init', '--json'], dir);
-    expect(outcomeOf(run, 'gitignore')).toBe('appended');
-    expect(gitignore(dir)).toBe('node_modules/\n*.log\n.ascend/\n');
+    expect(outcomeOf(run, 'gitignore')).toBe('updated');
+    expect(gitignore(dir)).toBe(ignoring('node_modules/', '*.log'));
   });
 
   it('follows a symlinked .gitignore instead of replacing the link with a regular file', () => {
@@ -310,17 +348,17 @@ describe('asc init', () => {
 
     const run = asc(['init', '--json'], dirs[0] as string);
 
-    expect(outcomeOf(run, 'gitignore')).toBe('appended');
+    expect(outcomeOf(run, 'gitignore')).toBe('updated');
     // The link survives, and still points at the same place -- asserted on the link itself rather
     // than on the content, because content is what survived even when the link was destroyed.
     expect(lstatSync(join(dirs[0] as string, '.gitignore')).isSymbolicLink()).toBe(true);
     expect(readlinkSync(join(dirs[0] as string, '.gitignore'))).toBe('../shared/gitignore');
-    expect(readFileSync(shared, 'utf8')).toBe('node_modules/\n.ascend/\n');
+    expect(readFileSync(shared, 'utf8')).toBe(ignoring('node_modules/'));
     // And the sharing still WORKS: the sibling that shares the target sees the new entry. This is
     // the assertion the whole fix is for -- "the link is still a link" would pass for a link
     // repointed somewhere harmless.
     expect(readFileSync(join(dirs[1] as string, '.gitignore'), 'utf8')).toBe(
-      'node_modules/\n.ascend/\n',
+      ignoring('node_modules/'),
     );
     // The row names the file the user asked about, not the resolved target; the resolved target is
     // on stderr instead, because `target` is the column a caller joins on across runs. Compared
@@ -355,20 +393,31 @@ describe('asc init', () => {
     expect(registry(dir).map((row) => row.name)).toEqual(STARTERS);
   });
 
-  it('recognises the store in every spelling git accepts, and does not mistake a re-include', () => {
+  it('removes the whole-directory ignore in every spelling git accepts, and does not touch a re-include', () => {
+    // **Inverted by the flip, deliberately.** Until E12.4 a `.ascend/` line was what `asc init`
+    // WANTED to see, and recognising it meant "nothing to do". Now the tree inside that directory
+    // is the store, so the same line means the opposite: every record this project has is
+    // uncommitted. It is removed, and the derived files are named individually instead.
     for (const entry of ['.ascend', '.ascend/', '/.ascend', '/.ascend/']) {
       const dir = repo();
       writeFileSync(join(dir, '.gitignore'), `${entry}\n`);
-      expect(outcomeOf(asc(['init', '--json'], dir), 'gitignore'), entry).toBe(
-        'already ignores it',
-      );
+      const run = asc(['init', '--json'], dir);
+
+      expect(outcomeOf(run, 'gitignore'), entry).toBe('updated');
+      expect(gitignore(dir), entry).toBe(ignoring());
+      // Editing a line the user wrote is the one thing here worth saying out loud, on stderr.
+      expect(flatten(run.stderr), entry).toContain('was removed from');
     }
 
-    // `!.ascend/` re-includes the path, so the store is NOT ignored and the entry is needed.
-    // Treating it as a match would report success while leaving the database committable.
+    // `!.ascend/` re-includes the path, so it is NOT the line above and must be left alone.
+    // Treating it as one would delete a deliberate arrangement, and the derived entries below it
+    // still do their job: git applies the later, more specific patterns.
     const dir = repo();
     writeFileSync(join(dir, '.gitignore'), '!.ascend/\n');
-    expect(outcomeOf(asc(['init', '--json'], dir), 'gitignore')).toBe('appended');
+    const run = asc(['init', '--json'], dir);
+    expect(outcomeOf(run, 'gitignore')).toBe('updated');
+    expect(gitignore(dir)).toBe(ignoring('!.ascend/'));
+    expect(flatten(run.stderr)).not.toContain('was removed from');
   });
 
   it('ignores the store from a repository subdirectory, where the repository is ABOVE it', () => {
@@ -388,7 +437,7 @@ describe('asc init', () => {
     // NEXT TO THE STORE, not at the repository root. A scoped file says what it means without a
     // relative path computed from here to there, and this is the file the store's own directory is
     // read from. Asserted, because "wrote a .gitignore somewhere" would also pass for the root.
-    expect(gitignore(dir)).toBe('.ascend/\n');
+    expect(gitignore(dir)).toBe(ignoring());
     expect(existsSync(join(outer, '.gitignore'))).toBe(false);
   });
 
@@ -405,7 +454,7 @@ describe('asc init', () => {
     const run = asc(['init', '--json'], dir);
 
     expect(outcomeOf(run, 'gitignore')).toBe('created');
-    expect(gitignore(dir)).toBe('.ascend/\n');
+    expect(gitignore(dir)).toBe(ignoring());
   });
 
   it('leaves .gitignore alone when there is no repository to apply it to', () => {

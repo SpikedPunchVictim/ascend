@@ -176,7 +176,9 @@ export default class TypesExport extends BaseCommand {
 
     const versions = typeVersions(store.db, name);
     if (versions.length === 0) {
-      throw refusal(`There is no entry type named '${name}' in this project. ${knownNames(store)}`);
+      throw refusal(
+        `There is no entry type named '${name}' in this project. ${knownNames(store.db)}`,
+      );
     }
     // Already oldest-first: `typeVersions` orders by version ascending, which is the order
     // `import` must register them in to reproduce these version numbers.

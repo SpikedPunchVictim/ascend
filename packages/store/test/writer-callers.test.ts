@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * E12.4b3: **the six writers are called from inside a production, and from nowhere else.**
+ * E12.4b3: **the writers are called from inside a production, and from nowhere else.**
  *
  * `writeProducedLines`'s body is handed the transaction's own `db` (see its doc), because four of the
  * six write sites make a read that decides what they write -- `annotate.ts`'s `listSchemes` (asc-q4p),
@@ -27,11 +27,20 @@ import { describe, expect, it } from 'vitest';
  *   - `line-producers.ts` -- the producers, which are the one supported way to call them.
  *   - `jsonl-index.ts` -- `replay`, which rebuilds the index from lines that already exist.
  *
- * **The six CLI modules below are on this list only until stage C of this change moves them**, and
- * they are written out rather than excused so that each move is a visible edit here: a site that was
- * migrated and a site that was forgotten look identical from the CLI's side, and only this list tells
- * them apart. When the last one is gone the list must be down to the five store modules, and the
- * scan's name becomes true without qualification.
+ * **Stage C moved all six CLI sites, and this list is the evidence.** It used to carry the six
+ * command modules as a written-out exception, so that each move was a visible edit here: a site that
+ * was migrated and a site that was forgotten look identical from the CLI's side, and only this list
+ * told them apart. The six are gone and the CLI names no writer at all -- every one of its writes now
+ * goes through `Producers`, which is what makes the tree and the index disagreeing impossible rather
+ * than unlikely.
+ *
+ * **`deprecateType` was the hole in this list, and it is the reason the list matters.** The writers
+ * were enumerated from the sites the plan had surveyed, and `asc types deprecate` was not among them:
+ * measured 2026-09-29, it failed after the flip with *attempt to write a readonly database* and the
+ * deprecation had no line to live in. A guard whose list is derived from the same survey as the fix
+ * cannot catch what the survey missed, and this one could not -- so the seventh writer is in the list
+ * now, and the caller it would have caught (`commands/types/deprecate.ts`, since moved to
+ * `produce.deprecate`) is the evidence that adding it is not theoretical.
  *
  * **What this cannot see, stated rather than implied:** a call added inside one of the five allowed
  * modules, and a call reached through a re-export or a string. It is a guard against the mistake a
@@ -49,18 +58,18 @@ const WRITERS = [
   'recordAnnotations',
   'recordInvalidation',
   'updateTypeProse',
+  'deprecateType',
 ] as const;
 
 const CALL = new RegExp(`\\b(${WRITERS.join('|')})\\s*\\(`, 'g');
 
-/** The five modules that own a reason, plus the six sites stage C has not moved yet. */
+/**
+ * The five modules that own a reason to call a writer directly.
+ *
+ * No CLI module appears, and its absence is the claim: `packages/cli` reaches every writer through
+ * `produce`, which is the whole point of the fused write.
+ */
 const ALLOWED = [
-  'packages/cli/src/commands/annotate.ts',
-  'packages/cli/src/commands/import.ts',
-  'packages/cli/src/commands/ingest/claude-code.ts',
-  'packages/cli/src/commands/invalidate.ts',
-  'packages/cli/src/commands/record.ts',
-  'packages/cli/src/register-document.ts',
   'packages/store/src/annotations.ts',
   'packages/store/src/jsonl-index.ts',
   'packages/store/src/line-producers.ts',
@@ -120,8 +129,8 @@ function callers(): string[] {
 
 describe('a writer is called by a production, and by nothing else', () => {
   it('names every module that calls one, and every one of them is allowed', () => {
-    // The claim, in full. A seventh write site -- a new command, a helper that "just records this
-    // one thing" -- has to appear here to be written, and appearing here is a failure.
+    // The claim, in full. A write site outside the store -- a new command, a helper that "just
+    // records this one thing" -- has to appear here to be written, and appearing here is a failure.
     expect(callers()).toEqual(ALLOWED);
   });
 

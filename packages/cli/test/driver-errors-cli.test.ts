@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -129,10 +129,16 @@ describe('a filesystem refusal names what ascend was doing and what to do next',
     expect(rendered).not.toContain(squashed('file already exists'));
   });
 
-  it('explains a store path the operating system will not open', () => {
+  it('explains a store directory the operating system will not read', () => {
     // Reproduced before this fix, from a project whose `.ascend` directory is unreadable:
     // `Error: unable to open database file` -- which names neither the store nor the directory, and
     // sounds like a SQLite internal rather than a permission problem on the caller's own project.
+    //
+    // **The branch it reaches changed with the flip, and the test was re-measured rather than
+    // adjusted.** The store is the JSONL tree now, so the first thing a read does is hash it --
+    // `recordFiles` lists each kind directory -- and that fails before any database is opened. What
+    // comes out is the FILESYSTEM branch naming `scandir` and the directory inside the tree that
+    // could not be listed. `EACCES` and not SQLite's code 14, so the assertion follows.
     const dir = project();
     const store = join(dir, '.ascend');
     // The one site that needs a real permission change. Restored in the `finally` because the temp
@@ -151,11 +157,12 @@ describe('a filesystem refusal names what ascend was doing and what to do next',
     expect(run.status).toBe(1);
     expect(run.stdout).toBe('');
     const rendered = squashed(run.stderr);
-    expect(rendered).toContain(squashed('ascend could not open its store file'));
-    expect(rendered).toContain(squashed('.ascend/ascend.db'));
-    expect(rendered).toContain(squashed('code 14'));
-    // The next step names the command that creates both the directory and the file.
-    expect(rendered).toContain(squashed('asc init'));
+    expect(rendered).toContain(squashed("ascend ran 'scandir'"));
+    expect(rendered).toContain(squashed(store));
+    expect(rendered).toContain(squashed('EACCES'));
+    // The plain-language problem and the next step, which are the half the raw string lacked.
+    expect(rendered).toContain(squashed('you do not have permission to use that path'));
+    expect(rendered).toContain(squashed('every directory above it'));
 
     // The raw leak, gone.
     expect(rendered).not.toContain(squashed('Error: unable to open database file'));
@@ -193,30 +200,75 @@ describe('a statement SQLite cannot make sense of says which of the two things h
   });
 });
 
-describe('a store file that is not a database says so, and says what to do', () => {
-  it('names the store path, the code, and the way out', () => {
-    // Reproduced before this fix by overwriting a real store with text:
-    // `Error: file is not a database`. Measured to reach the boundary through **both** `asc query`
-    // and `asc record`, because the store is opened the same way whichever command asked for it --
-    // this drives `record`, the write path, since a damaged store is more often met while writing.
+/**
+ * The same damage, through the two paths that reach it differently.
+ *
+ * The damaged file is the INDEX now, not `ascend.db`, and that is the flip in one line: the SQLite
+ * file every command opens is derived, so this is the file whose corruption a user can actually
+ * produce. Writing garbage into `ascend.db` beside it would leave every command working -- there is
+ * no code path left that reads it.
+ *
+ * **The old single test drove a WRITE** ("a damaged store is more often met while writing"), and the
+ * flip made that arm stop reaching this branch at all -- so the split is a measurement, not
+ * tidiness. Both arms were run against the real binary on 2026-09-29 and their outputs are what the
+ * assertions below quote.
+ */
+describe('an index that is not a database', () => {
+  it('is REFUSED by a read, which names the rebuild rather than a backup', () => {
+    // Measured: `asc query 'SELECT 1 AS n'` over a garbage `.ascend/index.db` says the file "is not
+    // an index ascend can read" and sends the caller to `asc index build`.
+    //
+    // The raw `Error: file is not a database` never appears, and the reason is worth stating because
+    // it is the mechanism and not a coincidence: `openIndex` compares the tree's fingerprint against
+    // what the file claims, and a file that cannot answer claims nothing, so the read arrives here
+    // through the STALE branch. One remedy covers every way an index can be broken -- corrupt,
+    // absent, out of date, half-copied -- which is the property that makes "derived" true in
+    // practice and not just in the header comment.
     const dir = project();
-    writeFileSync(join(dir, '.ascend', 'ascend.db'), 'not a database at all, just bytes\n');
+    writeFileSync(join(dir, '.ascend', 'index.db'), 'not a database at all, just bytes\n');
 
-    const run = asc(['record', 'note', '--prop=text=hello'], dir);
+    const run = asc(['query', 'SELECT 1 AS n'], dir);
 
     expect(run.status).toBe(1);
     expect(run.stdout).toBe('');
     const rendered = squashed(run.stderr);
-    expect(rendered).toContain(squashed('ascend opened a file as a SQLite database'));
-    expect(rendered).toContain(squashed('file is not a database'));
-    expect(rendered).toContain(squashed('code 26'));
-    expect(rendered).toContain(squashed('.ascend/ascend.db'));
-    // The way out: a fresh store, and an instruction to preserve what is there first -- because a
-    // message that said only "run asc init" would be telling the caller to destroy the file.
-    expect(rendered).toContain(squashed('asc init'));
-    expect(rendered).toContain(squashed('copy it somewhere first'));
+    expect(rendered).toContain(squashed(join(dir, '.ascend', 'index.db')));
+    expect(rendered).toContain(squashed('is not an index ascend can read'));
+    expect(rendered).toContain(squashed('a read does not build one'));
+    expect(rendered).toContain(squashed('asc index build'));
+    // The way out, and it is the opposite of the old one. The message used to tell the caller to
+    // preserve the file first, because the file was the store; now nothing is lost by deleting it,
+    // because the tree beside it still holds every record. A message that still said "copy it
+    // somewhere first" would be teaching a backup of a rebuildable cache.
+    expect(rendered).not.toContain(squashed('copy it somewhere first'));
 
     // The raw leak, gone.
     expect(rendered).not.toContain(squashed('Error: file is not a database'));
+  });
+
+  it('is REPAIRED by a write, because the tree beside it is the store', () => {
+    // Measured: the same garbage, then `asc record decision …` -- exit 0, the entry in the tree, and
+    // `index.db` a SQLite file again. A write may pay for a rebuild where a read may not, and this
+    // is the assertion that the index really is derived rather than a second source of truth.
+    //
+    // Asserted on the FILE, not on the exit code: a command that silently wrote into the damaged
+    // file, or that left it damaged and reported success, would pass an exit-code check. This is the
+    // arm that says a user who corrupts their index loses nothing.
+    const dir = project();
+    const indexFile = join(dir, '.ascend', 'index.db');
+    writeFileSync(indexFile, 'not a database at all, just bytes\n');
+
+    const run = asc(
+      ['record', 'decision', '--prop=chosen=rebuilt', '--prop=rationale=the-tree-is-the-store'],
+      dir,
+    );
+
+    expect(run.status, run.stderr).toBe(0);
+    expect(readFileSync(indexFile).subarray(0, 15).toString()).toBe('SQLite format 3');
+    // And the record survives a rebuild, which is the half that matters: the index was rebuilt FROM
+    // the tree, and the entry just written is in the tree.
+    const rebuilt = asc(['query', 'SELECT count(*) AS n FROM entries'], dir);
+    expect(rebuilt.status, rebuilt.stderr).toBe(0);
+    expect(rebuilt.stdout).toMatch(/\b1\b/);
   });
 });

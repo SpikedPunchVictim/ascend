@@ -25,6 +25,7 @@
 import { Args, Flags } from '@oclif/core';
 import type { TypeSpec } from '@ascend/core';
 import { BaseCommand } from '../../base.js';
+import { storePaths } from '../../project.js';
 import { parseDocument, verifyDocumentHash } from '../../document.js';
 import { defaultTranscriptRoot } from '@ascend/adapter-claude-code';
 import { sessionsNote, sweepCapture } from '../../capture-sweep.js';
@@ -84,8 +85,15 @@ export default class TypesDefine extends BaseCommand {
     // reach it at all.
     verifyDocumentHash(document, source);
 
-    await this.withProject(async ({ store, root }) => {
-      const result = registerDocument(store, document, { registeredAt: this.now(), dryRun });
+    await this.withProjectRoot(async (root) => {
+      // One fused write, or a preview of one -- see `registerDocument`. This is the only store call
+      // this command makes, so it never holds a read handle at all, which is also why registering a
+      // type does not require an index that a read would be refused for.
+      const { tree, index } = storePaths(root);
+      const result = registerDocument(tree, index, document, {
+        registeredAt: this.now(),
+        dryRun,
+      });
 
       for (const rename of result.renames) this.warn(`renamed '${rename.from}' -> '${rename.to}'`);
       // No `warning: ` prefix of our own: `this.warn` already renders one, so prefixing printed

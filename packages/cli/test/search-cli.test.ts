@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -44,11 +44,19 @@ const bin = join(root, 'packages/cli/dist/bin.js');
  * `count` the tests use and `fixture(count)` copies the one that matches.
  *
  * Copying is sound because the store is LOCATION-INDEPENDENT, and that was measured rather than
- * assumed: a seeded store is one file, `.ascend/ascend.db`, with no `-wal`/`-shm` left beside it;
- * `meta` holds only `created_by_ascend_version` and `cwd_convention = project-relative`; every
- * entry carries `cwd = '.'` with `repo`, `git_sha` and `branch` null; and a scan of every table for
- * the seed directory's own path returned ZERO hits. A copy into a different temporary directory
- * therefore says exactly what the original said.
+ * assumed -- RE-measured 2026-09-29 against the record tree, because what this paragraph used to
+ * cite described the SQLite store the flip retires (`asc-i5tj`): one file, `.ascend/ascend.db`,
+ * no `-wal`/`-shm`, and `meta` holding `created_by_ascend_version` and `cwd_convention`. A fresh
+ * `asc init` now lays out a DIRECTORY: `.gitattributes` (20 bytes), `types/0001.jsonl` (the starter
+ * types, 6,952), and the DERIVED `index.db` (200,704 -- the SQLite schema itself, and exactly the
+ * file the old figure described); one `record` adds `entries/decision-<hash>/0001.jsonl` (468). A
+ * scan of every one of those files for the seed directory's absolute path returned
+ * ZERO hits; every entry carries `cwd = '.'` with `repo`, `git_sha` and `branch` null, visible in
+ * the line rather than inferred from a table; and the two `meta` keys are gone with the store,
+ * because no corpus line kind carries them. A copy into a different temporary directory therefore
+ * says exactly what the original said -- and so does copying `.ascend/` WHOLE: the index travels
+ * with the tree and is still current there, because `treeFingerprint` hashes the record files'
+ * RELATIVE paths and never their absolute ones.
  *
  * The fixtures are still built by the REAL BINARY rather than through `@ascend/store`, so they keep
  * producing what `asc init`, `asc types define` and `asc record` produce.
@@ -77,7 +85,9 @@ beforeAll(() => {
     const dir = mkdtempSync(join(tmpdir(), 'asc-search-seed-'));
     dirs.push(dir);
     mkdirSync(join(dir, '.ascend'), { recursive: true });
-    copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
+    cpSync(join(seedDir, '.ascend'), join(dir, '.ascend'), {
+      recursive: true,
+    });
     for (let i = 0; i < count; i += 1) {
       // Cycled through all three enum values rather than alternated between two, so that a fixture
       // of three entries holds one of each -- which is what lets the underscore test assert a real
@@ -184,7 +194,9 @@ function project(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-search-'));
   dirs.push(dir);
   mkdirSync(join(dir, '.ascend'), { recursive: true });
-  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
+  cpSync(join(seedDir, '.ascend'), join(dir, '.ascend'), {
+    recursive: true,
+  });
   return dir;
 }
 
@@ -224,7 +236,9 @@ function fixture(count: number): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-search-'));
   dirs.push(dir);
   mkdirSync(join(dir, '.ascend'), { recursive: true });
-  copyFileSync(join(seed, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
+  cpSync(join(seed, '.ascend'), join(dir, '.ascend'), {
+    recursive: true,
+  });
   return dir;
 }
 

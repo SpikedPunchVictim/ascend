@@ -12,16 +12,24 @@
  * stand and says which document failed. An entry cannot be re-run: entries are immutable and
  * `recordEntry` refuses a duplicate id, so a half-applied corpus is a corpus that can never be
  * completed by retrying. Annotations are the same: they are append-only, so a half-restored pass can
- * never be finished by retrying either. So the whole restore runs inside one transaction and any
- * refusal rolls back every row of it.
+ * never be finished by retrying either. So the whole restore is ONE fused write
+ * (`writeProducedLines`): one transaction, one append, and any refusal rolls back every line of it.
  *
- * **Everything is checked before anything is written.** The stream is parsed, every type hash and
+ * **Everything is checked before anything is produced.** The stream is parsed, every type hash and
  * scheme hash is recomputed, and every entry id, annotation id, annotation-entry reference and
- * annotation-scheme reference is looked up against the target store, all before the transaction
- * opens. The conflicts those find are the ones a caller can act on -- this project already holds
- * that id, this project's definition of that name is not the one the corpus was recorded against --
- * and finding them after four thousand rows had landed would be the same finding with a worse
- * repair.
+ * annotation-scheme reference is looked up against the target store, all before the first definition
+ * is registered. The conflicts those find are the ones a caller can act on -- this project already
+ * holds that id, this project's definition of that name is not the one the corpus was recorded
+ * against -- and finding them after four thousand rows had landed would be the same finding with a
+ * worse repair.
+ *
+ * **Those checks read through the transaction that would write, not through a handle opened on the
+ * way in (E12.4b3).** After the flip the handle a command holds before the write is READ-ONLY, and
+ * the checks above are reads -- but `versionsByHash` is not: it resolves an entry's `type_hash` to a
+ * version number AFTER this stream's own definitions have been registered, so it has to see the rows
+ * this write is minting. One transaction serves both, which is what `writeProducedLines` hands its
+ * body (`asc-q4p`, closed by shape). A refusal still writes nothing: it rolls the transaction back
+ * before the append.
  *
  * **An annotation is restored as part of a PASS, never as an independent row.** `recordAnnotations`
  * stamps one `created_at`/`created_by` onto every row of a single call, and that stamp -- together
@@ -36,8 +44,10 @@
  * **`--dry-run` owns one transaction for the whole stream, like `asc types import`'s.** Previewing
  * each registration separately would mean the second type never sees the first, so it would compute
  * its version as though the first did not exist -- reporting version 1 twice where the real run
- * produces 1 then 2. `withRollback` runs the real code and discards it, so the preview cannot
- * describe a restore the real run would not produce.
+ * produces 1 then 2. `previewProducedLines` runs the real code and discards it, appending nothing to
+ * the tree and stamping nothing, so the preview cannot describe a restore the real run would not
+ * produce. Unlike the write, it does not build an index it finds missing or stale: it refuses and
+ * names `asc index build`, which is what every preview does after the flip.
  *
  * **One re-run is refused, deliberately.** Restoring a corpus twice meets the first entry's id
  * already present, and this refuses rather than skipping it. Skipping would make the command a
@@ -55,16 +65,12 @@ import {
   findEntry,
   listSchemes,
   listTypes,
-  recordAnnotations,
-  recordEntry,
-  registerScheme,
-  RESERVED_SCHEME,
-  restoreInvalidationScheme,
+  previewProducedLines,
   schemeVersions,
   typeVersions,
-  withRollback,
-  withTransaction,
-  type Store,
+  writeProducedLines,
+  type Producers,
+  type SqlDatabase,
 } from '@ascend/store';
 import { BaseCommand } from '../base.js';
 import {
@@ -79,7 +85,8 @@ import {
 } from '../corpus.js';
 import { refusal } from '../errors.js';
 import { readInput } from '../input.js';
-import { registerDocument } from '../register-document.js';
+import { storePaths } from '../project.js';
+import { registerDocumentVia } from '../register-document.js';
 
 /** A row of the report: what happened to one line. */
 interface ImportRow extends Record<string, unknown> {
@@ -149,35 +156,39 @@ export default class ImportCorpus extends BaseCommand {
     );
     refuseUnrestorable(source, types.length, entries.length, schemes.length, annotations.length);
 
-    await this.withProject(({ store }) => {
-      // The id conflicts, before the transaction opens. `findEntry` is the existence check rather
-      // than a query of this command's own, so "is this id taken" has one answer in the codebase.
-      refuseTakenIds(store, entries, source);
-      refuseTakenAnnotationIds(store, annotations, source);
-      // The two foreign keys `annotations` carries (`schema.ts`), checked before the transaction so
-      // a bad reference is a named refusal rather than a raw SQLite foreign-key error with no
-      // context (see each function's own doc for why a raw error is not good enough here).
-      refuseUnknownAnnotationEntries(store, annotations, entries, source);
-      refuseUnknownAnnotationSchemes(store, annotations, schemes, source);
-
-      // The names this project already had, read before the stream is applied. It is what tells the
-      // two version refusals apart (`versionMismatch`, `schemeVersionMismatch`), and it has to be
-      // read here rather than inside the transaction because it describes the project as the caller
-      // found it.
-      const preexisting = namesRegistered(store);
-      const preexistingSchemes = schemeNamesRegistered(store);
-
+    await this.withProjectRoot((root) => {
+      const { tree, index: indexFile } = storePaths(root);
       const rows: ImportRow[] = [];
 
       /**
-       * Register every definition, in order, then restore every entry and every annotation pass
-       * against them.
+       * Check the whole stream against the target, then register every definition in order, then
+       * restore every entry and every annotation pass against them.
+       *
+       * `produce` is the only way to write here, and that is not a style choice: the tree is
+       * appended from the lines the producers collect, never from the database, so a direct writer
+       * call on `db` would record a row the tree does not have. `db` is for the reads that decide
+       * what to write -- see the file comment.
        */
-      const restoreAll = (): void => {
+      const restoreAll = (produce: Producers, db: SqlDatabase): void => {
+        // The id conflicts, before anything is produced. `findEntry` is the existence check rather
+        // than a query of this command's own, so "is this id taken" has one answer in the codebase.
+        refuseTakenIds(db, entries, source);
+        refuseTakenAnnotationIds(db, annotations, source);
+        // The two foreign keys `annotations` carries (`schema.ts`), checked before anything is
+        // produced so a bad reference is a named refusal rather than a raw SQLite foreign-key error
+        // with no context (see each function's own doc for why a raw error is not good enough here).
+        refuseUnknownAnnotationEntries(db, annotations, entries, source);
+        refuseUnknownAnnotationSchemes(db, annotations, schemes, source);
+
+        // The names this project already had. It is what tells the two version refusals apart
+        // (`versionMismatch`, `schemeVersionMismatch`), and it has to be read BEFORE the loop below
+        // registers this stream's definitions -- it describes the project as the caller found it.
+        const preexisting = namesRegistered(db);
+        const preexistingSchemes = schemeNamesRegistered(db);
+
         for (const { line } of types) {
-          const result = registerDocument(store, line.document, {
+          const result = registerDocumentVia(produce, db, line.document, {
             registeredAt: this.now(),
-            dryRun: false,
           });
           rows.push({
             kind: 'type',
@@ -188,7 +199,9 @@ export default class ImportCorpus extends BaseCommand {
           });
         }
 
-        const versions = versionsByHash(store);
+        // AFTER the loop, and that ordering is the whole reason this read is in here: each entry
+        // names its `type_hash`, and this stream's own definitions are what that hash resolves to.
+        const versions = versionsByHash(db);
 
         for (const { where, line: entry } of entries) {
           const resolved = versions.get(hashKey(entry.type_name, entry.type_hash));
@@ -206,7 +219,7 @@ export default class ImportCorpus extends BaseCommand {
           }
 
           const { request, context } = entryFromLine(entry);
-          recordEntry(store.db, request, context);
+          produce.entry(request, context);
           rows.push({
             kind: 'entry',
             name: entry.type_name,
@@ -221,15 +234,14 @@ export default class ImportCorpus extends BaseCommand {
         // document, which carries none), so the check that the store minted the claimed number is
         // made right here, immediately after the call that could disagree with it -- there is no
         // need for a `versionsByHash`-style map built after the fact, because there is exactly one
-        // `registerScheme` call per line and its return value already IS the resolution by hash.
+        // scheme production per line and its return value already IS the resolution by hash.
         for (const { where, line: scheme } of schemes) {
-          // The reserved scheme is the store's own, so it is restored as itself rather than
-          // registered as a user's: `registerScheme` refuses the name (dogfood/0027).
-          const context = { createdAt: scheme.created_at };
-          const result =
-            scheme.name === RESERVED_SCHEME
-              ? restoreInvalidationScheme(store.db, scheme.spec, context)
-              : registerScheme(store.db, scheme.name, scheme.spec, context);
+          // `produce.scheme` restores the reserved invalidation scheme as itself rather than
+          // registering it as a user's -- `registerScheme` refuses that name (dogfood/0027), and
+          // the choice is made in one place (`registerNamedScheme`, `annotations.ts`).
+          const result = produce.scheme(scheme.name, scheme.spec, {
+            createdAt: scheme.created_at,
+          });
           if (result.version !== scheme.version) {
             throw schemeVersionMismatch(
               scheme,
@@ -252,8 +264,7 @@ export default class ImportCorpus extends BaseCommand {
         // one report row per call: `recordAnnotations` is a pass-level write, so a report that gave
         // it one row per annotation would be reporting a write that never happened at that grain.
         for (const group of annotationPassGroups(annotations.map((parsed) => parsed.line))) {
-          const result = recordAnnotations(
-            store.db,
+          const result = produce.annotation(
             {
               scheme: group.scheme,
               schemeVersion: group.schemeVersion,
@@ -286,7 +297,7 @@ export default class ImportCorpus extends BaseCommand {
 
       if (dryRun) {
         try {
-          withRollback(store.db, restoreAll);
+          previewProducedLines(tree, indexFile, restoreAll);
         } catch (error) {
           this.warn(
             'the dry run failed, so the whole preview was discarded and nothing was written. ' +
@@ -296,7 +307,7 @@ export default class ImportCorpus extends BaseCommand {
         }
         this.warn('dry run: nothing was written.');
       } else {
-        withTransaction(store.db, restoreAll);
+        writeProducedLines(tree, indexFile, { now: this.now() }, restoreAll);
       }
 
       // Emitted after the transaction commits, not inside it: a report that was rolled back with
@@ -406,13 +417,13 @@ function schemeVersionMismatch(
 }
 
 /** The type names this project holds at least one version of. See `versionMismatch`. */
-function namesRegistered(store: Store): ReadonlySet<string> {
-  return new Set(listTypes(store.db).map((summary) => summary.name));
+function namesRegistered(db: SqlDatabase): ReadonlySet<string> {
+  return new Set(listTypes(db).map((summary) => summary.name));
 }
 
 /** The scheme names this project holds at least one version of. See `schemeVersionMismatch`. */
-function schemeNamesRegistered(store: Store): ReadonlySet<string> {
-  return new Set(listSchemes(store.db).map((summary) => summary.name));
+function schemeNamesRegistered(db: SqlDatabase): ReadonlySet<string> {
+  return new Set(listSchemes(db).map((summary) => summary.name));
 }
 
 /**
@@ -467,16 +478,16 @@ function refuseUnrestorable(
  * Refuse when the target already holds any of these ids.
  *
  * A pre-pass rather than letting `recordEntry` discover it, for two reasons: the message can name
- * how many conflict and which, and the check runs before the transaction opens, so a corpus that
- * cannot land does not touch the store at all. `recordEntry` still refuses a duplicate -- this is
+ * how many conflict and which, and the check runs before anything is produced, so a corpus that
+ * cannot land appends nothing to the tree. `recordEntry` still refuses a duplicate -- this is
  * not the only guard, it is the earlier and more informative one.
  */
 function refuseTakenIds(
-  store: Store,
+  db: SqlDatabase,
   entries: readonly (ParsedLine & { line: EntryLine })[],
   source: string,
 ): void {
-  const taken = entries.filter(({ line }) => findEntry(store.db, line.id) !== undefined);
+  const taken = entries.filter(({ line }) => findEntry(db, line.id) !== undefined);
   if (taken.length === 0) return;
 
   const shown = taken.slice(0, 3).map(({ line }) => line.id);
@@ -499,11 +510,11 @@ function refuseTakenIds(
  * one -- so this reads every existing annotation once, scheme version by scheme version, and tests
  * membership rather than querying once per candidate id the way `refuseTakenIds` does for entries.
  */
-function existingAnnotationIds(store: Store): ReadonlySet<string> {
+function existingAnnotationIds(db: SqlDatabase): ReadonlySet<string> {
   const ids = new Set<string>();
-  for (const summary of listSchemes(store.db)) {
-    for (const version of schemeVersions(store.db, summary.name)) {
-      for (const row of annotationRows(store.db, {
+  for (const summary of listSchemes(db)) {
+    for (const version of schemeVersions(db, summary.name)) {
+      for (const row of annotationRows(db, {
         scheme: version.name,
         version: version.version,
       })) {
@@ -518,18 +529,18 @@ function existingAnnotationIds(store: Store): ReadonlySet<string> {
  * Refuse when the target already holds any of these annotation ids.
  *
  * The same shape as `refuseTakenIds`, and the same two reasons: the message can name how many
- * conflict and which, and it runs before the transaction opens so a corpus that cannot land does
- * not touch the store at all. Annotations are append-only (`annotations.ts`), so a taken id can no
+ * conflict and which, and it runs before anything is produced so a corpus that cannot land appends
+ * nothing to the tree. Annotations are append-only (`annotations.ts`), so a taken id can no
  * more be replaced than a taken entry id can.
  */
 function refuseTakenAnnotationIds(
-  store: Store,
+  db: SqlDatabase,
   annotations: readonly (ParsedLine & { line: AnnotationLine })[],
   source: string,
 ): void {
   if (annotations.length === 0) return;
 
-  const existing = existingAnnotationIds(store);
+  const existing = existingAnnotationIds(db);
   const taken = annotations.filter(({ line }) => existing.has(line.id));
   if (taken.length === 0) return;
 
@@ -547,10 +558,10 @@ function refuseTakenAnnotationIds(
 }
 
 /** Every entry id this project's `entries` table already holds, across every type. */
-function existingEntryIds(store: Store): ReadonlySet<string> {
+function existingEntryIds(db: SqlDatabase): ReadonlySet<string> {
   const ids = new Set<string>();
-  for (const summary of listTypes(store.db)) {
-    for (const id of entryIds(store.db, summary.name)) ids.add(id);
+  for (const summary of listTypes(db)) {
+    for (const id of entryIds(db, summary.name)) ids.add(id);
   }
   return ids;
 }
@@ -566,14 +577,14 @@ function existingEntryIds(store: Store): ReadonlySet<string> {
  * anyway.
  */
 function refuseUnknownAnnotationEntries(
-  store: Store,
+  db: SqlDatabase,
   annotations: readonly (ParsedLine & { line: AnnotationLine })[],
   entries: readonly (ParsedLine & { line: EntryLine })[],
   source: string,
 ): void {
   if (annotations.length === 0) return;
 
-  const known = new Set([...entries.map(({ line }) => line.id), ...existingEntryIds(store)]);
+  const known = new Set([...entries.map(({ line }) => line.id), ...existingEntryIds(db)]);
   const missing = annotations.filter(({ line }) => !known.has(line.entry_id));
   if (missing.length === 0) return;
 
@@ -595,10 +606,10 @@ function schemeVersionKey(name: string, version: number): string {
 }
 
 /** Every `(scheme, scheme_version)` pair this project already has, across every scheme name. */
-function existingSchemeVersionKeys(store: Store): ReadonlySet<string> {
+function existingSchemeVersionKeys(db: SqlDatabase): ReadonlySet<string> {
   const keys = new Set<string>();
-  for (const summary of listSchemes(store.db)) {
-    for (const version of schemeVersions(store.db, summary.name)) {
+  for (const summary of listSchemes(db)) {
+    for (const version of schemeVersions(db, summary.name)) {
       keys.add(schemeVersionKey(version.name, version.version));
     }
   }
@@ -618,7 +629,7 @@ function existingSchemeVersionKeys(store: Store): ReadonlySet<string> {
  * before the transaction opens rather than surfacing as a raw foreign-key failure.
  */
 function refuseUnknownAnnotationSchemes(
-  store: Store,
+  db: SqlDatabase,
   annotations: readonly (ParsedLine & { line: AnnotationLine })[],
   schemes: readonly (ParsedLine & { line: SchemeLine })[],
   source: string,
@@ -627,7 +638,7 @@ function refuseUnknownAnnotationSchemes(
 
   const known = new Set([
     ...schemes.map(({ line }) => schemeVersionKey(line.name, line.version)),
-    ...existingSchemeVersionKeys(store),
+    ...existingSchemeVersionKeys(db),
   ]);
   const missing = annotations.filter(
     ({ line }) => !known.has(schemeVersionKey(line.scheme, line.scheme_version)),
@@ -656,11 +667,11 @@ function hashKey(name: string, hash: string): string {
 }
 
 /** Every registered version, keyed by its type's name and its hash. */
-function versionsByHash(store: Store): ReadonlyMap<string, number> {
+function versionsByHash(db: SqlDatabase): ReadonlyMap<string, number> {
   const versions = new Map<string, number>();
 
-  for (const summary of listTypes(store.db)) {
-    for (const row of typeVersions(store.db, summary.name)) {
+  for (const summary of listTypes(db)) {
+    for (const row of typeVersions(db, summary.name)) {
       versions.set(hashKey(row.name, row.typeHash), row.version);
     }
   }

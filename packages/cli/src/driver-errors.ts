@@ -40,10 +40,18 @@
  * reporting the busy timeout as though the wait had taken that long.
  */
 
-import { sqlitePrimaryCode, STORE_DIR, STORE_FILE } from '@ascend/store';
+import { INDEX_FILE, sqlitePrimaryCode, STORE_DIR } from '@ascend/store';
 
-/** Where the store lives, spelled once so a message cannot drift from the code that makes it. */
-const STORE_PATH = `${STORE_DIR}/${STORE_FILE}`;
+/**
+ * Where the index lives, spelled once so a message cannot drift from the code that makes it.
+ *
+ * The INDEX and not the store, which is the flip (E12.4): a project's records are a JSONL tree
+ * inside `.ascend/`, and the one SQLite file left is `index.db`, derived from that tree and
+ * rebuildable from it at any moment. Every message below is about a file SQLite refused, and the
+ * only file SQLite is asked about is this one -- so naming the tree here would send the reader to a
+ * path no SQLite error can come from.
+ */
+const STORE_PATH = `${STORE_DIR}/${INDEX_FILE}`;
 
 /**
  * The filesystem's refusal codes, and what to do about each.
@@ -172,11 +180,11 @@ function sqliteFailure(primary: number, message: string): string {
     case SQLITE_NOTADB:
       return (
         `ascend opened a file as a SQLite database, and it is not one: SQLite reported ` +
-        `'${message}' (code ${String(primary)}). Ascend's store is the single file '${STORE_PATH}' ` +
+        `'${message}' (code ${String(primary)}). Ascend's index is the single file '${STORE_PATH}' ` +
         `inside a project, and '--across' attaches that same file from other projects -- so one of ` +
         `those paths holds something that is not a database, or a database that has been damaged. ` +
-        `Move that file aside and run 'asc init' for a fresh store. If it holds something you need, ` +
-        `copy it somewhere first: ascend cannot read it as it stands.`
+        `The index is derived, not the store: delete the file and run 'asc index build' to rebuild ` +
+        `it from the project's JSONL tree. Nothing is lost by doing so.`
       );
     case SQLITE_ERROR:
       return (
@@ -191,17 +199,18 @@ function sqliteFailure(primary: number, message: string): string {
     case SQLITE_CANTOPEN:
       return (
         `ascend could not open its store file: SQLite reported '${message}' ` +
-        `(code ${String(primary)}). The store is the single file '${STORE_PATH}' inside a project. ` +
+        `(code ${String(primary)}). The index is the single file '${STORE_PATH}' inside a project. ` +
         `Either it is not there, or a directory on the way to it cannot be read or searched by you, ` +
         `or the file itself cannot. Check that the project has an '${STORE_DIR}' directory holding ` +
-        `an '${STORE_FILE}' you can read -- 'asc init' creates both -- then re-run.`
+        `an '${INDEX_FILE}' you can read -- 'asc init' creates the store, and 'asc index build' ` +
+        `builds the index from the JSONL tree beside it -- then re-run.`
       );
     case SQLITE_CORRUPT:
       return (
-        `SQLite reported that ascend's store file is damaged: '${message}' ` +
-        `(code ${String(primary)}). ascend has no repair path of its own, and re-running will give ` +
-        `the same answer. Restore '${STORE_PATH}' from a backup, or move it aside and run ` +
-        `'asc init' for a fresh store.`
+        `SQLite reported that ascend's index is damaged: '${message}' ` +
+        `(code ${String(primary)}). The index is derived from the project's JSONL tree, so the ` +
+        `repair is to delete '${STORE_PATH}' and run 'asc index build': the tree is the store and ` +
+        `is unaffected. Re-running without deleting it will give the same answer.`
       );
     case SQLITE_FULL:
       return (
@@ -210,14 +219,14 @@ function sqliteFailure(primary: number, message: string): string {
       );
     case SQLITE_READONLY:
       return (
-        `ascend's store is read-only: SQLite reported '${message}' (code ${String(primary)}). ` +
+        `ascend's index is read-only: SQLite reported '${message}' (code ${String(primary)}). ` +
         `Something has made '${STORE_PATH}' or a directory above it unwritable -- a file mode, a ` +
-        `read-only mount, or a connection opened read-only. Check the permissions on the store and ` +
+        `read-only mount, or a connection opened read-only. Check the permissions on the index and ` +
         `on its directory, then re-run.`
       );
     default:
       return (
-        `SQLite refused an operation on ascend's store, with code ${String(primary)}: ` +
+        `SQLite refused an operation on ascend's index, with code ${String(primary)}: ` +
         `'${message}'. ascend has no specific advice for that code, and re-running will give the ` +
         `same answer unless something changed. If the operation came from SQL you wrote, check it ` +
         `-- 'asc query --help' describes what those statements may touch.`

@@ -1,10 +1,11 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { openStore, registerScheme } from '@ascend/store';
+import { writeProducedLines } from '@ascend/store';
+import { storePaths } from '../src/project.js';
 import { splitHoldout } from '../src/holdout.js';
 import { flatten } from './helpers.js';
 
@@ -38,11 +39,19 @@ const bin = join(root, 'packages/cli/dist/bin.js');
  * measures ~2.8 s, and this file alone takes 178.86 s.
  *
  * Copying is sound because the store is LOCATION-INDEPENDENT, and that was measured rather than
- * assumed. A seeded store is one file, `.ascend/ascend.db`, 200 K, with no `-wal`/`-shm` left
- * beside it; a scan of every table for the seed directory's absolute path returned ZERO hits;
- * `meta` holds only `created_by_ascend_version` and `cwd_convention = project-relative`; and every
- * entry carries `cwd = '.'` with `repo`, `git_sha` and `branch` null. A copy into a different
- * temporary directory therefore says exactly what the original said.
+ * assumed -- RE-measured 2026-09-29 against the record tree, because what this paragraph used to
+ * cite described the SQLite store the flip retires (`asc-i5tj`): one file, `.ascend/ascend.db`,
+ * 200 K, no `-wal`/`-shm`, and `meta` holding `created_by_ascend_version` and `cwd_convention`. A
+ * fresh `asc init` now lays out a DIRECTORY: `.gitattributes` (20 bytes), `types/0001.jsonl` (the
+ * starter types, 6,952), and the DERIVED `index.db` (200,704 -- the SQLite schema itself, and
+ * exactly the file the old 200 K figure described); one `record` adds
+ * `entries/decision-<hash>/0001.jsonl` (468). A scan of every one of those files
+ * for the seed directory's absolute path returned ZERO hits; every entry carries `cwd = '.'` with
+ * `repo`, `git_sha` and `branch` null, visible in the line rather than inferred from a table; and
+ * the two `meta` keys are gone with the store, because no corpus line kind carries them. A copy
+ * into a different temporary directory therefore says exactly what the original said -- and so does
+ * copying `.ascend/` WHOLE: the index travels with the tree and is still current there, because
+ * `treeFingerprint` hashes the record files' RELATIVE paths and never their absolute ones.
  *
  * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
  * producing what `asc init` produces -- including the four starter types that command registers.
@@ -140,7 +149,7 @@ function one(stdout: string): Record<string, unknown> {
  * assertion about an empty table pass.
  */
 function column(dir: string, sql: string, ...params: (string | number)[]): readonly unknown[][] {
-  const file = join(dir, '.ascend', 'ascend.db');
+  const file = join(dir, '.ascend', 'index.db');
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     return (db.prepare(sql).all(...params) as unknown as Record<string, unknown>[]).map((row) =>
@@ -236,7 +245,9 @@ function seeded(): string {
   const dir = mkdtempSync(join(tmpdir(), 'asc-annotate-'));
   dirs.push(dir);
   mkdirSync(join(dir, '.ascend'), { recursive: true });
-  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
+  cpSync(join(seedDir, '.ascend'), join(dir, '.ascend'), {
+    recursive: true,
+  });
   return dir;
 }
 
@@ -1071,19 +1082,26 @@ describe('asc annotate: --backtest --holdout (asc-z41.2)', () => {
   });
 });
 
-/** A scheme registered with no pass at all, which `asc annotate` cannot produce. */
+/**
+ * A scheme registered with no pass at all, which `asc annotate` cannot produce.
+ *
+ * **Through the fused write, not through a database handle**, and the flip is why: a scheme that is
+ * not a line in the tree is a scheme the next rebuild removes, so a fixture that wrote one straight
+ * into the index used to work and now produces a store where `never_run` does not exist -- which is
+ * a different test, and was passing as this one until 2026-09-29.
+ *
+ * `storePaths` rather than `join(dir, '.ascend')`: a write takes the TREE, and the index path is the
+ * derived file beside it that the same call stamps.
+ */
 function schemeWithoutPass(dir: string): void {
-  const store = openStore({ dir: join(dir, '.ascend') });
-  try {
-    registerScheme(
-      store.db,
+  const { tree, index } = storePaths(dir);
+  writeProducedLines(tree, index, { now: '2026-01-01T00:00:00.000Z' }, (produce) =>
+    produce.scheme(
       'never_run',
       { labels: ['bug'], rules: [{ label: 'bug', kind: 'sql', query: '1 = 1' }] },
       { createdAt: '2026-01-01T00:00:00.000Z' },
-    );
-  } finally {
-    store.close();
-  }
+    ),
+  );
 }
 
 describe('asc kappa: two schemes', () => {

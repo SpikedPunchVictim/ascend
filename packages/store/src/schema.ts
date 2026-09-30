@@ -792,7 +792,12 @@ export class LedgerMismatchError extends Error {
     readonly inferredVersion: number,
     file?: string,
   ) {
-    const target = file ?? "this store's database file (<project>/.ascend/ascend.db)";
+    // The fallback names the derived index rather than the store, and it is the right name for
+    // every path that can reach it: `openStore` always passes the file it resolved (`db.ts`), so
+    // this branch is only reached by a direct `migrate(db)` -- which is a caller with a connection
+    // in hand and no path, i.e. a test. Naming `ascend.db` here would be naming a file that the
+    // flip left behind (E12.4).
+    const target = file ?? 'the database file ascend opened (<project>/.ascend/index.db)';
     super(
       `this store's user_version ledger says ${String(ledgerVersion)}, but its tables already ` +
         `match migration ${String(inferredVersion)} -- ascend will not guess which one is right, ` +

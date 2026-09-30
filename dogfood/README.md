@@ -80,9 +80,32 @@ context; the depth lives in the numbered files.
 | [0036](0036-2026-09-29-a-closed-vocabulary-is-elided.md) | the default view of `asc types show` elides a cell mid-word, including a closed vocabulary: 7 of 18 rendered rows carry the U+2026 marker, and both `enum required` cells for `stage_transition` read `enum required [complete, in_pr…`, losing the third legal value — and the `to_status` cell drops the field's own warning, `Equal to from_status is legal and usually a mistake -- record the transition, not the state.` — while `--json` carries the full `value` and an `enum_values` array | `asc-1gnl` (P3, open) | reading `asc types show stage_transition` to fill in an `asc record` call, because a closed vocabulary has to be readable from the command whose job is to document it — nobody was looking for it |
 | [0037](0037-2026-09-29-a-no-op-transition-is-a-real-entry.md) | `asc record stage_transition` accepts and stores an entry whose `to_status` equals its `from_status`, which the field's own description calls "legal and usually a mistake": the mistake lands as a durable entry that cannot be deleted and enters the count this type exists for (`How often does a stage go complete without its tests passing?`) while describing no change at all — and the safe probe for the same question exists and writes nothing, measured (`stage_transition entries: 45` before and after a `--dry-run` that printed the row and the id it would have minted) | `asc-xvz5` (P2, open) | recording the value the truncated list hid, because writing an entry was the only other way to ask whether a value was legal — nobody was looking for it |
 
-Thirty-seven findings, each with its own mechanism. The mechanism is the part that repeats even when
+| [0038](0038-2026-09-29-a-retirement-the-rebuild-erased.md) | a deprecation that existed only in the DERIVED index: `asc types deprecate` succeeded and the index said `deprecated`, while `asc index build` — the command whose whole job is to reproduce the store from the lines — replayed the tree, found no retirement in it, gave the type back `active` and exited 0; the same migration turned out to be a **seventh** write site where the approved plan named five | `asc-i5tj.4.1` (P1, fixed in the working tree) | the flip's own verification loop run against a real project, reading a value back **after** a rebuild — nobody was looking for a deprecation defect |
+| [0039](0039-2026-09-29-a-build-that-reports-success-from-half-a-store.md) | `asc index build` reads the tree and only the tree, so a half-flipped `.ascend/` builds an index of the part and reports success: with the guard removed, a 6,473-entry store with no tree built to `records 0`, exit 0 (`asc types brief` exit 0, 0 bytes — the SessionStart hook's own command), and this repo's 2,917-line tree beside that store built to `records 2917`, exit 0, listing six plausible type rows while **3,562 entries were absent** | `asc-i5tj.15` (P1, fixed in the working tree) | counting tree lines against store rows to size the cutover, then asking what a build would say about the difference — nobody was looking for a build defect |
+
+| [0041](0041-2026-09-29-a-strike-nothing-counts.md) | an invalidation is recorded and **no read path consults it** — `listInvalidations` has exactly one caller in `packages/*/src`, `commands/invalidate.ts`, the command that writes strikes — so a struck entry keeps its place in every count and every listing: `asc types list` reported decision **92** with 1 of those 92 struck, the same 92 as before the strike, and `asc search decision "gitignored sidecar"` printed the struck duplicate and the entry that superseded it as two peer matches under *"the query terms do occur as property values"*, with nothing distinguishing them | `asc-9xi0` (P2, open) | recording two decisions from this plan's own *"Records to update"* list, the second of which the store already held — nobody was looking for the read-path defect; the duplicate was found by a count taken to verify the write path, which came back 2 where one choice existed |
+
+| [0040](0040-2026-09-29-a-canonical-form-that-stopped-at-the-top-level.md) | `orderedLine` pins the key order of a line's own fields but passes a scheme's nested `spec` through, while `parseSchemeRule` rebuilds each rule as `{label,kind,query}` — so one scheme had two canonical spellings and `migrateStoreToTree`'s read-back check saw the tree as *"10386 line(s) written, 10386 read, 3 missing and 3 that should not be there"*, refusing the cutover on a store where exactly the 3 rule-bearing schemes of 7 disagreed and the 4 rule-less ones agreed to the byte; **both** suite fixtures had `rules: []`, so no test had ever put a rule through the format | `asc-i5tj.16` (P1, fixed in the working tree) | the first real run of `asc init` on this repo's own 23 MB store — the plan's *not measured yet* item, and its first measurement was a refusal |
+
+Forty-one findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
 
+> **Adding 0041, the detector ran first and agreed a seventh time.** `grep -c '^| \[0'` returned 40
+> against a sentence saying Forty before the edit; the row was added flush, the sentence moved to
+> forty-one, and the count re-run. `ls dogfood/*.md | grep -c '/00'` returned 42 for the same 40
+> records plus `README.md` and `0000-template.md` — the two ways of counting agree, which is the
+> check that would have caught 0016 and 0038 when they were written and not indexed.
+>
+> **Adding 0040, the detector ran first and agreed a sixth time.** `grep -c '^| \[0'` returned 39
+> against a sentence saying thirty-nine before the edit; the row was added flush, the sentence moved
+> to forty, and the count re-run.
+>
+> **Adding 0038 and 0039, the detector ran first and agreed a fifth time.** `grep -c '^| \[0'`
+> returned 37 against a sentence saying thirty-seven before the edit; both rows were added flush, the
+> sentence moved to thirty-nine, and the count re-run. 0038 is also the second time a record was
+> written without being indexed — the class 0038 itself is about, and it caught the README rather than
+> the tool this time: a row that is not in the index is a row nothing will find.
+>
 > Rows 0016 and 0017 were added 2026-09-26; 0016 had been written but never indexed, and the
 > count here said "Ten" while the table listed fifteen.
 >

@@ -34,7 +34,7 @@ export function requireType(store: Store, name: string, version?: number): TypeV
   if (row === undefined) {
     throw refusal(
       version === undefined
-        ? `There is no entry type named '${name}' in this project. ${knownNames(store)}`
+        ? `There is no entry type named '${name}' in this project. ${knownNames(store.db)}`
         : `Entry type '${name}' has no version ${String(version)}. ` +
             `Versions are numbered from 1 without gaps; ` +
             `run 'asc types show ${name}' to see the latest.`,

@@ -863,6 +863,15 @@ export function findType(
  * `name` is canonicalized before the lookup, for the reason given on `typeVersions` above
  * (asc-pw2): the stored name is already canonical, so matching the caller's raw spelling
  * exactly refuses a type under the very name it was defined with.
+ *
+ * **Both of its callers produce a LINE, and that is not decoration (2026-09-29).** A retirement is
+ * not a version, so the only way the fact reaches a tree that IS the store is a repeat of a
+ * `(name, version)` pair the tree already holds: `deprecationLines` (`line-producers.ts`) emits that
+ * line on the way out, and `replayType` (`jsonl-index.ts`) applies the same statement on the way back
+ * in. Before either existed this function's effect lived in the index alone and `asc index build`
+ * erased it -- measured on a real store: `review_completed` came back `active`. So the command that
+ * retires a type (`asc types deprecate`) reaches this only through `produce.deprecate`, and
+ * `writer-callers.test.ts` pins it: this name is in the scanned list, and no CLI module calls it.
  */
 export function deprecateType(db: SqlDatabase, name: string): number {
   const result = db

@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OUTPUT_CONTRACT_VERSION } from '@ascend/cli';
 import { DERIVED_SOURCE } from '@ascend/adapter-claude-code';
-import { ENTRY_SOURCES } from '@ascend/store';
+import { buildIndex, ENTRY_SOURCES, INDEX_FILE } from '@ascend/store';
 
 /**
  * `asc ingest claude-code`, driven as the real binary against a real store and a real corpus.
@@ -69,10 +69,22 @@ function asc(args: readonly string[], cwd: string): Run {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
-/** A directory holding an `.ascend/` store, with nothing registered in it yet. */
+/**
+ * A directory holding an `.ascend/` store, with nothing registered in it yet.
+ *
+ * **The index is BUILT here, from the empty tree, and that is what makes this fixture honest.**
+ * Before the flip the command created the store itself on the way in; now the store is the tree,
+ * which `asc ingest` creates as it writes -- so the real run still needs nothing. But six of this
+ * file's tests are `--dry-run`, and a preview runs the real writers under a rollback instead of
+ * creating anything (E12.4), which needs an index that is already there. Building one costs no
+ * spawn and gives every test the same starting point: a project whose index is exactly the record
+ * of an empty tree.
+ */
 function project(): string {
   const dir = scratch();
-  mkdirSync(join(dir, '.ascend'));
+  const tree = join(dir, '.ascend');
+  mkdirSync(tree);
+  buildIndex(tree, join(tree, INDEX_FILE), { now: new Date().toISOString() });
   return dir;
 }
 
@@ -236,7 +248,7 @@ function stored(dir: string): {
   readonly sources: readonly string[];
   readonly ids: readonly string[];
 } {
-  const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+  const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
   try {
     const byType: Record<string, number> = {};
     for (const row of db
@@ -312,7 +324,7 @@ describe('asc ingest claude-code', () => {
     transcripts(dir);
     asc(['ingest', 'claude-code'], dir);
 
-    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
     try {
       // `JSON.parse` returns `any`, and the linter is right to refuse it: an untyped parse would
       // let a renamed property pass as `undefined` against `toMatchObject` instead of failing.
@@ -366,7 +378,7 @@ describe('asc ingest claude-code', () => {
     transcripts(dir);
     asc(['ingest', 'claude-code'], dir);
 
-    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
     try {
       const rows = db
         .prepare('SELECT type_name AS t, cwd, branch FROM entries ORDER BY type_name')
@@ -409,7 +421,7 @@ describe('asc ingest claude-code', () => {
     const run = asc(['ingest', 'claude-code'], dir);
     expect(run.status).toBe(0);
 
-    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
     try {
       const row = db
         .prepare('SELECT cwd, branch FROM entries WHERE type_name = ?')
@@ -425,7 +437,7 @@ describe('asc ingest claude-code', () => {
     transcripts(dir);
     asc(['ingest', 'claude-code'], dir);
 
-    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
     try {
       const row = db
         .prepare('SELECT evidence_text AS t FROM entries WHERE type_name = ?')
@@ -588,7 +600,7 @@ describe('asc ingest claude-code', () => {
 
     // And the entry the chain used to swallow is recovered -- a first verified pass, because
     // as far as the store is concerned nothing came before it.
-    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
     try {
       const rows = db
         .prepare('SELECT id, properties_json AS p FROM entries WHERE type_name = ?')
@@ -873,7 +885,7 @@ describe('asc ingest claude-code', () => {
     // BOTH events landed. Read back rather than trusted, and sorted so the assertion does not
     // silently encode the sweep's file order -- which file is read first is not what is being
     // claimed here.
-    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
     let rows: { id: string; t: string }[];
     try {
       rows = db
@@ -939,7 +951,7 @@ describe('asc ingest claude-code', () => {
     expect(unwrapped).not.toContain('edited after it was ingested');
 
     // Immutability, read back: the edit did not overwrite what was already recorded.
-    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
     try {
       const rows = db
         .prepare('SELECT evidence_text AS t FROM entries WHERE type_name = ?')
@@ -1427,7 +1439,7 @@ describe('asc ingest claude-code: review findings (asc-gtnu)', () => {
     transcripts(dir, [REPORT_RECORD]);
     asc(['ingest', 'claude-code'], dir);
 
-    const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'));
+    const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
     try {
       const rows = db
         .prepare(

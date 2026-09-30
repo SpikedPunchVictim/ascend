@@ -223,10 +223,14 @@ describe('migration', () => {
     migrate(db, MIGRATIONS);
     db.exec('PRAGMA user_version = 0');
 
-    expect(() => migrate(db, MIGRATIONS, '/example/project/.ascend/ascend.db')).toThrow(
-      `sqlite3 /example/project/.ascend/ascend.db "PRAGMA user_version = ${String(HIGHEST_MARKED_VERSION)}"`,
+    expect(() => migrate(db, MIGRATIONS, '/example/project/.ascend/index.db')).toThrow(
+      `sqlite3 /example/project/.ascend/index.db "PRAGMA user_version = ${String(HIGHEST_MARKED_VERSION)}"`,
     );
-    expect(() => migrate(db, MIGRATIONS)).toThrow(/this store's database file/);
+    // The fallback names the derived index, because every path that can reach it has one in hand:
+    // `openStore` always passes the file it resolved, so this is a direct `migrate(db)` -- a test.
+    expect(() => migrate(db, MIGRATIONS)).toThrow(
+      /ascend opened \(<project>\/\.ascend\/index\.db\)/,
+    );
     db.close();
   });
 

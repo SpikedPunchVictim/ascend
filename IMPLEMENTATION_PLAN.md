@@ -1300,6 +1300,15 @@ as the store itself.
     is archived**, compared as SETS of canonical lines (`readRecordTree` imposes its own order on
     entries and annotations, so a sequence comparison would report a difference where there is none),
     and every refusal fires **before any write** so a failed migration strands no half-tree.
+
+    **That read-back check is what caught the format's own defect, on its first real run
+    (`asc-i5tj.16`, `dogfood/0040`).** The comparison is only as good as the canonical text, and a
+    scheme's nested `spec.rules` was not being ordered: the store hands back `spec_json` as
+    registered while `parseSchemeRule` rebuilds each rule as `{label,kind,query}`, so the check read 3
+    lines of a perfectly good migration as *"3 missing and 3 that should not be there"* and refused.
+    Fixed in `orderedLine` (`orderedSpec`) and both suite fixtures now carry a rule — neither did, and
+    a scheme fixture with `rules: []` cannot hold the shape that breaks. The refusal is the reason this
+    was cheap: nothing was archived, and the same run was 4.43 s once the format agreed with itself.
   - **E12.4b — the write path.** Every writer appends to the tree and maintains the index by the
     decision above. **Success:** a write is visible in the tree and in the index, and a read
     immediately after a write is a cache hit (`0.05 s`) rather than a refusal. **Tests:** both
@@ -1425,11 +1434,17 @@ as the store itself.
       One gate note: a `TypeSpec` fixture held in a `const` needs the annotation spelled out, because
       away from the call site the literal's `type: 'text'` widens to `string`. `tsc -b` does not
       typecheck tests, so `tsc -p tsconfig.eslint.json` is the gate that caught it.
-    - **E12.4b3 — the five write sites.** `record.ts`, `annotate.ts`, `invalidate.ts`,
+    - **E12.4b3 — the write sites.** `record.ts`, `annotate.ts`, `invalidate.ts`,
       `register-document.ts` and `import.ts` move off `recordEntry(store.db, …)`-shaped calls onto
-      the new path, each handing `writeLines` the lines it produced. **Status:** In Progress
-      (2026-09-29). The write lock half is done and committed (below); the five sites have not moved
-      yet. b1's sequence defect is fixed, and each of the five sites is now a single `produceLines`
+      the new path, each handing `writeLines` the lines it produced. **Status:** Complete
+      (2026-09-29, uncommitted) — and the count in this heading is wrong, which is itself a finding.
+      There were **seven** sites, not five: `ingest/claude-code.ts` was found by exploration while
+      this plan was being written (`asc-i5tj.14`), and `types/deprecate.ts` was found by a defect
+      living in it — a retirement that existed only in the derived index and was erased by the next
+      rebuild (`dogfood/0038`). The lesson is recorded there rather than here: a survey of write
+      sites is a survey of the sites someone thought of, and `writer-callers.test.ts` could not catch
+      the seventh because its list came from the same survey. It carries all seven names now.
+      The write lock half is done and committed (below); each site is a single `produceLines`
       call around a body that makes its writes in order — `import.ts`'s four loops and
       `annotate.ts`'s scheme-plus-pass both fall out of the one transaction the producers now share.
       What each site gains is that its dry run and its real run differ only in whether `writeLines`
@@ -1556,7 +1571,23 @@ as the store itself.
     close }` and nothing else, with reads as free functions over `store.db` — so `openIndex` already
     returning a `Store` means the call sites do not learn a new type. **Tests:** the flip driven end
     to end through the real binary, plus a source scan pinning the modules that may name the old store
-    file, the same instrument `index-build-is-explicit.test.ts` uses. **Status:** Not started.
+    file, the same instrument `index-build-is-explicit.test.ts` uses. **Status:** Complete
+    (2026-09-29, uncommitted) — and it took a seventh write site with it (`asc-i5tj.4.1`), because a
+    read flip and a write migration cannot be separated: the read handle is read-only, so every site
+    still writing through it fails with *attempt to write a readonly database*.
+
+    **The flip needed one guard with it, and the guard is the reason this section is not just a
+    rename (`asc-i5tj.15`, `dogfood/0039`).** `buildIndex` reads the TREE, so during a migration it
+    builds an index from whatever part of the corpus the tree holds and reports success — measured,
+    with the guard removed: a 6,473-entry `ascend.db` with no tree at all built to `records 0`, exit
+    0, and this repo's own 2,917-line tree beside that store built to `records 2917`, exit 0, listing
+    six plausible type rows with **3,562 entries missing**. `assertNoLegacyStore(root)` refuses before
+    the read, so a refusal cannot be preceded by the `.tmp` removal or the `renameSync`, and it names
+    `asc init` (never a deletion) as the remedy. It is a refusal rather than a warning because a
+    warning here would be indistinguishable from a healthy build: the fingerprint covers the tree, so
+    the index genuinely IS current for it. The remedy takes two hops when a tree is already there —
+    measured: `asc init` then refuses with *"already holds a record tree (2917 line(s))"* and names
+    the next step — so the message says so.
   - **E12.4d — retire the source of truth.** The SQLite store stops being a store; `asc export`/`asc
     import` keep working against the tree. **`asc init` is part of this and is easy to miss: it is
     the thing that creates the source of truth today** — `.ascend/` plus `ascend.db` through
@@ -1568,11 +1599,39 @@ as the store itself.
     own tests that asserted SQLite-as-store are retargeted rather than deleted. **Success:** the owner
     ruling (*"JSONL is the store; SQLite does not coexist as a second source of truth"*) becomes
     checkable by a test that fails if a production module opens a non-derived database. **Status:**
-    Not started.
+    In Progress (2026-09-29, uncommitted) — the **`asc init` half** landed with the flip rather than
+    here, and it had to: the starter types lived only in `ascend.db`, so after the flip a fresh
+    project's index would be built from an EMPTY tree and the first `asc record` would fail
+    `UnknownTypeError` while every flip test passed. What remains here is the retirement itself (the
+    source scan over `openStore` callers, and the `ascend.db` file leaving this repo in E12.4e).
   - **E12.4e — the cutover, on this repo.** Run it on `.ascend/` and drive the real loop on the real
     corpus: record, query, ingest, search. **Success:** `EV-34`'s numbers reproduce — 10,316 lines,
-    0 lost, ~4.65 s end to end — and the two gaps are reported rather than absorbed. **Status:** Not
-    started.
+    0 lost, ~4.65 s end to end — and the two gaps are reported rather than absorbed. **Status:**
+    Complete (2026-09-29, uncommitted). **Measured, and the staging the plan gave is wrong in one
+    step.** `asc init` on this repo's store (23,273,472 bytes, 6,473 entries, 7 schemes / 17 types /
+    3,889 annotations) wrote **10,386 lines in 4.43 s** — EV-34's 10,316 lines were taken before the
+    corpus grew, and the shape reproduces exactly. It reported the two gaps rather than absorbing
+    them: `ingest_cursor` **1,079 rows** and `meta` **3 rows**, both named in the archived store's
+    path. But **archiving the partial tree first loses the 39 entries only the tree held** —
+    measured by id: the tree's 2,911 entry lines are 2,872 in the store and **39** that are not. All
+    39 are `derived:claude-code`, and a cursor-less `asc ingest claude-code` re-derives them (11–17 s
+    over ~1,000 transcripts, ids stable: the store's and the tree's agree on 2,872 of them). So the
+    verified order is: archive the partial tree, `asc init` (migrating all 6,473 with their legacy
+    ids), then re-ingest with the cursor absent — measured twice, on a copy and on this repo, both
+    ending at **6,515 entry lines with all 2,911 archived ids present and 0 missing**. The 6 starter
+    type lines the partial tree held are byte-identical to the migrated ones by hash, so archiving it
+    costs no type line either. Done here: the tree sits in the working set as **23 untracked files**
+    — 22 `*.jsonl` plus `.gitattributes`, measured 2026-09-29 — with `index.db` (+ `-wal`/`-shm`, which
+    a rebuild rewrites) and `ingest-cursor.json` ignored. Nothing is committed; the conservative profile
+    applies. `.gitignore`'s `.ascend/` line was replaced by the seven derived/local paths — and the hook
+    loop was driven (`asc types brief` 3,284 bytes, `asc doctor`, `asc explore`, `asc search`). **The first
+    write to the cut-over store is the last check, and it passed**: two `decision` entries recorded at
+    02:29 read back through the rebuilt index and the generated view. That write also produced a
+    finding about the read path rather than about the cutover: the second entry was a duplicate the
+    store already held, and nothing applies the `superseded` strike it was given — `asc types list`
+    reports decision **92** with 1 of those 92 struck, the same 92 as before the strike, and
+    `asc search` listed the duplicate and its superseder as two peers. Filed as `asc-9xi0` (P2) and
+    recorded as `dogfood/0041`.
 - **E12.5 — the guards the blocked beads own.** `asc-2ezs` (one id, two contents, refused at read),
   `asc-98e1` (id-set superset of each parent — EV-31 measured that the markers-and-parse half alone
   passes exactly the resolution that loses a record), `asc-8uzh` (per-record size limit, byte-bounded

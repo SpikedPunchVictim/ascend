@@ -94,12 +94,19 @@ describe('a filesystem refusal becomes context, problem and fix', () => {
 });
 
 describe('a sqlite refusal becomes context, problem and fix', () => {
-  it('names the store path when the file is not a database', () => {
+  it('names the index path when the file is not a database', () => {
+    // The path is `index.db` and the fix says nothing is lost, and both are the flip: the file this
+    // branch describes is derived from the JSONL tree, so the way out is a rebuild and not a rescue.
+    // The branch is reachable whenever a SQLite file ascend did not write is opened directly; the
+    // CLI's own reads arrive at the same damage one layer up, as a stale index (see
+    // `driver-errors-cli.test.ts`, which drives both outcomes from the real binary).
     const message = describeDriverError(sqlite(26, 'file is not a database'));
     expect(message).toContain('file is not a database');
-    expect(message).toContain('.ascend/ascend.db');
-    expect(message).toMatch(/Move that file aside/);
-    expect(message).toContain('asc init');
+    expect(message).toContain('.ascend/index.db');
+    expect(message).toContain('asc index build');
+    expect(message).toContain('Nothing is lost by doing so');
+    // The old advice, gone with the old store: the file is not something to rescue.
+    expect(message).not.toContain('copy it somewhere first');
   });
 
   it("keeps the driver's own wording, because the code is too coarse to replace it", () => {
@@ -161,7 +168,7 @@ describe('what this layer declines', () => {
   });
 
   it("declines the store's own busy error, which needs nothing from here", () => {
-    expect(describeDriverError(new StoreBusyError('/x/.ascend/ascend.db'))).toBeUndefined();
+    expect(describeDriverError(new StoreBusyError('/x/.ascend/index.db'))).toBeUndefined();
   });
 
   it('declines a sqlite error carrying no numeric code at all', () => {

@@ -99,3 +99,59 @@ describe('asc-bli.2 -- guidance fields in a type document', () => {
     );
   });
 });
+
+describe('the retirement marker a type line may carry (2026-09-29)', () => {
+  /**
+   * The field exists because a deprecation had nowhere to live: `deprecateType` changes rows and
+   * mints no version, so the tree held no line for it and every rebuild erased it. See
+   * `TypeDocument.status` for the measurement.
+   *
+   * What is asserted here is the CODEC, in both directions, because the field is read off disk as
+   * text: a key the writer emits and the parser does not know would refuse every tree ascend wrote,
+   * and a key the parser accepts and the writer drops would lose the fact on the way back out.
+   */
+  it('round-trips through the document format, and sits before type_hash', () => {
+    const document = parseDocument(JSON.stringify({ ...DOC, status: 'deprecated' }), 'r.json');
+
+    expect(document.status).toBe('deprecated');
+    // The exact bytes rather than a key-order list, because this order is what a `type` line in the
+    // tree contains -- `orderedDocument` is shared by `serializeDocument` and the line builder, so a
+    // test of one is a test of the other only if this is written as bytes.
+    expect(serializeDocument(document)).toBe(
+      '{"name":"widget_reviewed","properties":[{"name":"widget_kind","type":"string"}],' +
+        '"status":"deprecated"}',
+    );
+    expect(parseDocument(serializeDocument(document), 'again.json')).toEqual(document);
+  });
+
+  it('is absent from an ordinary document, so the lines already in every tree are unchanged', () => {
+    // Not tidiness. `documentFromRow` omits the field for an active row, and if it did not, the next
+    // write would append `"status":"active"` to every line of every tree already on disk -- a rewrite
+    // of the whole corpus for a fact this format defines as the absence of the key.
+    expect(serializeDocument(parseDocument(JSON.stringify(DOC), 'r.json'))).toBe(
+      '{"name":"widget_reviewed","properties":[{"name":"widget_kind","type":"string"}]}',
+    );
+  });
+
+  it("refuses 'active', because a reactivation is a thing no operation performs", () => {
+    // The refusal rather than a silent drop is the point. A reader that ignored the value would
+    // leave a line reading "active" beside a store holding a retired type, and nothing would say so.
+    expect(() => parseDocument(JSON.stringify({ ...DOC, status: 'active' }), 'r.json')).toThrow(
+      /r\.json.*status.*'deprecated'|only value/i,
+    );
+  });
+
+  it('refuses an unknown status with a message naming the document', () => {
+    expect(() => parseDocument(JSON.stringify({ ...DOC, status: 'retired' }), 'r.json')).toThrow(
+      /r\.json.*status/i,
+    );
+  });
+
+  it('still refuses a key it does not know, which is why the field had to be declared', () => {
+    // The control: `status` is accepted because it is now in the allowlist, and not because the
+    // allowlist gave up. A parser that had been loosened would pass every test above.
+    expect(() => parseDocument(JSON.stringify({ ...DOC, retired: true }), 'r.json')).toThrow(
+      /r\.json.*no such field 'retired'/,
+    );
+  });
+});

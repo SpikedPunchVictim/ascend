@@ -37,12 +37,14 @@
  * they apply to a batch as defaults for entries that do not state their own -- a caller recording
  * ten entries should not repeat the run id ten times.
  *
- * **A batch is all-or-nothing.** SQLite's default is autocommit, so without a transaction a batch
- * whose fourth entry fails validation would leave the first three permanently written (entries are
- * immutable and cannot be deleted) while exiting non-zero and naming one failure. `withTransaction`
- * is what makes the exit code describe the whole store: 0 means every entry is there, 1 means none
- * is. The dry run is the same work inside `withRollback`, so a preview cannot report an outcome
- * the real run would not produce -- the same reasoning as `types import`.
+ * **A batch is all-or-nothing.** `writeProducedLines` holds one `BEGIN IMMEDIATE` across the
+ * produce, the append to the JSONL tree and the replay into the index, so a batch whose fourth entry
+ * fails validation leaves nothing behind: the entries are immutable and cannot be deleted, so without
+ * that lock and rollback the first three would be permanently written while the command exited
+ * non-zero and named one failure. The exit code describes the whole store: 0 means every entry is
+ * there, 1 means none is. The dry run is the same body run under `previewProducedLines`, so a
+ * preview cannot report an outcome the real run would not produce -- the same reasoning as
+ * `types import`.
  *
  * **Provenance ascend can read, it reads.** `cwd` comes from the process; `source` is always
  * `self`; `id` and `recorded_at` are minted here because core and store are pure and take both
@@ -57,37 +59,24 @@ import { Args, Flags } from '@oclif/core';
 import {
   entryCount,
   findType,
-  recordEntry,
+  previewProducedLines,
   UnknownTypeError,
-  withRollback,
-  withTransaction,
+  writeProducedLines,
+  type Producers,
   type RecordContext,
   type RecordRequest,
   type RecordResult,
+  type SqlDatabase,
   type TypeVersionRow,
 } from '@ascend/store';
 import { canonicalJson, reviewAfterCrossed, type PropertySpec } from '@ascend/core';
 import { BaseCommand } from '../base.js';
+import { storePaths } from '../project.js';
 import { parseEntryDocuments, type EntryDocument } from '../entry-document.js';
 import { refusal, usageError } from '../errors.js';
 import { readInput, STDIN } from '../input.js';
 import { describedProperties, renderProperty } from '../property-shape.js';
 import { requireType } from '../type-lookup.js';
-
-/** One row of the report: the entry that was written, as the caller can refer to it. */
-interface RecordRow extends Record<string, unknown> {
-  readonly index: number;
-  readonly id: string;
-  readonly type: string;
-  readonly version: number;
-  readonly type_hash: string;
-  readonly recorded_at: string;
-  readonly source: string;
-  readonly states: Readonly<Record<string, string>>;
-  readonly na: readonly string[];
-  readonly warnings: readonly string[];
-  readonly dry_run: boolean;
-}
 
 /**
  * A flag value, as the type it looks like.
@@ -626,7 +615,7 @@ export default class RecordEntry extends BaseCommand {
       ...(flags.actor === undefined ? {} : { actor: flags.actor }),
     };
 
-    await this.withProject(({ store, root }) => {
+    await this.withProjectRoot((root) => {
       const ascendVersion = this.ascendVersion();
       // Project-relative, never absolute (asc-tlc). `project.ts` finds `root` by walking UP
       // from `process.cwd()` -- its own doc says so ("The root is found by walking up") -- and
@@ -664,28 +653,33 @@ export default class RecordEntry extends BaseCommand {
       const recordedAt = this.now();
 
       const recordOrRefuse = (
+        produce: Producers,
         index: number,
         request: RecordRequest,
         context: RecordContext,
       ): RecordResult => {
         try {
-          return recordEntry(store.db, request, context);
+          return produce.entry(request, context);
         } catch (error) {
           throw withEntryIndex(error, index, documents.length);
         }
       };
 
-      // The `review_after` advisory (asc-bli.5). Read only when the type declares one, so a type
-      // without it pays nothing on the write path; and never on a dry run, which writes nothing
-      // and so crosses nothing. An unknown type reads as undefined here and is refused, with its
-      // own message, by the first `recordEntry` below.
-      const reviewAfter = dryRun ? undefined : findType(store.db, args.type)?.guidance.review_after;
-      let countBefore = 0;
-
-      const writeAll = (): RecordRow[] => {
+      const writeAll = (produce: Producers, db: SqlDatabase) => {
+        // The `review_after` advisory (asc-bli.5). Read only when the type declares one, so a type
+        // without it pays nothing on the write path; and never on a dry run, which writes nothing
+        // and so crosses nothing. An unknown type reads as undefined here and is refused, with its
+        // own message, by the first production below.
+        //
+        // The read is through the TRANSACTION's handle rather than through one opened on the way
+        // in, and that is asc-q4p's shape rather than a preference: the handle a command holds
+        // before the write is READ-ONLY, so the read that decides what this write does has to be
+        // inside the lock that makes it true.
+        const reviewAfter = dryRun ? undefined : findType(db, args.type)?.guidance.review_after;
+        let countBefore = 0;
         // Counted inside the transaction, so the "before" this compares against cannot include a
         // concurrent writer's entries and make two processes both claim, or both miss, the crossing.
-        if (reviewAfter !== undefined) countBefore = entryCount(store.db, args.type);
+        if (reviewAfter !== undefined) countBefore = entryCount(db, args.type);
 
         const rows = documents.map((document, index) => {
           // Call-level flags are DEFAULTS: an entry that states its own value keeps it. A batch
@@ -706,6 +700,7 @@ export default class RecordEntry extends BaseCommand {
           };
 
           const result = recordOrRefuse(
+            produce,
             index,
             {
               type: args.type,
@@ -738,10 +733,23 @@ export default class RecordEntry extends BaseCommand {
           };
         });
 
-        return rows;
+        return { rows, countBefore, reviewAfter };
       };
 
-      const rows = dryRun ? withRollback(store.db, writeAll) : withTransaction(store.db, writeAll);
+      // One fused write: the batch is produced under the transaction's own lock, appended to the
+      // tree, and replayed into the index, or nothing is. `produce` is what makes the entries
+      // reach the tree -- a body that called `recordEntry` on `db` itself would write rows the
+      // appended lines do not contain, which is a record that survives nowhere (`writeProducedLines`
+      // says so at greater length).
+      //
+      // A dry run takes the preview: the SAME body, run under a rollback, with the tree and the
+      // index left exactly as they were. It refuses a stale index rather than building one, which
+      // is a real change -- `asc record --dry-run` against a checkout that has moved the tree now
+      // says `asc index build` instead of quietly spending a rebuild on a preview.
+      const { tree, index: indexFile } = storePaths(root);
+      const { rows, countBefore, reviewAfter } = dryRun
+        ? previewProducedLines(tree, indexFile, writeAll)
+        : writeProducedLines(tree, indexFile, { now: recordedAt }, writeAll).result;
 
       if (dryRun) this.warn('dry run: nothing was written.');
 

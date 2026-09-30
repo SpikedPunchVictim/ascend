@@ -16,11 +16,32 @@
  * would mean two different answers to "where is the store" depending on which rule
  * fired first. `asc doctor` should report the root it resolved, so the answer is always
  * visible rather than inferred from silence.
+ *
+ * **What a project's `store` is changed with E12.4c, and this module is where the change is
+ * spelled.** `.ascend/` used to hold `ascend.db` -- the source of truth -- and discovery and
+ * opening were one step. Now it holds a JSONL tree, which IS the store, beside an `index.db`
+ * that is derived from it and can be deleted at any moment. So the two steps are separated
+ * here:
+ *
+ *   - **Discovery finds the ROOT**, and says nothing about whether a readable index is there.
+ *     `findProjectRoot` needs the directory; the tree inside it is the store, and a fresh clone
+ *     has one with no index beside it.
+ *   - **Opening goes through `openIndex`**, which is the currency check as well as the open. A
+ *     handle from here is READ-ONLY and refuses when the index does not describe the tree it was
+ *     built from (`IndexStaleError`, naming `asc index build`). That refusal is the point rather
+ *     than a cost: before the flip, a read opened the source of truth and was therefore always
+ *     current by construction. There is no such thing as a current-but-cheap open of a derived
+ *     file, so a read is either current or refused, and it never builds one (`asc-i5tj.3.1`).
+ *
+ * **Writing is not reachable from here.** `writeProducedLines` takes a root and a path and does
+ * its own locked open, so a command that writes calls `withProjectRoot` (`base.ts`) and hands the
+ * root to the store. That is what keeps the read handle read-only as a property of the API rather
+ * than a convention: there is no writable handle for a read path to have been handed.
  */
 
 import { existsSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { openStore, STORE_DIR, type Store } from '@ascend/store';
+import { INDEX_FILE, openIndex, openStore, STORE_DIR, type Store } from '@ascend/store';
 
 /**
  * Thrown when no `.ascend/` store is reachable.
@@ -75,9 +96,52 @@ export function findProjectRoot(startDir: string): string | undefined {
   }
 }
 
+/**
+ * The root of the project containing `startDir`, or `NoProjectError`.
+ *
+ * The throwing half of `findProjectRoot`, split out because the two callers want different things
+ * from the same walk and the difference is not cosmetic: `openProject` needs a store and cannot
+ * proceed without one, while `withProjectRoot` needs nothing but the path and would otherwise have
+ * to open an index -- and be refused for a stale one -- to learn a directory it does not read.
+ * `asc index build` is the caller that makes this concrete: it is the remedy for a stale index, so
+ * a version of it that opened the index first would refuse the very command whose job is to fix
+ * that (`finding 4`).
+ */
+export function requireProjectRoot(startDir: string): string {
+  const root = findProjectRoot(startDir);
+  if (root === undefined) throw new NoProjectError(resolve(startDir));
+  return root;
+}
+
+/**
+ * Where a project's tree and its derived index live, given the project root.
+ *
+ * **The tree is INSIDE `.ascend/`, and the two paths are computed here so that is spelled once.**
+ * The store's own API takes the tree directory -- `readRecordTree(root)` looks for `root/types`,
+ * `root/entries` and so on -- while a command is handed the PROJECT root, and the difference is one
+ * `join(root, STORE_DIR)` that has to be made at every call. Made by hand at each site, it was made
+ * wrong: the write path was handed the project root, so `treeFingerprint` hashed `<project>/types`
+ * (which does not exist) and the fingerprint of every store was the hash of nothing at all. That is
+ * a store that certifies any index as current.
+ *
+ * Returning the pair rather than the directory alone, because no caller wants the tree without the
+ * index and two callers deriving the index from the tree is how the two drift.
+ */
+export function storePaths(root: string): { readonly tree: string; readonly index: string } {
+  const tree = join(root, STORE_DIR);
+  return { tree, index: join(tree, INDEX_FILE) };
+}
+
 export interface Project {
   /** The directory holding the store, not necessarily the working directory. */
   readonly root: string;
+  /**
+   * The project's index, READ-ONLY, current for the tree at `root` or a refusal.
+   *
+   * Named `store` rather than `index` because it is what a command reads the store through, and
+   * every read command was written against that name. What it is not is the store: the JSONL tree
+   * under `root` is, and this is a derived file that may be deleted and rebuilt at any moment.
+   */
   readonly store: Store;
 }
 
@@ -128,42 +192,29 @@ export interface QueryProject {
   readonly store: Store;
 }
 
-export interface ProjectOptions {
-  /** How long a writer waits for a lock. Defaults to the store's own default. */
-  readonly busyTimeoutMs?: number;
-  /**
-   * Open the store with a handle that cannot write. See `OpenOptions.readOnly`.
-   *
-   * Threaded through rather than decided here, because whether a command may write is a property
-   * of the COMMAND and not of project discovery -- `project.ts` finds a directory, and a module
-   * whose job is finding a directory is the wrong place to hold an opinion about mutation.
-   */
-  readonly readOnly?: boolean;
-}
-
 /**
- * Open the store for the project containing `startDir`.
+ * Open the index for the project containing `startDir`.
  *
- * Timeout is threaded rather than read from the environment: `cli-best-practices` rule 5
- * resolves configuration once, at the entry point, and a store-reading helper that
- * consulted `process.env` on its own would be a second place config is decided.
+ * **Read-only, and that is no longer a matter of what the caller asked for.** The handle
+ * `openIndex` returns cannot be written through, which is what makes the epic's invariant -- *no
+ * write may land in the index that is not first in the JSONL* -- structural on every read path at
+ * once rather than a rule each command is trusted to keep. A command that writes does not come
+ * here: it calls `withProjectRoot` and hands the root to `writeProducedLines`, which takes its own
+ * locked writable handle for the duration of one production.
+ *
+ * **A stale index refuses, and a read never builds one.** `openIndex` throws `IndexStaleError`
+ * naming `asc index build`; the alternative -- rebuilding here -- is a ~75 s cost a caller cannot
+ * see coming (`EV-33`), and it was removed on purpose (`asc-i5tj.3.1`).
+ *
+ * **There is no `ascendVersion` parameter, and its absence is the flip made visible.** It used to
+ * be stamped into the store by every open; a read that opens read-only writes no version row, and
+ * an index is derived rather than labelled. The version a command needs is the one it stamps on
+ * the records it writes, and those commands hold it themselves.
  */
-export function openProject(
-  startDir: string,
-  ascendVersion: string,
-  options: ProjectOptions = {},
-): Project {
-  const root = findProjectRoot(startDir);
-  if (root === undefined) throw new NoProjectError(resolve(startDir));
-
-  const store = openStore({
-    dir: join(root, STORE_DIR),
-    ascendVersion,
-    ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }),
-    ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
-  });
-
-  return { root, store };
+export function openProject(startDir: string): Project {
+  const root = requireProjectRoot(startDir);
+  const { tree, index } = storePaths(root);
+  return { root, store: openIndex(tree, index) };
 }
 
 /**
@@ -177,25 +228,28 @@ export function openProject(
  * `--across` exists to cover, since the analysis is a corpus-wide question and the working
  * directory is an accident of where the shell is.
  *
- * The stand-in is an in-memory store, and it is opened read-only like any other: measured,
+ * **The fallback stays an in-memory store, and it is a fallback rather than a second kind of
+ * project.** There is no tree to read when there is no `.ascend/`, so there is nothing an index
+ * could be built from and `openIndex` has no meaning here; what the caller gets is a connection to
+ * attach other projects to, and `root: undefined` is its signal that `main` is empty rather than a
+ * project. It is opened read-only like any other: measured,
  * `new DatabaseSync(':memory:', { readOnly: true })` still refuses writes
  * (`attempt to write a readonly database`). That matters more than it looks, because the fallback
  * connection is the one that will `ATTACH` the projects a glob matched -- so a writable fallback
  * would have been a way to mutate every matched project from outside any of them, which is exactly
  * the guarantee `Bash(asc query:*)` as an allowlist entry depends on.
  *
- * `root: undefined` is the caller's signal that `main` is empty rather than a project, and the
- * command reports that on stderr rather than letting an unqualified `entries` fail with
- * `no such table`.
+ * **A project whose index is stale refuses here too**, rather than falling back to the empty store:
+ * a corpus-wide query silently missing the local project's records would be the false-green class
+ * this epic treats as severity-zero, and "there is no project" is not what is wrong. The remedy is
+ * the same one `openIndex` names.
  */
-export function openQueryProject(startDir: string, ascendVersion: string): QueryProject {
+export function openQueryProject(startDir: string): QueryProject {
   const root = findProjectRoot(startDir);
   if (root !== undefined) {
-    return {
-      root,
-      store: openStore({ dir: join(root, STORE_DIR), ascendVersion, readOnly: true }),
-    };
+    const { tree, index } = storePaths(root);
+    return { root, store: openIndex(tree, index) };
   }
 
-  return { root: undefined, store: openStore({ dir: ':memory:', ascendVersion, readOnly: true }) };
+  return { root: undefined, store: openStore({ dir: ':memory:', readOnly: true }) };
 }

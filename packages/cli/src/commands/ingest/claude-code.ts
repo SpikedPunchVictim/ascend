@@ -58,13 +58,18 @@
  *     real limit of keying on a derived identity, not a bug to be fixed here -- which is why the
  *     count is reported rather than absorbed.
  *
- * **ONE TRANSACTION, AND ALL-OR-NOTHING.** The writes go in a single `withTransaction`, matching
- * what `asc record` already promises for a batch. Measured twice on the real corpus with the same
- * probe (`/tmp/ycl/tx.mjs`, which derives once and replays the identical buffer through both
- * strategies, so the two arms cannot differ by input): 460 ms in one transaction against 678 ms
- * with a transaction per entry, then 240 ms against 356 ms on a re-run. The atomic choice is also
- * the faster one, on both runs, so there is no trade to make. A rejection part-way through
- * therefore leaves the store exactly as it was.
+ * **ONE TRANSACTION, AND ALL-OR-NOTHING.** The entries are one fused write
+ * (`writeProducedLines`, E12.4b3), which is one `BEGIN IMMEDIATE` across produce, append and
+ * replay -- matching what `asc record` already promises for a batch. Measured twice on the real
+ * corpus with the same probe (`/tmp/ycl/tx.mjs`, which derives once and replays the identical
+ * buffer through both strategies, so the two arms cannot differ by input): 460 ms in one
+ * transaction against 678 ms with a transaction per entry, then 240 ms against 356 ms on a re-run.
+ * The atomic choice is also the faster one, on both runs, so there is no trade to make. A rejection
+ * part-way through therefore leaves the store exactly as it was.
+ *
+ * The definitions go in their own fused write before the sweep, because `recordEntry` refuses an
+ * entry whose type is not registered. `--dry-run` previews both through `previewProducedLines`,
+ * which produces the real lines under a rollback, appends nothing to the tree and stamps nothing.
  *
  * **The cursor no longer lands inside that transaction, and the order it lands in instead is the
  * point** (`asc-i5tj.14`, 2026-09-29). It is a file, so it cannot share a transaction with the
@@ -76,12 +81,11 @@
  * missing entry. That is the same reason the old paragraph gave for putting the two in one
  * transaction; only the mechanism available changed.
  *
- * **The entries are buffered before they are written**, because the corpus walk is async and
- * `withTransaction` takes a synchronous body. Measured: 1,489 entries for the corpus on this
- * machine, which is 1,488 plus this session's own transcript -- the corpus is live, so treat the
- * count as a dated measurement rather than a constant. A backfill across many projects
- * (`asc-sx7`) is the case where that stops being free, and it is the reason this is stated here
- * rather than left implicit.
+ * **The entries are buffered before they are written**, because the corpus walk is async and the
+ * write body is synchronous. Measured: 1,489 entries for the corpus on this machine, which is 1,488
+ * plus this session's own transcript -- the corpus is live, so treat the count as a dated
+ * measurement rather than a constant. A backfill across many projects (`asc-sx7`) is the case where
+ * that stops being free, and it is the reason this is stated here rather than left implicit.
  *
  * The reasoning behind all of the above, and the A/B that settled the transaction shape, is
  * `docs/evidence/EV-ingest.md` (EV-10).
@@ -101,7 +105,7 @@
  * leave a caller who wants them no route at all.
  */
 
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Flags } from '@oclif/core';
 import {
   DERIVED_SOURCE,
@@ -120,13 +124,16 @@ import {
 import { canonicalJson, validateEntry, type TypeSpec } from '@ascend/core';
 import {
   DuplicateEntryError,
+  INDEX_FILE,
   openEntriesByVersion,
   findEntry,
   findType,
+  openIndex,
+  previewProducedLines,
   readIngestCursor,
-  recordEntry,
-  withTransaction,
   writeIngestCursor,
+  writeProducedLines,
+  type Producers,
   type RecordedEntry,
   type SqlDatabase,
   type Store,
@@ -134,7 +141,8 @@ import {
 import { BaseCommand } from '../../base.js';
 import { entryDifference, type EntryDifference } from '../../entry-difference.js';
 import { refusal } from '../../errors.js';
-import { registerDocument } from '../../register-document.js';
+import { storePaths } from '../../project.js';
+import { registerDocumentVia } from '../../register-document.js';
 import { identityVocabularyOf, type Disclosing } from '../../redact.js';
 import {
   createHandlerProducer,
@@ -392,90 +400,113 @@ export default class IngestClaudeCode extends BaseCommand {
     // mislabelled rows `already present` and leaves them exactly as they are.
     const root = resolve(this.optionalFlag(flags.root) ?? defaultTranscriptRoot());
 
-    await this.withProject(async (project) => {
+    await this.withProjectRoot(async (projectRoot) => {
       const rows: Record<string, unknown>[] = [];
 
       // Definitions first, because `recordEntry` refuses an entry whose type is not registered --
       // and because the entries below carry no `version`, so they resolve to this run's
-      // registration. `registerDocument` is the same path `asc types define` takes, so these six
-      // are ordinary types: they version, export and diff like anything a user writes, and a
-      // second run reports `unchanged` rather than rewriting them. All six register even though
-      // the sixth (`review_finding`) derives nothing from any corpus measured so far -- a type
-      // that exists and has no rows is a readable fact, and registering it only once it had a
+      // registration. `registerDocumentVia` is the same producer `asc types define` reaches, so
+      // these six are ordinary types: they version, export and diff like anything a user writes,
+      // and a second run reports `unchanged` rather than rewriting them. All six register even
+      // though the sixth (`review_finding`) derives nothing from any corpus measured so far -- a
+      // type that exists and has no rows is a readable fact, and registering it only once it had a
       // row would make the day it appears depend on the corpus rather than on the code.
-      for (const spec of DERIVED_TYPES) {
-        const registration = registerDocument(project.store, spec, {
-          registeredAt: this.now(),
-          dryRun,
-        });
-        rows.push({ [ACTION]: 'type', [TARGET]: spec.name, [OUTCOME]: registration.outcome });
-      }
+      //
+      // ONE fused write for all six, not one each: they are registered together and the tree is
+      // appended once, so a run that dies mid-registration leaves no half-applied set. They have
+      // distinct names and no version depends on another, so the single rollback a preview takes
+      // cannot change any of their outcomes.
+      const { tree, index: indexFile } = storePaths(projectRoot);
+      const registerTypes = (produce: Producers, db: SqlDatabase): void => {
+        for (const spec of DERIVED_TYPES) {
+          const registration = registerDocumentVia(produce, db, spec, { registeredAt: this.now() });
+          rows.push({ [ACTION]: 'type', [TARGET]: spec.name, [OUTCOME]: registration.outcome });
+        }
+      };
+      if (dryRun) previewProducedLines(tree, indexFile, registerTypes);
+      else writeProducedLines(tree, indexFile, { now: this.now() }, registerTypes);
 
-      // `--full` (asc-4dm.4) ignores the cursor outright, by never building the map `streamCorpus`
-      // would otherwise consult -- the same "absence costs time, never correctness" contract as a
-      // store that predates migration 4, or one whose cursor rows were deleted by hand.
-      // Typed handlers (asc-tuur.3), read from this project's `handlers/`. A handler the cursor's
-      // files were never read through -- new, or changed, so its hash is new -- forces a full read
-      // on its first run: the cursor would otherwise withhold every transcript it already knows
-      // from the one reader that has never seen them, and a new handler would fill forward only.
-      const loaded = loadProjectHandlers(project.root);
-      for (const failure of loaded.failures) {
-        this.warn(`handler ${failure.path} was not run: ${failure.message}`);
-      }
-      // One read of the cursor, used for both halves of what it holds: which handlers the files it
-      // names were read through (below), and the files themselves (`knownFiles`). Both come off the
-      // same object because they are one fact -- a file read before a handler existed was never
-      // offered to it -- and because two reads of a file that a concurrent ingest could replace
-      // between them would be two answers to one question.
-      const cursor = readIngestCursor(project.store.dir);
-      const applied = new Set(cursor.handlers);
-      const unapplied = loaded.typed.filter(({ handler }) => !applied.has(handler.hash));
-      if (!full && unapplied.length > 0) {
-        this.logToStderr(
-          `reading every transcript: ${unapplied.map(({ name }) => name).join(', ')} ` +
-            `has not been run over the files already ingested`,
+      // Opened AFTER that write, and that order is the whole of why this command works on a fresh
+      // clone. The tree is committed and the index is not, so the first `asc ingest` in a new
+      // checkout has no index at all -- and the fused write above BUILDS one when it is missing,
+      // because a write may pay for a rebuild where a read may not. So the handle here is current
+      // by construction, and `specFor` below can resolve a typed handler's type out of the index
+      // rather than reporting six types as undefined.
+      //
+      // The `--dry-run` arm takes the same route and can therefore refuse a project with no index:
+      // a preview runs the real writers under a rollback and so needs a writable index, and this
+      // package's rule is that a read never builds one. Running `asc index build` first is the
+      // remedy, and the refusal names it.
+      const store = openIndex(tree, indexFile);
+      try {
+        // `--full` (asc-4dm.4) ignores the cursor outright, by never building the map `streamCorpus`
+        // would otherwise consult -- the same "absence costs time, never correctness" contract as a
+        // store that predates migration 4, or one whose cursor rows were deleted by hand.
+        // Typed handlers (asc-tuur.3), read from this project's `handlers/`. A handler the cursor's
+        // files were never read through -- new, or changed, so its hash is new -- forces a full read
+        // on its first run: the cursor would otherwise withhold every transcript it already knows
+        // from the one reader that has never seen them, and a new handler would fill forward only.
+        const loaded = loadProjectHandlers(projectRoot);
+        for (const failure of loaded.failures) {
+          this.warn(`handler ${failure.path} was not run: ${failure.message}`);
+        }
+        // One read of the cursor, used for both halves of what it holds: which handlers the files it
+        // names were read through (below), and the files themselves (`knownFiles`). Both come off the
+        // same object because they are one fact -- a file read before a handler existed was never
+        // offered to it -- and because two reads of a file that a concurrent ingest could replace
+        // between them would be two answers to one question.
+        const cursor = readIngestCursor(store.dir);
+        const applied = new Set(cursor.handlers);
+        const unapplied = loaded.typed.filter(({ handler }) => !applied.has(handler.hash));
+        if (!full && unapplied.length > 0) {
+          this.logToStderr(
+            `reading every transcript: ${unapplied.map(({ name }) => name).join(', ')} ` +
+              `has not been run over the files already ingested`,
+          );
+        }
+        const specFor = (type: string): TypeSpec | undefined =>
+          derivedType(type) ?? findType(store.db, type)?.spec;
+
+        const knownFiles =
+          full || unapplied.length > 0
+            ? undefined
+            : new Map(
+                cursor.files.map((row): [string, FileStat] => [
+                  row.path,
+                  { mtimeMs: row.mtimeMs, size: row.size },
+                ]),
+              );
+
+        const sweep = await this.sweep(root, includeEphemeral, knownFiles, loaded.typed, specFor);
+        const writes = this.write(projectRoot, store, sweep.entries, dryRun, sweep.readFiles, {
+          specFor,
+          // The union, not the current set: a handler removed from `handlers/` and later restored
+          // was still run over these files, and its entries are still in the store.
+          applied: [...applied, ...loaded.typed.map(({ handler }) => handler.hash)],
+          types: new Set(loaded.typed.map(({ handler }) => handler.type)),
+        });
+
+        const derivedNames = new Set(DERIVED_TYPES.map((spec) => spec.name));
+        const handlerTypes = [...new Set(loaded.typed.map(({ handler }) => handler.type))].filter(
+          (type) => !derivedNames.has(type),
         );
+        for (const type of [...derivedNames, ...handlerTypes]) {
+          rows.push({
+            [ACTION]: 'entry',
+            [TARGET]: type,
+            [OUTCOME]: describe(writes.counts.get(type) ?? ZERO_OUTCOME),
+          });
+        }
+        for (const one of sweep.handlers) {
+          rows.push({ [ACTION]: 'handler', [TARGET]: one.name, [OUTCOME]: handlerOutcome(one) });
+        }
+
+        this.emit(format, { columns: [ACTION, TARGET, OUTCOME], rows });
+        this.report(root, sweep, writes, dryRun);
+        this.reportEarlierVersions(store.db, loaded.typed);
+      } finally {
+        store.close();
       }
-      const specFor = (type: string): TypeSpec | undefined =>
-        derivedType(type) ?? findType(project.store.db, type)?.spec;
-
-      const knownFiles =
-        full || unapplied.length > 0
-          ? undefined
-          : new Map(
-              cursor.files.map((row): [string, FileStat] => [
-                row.path,
-                { mtimeMs: row.mtimeMs, size: row.size },
-              ]),
-            );
-
-      const sweep = await this.sweep(root, includeEphemeral, knownFiles, loaded.typed, specFor);
-      const writes = this.write(project.store, sweep.entries, dryRun, sweep.readFiles, {
-        specFor,
-        // The union, not the current set: a handler removed from `handlers/` and later restored
-        // was still run over these files, and its entries are still in the store.
-        applied: [...applied, ...loaded.typed.map(({ handler }) => handler.hash)],
-        types: new Set(loaded.typed.map(({ handler }) => handler.type)),
-      });
-
-      const derivedNames = new Set(DERIVED_TYPES.map((spec) => spec.name));
-      const handlerTypes = [...new Set(loaded.typed.map(({ handler }) => handler.type))].filter(
-        (type) => !derivedNames.has(type),
-      );
-      for (const type of [...derivedNames, ...handlerTypes]) {
-        rows.push({
-          [ACTION]: 'entry',
-          [TARGET]: type,
-          [OUTCOME]: describe(writes.counts.get(type) ?? ZERO_OUTCOME),
-        });
-      }
-      for (const one of sweep.handlers) {
-        rows.push({ [ACTION]: 'handler', [TARGET]: one.name, [OUTCOME]: handlerOutcome(one) });
-      }
-
-      this.emit(format, { columns: [ACTION, TARGET, OUTCOME], rows });
-      this.report(root, sweep, writes, dryRun);
-      this.reportEarlierVersions(project.store.db, loaded.typed);
     });
   }
 
@@ -618,6 +649,7 @@ export default class IngestClaudeCode extends BaseCommand {
    * file at all; this module's header says what that guarantee is and, just as importantly, is not.
    */
   private write(
+    root: string,
     store: Store,
     entries: readonly DerivedEntry[],
     dryRun: boolean,
@@ -736,15 +768,14 @@ export default class IngestClaudeCode extends BaseCommand {
       return { counts, warnings, rejections, collisions, redactedCollisions };
     }
 
-    // ONE transaction, all-or-nothing, as `asc record` promises for a batch. Measured twice on the
+    // ONE fused write, all-or-nothing, as `asc record` promises for a batch. Measured twice on the
     // real corpus (`asc-4dm.4`): 460 ms in one transaction against 678 ms with a transaction per
     // entry, then 240 ms against 356 ms on a re-run. Atomic is also the faster of the two, so
     // there is no trade to make, and a rejection part-way through leaves the store as it was.
-    withTransaction(store.db, () => {
+    const recordAll = (produce: Producers, db: SqlDatabase): void => {
       for (const entry of valid) {
         try {
-          const { warnings: issues } = recordEntry(
-            store.db,
+          const { warnings: issues } = produce.entry(
             { type: entry.type, properties: entry.properties },
             {
               id: idFor(entry),
@@ -786,7 +817,11 @@ export default class IngestClaudeCode extends BaseCommand {
             // comparing content is what tells the two cases apart; skipping the comparison is
             // exactly how this bug stayed invisible. A duplicate with no row to read is not a
             // collision at all, so it is rethrown.
-            const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
+            //
+            // Read through `db`, the transaction's own handle, rather than the read-only one the
+            // command opened on the way in: the row it looks for is one this transaction's
+            // predecessor wrote, and after the flip the outer handle would not serve it.
+            const existing: RecordedEntry | undefined = findEntry(db, idFor(entry));
             if (existing === undefined) throw error;
             if (fingerprint(existing) === fingerprint(entry)) {
               tally(entry.type, 'present');
@@ -798,7 +833,10 @@ export default class IngestClaudeCode extends BaseCommand {
           throw error;
         }
       }
-    });
+    };
+
+    const { tree } = storePaths(root);
+    writeProducedLines(tree, join(tree, INDEX_FILE), { now: recordedAt }, recordAll);
 
     // AFTER the entries commit, never before. `write`'s doc gives the direction argument -- a crash
     // here under-claims the cursor and costs a re-read, where the reverse order would cost entries.

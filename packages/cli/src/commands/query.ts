@@ -29,13 +29,15 @@ import {
   DuplicateProjectError,
   requireStore,
   sqlitePrimaryCode,
+  INDEX_FILE,
+  IndexStaleError,
+  openIndex,
   STORE_DIR,
-  STORE_FILE,
   type Attachment,
   type ProjectSource,
   type SqlDatabase,
 } from '@ascend/store';
-import { globSync, realpathSync } from 'node:fs';
+import { existsSync, globSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { BaseCommand } from '../base.js';
@@ -94,15 +96,21 @@ function requireSingleStatement(sql: string): void {
 /**
  * The project directory a glob match names.
  *
- * A match is read as a **project directory** -- the thing holding `.ascend/` -- and the store is
- * `<match>/.ascend/ascend.db`. The `<project>/.ascend/ascend.db` spelling is accepted too, because
- * that is what shell completion and `ls` produce, and a rule that refused it would be a rule about
- * spelling rather than about projects. Recognised structurally (the last two segments are `.ascend`
- * and `ascend.db`) rather than by cutting the string, so it gives the same answer on any separator.
+ * A match is read as a **project directory** -- the thing holding `.ascend/` -- and what is attached
+ * from it is `<match>/.ascend/index.db`. The `<project>/.ascend/index.db` spelling is accepted too,
+ * because that is what shell completion and `ls` produce, and a rule that refused it would be a rule
+ * about spelling rather than about projects. Recognised structurally (the last two segments are
+ * `.ascend` and `index.db`) rather than by cutting the string, so it gives the same answer on any
+ * separator.
+ *
+ * The file named here is the INDEX, not the store. A project's records are the JSONL tree beside it
+ * (`project.ts`), and `--across` attaches the derived file because that is the only thing SQLite can
+ * be pointed at. Which is why every target's currency is checked before anything is attached -- see
+ * `assertCurrent`.
  */
 function projectDirOf(match: string): string {
   const parent = dirname(match);
-  return basename(parent) === STORE_DIR && basename(match) === STORE_FILE ? dirname(parent) : match;
+  return basename(parent) === STORE_DIR && basename(match) === INDEX_FILE ? dirname(parent) : match;
 }
 
 /** Resolve a path that may not exist, since whether it exists is `attachStore`'s refusal to write. */
@@ -350,7 +358,7 @@ export default class Query extends BaseCommand {
       const localFile =
         project.root === undefined
           ? undefined
-          : resolveOrSelf(join(project.root, STORE_DIR, STORE_FILE));
+          : resolveOrSelf(join(project.root, STORE_DIR, INDEX_FILE));
 
       if (project.root === undefined) {
         // Said rather than left to be discovered by an unqualified `entries` failing with
@@ -421,11 +429,77 @@ export default class Query extends BaseCommand {
       const project = projectDirOf(match);
       return {
         label: project,
-        // A match that already names the store file is used as given; a project directory gets the
-        // store's path inside it.
-        file: project === match ? join(project, STORE_DIR, STORE_FILE) : match,
+        // A match that already names the index file is used as given; a project directory gets the
+        // index's path inside it.
+        file: project === match ? join(project, STORE_DIR, INDEX_FILE) : match,
       };
     });
+  }
+
+  /**
+   * Refuse the whole query when any project it would attach is not current for its own tree.
+   *
+   * **Before the first attach, and for every target rather than the first bad one.** `attachStore`
+   * verifies that a path exists and that an alias is free; it knows nothing about trees, and after
+   * the flip that is a hole rather than a division of labour -- what `--across` attaches is a DERIVED
+   * file, and a stale one holds whatever the corpus looked like the last time somebody built it.
+   * Measured on the store's own tests: an index holding `screening` v1 beside a tree holding v1 and
+   * v2. Attached without a check, that project unions in yesterday's records as though they were
+   * today's, and nothing about the answer says so -- the false-green class this epic treats as
+   * severity-zero, and the reason `openIndex` exists as the read path's currency check.
+   *
+   * `openIndex` IS that check (it hashes the tree and compares the stored fingerprint, then opens
+   * read-only), so this uses it rather than re-deriving a comparison: a second implementation of
+   * "is this index current" is a second answer, and the two would drift exactly where the tests are
+   * thinnest. The handle is closed immediately -- this is a validation, not the attachment.
+   *
+   * **Every stale project is named, not just the first.** A refusal that fixed one project and then
+   * reported the next would send the caller round the loop once per project, and the set is exactly
+   * what they need to rebuild.
+   *
+   * **The local project is skipped.** `openQueryProject` opened it through `openIndex` already, so
+   * it is current by construction; re-checking would be a second answer to a settled question, and
+   * on a large project a second full-tree hash.
+   *
+   * **Only staleness is collected. Anything else is rethrown.** A `ForeignStoreError` is a file
+   * ascend did not write (`asc-63v`), which `attachStore` refuses with its own message and which is
+   * not what this check is about; swallowing it here would replace a specific refusal with a claim
+   * about currency that is not true.
+   *
+   * **A target that is not an ascend project is skipped, and that is not an optimisation either.**
+   * "This index is not current for its record tree" presupposes a record tree, and a matched
+   * directory holding no `.ascend/` has none -- measured 2026-09-29: `--across` over a glob matching
+   * a plain directory reported it as a project whose index was stale and told the caller to run
+   * `asc index build` there, which is advice that cannot be followed in a directory that has no
+   * store and is a false statement about one ascend never set up. `attachStore` already refuses that
+   * case, in its own words and naming the path (`asc-4og`); this check simply steps aside for it.
+   * Skipped targets still reach that refusal -- they are only skipped HERE.
+   */
+  private assertCurrent(
+    planned: readonly { readonly target: ProjectSource; readonly local: boolean }[],
+  ): void {
+    const stale: string[] = [];
+
+    for (const { target, local } of planned) {
+      if (local) continue;
+      if (!existsSync(dirname(target.file))) continue;
+      try {
+        openIndex(dirname(target.file), target.file).db.close();
+      } catch (error) {
+        if (!(error instanceof IndexStaleError)) throw error;
+        stale.push(target.label);
+      }
+    }
+
+    if (stale.length === 0) return;
+
+    throw refusal(
+      `--across would attach ${String(stale.length)} project(s) whose index is not current for ` +
+        `their record trees: ${stale.join(', ')}. What is attached is the derived index, so a stale ` +
+        `one would union in whatever the corpus held the last time it was built and report that as ` +
+        `your data. Run 'asc index build' in each of those projects -- it rebuilds the index from ` +
+        `the JSONL tree, which is the store and is unaffected.`,
+    );
   }
 
   /**
@@ -477,6 +551,8 @@ export default class Query extends BaseCommand {
       local: localFile !== undefined && resolveOrSelf(target.file) === localFile,
     }));
     const wanted = planned.filter((entry) => !entry.local).length;
+
+    this.assertCurrent(planned);
 
     // **The ceiling, refused rather than discovered.** Every `--across` target is attached at once
     // and stays attached for the caller's statement, because that statement is the caller's own SQL

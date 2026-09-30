@@ -1,10 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OUTPUT_CONTRACT_VERSION } from '@ascend/cli';
+import { emptyStore } from './helpers.js';
 
 /**
  * The `asc types` commands, driven as the real binary against a real store.
@@ -73,9 +74,7 @@ function flatten(text: string): string {
 
 /** A directory holding an `.ascend/` store, with nothing registered in it yet. */
 function project(): string {
-  const dir = scratch();
-  mkdirSync(join(dir, '.ascend'));
-  return dir;
+  return emptyStore(scratch());
 }
 
 /**
@@ -154,7 +153,7 @@ interface RegistryRow {
  * `unable to open database file` at the assertion.
  */
 function registry(dir: string): readonly RegistryRow[] {
-  const file = join(dir, '.ascend', 'ascend.db');
+  const file = join(dir, '.ascend', 'index.db');
   if (!existsSync(file)) return [];
 
   const db = new DatabaseSync(file, { readOnly: true });
@@ -171,7 +170,7 @@ function registry(dir: string): readonly RegistryRow[] {
 
 /** Generated views and indexes -- the DDL a rollback has to undo as well as the rows. */
 function schemaObjects(dir: string): number {
-  const db = new DatabaseSync(join(dir, '.ascend', 'ascend.db'), { readOnly: true });
+  const db = new DatabaseSync(join(dir, '.ascend', 'index.db'), { readOnly: true });
   try {
     const row = db
       .prepare(
@@ -747,6 +746,37 @@ describe('asc types deprecate', () => {
     // Read back: a preview that changed the status anyway would still print this row.
     expect(registry(dir)[0]).toMatchObject({ status: 'active' });
   });
+
+  it('survives a rebuild, because the retirement is a line in the tree', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+    const defined = registry(dir);
+
+    expect(asc(['types', 'deprecate', 'review_completed'], dir).status).toBe(0);
+
+    // The TREE, not only the index. Measured 2026-09-29, and the measurement is why this test exists:
+    // the deprecation lived in the index alone, so `asc index build` -- the operation whose whole job
+    // is to reproduce the store -- gave the type back `active`. Reading the index here would have
+    // passed for a store that had already lost the fact.
+    const lines = readFileSync(join(dir, '.ascend', 'types', '0001.jsonl'), 'utf8')
+      .trim()
+      .split('\n');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[1] as string)).toMatchObject({ status: 'deprecated' });
+
+    // A repeat of a pair the tree already holds, which is how a fact with no version of its own
+    // reaches the tree. So: one version, and the SAME identity -- a retirement that minted a version
+    // would leave every entry recorded under the type pointing at a hash nothing declares.
+    const retired = registry(dir);
+    expect(retired.map((row) => row.version)).toEqual([1]);
+    expect(retired[0]?.type_hash).toBe(defined[0]?.type_hash);
+
+    // The rebuild, which the flip makes an ordinary event rather than a recovery: every checkout has
+    // the tree and no index, because `.gitignore` says so.
+    rmSync(join(dir, '.ascend', 'index.db'));
+    expect(asc(['index', 'build'], dir).status).toBe(0);
+    expect(registry(dir)[0]).toMatchObject({ status: 'deprecated' });
+  });
 });
 
 describe('asc types show -- guidance (asc-bli.4)', () => {
@@ -840,6 +870,44 @@ describe('asc types export and import', () => {
     // latest-only export would reproduce the same *shape* and lose version 1, which is the
     // definition any entry recorded under it would attach to.
     expect(registry(target)).toEqual(registry(source));
+  });
+
+  it('carries a retirement through export | import, and it survives the rebuild there', () => {
+    const source = project();
+    const target = project();
+    asc(['types', 'define', json(source, 'r.json', REVIEW)], source);
+    expect(asc(['types', 'deprecate', 'review_completed'], source).status).toBe(0);
+
+    const run = shell(
+      `( cd "$SRC" && HOME="$SRC" "$NODE" "$BIN" types export ) | ` +
+        `( cd "$DST" && HOME="$DST" "$NODE" "$BIN" types import - )`,
+      { cwd: target, src: source, dst: target },
+    );
+    expect(run.status, run.stderr).toBe(0);
+
+    // The status travels in the DOCUMENT, and that is a choice rather than a side effect: `export`
+    // writes what `documentFromRow` gives it, so a retired version's document says so. The other
+    // answer -- a document that describes only the shape, with the retirement left behind in the
+    // source project -- is defensible and was not taken, because `status` is not identity and the
+    // two drivers below have to agree about what a document means.
+    expect(documents(asc(['types', 'export'], source).stdout)[0]).toMatchObject({
+      status: 'deprecated',
+    });
+
+    // Applied through the SAME production `asc types deprecate` uses, so the target holds a retired
+    // type with a LINE saying so -- and the import says out loud that it did it, because a `status`
+    // in a document is otherwise easy not to notice.
+    expect(registry(target)[0]).toMatchObject({ status: 'deprecated' });
+    expect(run.stderr).toContain('registered retired');
+
+    // The half that a status written to the index alone would fail. This is the class the field
+    // exists to close (`asc index build` gave back `active`, measured 2026-09-29), and it is
+    // reachable from here as well as from `asc types deprecate`: `replayType` applies the field, so
+    // an import that did not would leave two stores disagreeing about one corpus with both
+    // reporting success.
+    rmSync(join(target, '.ascend', 'index.db'));
+    expect(asc(['index', 'build'], target).status).toBe(0);
+    expect(registry(target)[0]).toMatchObject({ status: 'deprecated' });
   });
 
   it('writes `[]` for an empty registry, so the pipeline its own help offers works', () => {

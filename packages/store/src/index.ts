@@ -83,6 +83,7 @@ export {
 export { indexName, refreshTypeViews, viewName, type RefreshReport } from './views.js';
 
 export {
+  INGEST_CURSOR_FILE,
   readIngestCursor,
   writeIngestCursor,
   type IngestCursor,
@@ -135,6 +136,7 @@ export {
   openEntriesByVersion,
   recordAnnotations,
   recordInvalidation,
+  registerNamedScheme,
   registerScheme,
   RESERVED_SCHEME,
   restoreInvalidationScheme,
@@ -239,6 +241,7 @@ export {
   produceLines,
   type ProducedLines,
   type Producers,
+  type TypeDeprecation,
   type TypeProduction,
 } from './line-producers.js';
 

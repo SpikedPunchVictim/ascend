@@ -1,9 +1,18 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { schemeHash, type SchemeSpec } from '@ascend/store';
+import { emptyStore } from './helpers.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
@@ -38,11 +47,18 @@ const bin = join(root, 'packages/cli/dist/bin.js');
  * 0.195 s replicated outside vitest, and this file's 43 tests take 78.59 s in all.
  *
  * Copying is sound because the store `asc init` leaves is LOCATION-INDEPENDENT, and that was
- * measured rather than assumed: a seeded store is one file, `.ascend/ascend.db`, 200704 bytes,
- * with no `-wal`/`-shm` left beside it; `meta` holds only `created_by_ascend_version` and
- * `cwd_convention = project-relative`; and a scan of every table for the seed directory's own path
- * returned ZERO hits. A copy into a different temporary directory therefore says exactly what the
- * original said.
+ * measured rather than assumed -- RE-measured 2026-09-29 against the record tree, because what this
+ * paragraph used to cite described the SQLite store the flip retires (`asc-i5tj`): one file,
+ * `.ascend/ascend.db`, 200,704 bytes, no `-wal`/`-shm`, and `meta` holding
+ * `created_by_ascend_version` and `cwd_convention`. A fresh `asc init` now lays out a DIRECTORY:
+ * `.gitattributes` (20 bytes), `types/0001.jsonl` (the starter types, 6,952), and the DERIVED
+ * `index.db` (200,704 -- the SQLite schema itself, and exactly the file the old figure described);
+ * one `record` adds `entries/decision-<hash>/0001.jsonl` (468). A scan of every one of those files
+ * for the seed directory's absolute path returned ZERO hits; and the two `meta` keys are gone
+ * with the store, because no corpus line kind carries them. A copy into a different temporary
+ * directory therefore says exactly what the original said -- and so does copying `.ascend/` WHOLE:
+ * the index travels with the tree and is still current there, because `treeFingerprint` hashes the
+ * record files' RELATIVE paths and never their absolute ones.
  *
  * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
  * producing what `asc init` produces -- including the four starter types that command registers.
@@ -145,11 +161,13 @@ function project(): string {
   const dir = scratch();
   mkdirSync(join(dir, '.git'));
   mkdirSync(join(dir, '.ascend'), { recursive: true });
-  copyFileSync(join(seedDir, '.ascend', 'ascend.db'), join(dir, '.ascend', 'ascend.db'));
+  cpSync(join(seedDir, '.ascend'), join(dir, '.ascend'), {
+    recursive: true,
+  });
   return dir;
 }
 
-/** A store directory with nothing registered in it at all. */
+/** A store directory with nothing registered in it at all. A WRITE target only -- see `emptyStore`. */
 function bare(): string {
   const dir = scratch();
   mkdirSync(join(dir, '.ascend'));
@@ -231,7 +249,7 @@ interface StoredEntry {
 
 /** Open the store read-only, or hand back `undefined` when there is no store file to open. */
 function open(dir: string): DatabaseSync | undefined {
-  const file = join(dir, '.ascend', 'ascend.db');
+  const file = join(dir, '.ascend', 'index.db');
   if (!existsSync(file)) return undefined;
   return new DatabaseSync(file, { readOnly: true });
 }
@@ -583,7 +601,10 @@ describe('asc export', () => {
   });
 
   it('writes zero bytes for a store with nothing in it, and says so through --json', () => {
-    const dir = bare();
+    // `emptyStore`, not `bare()`: this is the one test in the file that only READS. Every other
+    // `bare()` is an `asc import` target, and a write builds the index it needs; an export does not,
+    // and refuses without one.
+    const dir = emptyStore(scratch());
 
     const run = asc(['export'], dir);
     expect(run.status).toBe(0);
@@ -1290,9 +1311,12 @@ describe('asc import', () => {
     expect(run.status).toBe(1);
     const message = flatten(run.stderr);
     expect(message).toContain('1 entry line(s) and no type definitions');
-    // Refused before the store is opened, so there is no store file at all -- the strongest
-    // available form of "nothing was written".
-    expect(existsSync(join(target, '.ascend', 'ascend.db'))).toBe(false);
+    // Refused before the store is opened, so nothing was written at all -- the strongest available
+    // form of "nothing was written". Asserted as an EMPTY DIRECTORY rather than as the absence of
+    // one named file: `ascend.db` is the file this layout retires (`asc-i5tj`), and no code path
+    // writes it any more, so an assertion naming it could no longer fail. The layout is what this
+    // test is about, so the layout is what it names.
+    expect(readdirSync(join(target, '.ascend'))).toEqual([]);
   });
 
   it('refuses a stream with no corpus lines, which is what an empty export writes', () => {
@@ -1304,7 +1328,7 @@ describe('asc import', () => {
     // The pair matters: `asc export` writes zero bytes for an empty store, so this refusal is the
     // thing that turns "restored nothing" from a silent success into a sentence.
     expect(flatten(run.stderr)).toContain('holds no corpus lines');
-    expect(existsSync(join(target, '.ascend', 'ascend.db'))).toBe(false);
+    expect(readdirSync(join(target, '.ascend'))).toEqual([]);
   });
 
   it('refuses a line that is not JSON, and names the line', () => {

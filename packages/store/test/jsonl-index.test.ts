@@ -30,6 +30,7 @@ import {
   schemeHash,
   serializeCorpus,
   specHash,
+  STORE_FILE,
   treeFingerprint,
   type AnnotationLine,
   type CorpusLine,
@@ -196,8 +197,8 @@ function tree(lines: readonly CorpusLine[], root = scratch()): string {
  * does not build, so a test that wants an index built says so -- and the shape of this suite changed
  * when the API did, which is the settlement being visible in the place that would otherwise hide it.
  */
-function build(root: string): void {
-  buildIndex(root, join(root, INDEX_FILE), OPTS);
+function build(root: string): ReturnType<typeof buildIndex> {
+  return buildIndex(root, join(root, INDEX_FILE), OPTS);
 }
 
 const WHOLE_CORPUS: readonly CorpusLine[] = [
@@ -526,6 +527,52 @@ describe('a file ascend did not create is refused, never replaced', () => {
     const built = buildIndex(root, file, OPTS);
     expect(built.records).toBe(WHOLE_CORPUS.length);
     expect(entryIds(openIndex(root, file).db, 'note')).toHaveLength(2);
+  });
+});
+
+describe('a legacy store beside the tree is refused, never built over', () => {
+  /**
+   * The measured defect this closes: a build reads the TREE, so at a half-flipped project it
+   * published an index of the tree alone and reported success while a 3,585-entry `ascend.db` sat
+   * beside it unread. See `assertNoLegacyStore`.
+   *
+   * The fixture is deliberately NOT a valid store -- `STORE_FILE`'s name is all the guard reads,
+   * because reading further would cost every build in a migrated project a database open to
+   * re-establish a fact the file's absence already carries. Which is also why the test can write the
+   * marker with `writeFileSync` and still be testing the real path.
+   */
+  it('refuses to build while a store of the old name is there, and writes nothing', () => {
+    const root = tree(WHOLE_CORPUS);
+    writeFileSync(join(root, STORE_FILE), 'a store from before the flip');
+
+    expect(() => build(root)).toThrow(/ascend\.db/);
+    // The tree, the message and the filesystem: a refusal that happened after the `.tmp` removal or
+    // after the `renameSync` would leave an index that is current for the WRONG store, which is the
+    // failure and not a detail of it.
+    expect(existsSync(join(root, INDEX_FILE))).toBe(false);
+    expect(readdirSync(root).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('names the migration and where the store is archived, rather than a deletion', () => {
+    const root = tree(WHOLE_CORPUS);
+    writeFileSync(join(root, STORE_FILE), 'a store from before the flip');
+
+    // `asc init` is the command that owns this transition, and it ARCHIVES. A refusal that said
+    // "delete it" would be inviting exactly the loss it exists to prevent, so both halves of the
+    // remedy are asserted here rather than left to whoever rewrites the message next.
+    expect(() => build(root)).toThrow(/asc init[\s\S]*ascend-archived/);
+  });
+
+  it('builds the same tree once the store is gone, so the guard refuses one file and not the layout', () => {
+    // The control. A guard that refused every tree -- or that keyed on something other than the
+    // legacy file -- would pass both tests above and break the whole product.
+    const root = tree(WHOLE_CORPUS);
+    writeFileSync(join(root, STORE_FILE), 'a store from before the flip');
+    expect(() => build(root)).toThrow();
+
+    rmSync(join(root, STORE_FILE));
+    build(root);
+    expect(entryIds(openIndex(root, join(root, INDEX_FILE)).db, 'note')).toHaveLength(2);
   });
 });
 

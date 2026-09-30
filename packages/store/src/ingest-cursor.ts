@@ -76,12 +76,17 @@ export interface IngestCursor {
   readonly handlers: readonly string[];
 }
 
-/** The cursor's file name inside the store directory. Gitignored: see this module's doc. */
-const CURSOR_FILE = 'ingest-cursor.json';
+/**
+ * The cursor's file name inside the store directory. Gitignored: see this module's doc.
+ *
+ * Exported because `.gitignore` has to name it (`asc init` writes that list) and a second spelling
+ * of it in the CLI is a file that stops being ignored the day this one is renamed.
+ */
+export const INGEST_CURSOR_FILE = 'ingest-cursor.json';
 
 /** Where the cursor lives, given the store directory (`.ascend/`). */
 function cursorPath(dir: string): string {
-  return join(dir, CURSOR_FILE);
+  return join(dir, INGEST_CURSOR_FILE);
 }
 
 /**

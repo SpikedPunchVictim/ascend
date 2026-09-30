@@ -125,7 +125,7 @@ export default class Search extends BaseCommand {
       const db = store.db;
       if (findType(db, args.type) === undefined) {
         throw refusal(
-          `There is no entry type named '${args.type}' in this project. ${knownNames(store)}`,
+          `There is no entry type named '${args.type}' in this project. ${knownNames(store.db)}`,
         );
       }
 

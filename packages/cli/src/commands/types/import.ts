@@ -10,22 +10,30 @@
  * registered leaves a half-applied registry. So the whole list is parsed and verified first,
  * and only then does writing begin.
  *
- * **Writing is per-document, and a partial failure is reported as one.** Each `registerType` is
- * its own transaction (`registry.ts`), so a failure part-way through leaves the earlier
- * documents committed. That is deliberate -- one transaction spanning the list would either
- * have to nest an API that refuses to nest, or rewrite the store's transaction handling for
- * this command alone -- but it must not be *silent*. On failure the rows for what did land are
- * still written to stdout, a line on stderr names the document that failed and says how many
- * were registered before it, and the exit code is 1. A caller who retries is safe: registering
- * an already-known shape is `unchanged` and writes nothing.
+ * **Writing is per-document, and a partial failure is reported as one.** Each document is its own
+ * fused write -- its own transaction and its own append (`writeProducedLines`) -- so a failure
+ * part-way through leaves the earlier documents written AND in the tree. That is deliberate, and it
+ * is pinned by a test: one transaction spanning the list would either have to nest an API that
+ * refuses to nest, or rewrite the store's transaction handling for this command alone. But it must
+ * not be *silent*. On failure the rows for what did land are still written to stdout, a line on
+ * stderr names the document that failed and says how many were registered before it, and the exit
+ * code is 1. A caller who retries is safe: registering an already-known shape is `unchanged` and
+ * writes nothing.
  *
  * **`--dry-run` owns one transaction for the whole list, and that is not the same as asking each
  * registration to preview itself.** Per-document rollback would mean the second document never
  * sees the first, so it would compute its version as though the first did not exist -- reporting
  * version 1 twice where the real run produces 1 then 2. A preview that misdescribes what the
  * real run does is worse than no preview, so the whole list runs inside a single rollback
- * (`withRollback`) and the preview is atomic: if a document fails, nothing was previewed and
+ * (`previewProducedLines`) and the preview is atomic: if a document fails, nothing was previewed and
  * nothing was written, and it says so rather than showing rows for work that was discarded.
+ *
+ * **The two arms differ in scope, not in what they compute.** Both build their rows through the same
+ * `report`, over the same `registerDocumentVia`, so the outcome a preview reports for a document is
+ * the outcome the real run produces for it; all that differs is the transaction wrapped around the
+ * loop. That is the one asymmetry the shape cannot remove -- the preview must be atomic to be honest
+ * about versions, and the write must not be, by the decision above -- so it is stated here rather
+ * than left for a reader to notice.
  *
  * **Re-running is idempotent**, in the strong sense -- not "it does not error", but "it leaves
  * the registry exactly as it was". Known shapes report `unchanged`, and a document whose prose
@@ -33,11 +41,16 @@
  */
 
 import { Args, Flags } from '@oclif/core';
-import { withRollback } from '@ascend/store';
+import { previewProducedLines, type Producers, type SqlDatabase } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
-import { parseDocuments, verifyDocumentHash } from '../../document.js';
+import { storePaths } from '../../project.js';
+import { parseDocuments, verifyDocumentHash, type TypeDocument } from '../../document.js';
 import { readInput } from '../../input.js';
-import { registerDocument } from '../../register-document.js';
+import {
+  registerDocument,
+  registerDocumentVia,
+  type DocumentRegistration,
+} from '../../register-document.js';
 
 /** A row of the report: what happened to one document. */
 interface ImportRow extends Record<string, unknown> {
@@ -99,48 +112,52 @@ export default class TypesImport extends BaseCommand {
       verifyDocumentHash(document, label(source, index, documents.length));
     }
 
-    await this.withProject(({ store }) => {
-      const rows: ImportRow[] = [];
+    await this.withProjectRoot((root) => {
+      const { tree, index: indexFile } = storePaths(root);
 
-      /**
-       * Register every document, in order, appending a row per document.
-       *
-       * `registerDocument` is called with `dryRun: false` even in a dry run: the rollback is
-       * this command's, owned for the whole list (`withRollback`), so asking each registration
-       * to undo itself would defeat the point -- see the file comment.
-       */
-      const registerAll = (): void => {
-        for (const [index, document] of documents.entries()) {
-          const where = label(source, index, documents.length);
-          const result = registerDocument(store, document, {
-            registeredAt: this.now(),
-            dryRun: false,
-          });
-
-          for (const rename of result.renames) {
-            this.warn(`${where}: renamed '${rename.from}' -> '${rename.to}'`);
-          }
-          // `where` only: `this.warn` renders the "Warning:" itself, and prefixing a second one
-          // printed "Warning: doc.json: warning: ...".
-          for (const warning of result.warnings) this.warn(`${where}: ${warning}`);
-
-          rows.push({
-            index,
-            name: result.name,
-            version: result.version,
-            major: result.major,
-            type_hash: result.typeHash,
-            outcome: result.outcome,
-            bump: result.bump,
-            change_count: result.changeCount,
-            dry_run: dryRun,
-          });
+      /** One document's row, and the two warnings that accompany it. */
+      const report = (
+        document: TypeDocument,
+        index: number,
+        result: DocumentRegistration,
+      ): ImportRow => {
+        const where = label(source, index, documents.length);
+        for (const rename of result.renames) {
+          this.warn(`${where}: renamed '${rename.from}' -> '${rename.to}'`);
         }
+        // `where` only: `this.warn` renders the "Warning:" itself, and prefixing a second one
+        // printed "Warning: doc.json: warning: ...".
+        for (const warning of result.warnings) this.warn(`${where}: ${warning}`);
+
+        return {
+          index,
+          name: result.name,
+          version: result.version,
+          major: result.major,
+          type_hash: result.typeHash,
+          outcome: result.outcome,
+          bump: result.bump,
+          change_count: result.changeCount,
+          dry_run: dryRun,
+        };
       };
 
+      let rows: ImportRow[];
+
       if (dryRun) {
+        // The whole list inside ONE rollback, so the second document sees the first -- see the
+        // file comment. Nothing is appended and nothing is stamped; the index is only opened.
+        const preview = (produce: Producers, db: SqlDatabase): ImportRow[] =>
+          documents.map((document, index) =>
+            report(
+              document,
+              index,
+              registerDocumentVia(produce, db, document, { registeredAt: this.now() }),
+            ),
+          );
+
         try {
-          withRollback(store.db, registerAll);
+          rows = previewProducedLines(tree, indexFile, preview);
         } catch (error) {
           // No rows: everything the preview computed was discarded, so reporting it would
           // describe a registry that does not exist.
@@ -152,8 +169,22 @@ export default class TypesImport extends BaseCommand {
         }
         if (documents.length > 0) this.warn('dry run: nothing was written.');
       } else {
+        // Per document, so a failure leaves the earlier ones written -- the decision the file
+        // comment records. `rows` grows as it goes, which is what the catch below reports.
+        rows = [];
         try {
-          registerAll();
+          for (const [index, document] of documents.entries()) {
+            rows.push(
+              report(
+                document,
+                index,
+                registerDocument(tree, indexFile, document, {
+                  registeredAt: this.now(),
+                  dryRun: false,
+                }),
+              ),
+            );
+          }
         } catch (error) {
           // Emitted before the throw so the caller sees both halves: which documents are in
           // the registry, and why the rest are not. The `--json` consumer gets the same rows

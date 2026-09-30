@@ -147,21 +147,15 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
-import {
-  annotationPassGroups,
-  recordAnnotations,
-  registerScheme,
-  restoreInvalidationScheme,
-  RESERVED_SCHEME,
-} from './annotations.js';
-import { ForeignStoreError, openStore, withTransaction, type Store } from './db.js';
+import { annotationPassGroups, recordAnnotations, registerNamedScheme } from './annotations.js';
+import { ForeignStoreError, openStore, STORE_FILE, withTransaction, type Store } from './db.js';
 import { documentSpec, type TypeDocument } from './document.js';
 import { readRecordTree, recordFiles, openRecordWriter } from './jsonl-files.js';
 import type { CorpusLine, EntryLine, SchemeLine } from './jsonl.js';
 import { produceLines, type Producers } from './line-producers.js';
 import { recordEntry } from './recorder.js';
 import { entryFromLine, typeRegistrationOptions } from './replay.js';
-import { pendingProseUpdate, registerType, updateTypeProse } from './registry.js';
+import { deprecateType, pendingProseUpdate, registerType, updateTypeProse } from './registry.js';
 import type { SqlDatabase } from './sql-port.js';
 
 /**
@@ -268,8 +262,22 @@ export interface IndexBuild {
  * JSONL does not. This is not the merge guard (`asc-98e1`), which is a wider net over ids and
  * conflict markers and belongs to E12.5; it is the narrow version of it that this module's own
  * invariant requires.
+ *
+ * **A legacy `ascend.db` beside the tree is refused, and this is the guard the cutover needed most.**
+ * A build reads the TREE, and the tree at a half-flipped project is only part of the store, so it
+ * publishes an index of what the tree holds and reports success. Measured before this guard existed,
+ * on two real stores: a directory holding a 3,585-entry `ascend.db` and no tree at all built to
+ * *"0 records"* with exit 0; and this project's own `.ascend/` -- a partial tree of 2,888 lines
+ * beside a 6,473-entry store -- built an index reporting 2,894 records, which is what the read that
+ * followed then answered with. Nothing downstream can notice: the fingerprint is over the tree, so
+ * the index IS current for it, and a read has no reason to look for a file the layout says is gone.
+ * See `assertNoLegacyStore` for why the answer is a refusal rather than a warning.
  */
 export function buildIndex(root: string, dbPath: string, options: IndexOptions): IndexBuild {
+  // Before the tree is read, so a refusal costs a caller nothing and cannot be preceded by the
+  // `.tmp` removal or the `renameSync` below.
+  assertNoLegacyStore(root);
+
   const lines = readRecordTree(root);
   const fingerprint = treeFingerprint(root);
 
@@ -483,7 +491,7 @@ export interface ProducedWrite<Result> {
  * refused by exactly that). Handing the body the write handle puts every such read inside
  * `BEGIN IMMEDIATE` by construction, which is the shape asc-q4p wanted and could not have. The cost
  * is that a direct writer call on `db` is now spellable from a body, so a source scan pins the
- * modules allowed to call the five writers plus `updateTypeProse`.
+ * modules allowed to call the seven writers.
  *
  * A row written through that `db` is a record the tree does not have -- the tree is appended from the
  * lines `produceLines` collected, never from the database -- so a body that writes to `db` directly
@@ -631,6 +639,54 @@ function openIndexWritable(dbPath: string): Store {
 }
 
 /**
+ * Refuse to build from a tree that is not the only store in the directory.
+ *
+ * **The failure this prevents is silent, and it is measured in `buildIndex`'s doc.** A half-flipped
+ * project -- a legacy `ascend.db` beside a record tree -- builds an index from the TREE alone, so
+ * every record still in the database is left out of the index and nothing says so. There is no
+ * second line of defence: the fingerprint covers the tree, so the index is genuinely current for it
+ * and every later read is a correct read of the wrong store.
+ *
+ * **The two are refused rather than ranked.** The owner's ruling for the epic is *either/or, never
+ * both* -- "JSONL is the store; SQLite does not coexist as a second source of truth". A build that
+ * found both cannot tell which the caller meant, and answering that question quietly is precisely
+ * how 3,585 records disappear. So it declines to answer it.
+ *
+ * **The message names a migration and never a deletion.** `index.db` is derived and safe to remove,
+ * which `IndexStaleError` says out loud; this file is not, so a refusal that invited `rm` would be
+ * inviting the loss it exists to prevent. `asc init` archives the store under `.ascend-archived/`
+ * and is already the command that owns this transition.
+ *
+ * **The remedy takes two hops when the tree already holds lines, and the message says so.** Measured
+ * on a copy of this project's own half-flipped `.ascend/` (a 2,917-line tree beside the 6,473-entry
+ * store): `asc init` refuses with *"already holds a record tree (2917 line(s)) ... Move the tree aside
+ * and run this again"*, so the person who follows this message is refused once more, correctly, and
+ * told the next step. Naming it here costs a sentence and saves a round trip through an error. The
+ * remedy is not weakened by it: a migration writes a tree and never appends to one, and the archive
+ * of the tree is the caller's to make.
+ *
+ * A path check rather than a store check, deliberately: the file is read only if a caller ignores
+ * the refusal, so paying to open it here would cost every build in a migrated project a database
+ * open to re-establish a fact its absence already carries. A file of that name in `.ascend/` that is
+ * not a store is refused too, and the message's second half covers it.
+ */
+function assertNoLegacyStore(root: string): void {
+  const legacy = join(root, STORE_FILE);
+  if (!existsSync(legacy)) return;
+
+  const name = basename(legacy);
+  throw new Error(
+    `there is a store at ${legacy} beside the record tree at ${root}, and ascend will not build an ` +
+      `index from one of them while the other is there: a build reads the tree, so it would index ` +
+      `what the tree holds and leave every record in ${name} out of it, reporting success ` +
+      `throughout. Run \`asc init\` to migrate the store into the tree -- it moves the file to ` +
+      `.ascend-archived/, it never deletes it -- or move ${name} aside yourself, if it holds nothing ` +
+      `you need. If the tree there already holds lines, \`asc init\` refuses and names the next ` +
+      `step: move the tree aside, then run it again.`,
+  );
+}
+
+/**
  * Refuse to build over a file ascend did not create (`asc-63v`).
  *
  * **This check moved here when the build became a command, and it was not a formality.** Until
@@ -759,17 +815,29 @@ function replayType(store: Store, document: TypeDocument, now: string): void {
         `Re-export the corpus rather than editing this line.`,
     );
   }
+
+  // **A retirement has no version of its own, so it rides on a REPEAT of a pair the tree already
+  // holds, and this is where that repeat is read.** `registerType` cannot see the field: it takes a
+  // spec, and a spec is identity only. Measured 2026-09-29, before this line existed: `asc types
+  // deprecate` set the status in the index, `asc index build` replayed the tree, and the type came
+  // back `active` -- the store's own record of the retirement was erased by the operation whose job
+  // is to reproduce it. `deprecateType` rather than a second UPDATE, so the write and the rebuild
+  // agree about what retiring a type means by construction (all versions of the name, never one).
+  //
+  // Applied after the hash check, so a line that misdescribes its own contents is refused rather
+  // than half-applied. And only when the line says so: absence means "this line says nothing about
+  // status", never "active" (`document.ts`), so no line can un-retire a type and the order a union
+  // merge left two repeats in cannot change the answer.
+  if (document.status === 'deprecated') deprecateType(store.db, document.name);
 }
 
 /** Register one replayed scheme, and refuse if the store's identity for it is not the line's. */
 function replayScheme(store: Store, line: SchemeLine): void {
   const context = { createdAt: line.created_at };
   // The reserved scheme is the store's own, so it is replayed as itself rather than registered as
-  // a user's: `registerScheme` refuses the name (dogfood/0027).
-  const registered =
-    line.name === RESERVED_SCHEME
-      ? restoreInvalidationScheme(store.db, line.spec, context)
-      : registerScheme(store.db, line.name, line.spec, context);
+  // a user's: `registerScheme` refuses the name (dogfood/0027). `registerNamedScheme` is that
+  // choice, shared with the producer that wrote this line, so the round trip cannot disagree.
+  const registered = registerNamedScheme(store.db, line.name, line.spec, context);
 
   if (registered.version !== line.version) {
     throw new Error(

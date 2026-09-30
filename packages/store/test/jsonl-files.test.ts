@@ -129,7 +129,11 @@ const SCHEME: SchemeLine = {
   name: 'review',
   version: 1,
   created_at: at(0),
-  spec: { labels: ['good', 'bad'], rules: [] },
+  // A rule, and the rule is load-bearing rather than decoration: with `rules: []` this fixture could
+  // not represent the nested object whose key order `parseSchemeRule` rebuilds, which is the shape
+  // that made a real migration refuse to run (`dogfood/0040`, and the test below). A fixture that
+  // cannot hold the case is how the defect stayed invisible here through every round trip.
+  spec: { labels: ['good', 'bad'], rules: [{ kind: 'sql', label: 'good', query: '1=1' }] },
   scheme_hash: 'b'.repeat(64),
 };
 
@@ -205,6 +209,27 @@ describe('the record layer writes one file per kind, partitioned by name', () =>
     const { read } = roundTrip(root, lines);
 
     expect(serializeCorpus(read)).toBe(serializeCorpus(canonical(lines)));
+  });
+
+  it('canonicalizes a nested scheme rule, so the key order it arrives in cannot change the bytes', () => {
+    // The invariant, stated directly: one scheme spelled two ways is one line. `parseSchemeRule`
+    // rebuilds each rule as `{ label, kind, query }` whatever order the JSON held, so a canonical
+    // form that passed the spec through would serialize one scheme two ways -- and
+    // `migrateStoreToTree` compares canonical text, so it read that as a migration refusing to run
+    // on a real store. The two lines here differ ONLY in the order the rule's three keys were
+    // written.
+    const kindFirst: SchemeLine = {
+      ...SCHEME,
+      spec: { labels: ['good'], rules: [{ kind: 'sql', label: 'good', query: '1=1' }] },
+    };
+    const labelFirst: SchemeLine = {
+      ...SCHEME,
+      spec: { labels: ['good'], rules: [{ label: 'good', kind: 'sql', query: '1=1' }] },
+    };
+
+    expect(serializeCorpus([labelFirst])).toBe(serializeCorpus([kindFirst]));
+    // And the canonical form is the one the store already reads back, so nothing on disk changes.
+    expect(serializeCorpus([kindFirst])).toContain('{"kind":"sql","label":"good","query":"1=1"}');
   });
 
   it('appends to a file that already exists rather than starting a new one', () => {

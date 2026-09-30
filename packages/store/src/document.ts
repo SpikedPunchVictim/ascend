@@ -52,6 +52,36 @@ export interface TypeDocument extends TypeGuidance {
   readonly record_when?: string;
   /** Per-property prose, keyed by property name. Not part of identity. */
   readonly prose?: Readonly<Record<string, string>>;
+  /**
+   * Set when the type is RETIRED. Absent otherwise, and there is deliberately no `'active'`.
+   *
+   * **Deprecation is not a version, so it needs a second line for a pair the tree already holds.**
+   * `deprecateType` changes rows that exist and mints nothing (`registry.ts`), and a corpus carries
+   * a `type` line per VERSION -- so the one fact the store could hold with no line to carry it was
+   * silently erased by every rebuild. Measured 2026-09-29 against a real store, and the measurement
+   * is the whole reason this field exists: `asc types deprecate review_completed` set the status in
+   * the index, `asc index build` read the tree and gave back `status: 'active'`. The tree was the
+   * store; the deprecation was not in it. So the marker rides on a REPEAT of `(name, version)`,
+   * which is the mechanism prose already uses to change what a tree says about a version it holds.
+   *
+   * **Absence means "this line says nothing about status", NOT "active", and replay is therefore
+   * monotone.** A reader applies `'deprecated'` where it sees one and leaves the status alone
+   * otherwise, so no line un-retires a type and no ordering of lines can lose a retirement. That is
+   * *stronger* than the last-line-wins rule prose follows, and it is the rule this format can
+   * defend under `merge=union`: a union of two branches can interleave a repeat of a pair in either
+   * order, and a rule where the later line decided would make "was this type retired?" a question
+   * about merge order. It also cannot disagree with the writers: the only writer of `status` is
+   * `deprecateType`, a new version INHERITS the status of the one before it (`asc-9bd`, so a shape
+   * change does not reactivate a retired type), and so every state the producers can produce reads
+   * back identically under either rule.
+   *
+   * **`'active'` is refused by the parser rather than ignored.** A line spelling it would be a
+   * reactivation, and the store has no operation that performs one -- so honouring it is impossible
+   * and dropping it is the silent kind, which is exactly what the parser's key allowlist exists to
+   * prevent. Absence is the only way to say "not retired", and a hand-written `"status": "active"`
+   * is told so by name.
+   */
+  readonly status?: 'deprecated';
   /** The identity this document claims. Recomputed and checked on import. */
   readonly type_hash?: string;
 }
@@ -69,6 +99,12 @@ export interface TypeDocument extends TypeGuidance {
  * `type` line back through `registerType` (E12.2). A second spelling of "the part of a document
  * that is identity" is the class of defect that would make two stores disagree about whether they
  * hold the same definition while both reporting success.
+ *
+ * **`status` is outside it, which is what makes deprecating a type mint no version.** Retiring a
+ * type changes what a recorder is pointed at, never what a stored value means, so a deprecation that
+ * re-hashed the definition would invalidate every entry recorded under it -- the rewrite the whole
+ * store exists to prevent. Same rule as prose, same reason, and asserted rather than assumed: a
+ * `TypeLine` for a deprecated version carries the SAME `type_hash` as the line that created it.
  */
 export function documentSpec(document: TypeDocument): TypeSpec {
   return { name: document.name, properties: document.properties };
@@ -103,6 +139,10 @@ export function documentFromRow(row: TypeVersionRow): TypeDocument {
     ...(row.recordWhen === null ? {} : { record_when: row.recordWhen }),
     ...row.guidance,
     ...(Object.keys(row.prose).length === 0 ? {} : { prose: row.prose }),
+    // Only when retired, so an active row's line is the SAME BYTES it was before this field
+    // existed. That is not tidiness: the tree of every project already written would otherwise be
+    // rewritten to add `"status":"active"` to every line, for a fact the format defines as absent.
+    ...(row.status === 'deprecated' ? { status: 'deprecated' as const } : {}),
     type_hash: row.typeHash,
   };
 }
@@ -122,6 +162,10 @@ export function orderedDocument(document: TypeDocument): Record<string, unknown>
     ...(document.record_when === undefined ? {} : { record_when: document.record_when }),
     ...documentGuidance(document),
     ...(document.prose === undefined ? {} : { prose: document.prose }),
+    // Beside `type_hash`, and in the same relationship to it: both are facts ABOUT the definition
+    // rather than parts of it -- the hash a check on the way in, the status a fact about whether the
+    // type is still being recorded. Kept out of `documentSpec`, so neither is identity.
+    ...(document.status === undefined ? {} : { status: document.status }),
     ...(document.type_hash === undefined ? {} : { type_hash: document.type_hash }),
   };
 }
@@ -133,6 +177,7 @@ const KNOWN_KEYS = [
   'record_when',
   ...GUIDANCE_FIELDS,
   'prose',
+  'status',
   'type_hash',
 ] as const;
 const KNOWN_PROPERTY_KEYS = [
@@ -275,6 +320,18 @@ export function parseDocument(text: string, source: string): TypeDocument {
 
   const guidance = parseGuidance(source, raw);
 
+  // `status` is checked HERE rather than left to `TypeDocument`'s type, because a corpus line is
+  // hand-editable text: the field is read off disk by `jsonl.ts` exactly as a document is.
+  const status = raw['status'];
+  if (status !== undefined && status !== 'deprecated') {
+    throw new Error(
+      `${source}: status is ${describeValue(status)}, and the only value a line may carry is ` +
+        `'deprecated'. A retired type carries it; an active one omits the field, because absence is ` +
+        `the only way this format says 'not retired' -- the store has no operation that reactivates ` +
+        `a type, so a line spelling 'active' would ask for something nothing can perform.`,
+    );
+  }
+
   const prose = raw['prose'];
   if (prose !== undefined && !isPlainObject(prose)) {
     fieldError(source, 'prose', 'an object of strings, keyed by property name', prose);
@@ -291,6 +348,7 @@ export function parseDocument(text: string, source: string): TypeDocument {
     ...(description === undefined ? {} : { description }),
     ...(recordWhen === undefined ? {} : { record_when: recordWhen }),
     ...guidance,
+    ...(status === undefined ? {} : { status: 'deprecated' as const }),
     ...(prose === undefined ? {} : { prose: prose as Record<string, string> }),
     ...(hash === undefined ? {} : { type_hash: hash }),
   };
