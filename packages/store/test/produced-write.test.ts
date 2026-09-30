@@ -1,5 +1,5 @@
 import type { TypeSpec } from '@ascend/core';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -8,8 +8,11 @@ import {
   buildIndex,
   ForeignStoreError,
   INDEX_FILE,
+  IndexStaleError,
   openIndex,
   openRecordWriter,
+  previewProducedLines,
+  readRecordTree,
   treeFingerprint,
   typeVersions,
   writeProducedLines,
@@ -214,6 +217,122 @@ describe('a probe against a tree the index does not describe', () => {
 
     expect(out.result).toMatchObject({ version: 3, outcome: 'created' });
     expect(versions(root, dbPath)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('the body reads through the transaction, which is the shape asc-q4p asked for', () => {
+  /** How many `note` lines the TREE holds -- the thing the index is a function of. */
+  const treeTypeLines = (root: string): number =>
+    [...readRecordTree(root)].filter((line) => line.kind === 'type').length;
+
+  it('sees a production it just made, and sees it BEFORE the tree does', () => {
+    const { root, dbPath } = built();
+
+    const counts = writeProducedLines(root, dbPath, OPTS, (produce, db) => {
+      produce.type(V2, { registeredAt: AT });
+
+      // The read that decides what to write next -- `annotate.ts`'s `listSchemes`, `import.ts`'s
+      // `versionsByHash`. Through the handle the transaction holds it sees the production above,
+      // which is only possible because the production is in this transaction and not beside it.
+      const seen = typeVersions(db, 'note').map((row) => row.version);
+      // And the tree does not have it yet: the append happens after the body returns. A site that
+      // read the TREE here instead would be reading the store one step behind its own write.
+      return { seen, inTree: treeTypeLines(root) };
+    });
+
+    expect(counts.result).toEqual({ seen: [1, 2], inTree: 1 });
+    // The append did happen, afterwards -- so the two answers above are an ordering and not a bug.
+    expect(treeTypeLines(root)).toBe(2);
+    expect(versions(root, dbPath)).toEqual([1, 2]);
+  });
+});
+
+describe('a preview of a produced write', () => {
+  it('reports what the real write would do, and writes nothing at all', () => {
+    const { root, dbPath } = built();
+    const treeBefore = treeFingerprint(root);
+    const indexBefore = typeVersions(openIndex(root, dbPath).db, 'note');
+
+    const preview = previewProducedLines(root, dbPath, (produce) =>
+      produce.type(V2, { registeredAt: AT }),
+    );
+
+    // The SAME answer the real write gives, which is the whole point: a preview computed by anything
+    // but the writers is a preview of that thing.
+    expect(preview).toMatchObject({ name: 'note', version: 2, outcome: 'created' });
+    expect(treeFingerprint(root)).toBe(treeBefore);
+    expect(typeVersions(openIndex(root, dbPath).db, 'note')).toEqual(indexBefore);
+    // And the index still describes the tree, so the preview cannot have stamped one either.
+    expect(() => openIndex(root, dbPath)).not.toThrow();
+  });
+
+  it('leaves nothing behind when the body throws, and reports the throw', () => {
+    const { root, dbPath } = built();
+    const treeBefore = treeFingerprint(root);
+
+    expect(() =>
+      previewProducedLines(root, dbPath, (produce) => {
+        produce.type(V2, { registeredAt: AT });
+        throw new Error('the preview body gave up');
+      }),
+    ).toThrow('the preview body gave up');
+
+    expect(treeFingerprint(root)).toBe(treeBefore);
+    expect(versions(root, dbPath)).toEqual([1]);
+  });
+
+  it('refuses a stale index instead of building one, naming asc index build', () => {
+    const { root, dbPath } = built();
+    openRecordWriter(root).append(V2_LINE);
+
+    expect(() =>
+      previewProducedLines(root, dbPath, (produce) => produce.type(V3, { registeredAt: AT })),
+    ).toThrow(IndexStaleError);
+    expect(() =>
+      previewProducedLines(root, dbPath, (produce) => produce.type(V3, { registeredAt: AT })),
+    ).toThrow(/asc index build/);
+
+    // The contrast with the write path is the decision, so it is asserted rather than described:
+    // `writeProducedLines` against this same tree makes the index current and succeeds.
+    expect(
+      writeProducedLines(root, dbPath, OPTS, (produce) => produce.type(V3, { registeredAt: AT }))
+        .result.version,
+    ).toBe(3);
+  });
+
+  it('refuses when there is no index at all, and does not create one', () => {
+    const root = scratch();
+    const dbPath = join(root, INDEX_FILE);
+    openRecordWriter(root).append({
+      kind: 'type',
+      document: { name: 'note', properties: [BODY] },
+    });
+
+    expect(() =>
+      previewProducedLines(root, dbPath, (produce) => produce.type(V2, { registeredAt: AT })),
+    ).toThrow(/there is no index there/);
+
+    // The assertion the first check exists for: `openIndexWritable` runs the store's migrations on
+    // the way in, so a preview that opened before it checked would leave a brand-new empty `index.db`
+    // behind a `--dry-run` that reported writing nothing. That is a false green with a file attached.
+    expect(existsSync(dbPath)).toBe(false);
+  });
+
+  it('refuses a database ascend did not create, rather than reading it', () => {
+    const root = scratch();
+    const dbPath = join(root, INDEX_FILE);
+    openRecordWriter(root).append({
+      kind: 'type',
+      document: { name: 'note', properties: [BODY] },
+    });
+
+    const stranger = new DatabaseSync(dbPath);
+    stranger.exec('CREATE TABLE theirs (x TEXT)');
+    stranger.close();
+
+    expect(() =>
+      previewProducedLines(root, dbPath, (produce) => produce.type(V2, { registeredAt: AT })),
+    ).toThrow(ForeignStoreError);
   });
 });
 

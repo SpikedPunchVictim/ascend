@@ -1527,6 +1527,25 @@ as the store itself.
       old claim.
       The `.gitignore` entry for the sidecar is the one part deferred to E12.4d: `.ascend/` is still
       ignored wholesale today, so a rule for the future layout would be a rule nobody can verify.
+
+      **The store's half of the flip landed first, as its own commit, because it is additive and
+      independently green (2026-09-29).** The approved plan had stages A–F as one commit, on the
+      argument that every intermediate state is a store that reads one source and writes the other —
+      which is true from stage B onward and false of stage A, where nothing reads or writes
+      differently. So three things landed: `writeProducedLines`'s body now takes the transaction's own
+      `db` as a second argument (`(produce, db) => Result`), a new `previewProducedLines(root, dbPath,
+      body)` runs the writers under a rollback without building, appending or stamping, and
+      `writer-callers.test.ts` pins the modules allowed to call the six writers plus `updateTypeProse`.
+      Splitting it bounds the blast radius of the rest: stages B–F touch 6 write sites, 11 fixture
+      suites and the read path, and an interrupted one of those is a half-flipped store, where an
+      interrupted stage A is nothing at all.
+
+      The preview is the one behaviour change in that commit and it is deliberate: it REFUSES a stale
+      index rather than building one, naming `asc index build`. `writeProducedLines` still builds —
+      the owner's *build, then write* — because a write has to happen and a preview does not. The
+      first currency check also happens before the writable opener, which is not tidiness: `openStore`
+      migrates on the way in, so checking after opening would leave a brand-new empty `index.db`
+      behind a `--dry-run` that reported writing nothing.
   - **E12.4c — the read path.** Production readers open `openIndex(root, indexFile)`; `openStore` on
     `.ascend/ascend.db` becomes unreachable from `src`. **Success:** the whole suite's reads go
     through the index and every existing read test passes unchanged — this is where E12.3's seam pays

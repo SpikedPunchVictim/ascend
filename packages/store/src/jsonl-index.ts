@@ -162,6 +162,7 @@ import { produceLines, type Producers } from './line-producers.js';
 import { recordEntry } from './recorder.js';
 import { entryFromLine, typeRegistrationOptions } from './replay.js';
 import { pendingProseUpdate, registerType, updateTypeProse } from './registry.js';
+import type { SqlDatabase } from './sql-port.js';
 
 /**
  * The index's file name inside the store directory.
@@ -446,7 +447,7 @@ export interface ProducedWrite<Result> {
 /**
  * Produce lines from `body` and put them in the tree and the index, under ONE lock, or refuse.
  *
- * The write path the five CLI sites use (E12.4b3), and it is a separate function from `writeLines`
+ * The write path the six CLI sites use (E12.4b3), and it is a separate function from `writeLines`
  * rather than a flag on it for two reasons that are both about what a caller can then say:
  *
  * 1. **The lines come from HERE.** `writeLines` takes lines its caller already had, so it cannot be
@@ -474,14 +475,26 @@ export interface ProducedWrite<Result> {
  * **A file at `dbPath` that ascend did not create refuses the write entirely**, before the append:
  * `ForeignStoreError` (`asc-63v`) propagates out of the build, exactly as it does out of `writeLines`.
  *
- * The body is handed to `produceLines` unwrapped, so a site's dry run and its real run can be the
- * same function -- `produceLines(store.db, body)` for the preview, this for the write.
+ * The body is handed the transaction's own `db` as well as the producers, and that is a decision
+ * rather than a convenience. Four of the six write sites make a read that decides what they write --
+ * `annotate.ts`'s `listSchemes` (asc-q4p), `record.ts`'s `entryCount`, `import.ts`'s `versionsByHash`,
+ * `register-document.ts`'s `findType` -- and after the flip the handle a command holds on the way in
+ * is READ-ONLY, so those reads cannot be made there (`EV-35`, blocker 1: the preview's INSERT was
+ * refused by exactly that). Handing the body the write handle puts every such read inside
+ * `BEGIN IMMEDIATE` by construction, which is the shape asc-q4p wanted and could not have. The cost
+ * is that a direct writer call on `db` is now spellable from a body, so a source scan pins the
+ * modules allowed to call the five writers plus `updateTypeProse`.
+ *
+ * A row written through that `db` is a record the tree does not have -- the tree is appended from the
+ * lines `produceLines` collected, never from the database -- so a body that writes to `db` directly
+ * is a change that survives the rollback nowhere and is reported by nothing. Read through it; write
+ * through `produce`.
  */
 export function writeProducedLines<Result>(
   root: string,
   dbPath: string,
   options: IndexOptions,
-  body: (produce: Producers) => Result,
+  body: (produce: Producers, db: SqlDatabase) => Result,
 ): ProducedWrite<Result> {
   const before = treeFingerprint(root);
   if (!existsSync(dbPath) || storedFingerprint(dbPath) !== before)
@@ -493,13 +506,10 @@ export function writeProducedLines<Result>(
       // Inside the lock, and read from OUR handle rather than by reopening the file: a check-then-act
       // whose check happens outside `BEGIN IMMEDIATE` describes a moment another writer can undo.
       const tree = treeFingerprint(root);
-      const stamp = (
-        store.db.prepare('SELECT value FROM meta WHERE key = ?').get(FINGERPRINT_KEY) as
-          { value?: string } | undefined
-      )?.value;
+      const stamp = stampedFingerprint(store);
       if (stamp !== tree) throw new IndexStaleError(dbPath, stalenessReason(true, stamp));
 
-      const { lines, result } = produceLines(store.db, body);
+      const { lines, result } = produceLines(store.db, (produce) => body(produce, store.db));
 
       const writer = openRecordWriter(root);
       for (const line of lines) writer.append(line);
@@ -511,6 +521,69 @@ export function writeProducedLines<Result>(
   } finally {
     store.db.close();
   }
+}
+
+/**
+ * Run `body` against the index and return what it reported, appending nothing and stamping nothing.
+ *
+ * What `asc <write> --dry-run` needs (E12.4b3), and it cannot use `withRollback` on the read handle
+ * for the reason in `writeProducedLines`' own doc: the producers run the REAL writers, so they INSERT,
+ * and a read-only handle refuses the INSERT. Measured (`EV-35`): *attempt to write a readonly
+ * database*. The preview therefore opens the index writable and produces under a rollback, which
+ * leaves the tree, the index and the WAL exactly as it found them and reports what a write would do.
+ *
+ * **A preview never builds, and this is a real change in behaviour rather than an implementation
+ * detail.** `writeProducedLines` builds when the index is not current, because a write has to happen
+ * and the owner's ruling is *build, then write*. A preview has no such need, and building one is a
+ * ~75 s operation the caller asked to NOT perform -- so a stale index refuses here with
+ * `IndexStaleError`, the same error and the same remedy (`asc index build`) a read gives. Stated
+ * plainly because it is visible: `asc record --dry-run` against a checkout that has moved the tree
+ * now refuses instead of quietly rebuilding.
+ *
+ * **The currency check is made twice, and the second one is inside the lock.** The first is before
+ * anything is opened, and it is what keeps a preview from creating an `index.db` that was not there:
+ * `openIndexWritable` runs the store's migrations on the way in, so opening first and checking second
+ * would leave a brand-new empty index behind a `--dry-run` that reported writing nothing. The second
+ * is inside `produceLines`' own `BEGIN IMMEDIATE` -- `withRollback` takes the lock at the outermost
+ * level -- and it is there because the first describes a moment a concurrent write can invalidate
+ * while the body is being produced.
+ */
+export function previewProducedLines<Result>(
+  root: string,
+  dbPath: string,
+  body: (produce: Producers, db: SqlDatabase) => Result,
+): Result {
+  const present = existsSync(dbPath);
+  const stored = present ? storedFingerprint(dbPath) : undefined;
+  if (stored !== treeFingerprint(root)) {
+    throw new IndexStaleError(dbPath, stalenessReason(present, stored));
+  }
+
+  const store = openIndexWritable(dbPath);
+  try {
+    return produceLines(store.db, (produce) => {
+      const stamp = stampedFingerprint(store);
+      const tree = treeFingerprint(root);
+      if (stamp !== tree) throw new IndexStaleError(dbPath, stalenessReason(true, stamp));
+
+      return body(produce, store.db);
+    }).result;
+  } finally {
+    store.db.close();
+  }
+}
+
+/**
+ * The fingerprint the index in `store` carries, read through the handle that holds the transaction.
+ *
+ * Takes a `Store` rather than a path, and that is the whole point: `storedFingerprint` opens its own
+ * read-only connection, which inside `BEGIN IMMEDIATE` would describe a moment the lock has already
+ * frozen -- the right answer for the wrong reason, and a change that would silently stop this being a
+ * check-then-act guard at all.
+ */
+function stampedFingerprint(store: Store): string | undefined {
+  const row = store.db.prepare('SELECT value FROM meta WHERE key = ?').get(FINGERPRINT_KEY);
+  return (row as { value?: string } | undefined)?.value;
 }
 
 /**

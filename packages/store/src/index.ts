@@ -221,6 +221,7 @@ export {
   INDEX_FILE,
   IndexStaleError,
   openIndex,
+  previewProducedLines,
   treeFingerprint,
   writeLines,
   writeProducedLines,
