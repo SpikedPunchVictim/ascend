@@ -395,6 +395,49 @@ describe('a build is published whole, or not at all', () => {
     ).toEqual([]);
   });
 
+  it('replaces the write-ahead log a previous writer left, rather than replaying it', () => {
+    // The test above builds into a root where no `-wal` ever existed, so "no residue" is true of
+    // the handle it just closed and says nothing about the file the rename REPLACES. A writer that
+    // commits and then dies before its own close() leaves a different state: committed frames on
+    // disk, describing the database that is about to be overwritten. SQLite recovers a `-wal` onto
+    // whatever file sits beside it, so those frames land on the freshly renamed index and restore
+    // the fingerprint of the database that was just replaced -- while the build exits 0 reporting
+    // the new one. Measured end to end, with the refusal loop it produces, in `dogfood/0044`.
+    const root = tree(WHOLE_CORPUS);
+    build(root);
+
+    const index = join(root, INDEX_FILE);
+    const abandoned = new DatabaseSync(index);
+    abandoned.exec('BEGIN IMMEDIATE');
+    abandoned
+      .prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+      .run('index_fingerprint', 'a-fingerprint-the-tree-does-not-have');
+    abandoned
+      .prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+      .run('abandoned_writer', 'yes');
+    abandoned.exec('COMMIT');
+    // Saved out from under the closing handle and put back. close() is what checkpoints and removes
+    // these, and the writer that died never got that far -- so this is its on-disk state, not a
+    // simulation of it.
+    const wal = readFileSync(`${index}-wal`);
+    const shm = readFileSync(`${index}-shm`);
+    abandoned.close();
+    writeFileSync(`${index}-wal`, wal);
+    writeFileSync(`${index}-shm`, shm);
+
+    openRecordWriter(root).append(entry(4));
+    build(root);
+
+    // The build's own report is not the evidence -- the read is, and it is what the report is about.
+    // `openIndex` refuses unless the file carries the tree's fingerprint, which is the property
+    // `buildIndex` claims; in `dogfood/0044` it claimed it four times running while the file held
+    // something else, and the remedy the refusal named changed nothing.
+    const store = openIndex(root, index);
+    expect(
+      store.db.prepare('SELECT value FROM meta WHERE key = ?').get('abandoned_writer'),
+    ).toBeUndefined();
+  });
+
   it('leaves the previous index untouched when the tree cannot be read', () => {
     const root = tree(WHOLE_CORPUS);
     build(root);

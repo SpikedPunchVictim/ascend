@@ -131,6 +131,15 @@
  * written inside the same transaction as the records. `jsonl-index.test.ts` asserts both -- no
  * `-wal`/`-shm` residue, and byte-identical survival of a failed build.
  *
+ * **The replacement has two files' worth of state, not one.** That `close()` belongs to the staging
+ * handle, so it accounts for the sidecars of the file being *created* and for none of the sidecars
+ * of the file being *replaced*. A `-wal` left by a writer that committed and then died before its
+ * own `close()` is committed state sitting beside the target name, and SQLite recovers it onto
+ * whatever file it finds there -- so the rename alone publishes a new database carrying an old
+ * database's pages. The build deletes those two sidecars before the rename for that reason, and the
+ * assertion above does not notice their absence on its own, because it builds into a root where no
+ * prior `-wal` exists to be inherited. `dogfood/0044` is the measurement.
+ *
  * ## One column the tree cannot determine
  *
  * `entry_types.created_at` is taken from the caller by `registerType` and carried by no `TypeLine`
@@ -303,6 +312,17 @@ export function buildIndex(root: string, dbPath: string, options: IndexOptions):
   } finally {
     store.db.close();
   }
+
+  // The `close()` above belongs to the STAGING handle, so it covers the staging file's sidecars and
+  // says nothing about the sidecars of the file the rename is about to replace. Those are inherited
+  // by not being deleted, and SQLite recovers a `-wal` onto whatever file sits beside it -- so a
+  // writer that committed and then died before its own `close()` (a killed or timed-out hook, which
+  // is what leaves one) hands its frames to the NEW index, restoring the replaced database's
+  // `meta.index_fingerprint` under a build that reported the new one with exit 0. Removing them
+  // first is what makes the rename a replacement of the database rather than of one file of it.
+  // Measured, with the refusal loop it produced on a real tree: `dogfood/0044`, `asc-pwv7`.
+  rmSync(`${dbPath}-wal`, { force: true });
+  rmSync(`${dbPath}-shm`, { force: true });
 
   renameSync(join(dir, staging), dbPath);
 

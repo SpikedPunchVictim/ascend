@@ -7,7 +7,7 @@
 | **Surfaced by** | `asc store rewrite` → `asc index build` → `asc types brief`, driving the real binary on this repo's own `.ascend/` tree |
 | **Entry type(s)** | none — found on the command line, not in a recorded entry |
 | **Severity** | P1 |
-| **Status** | open |
+| **Status** | fixed in the working tree, uncommitted as of 2026-09-30 |
 
 ## What was found
 
@@ -155,13 +155,64 @@ Nothing in the suite could have produced the trigger, because producing it means
 - The tree was never at risk: only `index.db` and its sidecars are affected, and both are derived
   and rebuildable (`IndexStaleError` already says so).
 - The remedy currently reachable by a stranger is `rm .ascend/index.db` plus the sidecars, then
-  `asc index build`. The error message names only `asc index build`, which does not work. That is a
-  second, smaller defect in the same message, and it is filed with the bead rather than fixed here.
+  `asc index build`. The error message names only `asc index build`, and that was wrong only because
+  the build was broken: with the build fixed, the named remedy is the working one, and the message
+  needs no change. A reader who hits this on an older build still needs the `rm`, which is why the
+  measurement above keeps that step.
 - This arrived while verifying a wire-format change and is **not caused by it**: the diff to
   `packages/store/src/jsonl-index.ts` on that branch is a single 20-line hunk in `replayType`, and
   `buildIndex` is byte-identical to `HEAD`.
 - No entries were recorded for this finding — it is a defect in the indexing path, not an entry in
   the store, so there is nothing here subject to `entries_are_immutable`.
+
+## The fix
+
+Two lines in `buildIndex`, immediately before the `renameSync` that publishes:
+
+```ts
+rmSync(`${dbPath}-wal`, { force: true });
+rmSync(`${dbPath}-shm`, { force: true });
+```
+
+Placed after the store's `close()` and before the rename, so the window between deleting the old
+sidecars and publishing the new file holds no database that either belongs to. The module doc's
+*"Publication is atomic"* section was the false half of the finding and now says which handle its
+`close()` accounts for.
+
+**The test was watched to fail before it was watched to pass**, and the failure is the real-tree
+symptom rather than a proxy:
+
+```
+ × a build is published whole, or not at all > replaces the write-ahead log a previous writer left, rather than replaying it
+   → IndexStaleError: the index at …/index.db is not current for this tree (the tree has changed
+     since it was built) … Run `asc index build` to rebuild it from the JSONL tree.
+   Tests  1 failed | 29 passed (30)
+```
+
+The new test builds into a root that **already holds a `-wal`** — the state the existing *"leaves no
+write-ahead log beside the index"* test cannot reach, because it builds where no prior `-wal` exists.
+It commits through `node:sqlite`, saves the `-wal` and `-shm` out from under the closing handle, puts
+them back, moves the tree, and rebuilds; the test then asserts on the **read** (`openIndex`) rather
+than on the build's own report, which is the same read-back that located the defect.
+
+**End to end, on the scratch store where it was first measured** (`/tmp/asc-wal4`), after the fix:
+
+```
+$ node .../bin.js index build
+/private/tmp/asc-wal4/.ascend/index.db  6  7f65a4b8f6003674f89c1a86dbe22b…f5435fc82f32d32c0ec03feb72eba
+build exit=0
+  stored           : 7f65a4b8f6003674
+  tree             : 7f65a4b8f6003674
+  abandoned_writer : undefined
+$ node .../bin.js types brief     # the read that refused 5 of 5 times before
+read exit=0
+```
+
+Compare step 4–6 above: same command, same store, `stored: deadbeefdeadbeef` against `tree:
+7f65a4b8f6003674`, three runs in a row. The marker row (`abandoned_writer`) is asserted absent, not
+merely outvoted — a fingerprint that happened to agree would not show that the old pages were gone.
+
+The gate after the change: **124 files / 2827 passed | 2 skipped**, `align` green, `verdict: green`.
 
 ## Links
 
