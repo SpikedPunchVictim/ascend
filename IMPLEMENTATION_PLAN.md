@@ -1538,6 +1538,30 @@ as the store itself.
       index on disk to remove a table nothing opens, so it was deleted outright and 5 and 6 kept
       their numbers.
 
+      **Both `meta` keys `EV-34` could not carry are disposed of, and neither is a silent drop**
+      (`asc-i5tj.14` criterion 4, recorded here 2026-09-30). `ingest.applied_handlers` is **given a
+      home** — the sidecar's `handlers` key, written into the same atomically-renamed file as the
+      rows so the two cannot disagree, which is the reason the sidecar is one file rather than two.
+      `created_by_ascend_version` is **deliberately dropped**, and it is *redundant* rather than
+      merely unread: every entry line already carries `ascend_version` (`jsonl.ts:168`, read back at
+      `replay.ts:48`), so the tree records which ascend version wrote each entry — finer-grained than
+      one store-level key, which is why dropping it loses no information. Measured rather than
+      assumed: the only writer is `db.ts:801` (`INSERT OR IGNORE`, on every non-read-only open), and
+      no `src` reader exists — `meta` is read in exactly two places and both ask for
+      `index_fingerprint` (`jsonl-index.ts:594,735`). The read path had already stopped stamping it
+      (`project.ts`: *"There is no `ascendVersion` parameter, and its absence is the flip made
+      visible"*), and `openIndex` opens read-only, so an index is never born with the key.
+
+      **Criterion 3 — the cost of losing the cursor — is measured, and it is `EV-36`.** A
+      cursor-less `asc ingest claude-code` on this machine costs **17.56 s / 16.51 s** (n=2) over
+      **1,083 files / 2,146,378,468 bytes**; the next run, with the cursor it rebuilt, costs
+      **0.369 s**. The same-day ratio is **46×** and is the number to quote, because `EV-33`'s 1.6×
+      two-day drift makes the 7.965 s baseline from 2026-09-22 unusable for a cross-day comparison —
+      the corpus grew 977→1,083 files and 1.63→2.00 GiB in the interval, so the +114% is not
+      separable from drift and is not claimed as a regression. Criterion 2 was re-confirmed at 1,083×
+      the fixture's scale: a full re-read of every transcript minted **2 new entries and 0
+      duplicates**, and the rebuilt cursor came back at the same 1,083 rows.
+
       **This landed as its own commit, BEFORE the flip, green while the world was still all-SQLite**
       (2026-09-29) — it is independently verifiable and it is a prerequisite rather than part of the
       flip. The one thing it costs, stated in the code rather than discovered later: a file cannot
@@ -1640,7 +1664,7 @@ as the store itself.
   - **E12.4e — the cutover, on this repo.** Run it on `.ascend/` and drive the real loop on the real
     corpus: record, query, ingest, search. **Success:** `EV-34`'s numbers reproduce — 10,316 lines,
     0 lost, ~4.65 s end to end — and the two gaps are reported rather than absorbed. **Status:**
-    Complete (2026-09-29, uncommitted). **Measured, and the staging the plan gave is wrong in one
+    Complete (2026-09-29; re-verified 2026-09-30 on the current build, `asc-i5tj.4.4`). **Measured, and the staging the plan gave is wrong in one
     step.** `asc init` on this repo's store (23,273,472 bytes, 6,473 entries, 7 schemes / 17 types /
     3,889 annotations) wrote **10,386 lines in 4.43 s** — EV-34's 10,316 lines were taken before the
     corpus grew, and the shape reproduces exactly. It reported the two gaps rather than absorbing
@@ -1665,6 +1689,37 @@ as the store itself.
     reports decision **92** with 1 of those 92 struck, the same 92 as before the strike, and
     `asc search` listed the duplicate and its superseder as two peers. Filed as `asc-9xi0` (P2) and
     recorded as `dogfood/0041`.
+
+    **Re-verified 2026-09-30 on the current build (`asc-i5tj.4.4`), and the reason it needed
+    re-verifying is `asc-i5tj.4.3`:** deleting migration 4 changed the schema version list, which is
+    exactly what the index is opened against. Two measurements, both on the real corpus.
+
+    **The live index, rebuilt by the current build, loses the retired table.** `asc index build` on
+    this repo's tree wrote **10,445 records in 3.22 s**, and the result's `sqlite_master` has **no
+    `ingest_cursor`** while `user_version` stays **6** and `meta` stays `cwd_convention,
+    index_fingerprint`. So the deletion is confirmed against the live tree rather than only in tests,
+    and no version number moved anywhere.
+
+    **The migration reproduces, driven on a COPY of the archived store** (23,273,472 B, in a temp
+    project, so the live tree is untouched): `asc init` exit 0, **10,386 lines in 4.147 s**, and the
+    tree parsed by kind gives `{type:17, entry:6473, scheme:7, annotation:3889}` — **every kind equal
+    to its source table, 0 lost and 0 gained**, which is what the criterion's "0 lost" means.
+    **`EV-34`'s 10,316 is the same formula on its own store** (17 + 6,404 + 7 + 3,888 = 10,316); the
+    70-line difference is the corpus growing 6,404 → 6,473 entries, which `EV-34` itself anticipated.
+    So the criterion is met as an arithmetic identity that reproduces exactly on both sides, **not**
+    as the same bytes migrated twice — `EV-34`'s store no longer exists and that is stated rather
+    than glossed. Both gaps are still reported verbatim: `could not carry the ingest_cursor table:
+    1079 row(s)`, and `meta` with all three key names.
+
+    **The loop was driven on the reproduced store, not just on this repo's**: `asc record note` wrote
+    `2eab8413` (entries 6,473 → 6,474), `asc search note "freshly migrated"` returned it at bm25
+    −14.078, `asc types brief` returned all 15 types, and `--across` attached the copy from one
+    statement (`this_repo 6531 / migrated_copy 6475`). The freshly built index of that store has no
+    `ingest_cursor` either.
+
+    **What is still not measured, and it is the criterion's weak half:** no foreign repository was
+    migrated. Everything here is home-field — this repo's corpus, and a copy of it on the same
+    machine — so `EV-34`'s own "n=1, and it is the corpus the migration is FOR" caveat still stands.
 - **E12.5 — the guards the blocked beads own.** `asc-2ezs` (one id, two contents, refused at read),
   `asc-98e1` (id-set superset of each parent — EV-31 measured that the markers-and-parse half alone
   passes exactly the resolution that loses a record), `asc-8uzh` (per-record size limit, byte-bounded
