@@ -96,8 +96,20 @@ context; the depth lives in the numbered files.
 
 | [0047](0047-a-guard-that-stops-at-the-top-level.md) | three source-scanning guards enumerate a package's `src/` tree with a single **non-recursive** `readdirSync`, so the first subdirectory added under any of those trees is not read and the guard keeps reporting success — proven by planting a real `src/planted-probe/offender.ts` in each real tree: `INSERT INTO entries` + `Date.now()` + `node:sqlite` in the store's, `writeFileSync` in the adapter's, and the four guards still reported **`1 passed` ×3 and `11 passed`**; after `{ recursive: true }` the same plant fails 6 assertions. The bead names two guards; the sweep found **3 of 7** flat, the third (`sql-port.test.ts`) unnamed | `asc-y9ut` (P2, fixed in the working tree) | placing a module for `asc-i5tj` where `readdirSync(SRC)` sat one line from the file being moved — nobody was looking for a guard defect, and the class was only counted on the second pass, by asking what else lists a `src/` tree |
 
-Forty-seven findings, each with its own mechanism. The mechanism is the part that repeats even when
+| [0048](0048-a-premise-that-expired-without-saying-so.md) | `asc-y7p`'s factual premise had **expired without saying so, and the count it was stated in still agreed**: it holds the case for field-scoped invalidation against "the 10 legacy entries" carrying the AskUserQuestion clarification preamble, and `grep -ro "The user wants to clarify these questions" .ascend/entries/ \| wc -l` now returns **0** — the deriver fix passes `evidenceText` as `undefined` for an unquotable form and re-derivation removed the contamination, with no strike written. The corpus still holds exactly **10** `user_correction` entries whose `evidence_text` is absent (all 10 `tool_name: AskUserQuestion`, tying them to the preamble entries by a field other than the one under test), so the bead's number still matches the store — only the fact behind it changed, from *contaminated* to *deliberately withheld*, and a reader checking "are there still 10?" is confirmed rather than contradicted. The bead's other premise, *"Reopen the design question when a SECOND, unrelated instance appears"*, is a condition on the store that **no query evaluates**. The trigger was measured and has **not** fired: the 3,144 strikes are only **20 distinct notes**, every one entry-level, and **497 of 498** `wrong_value` strikes on `verification_run` have no re-derived sibling — so the whole-entry strike was the correct granularity rather than a wider one | `asc-y7p` (P2, open) | going to measure the bead's own stated trigger, which first required establishing that the instance it was written about still existed — nobody was looking for an expired premise, and three detectors built for that search were themselves blind, each printing a confident number (a whole-bucket prefix scan that cannot see a 10-of-19 subset; a census keyed on `type_name` without `type_version`; a check for a `category` field the type does not declare) before being caught |
+
+Forty-eight findings, each with its own mechanism. The mechanism is the part that repeats even when
 the findings do not, so each record states its own explicitly.
+
+> **Adding 0048, the detector ran first and agreed a thirteenth time.** `grep -c '^| \[0'` returned 47
+> against a sentence saying Forty-seven before the edit; the row was added flush after 0047, the sentence
+> moved to forty-eight, and the count re-run — **48**. `ls dogfood/ | grep -E '^[0-9]{4}-' | wc -l`
+> returns **49**, which is 48 records plus `0000-template.md` — the same trap 0047's and 0046's notes
+> record, and again the two are reconciled by NUMBER rather than by arithmetic: the numbers on disk are
+> `0001`–`0048` and the numbers indexed are `0001`–`0048`, with no gap on either side and neither set
+> repeating another. 0048 is about precisely the failure that reconciliation guards against — a count
+> that still agrees while the fact behind it has moved — which is why the two are compared by number and
+> never subtracted.
 
 > **Adding 0047, the detector ran first and agreed a twelfth time.** `grep -c '^| \[0'` returned 46
 > against a sentence saying Forty-six before the edit; the row was added flush, the sentence moved to
