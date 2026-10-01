@@ -67,3 +67,72 @@ export function briefLine(summary: TypeSummary): string {
     ? `${summary.name}${marker} -- no record_when given`
     : `${summary.name}${marker} -- ${summary.recordWhen}`;
 }
+
+/**
+ * The command that writes an entry, in `ARCHITECTURE.md:333`'s primary spelling for `asc record`.
+ *
+ * **A constant of its own, so the two artifacts that name it cannot disagree.** The brief prints it
+ * (composed into `RECORD_COMMAND_LINE` below) and the comment in the generated
+ * `.claude/ascend-hook.sh` tells a reader to run it by hand -- and the defect this fixes
+ * (`asc-l38f`, `dogfood/0028`) was precisely those two naming the same program two different ways.
+ * The script's way (`node "$root"/…/bin.js record …`) runs and is not granted; the bare way is
+ * granted and resolves nowhere when the binary is off `PATH`. Sharing one spelling is how the class
+ * is stopped rather than the instance. The `--prop=` flags are the convenience path, and
+ * `asc record --help` is where a reader finds those.
+ */
+export const RECORD_COMMAND = 'asc record TYPE --json -';
+
+/**
+ * The one line naming the command that writes an entry, printed first (`asc-uftd`).
+ *
+ * **This is a deliberate reversal of a documented rule, and the measurement is the reason.** The
+ * brief's contract was "one line per type, `name -- record_when`, and nothing else -- no header, no
+ * rule, no counts", on the argument that this payload is injected into every session and every
+ * extra line is a context tax. Measured on 2026-10-01, that contract produced a digest where
+ * **`asc record` occurred 0 times in 3,381 bytes**: the only `asc <verb>` strings in the whole
+ * document were `asc ingest` (6, all inside derived types' "Never by hand" text) and `asc query`
+ * (1). It named every type and never the verb that writes one, so a session asked to record had to
+ * *discover* the command -- and the artifact it found when it went looking, `.claude/ascend-hook.sh`,
+ * teaches the form `Bash(asc record:*)` can never match, because an allow rule matches a command's
+ * literal text and "doesn't match the same program invoked in a different form". Measured in
+ * `spike/ev16-arms.mjs` arm F: the session that read the script tried that form **four times**, was
+ * denied, and stopped. Recorded as `dogfood/0028`.
+ *
+ * The counter-argument the old rule was making is real and is why this is exactly one line rather
+ * than a rule or a count: the payload's budget is a measured constraint (`BRIEF_CAP_BYTES`, and
+ * EV-16 measured its cost as linear in lines), and it had 4,619 bytes free. The line costs 38 of
+ * them, and the digest this repo serves now measures 3,419 bytes -- the number `asc doctor` reports,
+ * which is this text's byte length because both go through here.
+ *
+ * Composed from `RECORD_COMMAND` rather than spelled again, so the sentence and the command inside
+ * it cannot drift apart.
+ */
+export const RECORD_COMMAND_LINE = `Record with: ${RECORD_COMMAND}`;
+
+/**
+ * The type lines, in the order the registry already has them.
+ *
+ * A list rather than a joined string because `asc types brief` fits them one at a time against the
+ * cap and drops from the end; joining here would mean splitting them again at the call site.
+ */
+export function briefLines(summaries: readonly TypeSummary[]): readonly string[] {
+  return summaries.map(briefLine);
+}
+
+/**
+ * The whole payload: the recording command, then one line per type.
+ *
+ * **The empty case is silence, not a bare command line.** A header with no types under it names a
+ * command and shows a reader nothing to point it at, and the deprecated-only registry -- a store
+ * whose every type has been retired -- is exactly the case where the old contract printed nothing
+ * at all. Returning `''` here rather than `RECORD_COMMAND` keeps that, so the rule lives in one
+ * place instead of in each caller's early return.
+ *
+ * Shared with `asc doctor` so the size that check reports is the size of what this renders, header
+ * included; that sharing is the reason the command line belongs here rather than in the hook script,
+ * which the doctor cannot see and `BRIEF_CAP_BYTES` does not bound.
+ */
+export function briefText(summaries: readonly TypeSummary[]): string {
+  const lines = briefLines(summaries);
+  return lines.length === 0 ? '' : [RECORD_COMMAND_LINE, ...lines].join('\n');
+}

@@ -2252,6 +2252,211 @@ well-formed file. The check lives at the two call sites that can see both sides 
 
 ---
 
+### E12.13 — the recording command is named where a session reads, and the artifact that taught a denied form stops teaching it (`asc-uftd` + `asc-l38f`, P2, planned 2026-10-01)
+
+**Goal** — a session that intends to record reaches a command that is *findable and correct*, from
+both routes it actually takes: the `SessionStart` payload, and the install artifacts it reads when
+the payload is silent. Recorded as `dogfood/0028`, surfaced 2026-09-28 by `spike/ev16-arms.mjs` arms
+F and G, found while a measurement was running and **nobody was looking for it**.
+
+**The finding is a table, and every artifact fails a different cell.** Re-measured on this checkout
+2026-10-01:
+
+| artifact a session may read | what it tells you to run | runs? | covered by the documented grant `Bash(asc record:*)`? |
+|---|---|---|---|
+| `asc types brief` — the `SessionStart` payload | nothing: `asc record` occurs **0** times; only `asc ingest` (6) and `asc query` (1), both in *"Never by hand"* prose | n/a | n/a |
+| `README.md` §Install | `node packages/cli/dist/bin.js`; or an alias in the reader's shell profile | yes | no |
+| `README.md` §Quickstart | `asc record review_completed …`, offered as literally runnable | **no** — `command -v asc` exits 1 | yes |
+| `ARCHITECTURE.md:331` | documents `Bash(asc record:*)` — a grant for a name that resolves nowhere | — | yes |
+| `.claude/ascend-hook.sh` | `node "$root"/packages/cli/dist/bin.js` | yes | **no** |
+
+**No artifact names a form that is both runnable and granted**, and that is structural rather than
+an oversight in any one file. `asc` is a bare name nowhere in a project: `command -v asc` exits 1,
+`node_modules/.bin/asc` does not exist, `@ascend/cli` is `private: true` and unpublished
+(`README.md:41-42` says so in as many words). And a `Bash(<prefix>:*)` allow rule matches the
+**literal command text**, after compound-command splitting and a fixed wrapper list — it *"doesn't
+match the same program invoked in a different form"* — so `Bash(asc record:*)` can never match
+`node …/bin.js record …`, relative or absolute, in any layout. Nothing in the shipped hook script can
+repair that from inside: the script needs the path form to run *itself*, so the resolution order is
+correct as it stands and the defect is **pedagogical** — it is the artifact a lost session reads, and
+what it teaches is a form the grant refuses.
+
+**Three corrections to `dogfood/0028`'s account, measured 2026-10-01 before deciding anything.** The
+body is immutable, so they land in its Status cell (the `dogfood/0037` precedent):
+
+1. **The "wall" is a headless artifact.** `spike/ev16-arms.mjs:295` sets
+   `ALLOWED = 'Read,Edit,Write,Bash(node test.js),Bash(asc:*)'`, and the arms ran
+   `--permission-mode dontAsk`, which auto-denies every call that would otherwise prompt. In a real
+   interactive session F2's denied `node …/bin.js` would have **prompted**. The finding's severity is
+   friction, which is real — `ARCHITECTURE.md:331`'s stated concern is *"A permission prompt per
+   record kills the workflow"* — and not unreachability.
+2. **The shim was the harness's.** `spike/ev16-arms.mjs:169` creates `.shim/asc` and `:428` prepends
+   it to `PATH`. `0028` already says this; what it does not say is that the same file's grant is what
+   made `node …/bin.js` denyable at all. On this checkout the hook script's own form is **allowed**,
+   by `Bash(node *)` in the untracked `.claude/settings.local.json` — an accident, and not something
+   `asc install-hook` writes, since it writes no permissions at all.
+3. **The README's alias remedy works, for a Bash tool call.** Claude Code sources
+   `~/.zshrc`/`~/.bashrc`/`~/.profile` at session start and applies captured aliases to every Bash
+   command. So §Install is not lying and §Quickstart is not wrong *for a reader who did §Install
+   first*; the gap is only that the quickstart never says it depends on that.
+
+**The fork was put to the owner and decided: teach it in both places.** The alternative — make the
+bare name resolve by shipping a project shim and exporting it onto `PATH` through `CLAUDE_ENV_FILE`
+(a documented mechanism: a shell script Claude Code executes, so `export PATH=…:$PATH` really
+expands) — is the only fix that makes the artifacts *true* rather than *consistent*, and it is filed
+as its own bead rather than carried by two P2 discovery defects, because it costs a new tracked file,
+a new hook duty and a folder-trust step.
+
+**Where the line goes is a correctness question, not a preference.** `packages/cli/src/doctor.ts:213`
+assembles its size figure from `briefLine` alone and compares it to `BRIEF_CAP_BYTES`, and
+`brief-text.ts`'s own doc says the renderer is shared *"so that the size doctor reports is the size of
+what the brief actually prints."* A line emitted by the **hook script** would sit outside both the cap
+and the doctor's count: the payload would exceed `BRIEF_CAP_BYTES` by an uncounted line and
+`asc doctor` would report a number that had stopped being true. The line therefore belongs in
+`asc types brief`'s own rendering — one renderer, one cap, one number.
+
+**Stage 1 — the brief names the recording command (`asc-uftd`).**
+*Goal*: line 1 of `asc types brief`'s stdout names the command; the whole text still fits the cap and
+the doctor's number still equals it.
+*Tests, RED first*: `types/brief` emits the command line first and the type lines after it (the
+`toHaveLength(1)` shape assertion at `packages/cli/test/types.test.ts:527` becomes a stated two-part
+shape, because this is a deliberate reversal of the *"No header, no rule, no counts"* rule and must be
+recorded as one); **the cheap detector made permanent** — the brief's text contains `asc record`,
+which is the one-line check `dogfood/0028` names as having caught this before it was ever measured
+(empirical-planning P7: codify the invariant so the class cannot recur); `doctor.briefSize` counts the
+header, driven across the cap boundary so the number moves; a brief over the cap still emits the header
+first and drops whole type lines, and the fallback note still claims no file.
+*Implementation*: one `briefText`/`briefLines` in `brief-text.ts` used by **both** `types/brief.ts` and
+`doctor.ts` — two renderings is the drift the file exists to prevent — with the header outside the
+counted line set so `fitBrief`'s `kept`/`total` stay about types. `--json` is left unchanged, and the
+asymmetry documented in `output.ts`'s own idiom (`output.ts:468`: *"A consumer knows which command it
+ran"*).
+
+**Status**: Complete (2026-10-01). `RECORD_COMMAND` (`Record with: asc record TYPE --json -`, 37
+bytes), `briefLines` and `briefText` in `brief-text.ts`; both callers go through `briefText`, so the
+number `asc doctor` reports is this text's byte length by construction. In `types/brief.ts` the header
+is emitted outside `fitBrief`'s counted set and its bytes come **off the top of the cap**
+(`budget = BRIEF_CAP_BYTES - byteLength(header + '\n')`), so the payload is bounded as a whole while
+the note's `N of M types` still counts types; the capped `.ascend/brief.txt` write carries `whole`
+(header included), and the no-file fallback keeps the header. `briefText([])` is `''`, so a
+deprecated-only registry prints nothing and the doctor reads `0 bytes` — the rule lives in one place
+rather than in each caller's early return. `--json` untouched (`columns` and `row_count` unchanged),
+with the asymmetry argued in the command's own header comment.
+
+RED→GREEN: 13 failed of 99 across the three chosen files. **The full gate then found a fourteenth
+assertion of the reversed contract that I had not thought to look for** — `init.test.ts:568` pinned
+the brief to exactly 4 non-empty lines. Its budget guard was right and only the line count encoded the
+old rule, so it now asserts the header's exact text plus `lines.slice(1)).toHaveLength(4)`, keeping
+"a later starter cannot quietly double it" intact. That is the gate earning its place: three files I
+chose, four I needed.
+
+**Bind-checked by mutation**: making `briefText` return `lines.join('\n')` fails 3 tests across 3
+files, including `doctor-cli.test.ts`'s end-to-end comparison of the printed payload against the
+reported size — the test that decided this placement and the only form of the check that can fail.
+
+**Driven live on this repo's own registry**, not only in tests: the payload went **3,381 → 3,419
+bytes** (15 lines, `asc record` **0 → 1**) in **4,619 free**, and `asc doctor` reads
+`3419 bytes, ~760 tokens of 2000` — equal to the payload's measured length, header included. One
+number in the first draft of `RECORD_COMMAND`'s comment was off by one (`3,382`, the trailing newline
+`this.log` appends, which the doctor excludes); corrected to the measured 3,381, since a comment
+citing a measurement is worthless if the number is nearly right.
+
+Full gate green: **124 files / 2905 passed, 2 skipped**; `format:check`, `typecheck`, `lint` 0;
+`align` green.
+
+**Stage 2 — the hook script stops teaching the form (`asc-l38f`).**
+*Goal*: a session that reads `.claude/ascend-hook.sh` is told what to run by hand and that the path
+resolution below it is the hook's own.
+*Tests, RED first*: the generated script carries the comment; `--dry-run` shows it; the byte-equality
+currency check at `install-hook.ts:337` still calls a current script current and a stale one stale —
+every existing install will read `upgraded`, which is the designed behaviour and not a regression;
+end-to-end, install into a scratch project and `sh` the script, asserting stdout is **exactly** the
+brief and nothing more.
+*Implementation*: a comment beside the resolution in `hookScript`. **No echo**, deliberately: the line
+lives in Stage 1, and `install-hook.ts`'s invariant that `types brief`'s stdout is the only payload
+`SessionStart` ever sees stays intact.
+
+**Status**: Complete (2026-10-01). `hookScript` emits a four-line comment immediately above
+`${resolution}`, and the command inside it is interpolated from **`RECORD_COMMAND`** — which is why
+that constant was split from `RECORD_COMMAND_LINE` in Stage 1. The brief and the script now read one
+spelling from one place, which is the structural form of the fix: `dogfood/0028`'s defect was two
+artifacts naming one program two ways, and a test that merely compared them would catch the drift
+after the fact rather than making it unrepresentable. No `echo`; the script's runtime output is
+unchanged, byte for byte.
+
+**One plan claim was wrong and is corrected here**: `--dry-run` does **not** show the script.
+`install-hook.ts:775` warns `dry run: nothing was written` and the report carries the settings
+command and the outcome — so there is no dry-run arm for a comment inside a file the dry run does not
+write. The test is the installed file itself.
+
+RED→GREEN: 3 failed of 45 in `install-hook.test.ts`. The fourth test — the script's stdout compared
+**byte for byte** against `asc types brief` — passed on RED and is meant to: it guards a property that
+already held and could silently stop holding, rather than driving the change.
+
+The staleness test reconstructs the **previous generation** (today's text with the by-hand block
+removed, found by the sentence that introduces it, not by line number) and asserts it reads
+`upgraded` — so "every existing install upgrades" is measured rather than assumed, and asserted to be
+the currency check working rather than a regression.
+
+Driven live in a scratch project, not only in tests: `asc install-hook --yes`, then `sh
+.claude/ascend-hook.sh` with `CLAUDE_PROJECT_DIR` and `ASCEND_BIN` set — `cmp` of the script's stdout
+against `asc types brief`'s own reports **IDENTICAL**, and the comment sits above the resolution on
+disk exactly as written above.
+
+Full gate green: **124 files / 2909 passed, 2 skipped**; `format:check`, `typecheck`, `lint` 0;
+`align` green. (Prettier reflowed the comment block on first pass — the gate caught it, which is what
+it is for.)
+
+**Stage 3 — README §Quickstart names its dependency.**
+*Goal*: the quickstart's bare `asc init` / `asc record` is not read cold.
+*Implementation*: one sentence pointing at §Install's alias. **No test asserts prose** — `dogfood/0028`
+states plainly that no test can catch an absence in prose and that asserting one would be asserting a
+design choice rather than a behaviour; the standing check is Stage 1's detector.
+
+**Status**: Complete (2026-10-01). §Quickstart now opens with the sentence it was missing: the
+sections are written as bare `asc`, which is §Install's alias, and without that alias every `asc`
+below has to be `node packages/cli/dist/bin.js`. This is the **second** artifact in the same class —
+`0028` is about the hook script teaching a form that is refused, and this is the quickstart teaching
+a form that does not resolve, with §Install's alias being the only spelling that both runs *and* is
+granted. `format:check` clean; no code, so no other gate arm moves.
+
+**Stage 4 — records, the root-fix bead, gate.**
+`dogfood/0028`'s Status cell and its README row (three corrections above); a new record for the
+§Install↔§Quickstart gap, which `0028` does not contain; a bead for the shim + `CLAUDE_ENV_FILE` root
+fix, carrying the measured reason it cannot ride on these two; then the gate.
+
+**Status**: Complete (2026-10-01). `dogfood/0028`'s Status cell is closed and carries the **three
+corrections** (immutable body, `0037`'s precedent): the `dontAsk` harness made F2's denials *prompts*
+rather than a wall; the shim and the `Bash(asc:*)`-vs-`Bash(node …)` asymmetry were properties of
+*that arm's grant* (`spike/ev16-arms.mjs:169`, `:428`, `:295`), not of Claude Code, and the script's
+own path form is allowed on this checkout; and the body's *"converts a discovery problem into a denial
+problem, which is worse"* is false for the remedy the README already ships, because **an alias does
+work in a Bash tool call**. Its README row moves from `(P2, open)` to fixed.
+
+`dogfood/0050` is new — **the same class a third time, with a sub-shape `0028` does not have**: the
+mechanism *is* documented, in the wrong section. §Quickstart ran **4** bare `asc` command lines and used
+the word *"alias"* **0** times, while §Install (27 lines up) defines it and itself runs **0** bare
+`asc` lines. The mechanism that surfaced it is the part worth keeping: E12.13's artifact table had one
+row per artifact, so it was **structurally blind to an absence in the seam between two rows**. Written
+with the count-of-text discipline — *no user or session is claimed; whether a reader was stopped is
+unmeasured and is not asserted.*
+
+`asc-zser` filed for the root fix (put `asc` on `PATH` via `CLAUDE_ENV_FILE`, which is executed as a
+shell script, so `export PATH=…:$PATH` really expands) — deliberately **not** ridden on this pair,
+because it changes what `install-hook` writes and needs its own measurement.
+
+Index updated by its own procedure — detector run **first** (`grep -c '^| \[0'` returned 49 against a
+sentence saying Forty-nine), row added flush, sentence moved to Fifty, both detectors re-run and
+agreeing: **50 rows indexed, 51 files on disk** (50 + `0000-template.md`), numbers `0001`–`0050` with
+no gap on either side.
+
+**Full gate green: 124 files / 2909 passed, 2 skipped (baseline 2900); `format:check`, `typecheck`,
+`lint` 0; `align` green.** Nothing committed — the conservative profile reports and waits.
+
+**Status**: Not started. Baseline before the work: 124 files / 2900 passed, 2 skipped, `align` green.
+
+---
+
 ## Stage 2: Claude Code adapter + backfill — epic E5
 
 **Goal** — `asc ingest claude-code` derives entries from existing transcripts.

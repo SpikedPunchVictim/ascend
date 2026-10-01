@@ -112,6 +112,24 @@ function hookCommands(dir: string): readonly string[] {
   });
 }
 
+/**
+ * The script as the generation before `asc-l38f` wrote it: today's text, with the by-hand block
+ * removed.
+ *
+ * Reconstructed rather than pasted in as a literal, so this cannot quietly become a test of a
+ * string nobody ships. The block is found by the sentence that introduces it -- not by a line
+ * number -- so an edit that moves it cannot produce a "previous" script that is really today's,
+ * which would make the staleness test pass while asserting nothing.
+ */
+function withoutByHandBlock(script: string): string {
+  const lines = script.split('\n');
+  const start = lines.findIndex((line) => line.includes('To record an entry by hand'));
+  if (start === -1) throw new Error('the generated script has no by-hand block');
+  let end = start;
+  while (end < lines.length && (lines[end] ?? '').startsWith('#')) end += 1;
+  return [...lines.slice(0, start), ...lines.slice(end)].join('\n');
+}
+
 /** The command the command would write, taken from `--json` rather than reconstructed here. */
 function generated(dir: string): string {
   const run = asc(['install-hook', '--dry-run', '--json'], dir);
@@ -414,6 +432,100 @@ describe('asc install-hook: upgrading a stale script without touching settings.j
     expect(JSON.parse(run.stdout)).toMatchObject({ rows: [{ outcome: 'would upgrade' }] });
     expect(readFileSync(scriptPath(dir), 'utf8')).toBe(scriptBefore);
     expect(readFileSync(settingsPath(dir), 'utf8')).toBe(settingsBefore);
+  });
+});
+
+/**
+ * `asc-l38f`, `dogfood/0028`: the script is the artifact a session reads when it goes looking.
+ *
+ * **The defect was an asymmetry, not a missing line.** Nothing in the brief named the recording
+ * command (`asc record` occurred **0 times in 3,382 bytes**), so a session asked to record had to
+ * discover it -- and the one artifact it found, this script, taught
+ * `node "$root"/path/to/bin.js record ...`. Measured in `spike/ev16-arms.mjs` arm F: the session
+ * that read the script tried that form **four times**, was denied, and stopped. The reason is
+ * mechanical and is why the fix is a sentence rather than a working example: a Claude Code allow
+ * rule such as `Bash(asc record:*)` matches the **literal text of the command the model emits**
+ * (after compound-command splitting), so *"it doesn't match the same program invoked in a different
+ * form"*. No artifact can therefore be both runnable and granted -- the path form runs and is not
+ * granted, the bare form is granted and (with the binary off `PATH`) resolves nowhere. The script
+ * must stop *recommending* the form it needs for itself, and say what to run instead.
+ *
+ * The comment is the whole change: **no `echo`**, because `install-hook.ts` holds that
+ * `types brief`'s stdout is the only thing `SessionStart` ever sees -- a second line of output here
+ * would be a second payload, unaudited and outside `BRIEF_CAP_BYTES`.
+ */
+describe('asc install-hook: the script says what to run by hand (asc-l38f)', () => {
+  it('names the recording command, in the same spelling the brief prints', () => {
+    const dir = project();
+    asc(['install-hook', '--yes'], dir);
+
+    // The command spelling, asserted against BOTH artifacts at once. A test that only checked the
+    // script could pass while the two drifted apart, which is the defect: the artifact and the
+    // digest naming the same program two different ways.
+    const command = 'asc record TYPE --json -';
+    expect(asc(['types', 'brief'], dir).stdout).toContain(command);
+    expect(readFileSync(scriptPath(dir), 'utf8')).toContain(command);
+  });
+
+  it('says it by hand, and says the path form below it is not the form to copy', () => {
+    const dir = project();
+    asc(['install-hook', '--yes'], dir);
+    const content = readFileSync(scriptPath(dir), 'utf8');
+
+    // The line must be a COMMENT. A bare `asc record` in the script body would be a command the
+    // hook runs on every session, which would record an entry per session -- the opposite of a
+    // sentence telling a reader what to type.
+    const telling = content.split('\n').filter((line) => line.includes('asc record'));
+    expect(telling.length).toBeGreaterThan(0);
+    for (const line of telling) expect(line.startsWith('#')).toBe(true);
+
+    // And the sentence that stops the reader copying `bin="$root"...` above it.
+    expect(content).toContain('not a form to copy');
+    expect(content).toContain('literal');
+  });
+
+  it('reads a script written before that line as stale, so an existing install upgrades', () => {
+    // The designed consequence, asserted rather than assumed: every already-installed script
+    // differs from this one byte for byte, and `isScriptCurrent` is byte equality -- so an
+    // existing install reports `upgraded`, not `already installed`. That is the mechanism working,
+    // not a regression, and this is the test that says which it is.
+    const dir = project();
+    asc(['install-hook', '--yes'], dir);
+    const current = readFileSync(scriptPath(dir), 'utf8');
+
+    const previous = withoutByHandBlock(current);
+    expect(previous).not.toBe(current);
+    // The previous generation is otherwise exactly today's script -- so the ONLY thing this can
+    // be testing is the block's presence in the currency identity.
+    expect(previous).toContain('ingest claude-code');
+    writeFileSync(scriptPath(dir), previous, 'utf8');
+
+    const run = asc(['install-hook', '--yes', '--json'], dir);
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ rows: [{ outcome: 'upgraded' }] });
+    expect(readFileSync(scriptPath(dir), 'utf8')).toBe(current);
+  });
+
+  it('still prints exactly the brief and nothing else, end to end', () => {
+    // The comment must be invisible at run time, and "invisible" means byte-for-byte: the whole
+    // payload the hook delivers is compared against what `asc types brief` prints on its own.
+    // Asserting only that the brief is *contained* would pass on a script that also leaked the
+    // ingest report, an error, or the comment itself.
+    const dir = project();
+    asc(['install-hook', '--yes'], dir);
+
+    const isolated = {
+      ...process.env,
+      HOME: dir,
+      XDG_CACHE_HOME: join(dir, '.cache'),
+      CLAUDE_PROJECT_DIR: dir,
+      ASCEND_BIN: bin,
+    };
+    const command = hookCommands(dir)[0] ?? '';
+    const live = spawnSync('sh', ['-c', command], { cwd: dir, encoding: 'utf8', env: isolated });
+    expect(live.status).toBe(0);
+    expect(live.stdout).toBe(asc(['types', 'brief'], dir).stdout);
+    expect(live.stderr).toBe('');
   });
 });
 

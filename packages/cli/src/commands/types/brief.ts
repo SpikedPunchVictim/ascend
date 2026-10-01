@@ -1,14 +1,27 @@
 /**
  * `asc types brief` -- the digest a model is handed before it records anything.
  *
- * This is the command `asc-9y1` measures on a token budget, so its default output is the
- * smallest true thing: one line per active type, `name -- record_when`, and nothing else. No
- * header, no rule, no counts. The types are what the reader needs; the rest is tokens.
+ * This is the command `asc-9y1` measures on a token budget, so its default output is the smallest
+ * true thing: the recording command, then one line per active type, `name -- record_when`, and
+ * nothing else. No rule, no counts. The types are what the reader needs; the rest is tokens.
+ *
+ * **The recording command is the one exception, and it is a reversal of this command's original
+ * "no header" rule** (`asc-uftd`, `dogfood/0028`). That rule was argued on the same budget the
+ * paragraph above states, and EV-16 measured the budget as real -- but measured against the text
+ * the rule produced, the digest named every type and never the verb that writes one: `asc record`
+ * occurred **0 times in 3,382 bytes**, while `asc ingest` occurred 6 and `asc query` 1, both as
+ * prose inside derived types' descriptions. A session asked to record therefore had to go looking,
+ * and the artifact it found, `.claude/ascend-hook.sh`, teaches a form an allow rule cannot match
+ * (`ARCHITECTURE.md`'s allow-list note; measured in `spike/ev16-arms.mjs` arm F, four denials).
+ * The header is one line, and it buys the removal of a discovery step; the budget still governs,
+ * and this is the only line in the payload that is not a type. The comment on `RECORD_COMMAND_LINE` in
+ * `brief-text.ts` carries the full argument.
  *
  * **Deprecated types are absent, and that is the point of asking for a brief.** A deprecated
  * type still holds entries and is still queryable (`asc types list` and `asc types show` report
  * it), but telling a recorder about one would invite new entries under a definition the project
- * has retired.
+ * has retired. A registry with no active type at all prints nothing rather than a bare command
+ * line, and the doctor's size reads 0 for it (`briefText` owns that rule).
  *
  * **`--csv` is refused rather than rendered.** A digest has no columns to project: the two
  * columns it would have are the two fields of a sentence, and every row would repeat the
@@ -18,15 +31,24 @@
  * **`--table` is accepted as the default's name.** The line format *is* this command's table --
  * it is not `output.ts`'s aligned grid, and `--json` is where the rows become a contract.
  *
+ * **`--json` is deliberately asymmetric: the rows are types and the command line is not one of
+ * them.** The default output is prose addressed to a model, and the header is part of it; the
+ * envelope is a `rows` contract addressed to a script, and a synthetic row naming a command would
+ * be a row that corresponds to no type. The precedent is `output.ts`'s "there is deliberately no
+ * `command` field naming which command produced this ... a consumer knows which command it ran",
+ * and the same holds here: a script that ran `asc types brief --json` to get the type list does not
+ * need to be told how to record, because it is not a recorder. `columns` stays `['name',
+ * 'record_when']` and `row_count` still counts types, so nothing about the envelope moves.
+ *
  * **Above a measured ceiling the payload is capped, and the whole brief is written beside the
  * store.** A `SessionStart` hook's stdout is truncated to a ~2 KiB preview somewhere between 8,990
  * and 10,495 bytes (`asc-3q7`, located one session per point by `spike/ev16-brief-canary.mjs`), and
  * **nothing reports the loss**: the hook exits 0, this command prints everything, and the
  * transcript's own `hook_response` carries the full text even when the model received almost none
- * of it. When the brief does not fit under `BRIEF_CAP_BYTES`, the whole text is written to
- * `.ascend/brief.txt` and stdout carries as many whole lines as fit plus a note saying how many
- * were dropped and where they went. That pointer is the arm `9bf45ed` measured delivering a canary
- * whole at 121,865 bytes, where stdout and the JSON envelope both truncated.
+ * of it. When the brief does not fit under `BRIEF_CAP_BYTES`, the whole text -- header included --
+ * is written to `.ascend/brief.txt` and stdout carries as many whole lines as fit plus a note saying
+ * how many were dropped and where they went. That pointer is the arm `9bf45ed` measured delivering
+ * a canary whole at 121,865 bytes, where stdout and the JSON envelope both truncated.
  *
  * **No flag turns this on, and that is a constraint rather than an oversight.** `install-hook.ts`
  * records that the hook's payload is this command's plain stdout and that there is to be **no new
@@ -41,7 +63,13 @@ import { join, relative } from 'node:path';
 
 import { listTypes } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
-import { BRIEF_CAP_BYTES, briefLine, reviewAfterReached } from '../../brief-text.js';
+import {
+  BRIEF_CAP_BYTES,
+  RECORD_COMMAND_LINE,
+  briefLines,
+  briefText,
+  reviewAfterReached,
+} from '../../brief-text.js';
 import { usageError } from '../../errors.js';
 
 /** The whole brief's path under the project root. Written only when the payload has to be capped. */
@@ -59,6 +87,10 @@ const BRIEF_FILE = '.ascend/brief.txt';
  * The note is regenerated per candidate because it names how many were dropped, so the fit is over
  * the text that will actually be emitted rather than over the lines alone -- the same reason
  * `budget.ts` measures its report as part of the output it reports on.
+ *
+ * `cap` is a **budget, not necessarily `BRIEF_CAP_BYTES`**: the caller may pass the constant less a
+ * header this function never sees, so that what lands on stdout fits the cap as a whole. Whatever it
+ * is given bounds the lines and the note; the caller owns everything else on the wire.
  */
 function fitBrief(
   lines: readonly string[],
@@ -127,8 +159,8 @@ export default class TypesBrief extends BaseCommand {
 
       if (summaries.length === 0) return;
 
-      const lines = summaries.map(briefLine);
-      const whole = lines.join('\n');
+      const lines = briefLines(summaries);
+      const whole = briefText(summaries);
 
       // The pointer is named relative to the caller's working directory rather than to the project
       // root, because a store is found by walking UP from the cwd: run from a subdirectory, the
@@ -138,7 +170,16 @@ export default class TypesBrief extends BaseCommand {
         `[${String(kept)} of ${String(total)} types shown; the other ${String(total - kept)} are ` +
         `in ${pointer} -- read it before recording anything.]`;
 
-      const fit = fitBrief(lines, note, BRIEF_CAP_BYTES);
+      // The recording command is **not one of the lines `fitBrief` counts, and its bytes are still
+      // charged to the cap**: the budget handed to the fitter is the cap less the header, so
+      // `header + fit.text` is what has to fit. Keeping it out of the counted set is what makes the
+      // note's `N of M types` mean types -- put the header in the list and a capped brief would
+      // account for it as a dropped type, and the count a reader checks against `asc types list`
+      // would be off by one. Taking the bytes off the top is what keeps `BRIEF_CAP_BYTES` a bound on
+      // the payload rather than on part of it.
+      const budget = BRIEF_CAP_BYTES - Buffer.byteLength(`${RECORD_COMMAND_LINE}\n`, 'utf8');
+
+      const fit = fitBrief(lines, note, budget);
       if (fit.kept === lines.length) {
         // One write rather than one per line, so a brief read through a pipe arrives whole.
         this.log(whole);
@@ -147,22 +188,26 @@ export default class TypesBrief extends BaseCommand {
 
       // Over the cap, so the whole brief has to be somewhere the model can reach. Written BEFORE
       // the line that names it: a pointer emitted first and written second is a claim about a file
-      // that a crash can leave missing, and the model would spend a turn discovering that.
+      // that a crash can leave missing, and the model would spend a turn discovering that. The file
+      // gets the header too -- `whole`, not `fit.text` -- because it is the brief, and a reader
+      // handed the capped stdout is told to go and read this one.
       try {
         writeFileSync(join(root, BRIEF_FILE), whole, 'utf8');
-        this.log(fit.text);
+        this.log(`${RECORD_COMMAND_LINE}\n${fit.text}`);
       } catch (cause) {
         // Not swallowed. The payload still has to fit under the ceiling, so the fallback is the
         // same fit with a note that claims no file -- never a pointer to one that is not there.
         this.log(
-          fitBrief(
-            lines,
-            (kept, total) =>
-              `[${String(kept)} of ${String(total)} types shown; the other ` +
-              `${String(total - kept)} are in this project's store -- \`asc types list\` names ` +
-              `them.]`,
-            BRIEF_CAP_BYTES,
-          ).text,
+          `${RECORD_COMMAND_LINE}\n${
+            fitBrief(
+              lines,
+              (kept, total) =>
+                `[${String(kept)} of ${String(total)} types shown; the other ` +
+                `${String(total - kept)} are in this project's store -- \`asc types list\` names ` +
+                `them.]`,
+              budget,
+            ).text
+          }`,
         );
         this.warn(
           `could not write ${pointer} (${String(cause)}) -- the brief was capped and the ` +

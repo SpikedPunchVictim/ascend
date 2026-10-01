@@ -55,6 +55,10 @@ alias asc='node /path/to/ascend/packages/cli/dist/bin.js'
 
 Everything below is real output from the commands as they ship today.
 
+It is written as bare `asc`, which is the alias at the end of [Install](#install). Nothing links an
+`asc` binary onto your `PATH` — the package is not published to npm — so without that alias, every
+`asc` below has to be `node packages/cli/dist/bin.js` instead.
+
 ```bash
 cd ~/some/project
 asc init

@@ -27,7 +27,7 @@ import { MIN_N } from '@ascend/analysis';
 import { confusableNames } from '@ascend/core';
 import type { TypeProfile, TypeSummary } from '@ascend/store';
 
-import { BRIEF_CAP_BYTES, briefLine } from './brief-text.js';
+import { BRIEF_CAP_BYTES, briefText } from './brief-text.js';
 import { countCodePoints } from './budget.js';
 
 export type DoctorCheck =
@@ -210,7 +210,12 @@ export function propertyStates(profiles: readonly TypeProfile[]): readonly Docto
 /** The brief's size against the token cap, measured on the text `asc types brief` prints. */
 export function briefSize(summaries: readonly TypeSummary[]): readonly DoctorFinding[] {
   const active = summaries.filter((summary) => summary.status === 'active');
-  const text = active.map(briefLine).join('\n');
+  // The whole payload through the shared renderer, header and all (`asc-uftd`). This is why the
+  // recording command lives in `brief-text.ts` and nowhere else: this check's contract is to report
+  // the size of *what the brief actually prints*, and a line the payload prints that this does not
+  // count is precisely the drift `brief-text.ts` exists to prevent. An empty registry renders to
+  // `''` rather than to a bare command line, so a deprecated-only store measures 0.
+  const text = briefText(active);
   const bytes = Buffer.byteLength(text, 'utf8');
   const tokens = Math.round(countCodePoints(text) / BRIEF_CODE_POINTS_PER_TOKEN);
   const over = tokens > BRIEF_TOKEN_CAP;

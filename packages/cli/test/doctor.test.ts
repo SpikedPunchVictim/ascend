@@ -211,9 +211,19 @@ describe('propertyStates', () => {
 describe('briefSize', () => {
   it('measures the brief as `asc types brief` renders it, and passes a small registry', () => {
     const [finding] = briefSize([summary('note', { recordWhen: 'x'.repeat(40) })]);
-    // `note -- ` plus 40 characters.
-    expect(finding?.detail.startsWith('48 bytes, ~11 tokens of 2000')).toBe(true);
+    // `Record with: asc record TYPE --json -` (37) + newline + `note -- ` + 40 characters = 86.
+    // It read `48 bytes` before the recording command existed; the 38-byte difference is the point
+    // (`asc-uftd`) -- this check exists to report the size of what the payload prints, so a line
+    // the payload prints is a line it has to count.
+    expect(finding?.detail.startsWith('86 bytes,')).toBe(true);
     expect(finding?.status).toBe('ok');
+  });
+
+  it('counts the command line only when there is a brief to put it on (asc-uftd)', () => {
+    // No active types means no brief at all -- `asc types brief` prints nothing rather than a
+    // bare command line naming a type that is not there, so the size is zero, not 37.
+    const [finding] = briefSize([summary('old', { status: 'deprecated' })]);
+    expect(finding?.detail.startsWith('0 bytes,')).toBe(true);
   });
 
   it('warns past the token cap, and says the brief itself is capped', () => {

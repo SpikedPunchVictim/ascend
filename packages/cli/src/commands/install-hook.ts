@@ -97,6 +97,7 @@ import { Flags } from '@oclif/core';
 import { HOOK_STAGES, type HookStage } from '@ascend/adapter-claude-code';
 import { STORE_DIR } from '@ascend/store';
 import { BaseCommand } from '../base.js';
+import { RECORD_COMMAND } from '../brief-text.js';
 import { refusal, usageError } from '../errors.js';
 import { findProjectRoot } from '../project.js';
 import { shellQuote, symlinkTarget } from '../symlink.js';
@@ -272,6 +273,23 @@ function hookScript(binaryRelativeToRoot: string | undefined): string {
     return [`elif [ -f "$root"${quoted} ]; then`, `  bin="$root"${quoted}`];
   })();
 
+  // The one sentence that stops a reader copying the resolution below (`asc-l38f`, dogfood/0028).
+  // The asymmetry it names is structural, not a bug to be fixed: an allow rule matches the LITERAL
+  // TEXT of the command a session emits, so a form spelled differently is a different command --
+  // "it doesn't match the same program invoked in a different form". This script's own path form
+  // therefore runs and is not granted, while the bare form is granted and resolves nowhere when the
+  // binary is off PATH. No artifact can be both, so the script stops RECOMMENDING its own form.
+  // The command is interpolated from `RECORD_COMMAND` rather than spelled again: `dogfood/0028`
+  // measured `asc record` at 0 occurrences in the brief and this script naming a form four sessions
+  // tried and were denied, and two artifacts disagreeing on one spelling is the class this closes.
+  const byHand = [
+    `# To record an entry by hand, run: ${RECORD_COMMAND}`,
+    "# The resolution below is THIS script's own job -- how a hook finds a binary that is not on",
+    '# PATH -- and is not a form to copy: an allow rule matches the literal text of a command, so a',
+    '# path form is a different command to the one an allow-list entry names, and is refused.',
+    '',
+  ].join('\n');
+
   const resolution = [
     'if [ -n "$ASCEND_BIN" ] && [ -f "$ASCEND_BIN" ]; then',
     '  bin="$ASCEND_BIN"',
@@ -307,7 +325,7 @@ root=\${CLAUDE_PROJECT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null 
 # file one project's transcripts into another project's database, silently and irreversibly.
 cd "$root" || exit 0
 
-${resolution}
+${byHand}${resolution}
 
 case "$bin" in
   *.js)

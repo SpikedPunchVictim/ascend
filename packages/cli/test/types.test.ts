@@ -78,6 +78,21 @@ function project(): string {
 }
 
 /**
+ * The brief's type lines: everything after the recording command, which is line 1 (`asc-uftd`).
+ *
+ * The byte-exact assertions that predate the header stay byte-exact here, and they stay about the
+ * part they were always about. Spelling the header into each of them would mean editing all of
+ * them again the next time its wording moves, and would stop any of them from saying anything
+ * about the lines themselves.
+ *
+ * Not a blind `slice(1)`: with the header missing, the first *type* line is dropped instead, so a
+ * test expecting one line fails rather than silently losing one.
+ */
+function briefTypeLines(dir: string): readonly string[] {
+  return asc(['types', 'brief'], dir).stdout.trim().split('\n').slice(1);
+}
+
+/**
  * Run a `sh` pipeline, with `SRC`, `DST`, `BIN` and `NODE` in the environment.
  *
  * A real shell pipeline rather than `spawnSync`'s `input` option, and the difference is not
@@ -198,6 +213,17 @@ const REVIEW = {
   record_when: 'Record when a review of a change reaches a verdict.',
   prose: { rounds: 'How many rounds of review it took.' },
 };
+
+/**
+ * The line `asc types brief` prints first, spelled out here rather than imported.
+ *
+ * It is the `SessionStart` payload's contract, and this file drives the real binary rather than
+ * importing from it -- a test that asserted the constant it had just imported could not fail when
+ * that constant was the wrong thing to print, which is the whole question `asc-uftd` asks. The
+ * form is `ARCHITECTURE.md:333`'s primary path for `asc record`; the flag form is the convenience
+ * path and `asc record --help` is where a reader finds it.
+ */
+const RECORD_COMMAND = 'Record with: asc record TYPE --json -';
 
 /** REVIEW with every guidance field declared (asc-bli). Same shape, so the same hash. */
 const REVIEW_GUIDED = {
@@ -515,18 +541,23 @@ describe('asc types show', () => {
 });
 
 describe('asc types brief', () => {
-  it('prints one line per active type, and nothing else on stdout', () => {
+  it('prints the recording command first, then one line per active type, and nothing else', () => {
     const dir = project();
     asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
 
     const run = asc([], dir);
     expect(run.status).toBe(0);
-    expect(run.stdout.trim()).toBe(
+    // **This is a deliberate reversal of the old "no header, no rule, no count" rule, and the
+    // reason is measured** (`asc-uftd`). The digest named every type and never the verb that
+    // writes one: `asc record` occurred 0 times in this payload, whose only `asc <verb>` strings
+    // were `asc ingest` (6, all inside "Never by hand" prose) and `asc query` (1). A session that
+    // therefore had to *discover* the verb read `.claude/ascend-hook.sh` instead, and learned a
+    // form the documented allowlist refuses -- it tried that form four times and stopped
+    // (`dogfood/0028`). The header costs one line against a cap with 4,618 bytes free.
+    expect(run.stdout.trim().split('\n')).toEqual([
+      RECORD_COMMAND,
       'review_completed -- Record when a review of a change reaches a verdict.',
-    );
-    // No header, no rule, no count: this is the digest a session hook injects on every session
-    // (`ARCHITECTURE.md`), so every extra line is a context tax.
-    expect(run.stdout.trim().split('\n')).toHaveLength(1);
+    ]);
   });
 
   it('omits a deprecated type, because a brief is what a recorder should reach for', () => {
@@ -538,6 +569,40 @@ describe('asc types brief', () => {
     // Still listed and still shown: deprecated is a status, not a deletion.
     expect(asc(['types', 'list'], dir).stdout).toContain('review_completed');
     expect(asc(['types', 'show', 'review_completed'], dir).stdout).toContain('deprecated');
+  });
+
+  it('prints no command line either, when there is no type to name one for', () => {
+    // The header is a way into the list below it; with no list it points at nothing, and the
+    // deprecated case above would otherwise print one bare line where the contract says silence.
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+    asc(['types', 'deprecate', 'review_completed'], dir);
+
+    expect(asc(['types', 'brief'], dir).stdout).not.toContain('asc record');
+  });
+
+  it('names the command in the bytes a reader greps, which is the check that was zero', () => {
+    // `dogfood/0028` states the detector in as many words: "for every documented capability, grep
+    // the text a consumer actually reads for the command that performs it", and "`grep -c 'asc
+    // record'` over the brief is 0. That check costs one line and would have caught this before the
+    // measurement." It is a test now, so the class cannot come back the next time the payload is
+    // trimmed for bytes.
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+
+    expect(asc(['types', 'brief'], dir).stdout).toContain('asc record');
+  });
+
+  it('leaves --json a rows contract, with the command line out of it', () => {
+    // The asymmetry is deliberate and it is `output.ts`'s own reasoning (`output.ts:468`: "A
+    // consumer knows which command it ran"). A script that asked for `--json` already knows how to
+    // invoke the tool; the reader who may not is the model reading the text payload, and it is the
+    // only reader the extra line is for.
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+
+    const rows = envelope(asc(['types', 'brief', '--json'], dir).stdout);
+    expect(rows.map((row) => row['name'])).toEqual(['review_completed']);
   });
 
   it('refuses --csv as a usage error rather than emitting a degenerate table', () => {
@@ -606,6 +671,16 @@ describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
     expect(run.stdout).toContain(`of ${String(names.length)} types shown`);
     expect(run.stdout).toContain('.ascend/brief.txt');
 
+    // The command line is the ONE line the cap may never drop, and the payload is exactly where it
+    // matters most: this is a registry whose brief did not fit, i.e. a project with enough types
+    // that a session is least likely to have learned the verb by hand. It is charged to the cap
+    // like everything else -- `BRIEF_CAP_BYTES` bounds the whole payload, so the count of dropped
+    // types below is a count of TYPES and the header is not one of them.
+    expect(run.stdout.split('\n')[0]).toBe(RECORD_COMMAND);
+    // ...and the file the pointer names is the same payload, header included, so a reader who
+    // follows the pointer does not get a shorter document than the one it was cut from.
+    expect(written.split('\n')[0]).toBe(RECORD_COMMAND);
+
     // Every active type is in the file, including the ones stdout had to drop.
     for (const name of names) expect(written).toContain(`${name} -- `);
   });
@@ -619,12 +694,17 @@ describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
     expect(note.startsWith('[')).toBe(true);
 
     const written = readFileSync(join(dir, '.ascend', 'brief.txt'), 'utf8').split('\n');
-    const lines = shown.slice(0, -1);
+    // Line 1 is the command; the type lines are what is left once it and the note are set aside,
+    // and the note's own count has to be a count of THOSE. A header counted as a type would make
+    // the note claim one more was shown than was.
+    const lines = shown.slice(1, -1);
+    expect(shown[0]).toBe(RECORD_COMMAND);
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.length).toBeLessThan(names.length);
+    expect(note).toContain(`[${String(lines.length)} of ${String(names.length)} types shown`);
     // A byte slice would leave a partial sentence in the head; a boundary cut leaves whole lines,
     // each of which is a line of the file verbatim.
-    for (const row of lines) expect(written).toContain(row);
+    for (const row of [RECORD_COMMAND, ...lines]) expect(written).toContain(row);
   });
 
   it('leaves the payload whole, and writes no file, when it fits', () => {
@@ -633,7 +713,7 @@ describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
 
     const run = asc(['types', 'brief'], dir);
     expect(run.stdout.trim()).toBe(
-      'review_completed -- Record when a review of a change reaches a verdict.',
+      `${RECORD_COMMAND}\nreview_completed -- Record when a review of a change reaches a verdict.`,
     );
     // Nothing was dropped, so nothing points anywhere -- and a project that never crosses the cap
     // should never find a file appearing inside its store directory.
@@ -668,16 +748,19 @@ describe('readiness in asc types brief and asc types list (asc-bli.6)', () => {
   it('leaves the brief line byte-identical below the threshold: readiness costs nothing until it is true', () => {
     const dir = guided(2);
     review(dir);
-    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(`review_completed -- ${LINE}`);
+    expect(briefTypeLines(dir)).toEqual([`review_completed -- ${LINE}`]);
   });
 
   it('marks the existing line, not a new section, once the count reaches review_after', () => {
     const dir = guided(2);
     review(dir);
     review(dir);
-    const brief = asc(['types', 'brief'], dir).stdout.trim();
-    expect(brief).toBe(`review_completed [review_after 2 reached: 2 entries] -- ${LINE}`);
-    expect(brief.split('\n')).toHaveLength(1);
+    expect(briefTypeLines(dir)).toEqual([
+      `review_completed [review_after 2 reached: 2 entries] -- ${LINE}`,
+    ]);
+    // The marker rides inside the existing line, and the payload is still exactly two lines: the
+    // command and the type. A readiness marker that added a line would be a second rendering.
+    expect(asc(['types', 'brief'], dir).stdout.trim().split('\n')).toHaveLength(2);
   });
 
   it('stays marked past the threshold, because it states a level; raising review_after clears it', () => {
@@ -688,7 +771,7 @@ describe('readiness in asc types brief and asc types list (asc-bli.6)', () => {
 
     // Dismissal is a real act of intent, not a snooze: declare a later point.
     asc(['types', 'define', json(dir, 'r2.json', { ...REVIEW_GUIDED, review_after: 10 })], dir);
-    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(`review_completed -- ${LINE}`);
+    expect(briefTypeLines(dir)).toEqual([`review_completed -- ${LINE}`]);
   });
 
   it('reports the threshold and whether it is reached in --json, and omits both when undeclared', () => {
@@ -1415,17 +1498,15 @@ describe('a strike moves the counts a person reads (asc-9xi0)', () => {
     const only = recordOne(dir);
 
     // One live entry reaches a threshold of 1, so the marker is there with nothing struck.
-    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(
+    expect(briefTypeLines(dir)).toEqual([
       `review_completed [review_after 1 reached: 1 entries] -- ${REVIEW.record_when}`,
-    );
+    ]);
 
     strike(dir, only);
 
     // Now the count that moved is followed by what moved out of it, and the type has dropped BELOW
     // its own threshold -- a level measured against what still stands, not against what was written.
-    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(
-      `review_completed -- ${REVIEW.record_when}`,
-    );
+    expect(briefTypeLines(dir)).toEqual([`review_completed -- ${REVIEW.record_when}`]);
   });
 
   it('states the struck count beside a marker that is still reached', () => {
@@ -1438,18 +1519,22 @@ describe('a strike moves the counts a person reads (asc-9xi0)', () => {
     strike(dir, first);
 
     // 2 live reaches 2, and the struck entry is stated beside it rather than silently absent.
-    expect(asc(['types', 'brief'], dir).stdout.trim()).toBe(
+    expect(briefTypeLines(dir)).toEqual([
       `review_completed [review_after 2 reached: 2 entries, 1 struck] -- ${REVIEW.record_when}`,
-    );
+    ]);
   });
 
   it('leaves the brief line byte-identical when nothing is struck', () => {
     // The SessionStart payload's budget is a measured constraint (EV-16), so the struck count may
-    // not appear on a type that has none.
+    // not appear on a type that has none -- and the command line `asc-uftd` added is the only
+    // header this payload gets.
     const dir = project();
     asc(['types', 'define', json(dir, 'r.json', { ...REVIEW_GUIDED, review_after: 1 })], dir);
     recordOne(dir);
 
     expect(asc(['types', 'brief'], dir).stdout.trim()).not.toContain('struck');
+    expect(briefTypeLines(dir)).toEqual([
+      `review_completed [review_after 1 reached: 1 entries] -- ${REVIEW.record_when}`,
+    ]);
   });
 });

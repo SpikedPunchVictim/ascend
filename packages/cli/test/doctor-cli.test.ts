@@ -42,9 +42,36 @@ interface Finding {
   readonly check: string;
   readonly status: string;
   readonly subject: string;
+  readonly detail: string;
 }
 
 describe('asc doctor', () => {
+  it('reports the brief size of what the brief actually prints, header and all (asc-uftd)', () => {
+    // This is the test that decided where the recording command lives. `brief-text.ts` is shared
+    // between `asc types brief` and this check precisely so the doctor "reports the size of what
+    // the brief actually prints", and `BRIEF_CAP_BYTES` bounds that same text. A command line
+    // emitted by `.claude/ascend-hook.sh` instead would sit outside both: the SessionStart payload
+    // would run over the cap by an uncharged line, and this number would go on reporting a size
+    // that had stopped being true. Driving both commands and comparing them is the only form of
+    // the check that can fail.
+    const dir = project();
+
+    const printed = asc(['types', 'brief'], dir).stdout;
+    // `this.log` appends the newline; the doctor measures the text, without it.
+    const measured = printed.replace(/\n$/, '');
+    expect(measured).toContain('asc record');
+
+    const rows = (
+      JSON.parse(asc(['doctor', '--json'], dir).stdout) as {
+        rows: Finding[];
+      }
+    ).rows;
+    const brief = rows.find((row) => row.check === 'brief_size');
+    expect(brief?.detail.startsWith(`${String(Buffer.byteLength(measured, 'utf8'))} bytes,`)).toBe(
+      true,
+    );
+  });
+
   it('reports every check on a fresh store, and exits 0 with warnings present', () => {
     const run = asc(['doctor', '--json'], project());
     expect(run.status).toBe(0);
