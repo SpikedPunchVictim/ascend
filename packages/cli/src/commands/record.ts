@@ -60,6 +60,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute, relative } from 'node:path';
 import { Args, Flags } from '@oclif/core';
 import {
+  EntryRejectedError,
   entryCount,
   findType,
   previewProducedLines,
@@ -80,6 +81,7 @@ import { refusal, usageError } from '../errors.js';
 import { readInput, STDIN } from '../input.js';
 import { describedProperties, renderProperty } from '../property-shape.js';
 import { requireType } from '../type-lookup.js';
+import { starterEntryIssue } from '../starters.js';
 
 /**
  * A flag value, as the type it looks like.
@@ -704,6 +706,35 @@ export default class RecordEntry extends BaseCommand {
             ...(merged.actor === undefined ? {} : { actor: merged.actor }),
             ...(merged.evidence_text === undefined ? {} : { evidenceText: merged.evidence_text }),
           };
+
+          // `asc-xvz5`: a starter's own rule about its own properties, refused HERE rather than in
+          // `validateEntry`. The funnel is shared with `asc import`, `asc ingest` and `asc index
+          // build`'s replay, and this tree already holds four no-op `stage_transition` lines -- two
+          // of them deliberate, with their reasons written out -- so a refusal there would make
+          // `asc index build` throw on a tree that is not wrong. `starterEntryIssue`'s doc carries
+          // the measurement. Refusing before `produce` is what makes it a refusal rather than an
+          // after-the-fact report, since `produce` is the thing that appends.
+          //
+          // It throws the SAME `EntryRejectedError` every other refusal uses, so the batch index
+          // (`entry 1: ...`) and the "so nothing was recorded" line come from machinery that already
+          // does them rather than from a second shape of failure.
+          //
+          // One limitation, stated rather than discovered later: this runs before the definition is
+          // consulted, so an entry that is BOTH a no-op and otherwise invalid reports the no-op and
+          // not the other problem. The batch is refused either way and both messages are true; the
+          // cost is one round trip in a case that was already going to cost one.
+          const starterIssue = starterEntryIssue(
+            args.type,
+            merged.properties,
+            merged.evidence_text,
+          );
+          if (starterIssue !== undefined) {
+            throw withEntryIndex(
+              new EntryRejectedError(args.type, [starterIssue]),
+              index,
+              documents.length,
+            );
+          }
 
           const result = recordOrRefuse(
             produce,

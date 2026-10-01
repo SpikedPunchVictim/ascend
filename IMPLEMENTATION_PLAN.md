@@ -2138,6 +2138,84 @@ as the store itself.
   `format:check` 0, `align` green. `dogfood/0046`'s Status and its index row both moved to *fixed in
   the working tree* — the two are kept in step in every record checked.
 
+- **E12.12 — a no-op transition is a real entry (`asc-xvz5`, P2, done 2026-10-01).**
+  `asc record stage_transition` accepts a document whose `to_status` equals its `from_status`, and
+  stores it. The field's own description already says what that is — *"Equal to `from_status` is
+  legal and usually a mistake -- record the transition, not the state"* — and nothing enforced it.
+  The mistake lands as a durable entry (entries are immutable, so the strike that answers it costs a
+  **second** entry), inside the count this type exists to produce. Recorded as `dogfood/0037`, found
+  2026-09-29 while probing the enum, because `asc types show` truncated the list mid-word
+  (`dogfood/0036`) and writing an entry was the only other way to ask what was legal.
+
+  *Measured before choosing, on this store's own tree* — 51 `stage_transition` entries, **4 of them
+  no-ops (7.8%)**, and the four do not agree about what a no-op means:
+
+  | entry | `evidence_text` | struck |
+  |---|---|---|
+  | `bbc13728` · in_progress→in_progress | *"to_status stays in_progress because the bead is 'asc kappa' and no asc kappa command exists yet"* | no |
+  | `616f9174` · in_progress→in_progress | *"to_status stays in_progress because asc-8tv needs asc annotate … and neither command exists"* | no |
+  | `9b8e9d6d` · in_progress→in_progress | (none) | no |
+  | `df58e059` · in_progress→in_progress | (none) | **yes**, `wrong_value` |
+
+  **Half the no-ops in this store are deliberate, and the recorder wrote a paragraph saying why.**
+  That number is what makes the choice non-obvious, and it is why a **hard refusal is measurably
+  wrong here**: it would have made `bbc13728` and `616f9174` unwritable — two entries whose whole
+  content is a plan stage that was worked and did not move, which is information a plan wants.
+
+  *Where the check may live is decided by a second measurement, not by taste.* Every writer funnels
+  through `recordEntry` → `validateEntry` — `asc record`, `asc import`, `asc ingest`, and
+  `asc index build`'s replay (`jsonl-index.ts:969`) — so a **refusal raised in that funnel would make
+  `asc index build` throw on this tree's four existing no-op lines**. The precedent does not transfer:
+  `asc-4wx6` put its refusal in the corpus parser for exactly this reach, and its pre-flight measured
+  **0** existing violations. Here the pre-flight measures 4, two of them deliberate. So the guard goes
+  on the **write command's own path** — `asc record`, which is also where the mistake was made — and
+  this tree stays reindexable and importable exactly as it is.
+
+  *The owner chose the door.* Three options were put with the numbers above: refuse outright; refuse
+  unless the entry gives a reason; warn and write anyway. **Chosen: refuse unless a reason is given**,
+  and the acknowledgement is `evidence_text`, the store's own field for *"why is this true"*. The
+  measured fit is why that is the recommendation rather than a compromise: **the two deliberate
+  no-ops already carry one, unprompted, and the mistake does not** — so nothing about how the
+  legitimate entries were recorded changes. Refusing outright would have refused the two; warning
+  would have refused neither and left the mistake durable.
+
+  **Stages.** 1 — the guard, declared in `starters.ts` beside the type it guards (`stage_transition`
+  is a CLI starter; core and store are generic and one starter's name belongs in neither), as
+  `starterEntryIssue(typeName, properties, evidenceText)`. It compares only when BOTH statuses are
+  present strings — `undefined === undefined` is not a no-op, it is two absent decisions, and the
+  required-property rule already owns that — and treats a whitespace-only reason as no reason, which
+  is the `asc-4wx6` rule applied again (*"a value wearing a value's clothes"*). 2 — `record.ts`
+  consults it per document **before** `produce.entry`, so nothing is ever appended and the refusal is
+  an ordinary `EntryRejectedError` naming the batch index; it fires on `--dry-run` too, because a
+  preview that green-lights what the write refuses is the `asc-mw1u` failure in the other direction.
+  3 — tests, RED first. 4 — the record, the decision entry, and the full gate.
+
+  *Built.* The guard is `starterEntryIssue(typeName, properties, evidenceText)` in `starters.ts`,
+  beside the type it is about, and `record.ts` consults it once per document before `produce`. It
+  throws the ordinary `EntryRejectedError`, so the batch index and the *"so nothing was recorded"*
+  line come from machinery that already did them. **The test suite caught a hole in the guard and a
+  mutation check caught a hole in the test.** The suite's RED run was exactly the four refusal arms
+  against three controls already green. The mutation check then found that deleting the `typeof`
+  half of the comparison left all seven tests green — the arm written for that case used
+  `--na from_status`, which leaves `to_status` present, so the naive `undefined === undefined` path
+  was never reached. The arm was replaced with the one that reaches it (both statuses absent, where
+  the honest refusal is the two **required** errors and not `'to_status' is 'undefined'`), and the
+  mutation now fails exactly one test. That is the whole argument for mutating rather than trusting a
+  green run: the suite was green, and the line was unbound.
+
+  *Driven end to end on the real binary*, five arms plus the placement counterfactual. A no-op with no
+  reason exits **1** naming both statuses and the door; the same no-op with `--evidence` exits **0**
+  and the reason is in the row; a transition to `complete` with no reason exits **0** and its
+  `evidence_text` is null; the no-op on `--dry-run` exits **1**, so the two arms agree; and two absent
+  statuses report the two required errors. Then the placement, measured rather than argued: a corpus
+  exported from a legal no-op and stripped of its `evidence_text` **imports** (`entry stage_transition
+  1 restored`, exit 0) and **indexes** (exit 0, 5 records), while `asc record` of the same no-op exits
+  1 — the asymmetry the four existing lines in this tree required. *Gate* **green**: 124 files /
+  **2900** passed (2892 → 2900, +8), 2 skipped; typecheck 0, lint 0, `format:check` 0, `align` verdict
+  green, baselined debt 20 → 20. `dogfood/0037`'s Status and its index row both moved, and the Status
+  carries the correction for two sentences in the record's own body that this change made stale — the
+  body stays immutable, per `asc-4wx6`.
+
 **Status: E12.1 and E12.2 built; E12.3 built as the seam and its settlement** (2026-09-29) — the record
 layer exists (37 tests), the derived index exists (26 tests after `asc-i5tj.3.1`), the store names a SQL
 port instead of the driver (3 tests, one module may import `node:sqlite`, pinned by name), and

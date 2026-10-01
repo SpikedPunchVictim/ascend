@@ -7,7 +7,7 @@
 | **Surfaced by** | `asc record stage_transition`, in the act of finding out whether `in_progress` was a legal `to_status` |
 | **Entry type(s)** | `stage_transition` (derived) |
 | **Severity** | P2, matching the bead |
-| **Status** | open |
+| **Status** | fixed in the working tree — `asc record` refuses a no-op `stage_transition` unless the entry gives a reason, and the door is `evidence_text`, the field the two *deliberate* no-ops in this project's tree already carried. The guard sits on the write command rather than in `recordEntry`/`validateEntry`, because that funnel is shared with `asc import`, `asc ingest` and `asc index build`'s replay — measured, this tree holds **4** no-op lines and a refusal there would make `asc index build` throw on all four; a corpus holding a reasonless no-op still imports and indexes. **Two sentences in the body above are now stale and are corrected here rather than edited there, because the body is immutable** (`asc-4wx6`'s precedent): the dry-run probe at "How it surfaced" printed *the id it would mint* only until `asc-mw1u`, and it now **refuses the no-op outright** instead of recording it — so the probe would have stopped this entry rather than merely avoiding it. |
 
 ## What was found
 

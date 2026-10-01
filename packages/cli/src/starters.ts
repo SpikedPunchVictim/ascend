@@ -24,7 +24,7 @@
  * which means they should be free to get better.
  */
 
-import type { TypeSpec } from '@ascend/core';
+import type { TypeSpec, ValidationIssue } from '@ascend/core';
 
 /**
  * The one convention `json` cannot express, repeated wherever a list-shaped property appears.
@@ -248,3 +248,68 @@ export const STARTER_TYPES: readonly TypeSpec[] = [
     ],
   },
 ];
+
+/**
+ * A reason `asc record` refuses one of the CLI's OWN starter types, which the definition language
+ * cannot express.
+ *
+ * `stage_transition` is the whole of this function's reason to exist (`asc-xvz5`). Its `to_status`
+ * description already says an equal `from_status` is *"legal and usually a mistake -- record the
+ * transition, not the state"*, and a description is prose: `definitionShape` drops it before hashing
+ * and nothing reads it at write time. Expressing the rule in the definition would mean a new
+ * `PropertySpec` field, which `definitionShape` would then have to carry -- its own doc pins
+ * *"everything a stored value is validated against, and nothing else"*, and a field the validator
+ * reads but the shape drops is the drift that doc forbids by construction. So every registered type,
+ * in every store, would mint a new `type_hash`: a schema migration to guard one property pair. The
+ * rule lives here instead, beside the type it is about.
+ *
+ * **Why the CLI and not `core` or `store`.** Both are generic and neither holds a starter's name.
+ * The only type this rule knows is one this package ships, so this package is where the knowledge
+ * belongs -- and `record.ts` asks "does any starter object to this entry?" without naming one.
+ *
+ * **Why the write command and not the validation funnel.** `recordEntry` -> `validateEntry` is
+ * shared by `asc record`, `asc import`, `asc ingest` and `asc index build`'s replay
+ * (`jsonl-index.ts:969`), so a refusal raised there would make `asc index build` throw on a tree that
+ * already holds a no-op. This repository's tree holds **four**, two of them deliberate -- measured
+ * before choosing, and the reason the `asc-4wx6` precedent (whose pre-flight measured zero) does not
+ * transfer. Applied where a NEW entry is written and nowhere else, an existing tree stays
+ * reindexable and importable exactly as it is.
+ *
+ * **The rule is conditioned on a reason, and that is measured rather than lenient.** Of the four
+ * no-op transitions in this project's own tree, two carry a paragraph explaining why the stage did
+ * not move (*"to_status stays in_progress because the bead is 'asc kappa' and no asc kappa command
+ * exists yet"*) and exactly one is the mistake. Refusing the no-op outright would have made those two
+ * unwritable, which is a claim that a stage cannot be worked without advancing, and that claim is
+ * false here. The acknowledgement is `evidence_text` -- the store's own field for "why is this true"
+ * -- which is what those two already had and the mistake did not.
+ */
+export function starterEntryIssue(
+  typeName: string,
+  properties: Readonly<Record<string, unknown>> | undefined,
+  evidenceText: string | undefined,
+): ValidationIssue | undefined {
+  if (typeName !== 'stage_transition') return undefined;
+
+  const from = properties?.['from_status'];
+  const to = properties?.['to_status'];
+
+  // Both must be present strings. `undefined === undefined` is two decisions nobody has made, not a
+  // transition that goes nowhere, and the required-property rule in `validateEntry` already owns
+  // that case -- with a message that names the absent property rather than quoting a value that is
+  // not there. A non-string cannot reach here from `asc record` (the schema refuses it first), but
+  // this function is not the schema and does not assume its work.
+  if (typeof from !== 'string' || typeof to !== 'string' || from !== to) return undefined;
+
+  // A reason, not the shape of one. Whitespace is the `asc-4wx6` defect in miniature -- a value
+  // wearing a value's clothes -- and it would be stored as the answer to "why is this a no-op".
+  if ((evidenceText ?? '').trim() !== '') return undefined;
+
+  return {
+    field: 'to_status',
+    problem: `'to_status' is '${to}', the same as 'from_status' -- this entry records no transition`,
+    fix:
+      `A no-op transition is recorded only when it says why: re-record with ` +
+      `--evidence=<why the stage did not move>, or set "evidence_text" in the document. ` +
+      `Record the transition, not the state -- if no stage moved, there may be nothing to record.`,
+  };
+}

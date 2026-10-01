@@ -1026,6 +1026,181 @@ describe('asc record', () => {
     expect(run.stdout).not.toContain('undefined');
   });
 
+  /**
+   * `asc-xvz5`. `stage_transition`'s own `to_status` description says an equal `from_status` is
+   * *"legal and usually a mistake -- record the transition, not the state"*, and nothing enforced it:
+   * the mistake lands as a durable entry (entries are immutable, so answering it with a strike costs
+   * a **second** entry) inside the count this type exists to produce.
+   *
+   * **The guard is conditioned on `evidence_text` rather than absolute, and that is a measured choice
+   * rather than a lenient one.** Of the four no-op transitions this project's own tree holds, two
+   * carry a paragraph explaining why the stage did not move (`"to_status stays in_progress because
+   * the bead is 'asc kappa' and no asc kappa command exists yet"`) and exactly one is the mistake. A
+   * hard refusal would have made the two deliberate ones unwritable — entries whose whole content is
+   * a plan stage that was worked and did not move, which is information a plan wants.
+   *
+   * **Every arm below is driven as the real binary and read back out of SQLite**, because the claim
+   * is about what reached the ledger and not about what the command said.
+   */
+  describe('a no-op stage transition (asc-xvz5)', () => {
+    const noOp = [
+      'record',
+      'stage_transition',
+      '--prop=stage=E12.12',
+      '--prop=from_status=in_progress',
+      '--prop=to_status=in_progress',
+    ];
+
+    it('refuses a no-op that gives no reason, and writes nothing', () => {
+      const dir = project();
+      const run = asc(noOp, dir);
+
+      expect(run.status).toBe(1);
+      const message = flatten(run.stderr);
+      // Both values, so the refusal shows the recorder what it actually wrote rather than only that
+      // something was wrong with it.
+      expect(message).toContain("'to_status' is 'in_progress', the same as 'from_status'");
+      // And the door: a refusal that does not name one is a stuck recorder.
+      expect(message).toContain('--evidence');
+      expect(stored(dir)).toEqual([]);
+    });
+
+    it('records the same no-op once it carries a reason, so the door is real', () => {
+      const dir = project();
+      const run = asc(
+        [...noOp, '--evidence=the bead is asc-kappa and no asc kappa command exists yet', '--json'],
+        dir,
+      );
+
+      expect(run.status).toBe(0);
+      // Read back out of SQLite: the reason is the thing that made the write legal, so the assertion
+      // is that it reached the row and not that it was accepted.
+      expect(stored(dir)).toHaveLength(1);
+      expect(stored(dir)[0]?.evidence_text).toBe(
+        'the bead is asc-kappa and no asc kappa command exists yet',
+      );
+    });
+
+    it('does not touch a transition that actually moves, reason or no reason', () => {
+      // The control that decides whether the guard is about inequality or about transitions. A type
+      // that demanded evidence for every transition would make this file's own subject unwritable.
+      const dir = project();
+      const run = asc(
+        [
+          'record',
+          'stage_transition',
+          '--prop=stage=E12.12',
+          '--prop=from_status=in_progress',
+          '--prop=to_status=complete',
+          '--json',
+        ],
+        dir,
+      );
+
+      expect(run.status).toBe(0);
+      expect(stored(dir)).toHaveLength(1);
+      expect(stored(dir)[0]?.evidence_text).toBeNull();
+    });
+
+    it('does not call two absent statuses a no-op -- the naive comparison does', () => {
+      // **This arm was added because a mutation check found the hole it fills.** The first version
+      // of this test used `--na from_status` and left `to_status` present, so `from !== to` was
+      // already true and the `typeof` half of the guard was never exercised: deleting it left all
+      // seven tests green. Both absent is the case that reaches it, and the comparison is true
+      // there -- `undefined === undefined` -- so the refusal would quote a value that is not there:
+      // `'to_status' is 'undefined', the same as 'from_status'`. Two decisions nobody has made are
+      // not a transition that goes nowhere, and both properties are required, so the honest refusal
+      // is the one that names them.
+      const dir = project();
+      const run = asc(['record', 'stage_transition', '--prop=stage=E12.12'], dir);
+
+      expect(run.status).toBe(1);
+      const message = flatten(run.stderr);
+      expect(message).toContain("'from_status' is required");
+      expect(message).toContain("'to_status' is required");
+      expect(message).not.toContain('undefined');
+      expect(stored(dir)).toEqual([]);
+    });
+
+    it('records a transition from an unknown status, because unknown is not equal', () => {
+      // The other half of the boundary: an explicit N/A records a real decision -- "nobody knows
+      // what it was" -- which is a different fact from "it was in_progress". There is nothing to
+      // compare, so there is nothing to refuse.
+      const dir = project();
+      const run = asc(
+        [
+          'record',
+          'stage_transition',
+          '--prop=stage=E12.12',
+          '--na',
+          'from_status',
+          '--prop=to_status=in_progress',
+          '--json',
+        ],
+        dir,
+      );
+
+      expect(run.status).toBe(0);
+      expect(stored(dir)).toHaveLength(1);
+      expect(stored(dir)[0]?.na_json).toContain('from_status');
+    });
+
+    it('refuses a no-op whose only reason is whitespace', () => {
+      // The `asc-4wx6` rule, applied again: a reason that is not a reason is a value wearing a
+      // value's clothes, and the store would hold it as the answer to "why is this a no-op".
+      const dir = project();
+      const run = asc([...noOp, '--evidence=   '], dir);
+
+      expect(run.status).toBe(1);
+      expect(flatten(run.stderr)).toContain('--evidence');
+      expect(stored(dir)).toEqual([]);
+    });
+
+    it('refuses on a dry run too, because a preview cannot promise a write the write refuses', () => {
+      // `dogfood/0046` in the other direction: there a preview reported a value the write would not
+      // produce; here it would report a write the write would not perform.
+      const dir = project();
+      const run = asc([...noOp, '--dry-run', '--json'], dir);
+
+      expect(run.status).toBe(1);
+      expect(flatten(run.stderr)).toContain(
+        "'to_status' is 'in_progress', the same as 'from_status'",
+      );
+      expect(stored(dir)).toEqual([]);
+    });
+
+    it('refuses the whole batch and names which entry the no-op was', () => {
+      const dir = project();
+      const run = asc(
+        ['record', 'stage_transition', '-', '--json'],
+        dir,
+        JSON.stringify([
+          {
+            properties: {
+              stage: 'E12.12',
+              from_status: 'not_started',
+              to_status: 'in_progress',
+            },
+          },
+          {
+            properties: {
+              stage: 'E12.12',
+              from_status: 'in_progress',
+              to_status: 'in_progress',
+            },
+          },
+        ]),
+      );
+
+      expect(run.status).toBe(1);
+      // The first document was valid and is still not in the store: the batch is one write.
+      expect(stored(dir)).toEqual([]);
+      const message = flatten(run.stderr);
+      expect(message).toContain('entry 1');
+      expect(message).toContain("'to_status' is 'in_progress', the same as 'from_status'");
+    });
+  });
+
   it('fills in the provenance it can read, and refuses the parts it cannot', () => {
     const dir = project();
     const run = asc(
