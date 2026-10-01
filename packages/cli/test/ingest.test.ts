@@ -1476,6 +1476,78 @@ describe('asc ingest claude-code: review findings (asc-gtnu)', () => {
     expect(run.stderr).toContain('replay log');
   });
 
+  it('writes NOTHING for a call the harness REFUSED, and says aloud that it did', () => {
+    const dir = project();
+    // The measured shape (`asc-2uov`, 2026-09-30): the reviewer overran the tool's 60-character
+    // `short_summary` maximum, the harness refused the call, and the retry carried the SAME two
+    // findings. Reading only the call's input wrote both copies -- this store really did hold 18
+    // entries for 9 distinct findings -- so every per-lens count for that session was doubled.
+    const accepted = [
+      {
+        file: 'packages/core/src/state.ts',
+        line: 412,
+        summary: 'The writer accepts a trailing separator the reader rejects.',
+        category: 'write_read_asymmetry',
+        verdict: 'CONFIRMED',
+      },
+      {
+        file: 'packages/cli/src/bin.ts',
+        summary: 'No exit code is set on the refusal path.',
+        category: 'error_paths',
+        verdict: 'PLAUSIBLE',
+      },
+    ];
+    const call = (id: string, uuid: string, timestamp: string): Record<string, unknown> => ({
+      sessionId: 's-1',
+      uuid,
+      timestamp,
+      ...RECORD_AT,
+      message: {
+        model: 'deepseek-v4.1-flash:cloud',
+        content: [
+          {
+            type: 'tool_use',
+            id,
+            name: 'ReportFindings',
+            input: { level: 'high', findings: accepted },
+          },
+        ],
+      },
+    });
+    const answer = (
+      id: string,
+      uuid: string,
+      timestamp: string,
+      isError: boolean,
+    ): Record<string, unknown> => ({
+      sessionId: 's-1',
+      uuid,
+      timestamp,
+      ...RECORD_AT,
+      message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: isError }] },
+    });
+    transcripts(dir, [
+      call('toolu-refused', 'u-8', '2026-01-02T03:04:11.000Z'),
+      answer('toolu-refused', 'u-8b', '2026-01-02T03:04:12.000Z', true),
+      call('toolu-retry', 'u-9', '2026-01-02T03:04:13.000Z'),
+      answer('toolu-retry', 'u-9b', '2026-01-02T03:04:14.000Z', false),
+    ]);
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    expect(run.status).toBe(0);
+    // TWO, not four. `ReportFindings` is the instrument a finding is recorded BY, so a call the
+    // instrument rejected is not a reading, and the retry is the one that counts.
+    expect(stored(dir).byType['review_finding']).toBe(2);
+    // Said aloud, even though it is usually not a loss: the count is the only way to see the
+    // refusal that was never retried, and the only way to see a reviewer's call failing at all.
+    // Whitespace is collapsed first: the warning is WRAPPED to the terminal, so an assertion on
+    // the full sentence would break the moment the wrap point moved.
+    expect(run.stderr.replace(/\s+/g, ' ')).toContain(
+      '2 reported finding(s) came from a ReportFindings call the harness REFUSED',
+    );
+  });
+
   it('stores the class, the file, the verdict and the reviewer model, omitting the absent line', () => {
     const dir = project();
     transcripts(dir, [REPORT_RECORD]);

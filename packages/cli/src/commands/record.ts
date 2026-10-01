@@ -44,7 +44,10 @@
  * non-zero and named one failure. The exit code describes the whole store: 0 means every entry is
  * there, 1 means none is. The dry run is the same body run under `previewProducedLines`, so a
  * preview cannot report an outcome the real run would not produce -- the same reasoning as
- * `types import`.
+ * `types import`. **The one thing it cannot report is an id it would mint** (`asc-mw1u`): the write
+ * chooses that id at write time, so the preview leaves the field out rather than printing a
+ * specimen that no later command will find. An id the document NAMES is reported exactly, because
+ * that is the id the write will use.
  *
  * **Provenance ascend can read, it reads.** `cwd` comes from the process; `source` is always
  * `self`; `id` and `recorded_at` are minted here because core and store are pure and take both
@@ -435,7 +438,10 @@ export default class RecordEntry extends BaseCommand {
     // Quoted and hyphenated rather than `dryRun`: measured against this oclif, a camelCase key
     // renders verbatim as `--dryRun` (`types/define.ts`).
     'dry-run': Flags.boolean({
-      description: 'Validate everything and report what would be written, then write nothing.',
+      description:
+        'Validate everything and report what would be written, then write nothing. An entry id ' +
+        'the write would MINT is not reported, because a preview cannot know it -- name the id in ' +
+        'the document to see one, and to make the write use it.',
     }),
     scaffold: Flags.boolean({
       description:
@@ -715,9 +721,20 @@ export default class RecordEntry extends BaseCommand {
             this.warn(`${entryLabel(index, documents.length)}: ${warning.problem}. ${warning.fix}`);
           }
 
+          // `asc-mw1u`: the write mints this id AT WRITE TIME when the document names none, so a
+          // preview's copy cannot be the id the write would use -- they are two `randomUUID` calls,
+          // not one value read twice. Omitting it is the rule this CLI already states for every
+          // absent value (`output.ts`: "an empty evidence field and a missing one are different
+          // facts", `TASKS.md` #7): a specimen UUID is a value wearing a value's clothes, and the
+          // one obvious destination for a previewed id is `asc invalidate`, which would then refuse
+          // an entry that never existed. A NAMED id is reproduced exactly -- it is the one the write
+          // will honour, and naming it is also the only way to make the write use a chosen one.
+          // `merged.id` is the document's own field, already in scope; nothing new is threaded.
+          const mintedHere = dryRun && merged.id === undefined;
+
           return {
             index,
-            id: result.entry.id,
+            ...(mintedHere ? {} : { id: result.entry.id }),
             type: result.entry.typeName,
             version: result.entry.typeVersion,
             type_hash: result.entry.typeHash,

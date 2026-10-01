@@ -1678,4 +1678,73 @@ describe('review_finding, from a ReportFindings call', () => {
     );
     expect(new Set(entries.map((entry) => entry.key)).size).toBe(2);
   });
+
+  it('writes NO entry for a call the harness REFUSED, and counts its findings', () => {
+    const deriver = createDeriver();
+    const entries = [
+      ...deriver.accept(record([report([finding()], { id: 'r-1' })]), FILE),
+      ...deriver.accept(result('r-1', true), FILE),
+      ...deriver.drain(),
+    ];
+    // `ReportFindings` is the instrument a finding is recorded BY -- the type's own sentence is
+    // "Never by hand" -- so a call the instrument rejected is not a reading. Emitting it puts a
+    // finding in the store that the reviewer's own tool refused to accept, which makes a per-lens
+    // count a count of ATTEMPTED findings (asc-2uov).
+    expect(ofType(entries, 'review_finding')).toEqual([]);
+    expect(deriver.counters.refusedFindings).toBe(1);
+  });
+
+  it("writes a refused call's findings ONCE when the reviewer retries and the retry is accepted", () => {
+    // The measured shape, 2026-09-30: the reviewer overran the tool's 60-character
+    // `short_summary` maximum, the harness refused the call, and the retry carried the SAME nine
+    // findings. Reading only the input wrote all nine twice -- this store held 18 `reported`
+    // entries for 9 distinct findings -- so every per-lens count for that session was exactly
+    // doubled.
+    const deriver = createDeriver();
+    const entries = [
+      ...deriver.accept(record([report([finding()], { id: 'r-1' })]), FILE),
+      ...deriver.accept(result('r-1', true), FILE),
+      ...deriver.accept(record([report([finding()], { id: 'r-2' })]), FILE),
+      ...deriver.accept(result('r-2', false), FILE),
+      ...deriver.drain(),
+    ];
+    expect(ofType(entries, 'review_finding')).toHaveLength(1);
+    expect(deriver.counters.refusedFindings).toBe(1);
+  });
+
+  it('still writes a report whose result the transcript never showed', () => {
+    // Only a refusal it can SEE is suppressed. Suppressing an unresolved call instead would drop
+    // a real finding to punish a missing record -- and the alternative reading, treating "no
+    // result yet" as a refusal, would make a live transcript lose findings it had earned.
+    const deriver = createDeriver();
+    const entries = [
+      ...deriver.accept(withModel([report([finding()])], 'm'), FILE),
+      ...deriver.drain(),
+    ];
+    expect(ofType(entries, 'review_finding')).toHaveLength(1);
+    expect(deriver.counters.refusedFindings).toBe(0);
+  });
+
+  it("resolves a report only on the result naming that call's own id", () => {
+    const deriver = createDeriver();
+    const entries = [
+      ...deriver.accept(record([report([finding()], { id: 'r-1' })]), FILE),
+      ...deriver.accept(result('r-9', true), FILE),
+      ...deriver.drain(),
+    ];
+    expect(ofType(entries, 'review_finding')).toHaveLength(1);
+    expect(deriver.counters.refusedFindings).toBe(0);
+  });
+
+  it('does not carry a pending report across a file boundary', () => {
+    const deriver = createDeriver();
+    const first = deriver.accept(record([report([finding()], { id: 'r-1' })]), fileAt('aa'));
+    // A sweep reads one file at a time, so a result in the NEXT file cannot be the same stream's.
+    // Letting it resolve the call would hand one transcript's verdict to another transcript's
+    // finding -- the misattribution the per-file `invocations` map exists to prevent.
+    const second = deriver.accept(result('r-1', true), fileAt('bb'));
+    const entries = [...first, ...second, ...deriver.drain()];
+    expect(ofType(entries, 'review_finding')).toHaveLength(1);
+    expect(deriver.counters.refusedFindings).toBe(0);
+  });
 });

@@ -7,7 +7,7 @@
 | **Surfaced by** | running `asc record … --dry-run` to validate three entry documents before writing them, then running the same commands for real and comparing the two outputs |
 | **Entry type(s)** | `probe` (scratch, project-defined) — used only because a throwaway store makes the ids unambiguous; the finding is in `asc record --dry-run`, not in any entry |
 | **Severity** | P3 — nothing is written wrongly and nothing is lost; the refusal a caller meets is clear and comes before any damage |
-| **Status** | open |
+| **Status** | fixed in the working tree (the minted id is omitted; `ascend_output` 2 → 3) |
 
 ## What was found
 

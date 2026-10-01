@@ -957,6 +957,75 @@ describe('asc record', () => {
     expect(envelope(run.stdout)[0]?.['dry_run']).toBe(false);
   });
 
+  /**
+   * `asc-mw1u`. The write mints the id at write time, so a preview's copy CANNOT be the id the
+   * write would use -- they are two calls to `randomUUID`. A caller that read `row.id` and carried
+   * it into `asc invalidate` was carrying a value that does not exist. Omitted rather than rendered
+   * as a placeholder, which is the rule `output.ts` states for every absent value in this CLI
+   * (`TASKS.md` #7): an empty id and a missing one are different facts.
+   */
+  it('omits the id on a dry run whose document named none, because the write mints its own', () => {
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '-', '--dry-run', '--json'],
+      dir,
+      JSON.stringify({ properties: { chosen: 'a', rationale: 'because' } }),
+    );
+
+    expect(run.status).toBe(0);
+    const [row] = envelope(run.stdout);
+    expect(row).not.toHaveProperty('id');
+    // The rest of the row is untouched, so the omission is about the id and not about the dry run.
+    expect(row?.['type']).toBe('decision');
+    expect(row?.['dry_run']).toBe(true);
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('still reports a NAMED id on a dry run, because that one the write will honour', () => {
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '-', '--dry-run', '--json'],
+      dir,
+      JSON.stringify({
+        properties: { chosen: 'a', rationale: 'because' },
+        id: 'chosen-by-the-caller',
+      }),
+    );
+
+    expect(run.status).toBe(0);
+    expect(envelope(run.stdout)[0]?.['id']).toBe('chosen-by-the-caller');
+    expect(stored(dir)).toEqual([]);
+  });
+
+  it('reports the id a real run actually wrote, so the two arms are not the same claim', () => {
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '-', '--json'],
+      dir,
+      JSON.stringify({ properties: { chosen: 'a', rationale: 'because' } }),
+    );
+
+    expect(run.status).toBe(0);
+    const reported = envelope(run.stdout)[0]?.['id'];
+    expect(typeof reported).toBe('string');
+    // Read back out of SQLite: a real run's id is not a report about an id, it IS the id.
+    expect(stored(dir)[0]?.id).toBe(reported);
+  });
+
+  it('renders a blank id cell in the table for a dry run, rather than the word undefined', () => {
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '-', '--dry-run'],
+      dir,
+      JSON.stringify({ properties: { chosen: 'a', rationale: 'because' } }),
+    );
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('index');
+    // The table is the lossy human view; a missing cell has to be blank, not `String(undefined)`.
+    expect(run.stdout).not.toContain('undefined');
+  });
+
   it('fills in the provenance it can read, and refuses the parts it cannot', () => {
     const dir = project();
     const run = asc(

@@ -317,7 +317,7 @@ describe('a malformed value already in the input is carried, not hidden', () => 
 });
 
 describe('the version a consumer branches on', () => {
-  it('is 2, and changing it has to be deliberate', () => {
+  it('is 3, and changing it has to be deliberate', () => {
     // The one place the literal is written down. Every other suite asserts against the exported
     // constant, which is right -- they are testing that commands agree with the contract, not what
     // the contract says -- but it left the number itself unguarded, so a bump would have been a
@@ -326,7 +326,13 @@ describe('the version a consumer branches on', () => {
     // wrong, and one that read `reason` as always naming a failure is wrong for `rows-returned`.
     // Both are breaking readings of a field that looks unchanged, which is precisely what a
     // contract version is for. If you are here to change this number, say in the comment why.
-    expect(OUTPUT_CONTRACT_VERSION).toBe(2);
+    //
+    // 3 (`asc-mw1u`) because `asc record --dry-run` now OMITS `id` on a row whose document named
+    // none: the write mints that id, so the preview's copy could never be the id the write would
+    // use, and a consumer carrying it into `asc invalidate` carried a value that does not exist. A
+    // key that is always present became absent in one arm, which is breaking by this number's own
+    // rule. A NAMED id is still reported exactly and a real run always reports a real one.
+    expect(OUTPUT_CONTRACT_VERSION).toBe(3);
   });
 });
 

@@ -2016,6 +2016,128 @@ as the store itself.
   2 skipped; typecheck 0, lint 0, `format:check` 0, `align` green (parse, architecture, security all 0
   violations).
 
+- **E12.10 — a call the harness refused still counted (`asc-2uov`, P2, done 2026-10-01).** The
+  deriver read a `ReportFindings` call's **input** and never its **result**, so a call the harness
+  refused wrote one `review_finding` entry per finding. The bead had that, and drew the opposite
+  conclusion from it: *"arguably correct — the findings were real and only the wrapper's schema was
+  wrong — but undocumented"*. The measurement overturned the framing rather than the fact. A refusal
+  is followed by a **corrected retry carrying the same findings**, so the defect did not add a stray
+  row, it **doubled the count** — and the number it doubled is the per-lens count this type exists to
+  produce. This store held **18 `reported` entries for 9 distinct findings**: `call_0o92cyc2`
+  (refused; 6 of 9 `short_summary` over the tool's 60-character maximum, longest **79**) and
+  `call_p374n0av` (accepted; longest **57**) differ in **0 of 9** `(file, line, summary)` triples and
+  **0** lens values. *Nobody was looking for the doubling.*
+
+  *The decision was forked to the owner*, because one candidate was a schema change and hard to
+  reverse: **do not emit for a refused call**, versus document-only, versus stamp the entry so counts
+  could exclude it, versus dedupe by finding identity. The measurement is what settled it, and it
+  settles the cost side too — across every transcript on this machine, **35** calls, **3 refused
+  (8.6%)**, **26** findings carried by them, **25 of the 26 (96.2%)** duplicated by a later accepted
+  call; the single finding with no twin is in an **ephemeral** project ingest skips, so suppressing a
+  refusal loses **nothing** in any transcript the store actually reads. The 3 refused calls are under
+  `MIN_N`, so those two figures are recorded in `dogfood/0049` as an **anecdote, not a rate**.
+
+  *The fix is the join the rule's own comment refused*, and the comment is worth reading because every
+  clause of it is true: *"No join is needed, which is why this rule sits here rather than in the
+  pending-result machinery: the findings are an ARGUMENT to the call, not a result of it."* It is true,
+  and it is the bug. Findings are held in a per-file `pendingReports` map and resolved when the call's
+  own `tool_result` arrives — the shape `invocations` already had one level up, for the same reason
+  (`tool_denial`: *"a denial and the invocation it refused are on DIFFERENT records"*). `is_error ===
+  true` is the **only** suppressing value: an unresolved call is EMITTED, so the delta is strictly
+  "stop writing what we can prove was refused" and can lose nothing that exists today, and every
+  pre-existing unit test — all of which build a `tool_use` with no result — stays green unchanged.
+
+  *No `derivationVersion` bump*, and this is load-bearing rather than an omission. `@n` exists so a
+  stale entry cannot suppress a differently-meaning new one under the same key; here **no surviving
+  key changes meaning** — 121 keys still derive identically and 9 simply stop being produced — so a
+  bump would mint **121 duplicate ids** and `dogfood/0024` is the record of exactly that failure for
+  exactly this type (a version change that left the old rows counted beside the new, 47 struck by
+  hand). The 9 already on disk needed the same remedy, for the same reason the store gave on
+  2026-09-30: **`openRecordWriter` appends** (`jsonl-files.ts:659`) and never rewrites, so a re-ingest
+  removes nothing. Each phantom was struck `superseded` with `--superseded-by` naming its
+  index-matched survivor; `asc types list` now reads `review_finding 2 13 74 56` where it read
+  `83 / 47`. The counter `refusedFindings` was added AND wired to the ingest output — a count nobody
+  prints is the silence the counters exist to prevent.
+
+  *Driven end to end*, which is the only evidence that counts here: the real binary, `--root` at a
+  scratch corpus holding a copy of the real 77 MB session transcript, into a fresh store —
+  `entry review_finding 9 new`, with `Warning: 9 reported finding(s) came from a ReportFindings call
+  the harness REFUSED`. Nine, not eighteen.
+
+  *Recorded as `dogfood/0049`*, under the class `dogfood/0039` named and `dogfood/0047` was the third
+  instance of — a report true about what it read and false about what it says — and named a
+  **false-green** on the project's own severity-zero terms. *Tests*: 5 in `derive.test.ts` (RED first,
+  all 5 failing on the absent counter and the emitted entry), 1 in `cli/test/ingest.test.ts` driving
+  the real binary through a refused-call-plus-retry fixture and reading the store back. The suite moved
+  **2882 → 2888 (+6)**. Full gate **green**: 124 files / **2888** passed, 2 skipped; typecheck 0, lint
+  0, `format:check` 0, `align` green.
+
+- **E12.11 — a preview that mints an id it will not use (`asc-mw1u`, P3, done 2026-10-01).**
+  `asc record` mints a random UUID for any entry whose document does not name one
+  (`record.ts:692`), and `--dry-run` runs the same body, so **it mints its own**. The id a preview
+  reports is therefore not merely usually different from the id the write produces — it **cannot**
+  be the same, because the two are two calls to `randomUUID`. `--dry-run --json` returns a row with
+  the same `type_hash`, a `recorded_at`, a `states` map and `dry_run: true` as its only marker, so
+  the `id` reads as a preview of the id. It is a preview of nothing. Found while dry-running three
+  decision documents before recording them, for their *warnings*; the ids were incidental, and
+  *nobody was looking*. Recorded as `dogfood/0046`.
+
+  *The class was hunted and the count is **one**.* `annotate.ts:589` also mints annotation ids, and
+  `annotate --dry-run` does not report them in either arm — its row carries
+  `scheme/outcome/considered/labelled/unclassified/dry_run` and no id at all. So there is no second
+  instance to fix, and a source scan across `packages/*/src` finds exactly two `randomUUID` call
+  sites. Stated as a measured count rather than as "this is the only one", because the second site
+  is one line away from having the same defect.
+
+  *The decision was forked to the owner* — the finding record itself concluded that, calling it
+  *"a small user-facing contract question ... the owner's to settle, not a mechanism to be inferred
+  from the code"*. Three real options: omit the id when it was minted; keep it and add a
+  `id_provisional` marker; keep the key and set it to `null`. **Chosen: omit the id when it was
+  minted** (dry-run arm only — a named id is still reproduced exactly, and a real run always reports
+  a real one). The argument that settled it is the house rule this codebase already writes down at
+  `output.ts:207`: *"`evidence_text` is omitted when the entry has none rather than rendered as an
+  empty string, for the same reason every other absent value in this CLI is (`TASKS.md` #7): an
+  empty evidence field and a missing one are different facts."* A specimen UUID is that same failure
+  with a louder voice — a value wearing a value's clothes — and the project has refused exactly that
+  shape once already, when it declined to stamp a placeholder reason on a reasonless strike
+  (`asc-4wx6`). The escape hatch costs nothing and already exists: **name the id in the document and
+  the preview reproduces it faithfully**, which is also the only way to make the *write* use a
+  chosen id.
+
+  *Measured before choosing, so the cost side is a number rather than a worry*: **no consumer reads
+  `record`'s row id** — a scan of `packages/cli/src` finds `.id` reads only on `explore`, `annotate`
+  and `import` rows, never on a record row.
+
+  *The cost, stated plainly*: a key that is always present becomes absent in one arm, which is a
+  breaking shape change by the contract's own rule (*"Increment only for a breaking shape change"*),
+  so **`ascend_output` goes 2 → 3**. That is why this is a fork and not a default — the alternative
+  reads cost no bump. Two tests pin the literal (`output.test.ts:329`, `help-cli.test.ts:151`) and
+  both move with their comment naming this reason, which is what they ask for.
+
+  **Stages.** 1 — the contract bump, in `output.ts` and both pinning tests. 2 — `record.ts` omits
+  `id` when the document named none and the run is a dry run; the row is built from `merged.id`,
+  which is already in scope, so no new state is threaded. 3 — tests, RED first: a dry run with a
+  minted id has no `id` key; a dry run with a **named** id still reports it; a **real** run reports
+  an id that equals what the store holds. 4 — records and the full gate.
+
+  *Built.* The implementation is one spread — `...(mintedHere ? {} : { id: result.entry.id })` —
+  where `mintedHere = dryRun && merged.id === undefined`. The flag description and the file header
+  both say the omission, because the honest sentence has to be where a caller reads it and not only
+  in the JSON. The four arms were driven on the **real binary** rather than inferred from the
+  suite: a dry run with no id named prints `{"ascend_output":3,"rows":[{"index":0,"type":"decision",
+  …,"dry_run":true}]}` — no `id` key anywhere; a **named** id still prints
+  `"id":"named-by-the-caller"`; a real run prints `"id":"732387f6-49a0-4335-8f4a-c5d9a640af84"` and
+  that is the id the store holds; and the **table** renders a blank id cell with the string
+  `undefined` absent from stdout, which is the one way this fix could have made the human view
+  worse. *Tests*: RED first — exactly the target assertion failed (`expected { index: +0, …(10) } to
+  not have property "id"`) while the three controls were already green, which is what a control is
+  for. 4 new in `record.test.ts`, and the two version pins moved with their comments naming this
+  reason (`output.test.ts` — *"If you are here to change this number, say in the comment why"* —
+  and `help-cli.test.ts`, which writes the literal a second time). The suite moved **2888 → 2892
+  (+4)**. Full gate **green**: 124 files / **2892** passed, 2 skipped; typecheck 0, lint 0,
+  `format:check` 0, `align` green. `dogfood/0046`'s Status and its index row both moved to *fixed in
+  the working tree* — the two are kept in step in every record checked.
+
 **Status: E12.1 and E12.2 built; E12.3 built as the seam and its settlement** (2026-09-29) — the record
 layer exists (37 tests), the derived index exists (26 tests after `asc-i5tj.3.1`), the store names a SQL
 port instead of the driver (3 tests, one module may import `node:sqlite`, pinned by name), and

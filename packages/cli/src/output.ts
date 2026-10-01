@@ -36,8 +36,15 @@ import { renderAssist, type SearchAssist } from './search-assist.js';
  * the block's absence as "this search succeeded" is now wrong, and one that read `reason` as always
  * naming a failure is wrong for the new `rows-returned` code. Both are breaking readings of an
  * unchanged-looking field, which is what this number is for.
+ *
+ * 3 -- `asc record --dry-run` OMITS `id` on a row whose document named none (`asc-mw1u`). The write
+ * mints that id at write time, so the preview's copy could never be the id the write would use; a
+ * consumer that read `row.id` and carried it into `asc invalidate` was carrying a value that does
+ * not exist. A key that is always present became absent, which is breaking by this number's own
+ * rule even though nothing else about the row changed. A NAMED id is still reported exactly, and a
+ * real run always reports a real one, so the omission is one arm of one command.
  */
-export const OUTPUT_CONTRACT_VERSION = 2;
+export const OUTPUT_CONTRACT_VERSION = 3;
 
 export type OutputFormat = 'json' | 'table' | 'csv';
 

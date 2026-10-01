@@ -227,6 +227,39 @@ export interface DeriveCounters {
    */
   unreportableFindings: number;
   /**
+   * `ReportFindings` findings carried by a call the harness REFUSED. NO ENTRY IS WRITTEN for
+   * these, and that is deliberately a change of behaviour rather than a description of one
+   * (`asc-2uov`).
+   *
+   * The findings are an ARGUMENT to the call, so they are readable whether or not the call was
+   * accepted -- and until this rule existed the deriver read the input and never the result, so a
+   * refused call contributed its findings to the store. `ReportFindings` is the instrument a
+   * finding is recorded BY (the type's own sentence is "Never by hand"), so a call the instrument
+   * rejected is not a reading, and counting it is the "reports success wrongly" class: a per-lens
+   * count asserting a finding the reviewer's tool refused to accept.
+   *
+   * What makes this a COUNT rather than a note. A refusal is followed by a corrected retry
+   * carrying the SAME findings, so the defect doubled counts rather than adding a stray row.
+   * MEASURED 2026-09-30 on this store: 18 `reported` entries for 9 distinct findings --
+   * `call_0o92cyc2` (refused; 6 `short_summary` values over the tool's 60-character maximum,
+   * longest 79) and `call_p374n0av` (accepted) differ in ZERO of the 9 `(file, line, summary)`
+   * triples and in zero lens values -- so every per-lens count for that session read exactly
+   * doubled. MEASURED 2026-10-01 across every transcript on the machine: 35 calls, 3 refused
+   * (8.6%), 26 findings carried by them; 25 of the 26 (96.2%) are duplicated by a later accepted
+   * call, and the single one that is not sits in an ephemeral project ingest never reads.
+   *
+   * So this number OVERSTATES what was lost, deliberately and in the safe direction: it counts
+   * what the store did not take, not what the corpus does not know. A refusal that is retried
+   * loses nothing, which is 96.2% of every refusal measured. Read beside the same type's entry
+   * count, not instead of it.
+   *
+   * A call whose result the transcript never showed is NOT counted here and IS emitted -- this
+   * rule suppresses only a refusal it can see, because the alternative is dropping a real finding
+   * to punish a missing record. Neither is a result whose `is_error` is absent: an unstated
+   * verdict is not a refusal.
+   */
+  refusedFindings: number;
+  /**
    * Attributed runs in a SUBAGENT stream that invoked no skill of its own: the subagent was
    * spawned while its parent's skill was active and inherited the parent's `attributionSkill`.
    * NO ENTRY IS WRITTEN, because the activation is the parent's and is already counted there
@@ -867,6 +900,28 @@ interface SkillRun {
 }
 
 /**
+ * A `ReportFindings` call that has been read but not yet judged, held until its result arrives.
+ *
+ * The findings are carried HERE, already filtered and shaped into the properties they will be
+ * written with, rather than re-read at the result: the call is where they exist, and the result
+ * record holds no copy of them. Every field below is captured at the CALL for the reason
+ * `SkillRun`'s are -- `occurred_at` and the locality belong to the moment the reviewer reported,
+ * not to the moment the harness answered (`asc-2uov`).
+ */
+interface PendingReport {
+  readonly reportKey: string;
+  readonly sessionId: string;
+  readonly project: string;
+  readonly occurredAt: string | undefined;
+  readonly locality: Locality;
+  /** One per finding that will be WRITTEN, in the order the call carried them. */
+  readonly ready: readonly {
+    readonly index: number;
+    readonly properties: Record<string, unknown>;
+  }[];
+}
+
+/**
  * Create a deriver. One per sweep, or one per file -- `accept` resets on a file change, so
  * reusing it across files is the intended use and reusing it across SWEEPS is not.
  */
@@ -931,6 +986,18 @@ export function createDeriver(): Deriver {
    * the last green and find no change at all.
    */
   let lastVerdict: boolean | undefined;
+  /**
+   * `ReportFindings` calls seen in THIS file whose result has not arrived yet, keyed by the call's
+   * own tool_use id. Per FILE, for the reason the `invocations` map above is: a sweep reads one
+   * file at a time, so a result in the next file cannot belong to the same stream, and letting it
+   * resolve this one would hand one transcript's verdict to another transcript's finding.
+   *
+   * A call's findings are an ARGUMENT to it, so they are readable the moment the call is read --
+   * whether the call was ACCEPTED is a property of its RESULT, which lands on a later record.
+   * Holding the findings here until that record arrives is what makes the refusal readable at all;
+   * it is the same shape as `invocations`, one level up (`asc-2uov`).
+   */
+  let pendingReports = new Map<string, PendingReport>();
 
   const counters: DeriveCounters = {
     records: 0,
@@ -942,6 +1009,7 @@ export function createDeriver(): Deriver {
     unquotable: 0,
     offVocabularyFindings: 0,
     unreportableFindings: 0,
+    refusedFindings: 0,
     inheritedSkillRuns: 0,
   };
 
@@ -1023,6 +1091,38 @@ export function createDeriver(): Deriver {
     );
   };
 
+  /** Write one judged-and-accepted report's findings, which is `emit` plus the buffered context. */
+  const emitReport = (out: DerivedEntry[], report: PendingReport): void => {
+    for (const finding of report.ready) {
+      emit(
+        out,
+        'review_finding',
+        // The key is unchanged from when this rule read the call and wrote at once: the call id
+        // names the CALL and the index names the finding within it. Deferring the write must not
+        // move an id, or every existing `review_finding` would be re-minted under a new one.
+        `${report.reportKey}:${String(finding.index)}`,
+        report.sessionId,
+        report.project,
+        report.occurredAt,
+        report.locality,
+        finding.properties,
+      );
+    }
+  };
+
+  /**
+   * Close every report still waiting for a result, in the file being left.
+   *
+   * Each is EMITTED, not dropped. Only a refusal the rule can SEE is suppressed, and an
+   * unresolved call is not one: dropping it would lose a real finding to punish a missing
+   * record, and treating "no result yet" as a refusal would make a live transcript lose findings
+   * it had earned. Waiting is also harmless, because a re-ingest reads the same file again and
+   * writes the entry under the same key once the result is there.
+   */
+  const flushReports = (out: DerivedEntry[]): void => {
+    for (const report of pendingReports.values()) emitReport(out, report);
+  };
+
   /**
    * Reset the state that belongs to ONE file, when the sweep moves to the next one.
    *
@@ -1033,6 +1133,7 @@ export function createDeriver(): Deriver {
   const begin = (): void => {
     invocations = new Map();
     claims = new Map();
+    pendingReports = new Map();
     lastVerdict = undefined;
   };
 
@@ -1040,8 +1141,10 @@ export function createDeriver(): Deriver {
     const out: DerivedEntry[] = [];
 
     if (path !== file.path) {
-      // The pending run belongs to the file being left, so it is flushed BEFORE the reset.
+      // The pending run and the pending reports belong to the file being left, so both are
+      // flushed BEFORE the reset.
       flushRun(out);
+      flushReports(out);
       begin();
       path = file.path;
     }
@@ -1313,9 +1416,13 @@ export function createDeriver(): Deriver {
     // uuid was the identity and the position was implicit; here it cannot be, because N
     // findings share both the record and the tool_use id.
     //
-    // Read from THIS record's own tool_use block. No join is needed, which is why this rule
-    // sits here rather than in the pending-result machinery: the findings are an ARGUMENT to
-    // the call, not a result of it, so they are on the same record that names the call.
+    // Read from THIS record's own tool_use block, and HELD there rather than written: the
+    // findings are an ARGUMENT to the call, not a result of it, so they are on the same record
+    // that names the call -- but whether the call was ACCEPTED is on its RESULT, which is a LATER
+    // record. Writing at the call meant a call the harness REFUSED still contributed its findings,
+    // and a refusal is followed by a corrected retry carrying the SAME ones, so the count doubled
+    // rather than gaining a stray row (`asc-2uov`). This is the pending-result machinery the
+    // sentence that used to sit here said it was avoiding, and for the reason it gave.
     for (const block of blocksIn) {
       if (block['type'] !== 'tool_use' || str(block['name']) !== REPORT_FINDINGS_TOOL) continue;
       const reportId = str(block['id']);
@@ -1333,6 +1440,10 @@ export function createDeriver(): Deriver {
         counters.unkeyable += 1;
         continue;
       }
+
+      // Everything that WILL be written, shaped here because this is the only record that holds
+      // it. A refused call writes NONE of it; an accepted one writes all of it unchanged.
+      const ready: { index: number; properties: Record<string, unknown> }[] = [];
 
       for (const [index, raw] of findings.entries()) {
         const finding = rec(raw);
@@ -1355,15 +1466,9 @@ export function createDeriver(): Deriver {
         const line = finding === undefined ? undefined : num(finding['line']);
         const scenario = finding === undefined ? undefined : str(finding['failure_scenario']);
         const verdict = finding === undefined ? undefined : str(finding['verdict']);
-        emit(
-          out,
-          'review_finding',
-          `${sessionId}:${reportId}:${String(index)}`,
-          sessionId,
-          file.project,
-          occurredAt,
-          locality,
-          {
+        ready.push({
+          index,
+          properties: {
             class: category,
             file: filePath,
             summary,
@@ -1383,8 +1488,38 @@ export function createDeriver(): Deriver {
             // (asc-gtnu.11), so the log and the store agree.
             ...(model === undefined ? {} : { reviewer_model: model }),
           },
-        );
+        });
       }
+
+      // Held, not written: the result record decides. `accept`'s result branch resolves this the
+      // moment the call's own `tool_result` arrives, and `flushReports` writes it if the file ends
+      // first -- so a call this rule can SEE was refused is the only one that ever disappears.
+      pendingReports.set(reportId, {
+        reportKey: `${sessionId}:${reportId}`,
+        sessionId,
+        project: file.project,
+        occurredAt,
+        locality,
+        ready,
+      });
+    }
+
+    // ---- review_finding: the result decides whether the call counted ------
+    // A separate walk from the tool_result loop above, because a call's own result is only
+    // readable once the call has been buffered -- if a transcript ever carried both blocks on one
+    // record, resolving in the earlier loop would run before there was anything to resolve.
+    //
+    // `is_error === true` is the ONLY value that suppresses. An absent `is_error` is an unstated
+    // verdict, not a refusal, and writes the findings rather than quietly dropping them.
+    for (const block of blocksIn) {
+      if (block['type'] !== 'tool_result') continue;
+      const resultId = str(block['tool_use_id']);
+      if (resultId === undefined) continue;
+      const report = pendingReports.get(resultId);
+      if (report === undefined) continue;
+      pendingReports.delete(resultId);
+      if (block['is_error'] === true) counters.refusedFindings += report.ready.length;
+      else emitReport(out, report);
     }
 
     return out;
@@ -1395,6 +1530,7 @@ export function createDeriver(): Deriver {
     drain: (): readonly DerivedEntry[] => {
       const out: DerivedEntry[] = [];
       flushRun(out);
+      flushReports(out);
       begin();
       path = undefined;
       return out;

@@ -1000,6 +1000,22 @@ export default class IngestClaudeCode extends BaseCommand {
           `transcript never held the field.`,
       );
     }
+    // `asc-2uov`. A refusal is the harness rejecting the reviewer's own tool call, so the call's
+    // findings are not a reading and no entry is written for them. Worth saying out loud even
+    // though it is USUALLY not a loss -- a refusal is normally followed by a corrected retry
+    // carrying the same findings, which are counted in the totals above, and that is 25 of the 26
+    // refusals measured. What makes it worth a warning rather than a silent note is that the
+    // count is the only way to see the case where there was no retry, and the only way to see
+    // that a reviewer's tool call is failing its own schema at all.
+    if (counters.refusedFindings > 0) {
+      this.warn(
+        `${String(counters.refusedFindings)} reported finding(s) came from a ReportFindings call ` +
+          `the harness REFUSED, so no entry was written for them from that call. They are usually ` +
+          `not lost: the reviewer normally corrects the call and resubmits the same findings, and ` +
+          `those ARE counted above -- check whether a retry follows before reading this as a ` +
+          `shortfall.`,
+      );
+    }
     if (counters.keyCollisions > 0) {
       this.warn(
         `${String(counters.keyCollisions)} event key(s) repeated within a transcript and were ` +
