@@ -63,6 +63,7 @@ import {
   EntryRejectedError,
   entryCount,
   findType,
+  IndexStaleError,
   previewProducedLines,
   UnknownTypeError,
   writeProducedLines,
@@ -78,7 +79,7 @@ import { BaseCommand } from '../base.js';
 import { storePaths } from '../project.js';
 import { parseEntryDocuments, type EntryDocument } from '../entry-document.js';
 import { refusal, usageError } from '../errors.js';
-import { readInput, STDIN } from '../input.js';
+import { readInput, STDIN, terminalStdinRefusal } from '../input.js';
 import { describedProperties, renderProperty } from '../property-shape.js';
 import { requireType } from '../type-lookup.js';
 import { starterEntryIssue } from '../starters.js';
@@ -601,6 +602,14 @@ export default class RecordEntry extends BaseCommand {
       .map(([name]) => name);
     if (emptyNames.length > 0) throw emptyPropertyError(emptyNames);
 
+    // Everything above here is a question about the caller's own argv, and answers without a store.
+    // This is the first check that needs one, and it is deliberately placed BEFORE the document is
+    // read -- see `refuseBeforeReading`.
+    const typeVersion = this.optionalFlag(flags['type-version']);
+    if (args.document !== undefined) {
+      await this.refuseBeforeReading(args.type, args.document, typeVersion);
+    }
+
     const documents =
       args.document === undefined
         ? [
@@ -614,8 +623,6 @@ export default class RecordEntry extends BaseCommand {
             await readInput(args.document),
             args.document === STDIN ? 'standard input' : args.document,
           );
-
-    const typeVersion = this.optionalFlag(flags['type-version']);
     const callLevel = {
       ...(typeVersion === undefined ? {} : { version: typeVersion }),
       ...(flags['run-id'] === undefined ? {} : { run_id: flags['run-id'] }),
@@ -744,6 +751,11 @@ export default class RecordEntry extends BaseCommand {
               ...(merged.version === undefined ? {} : { version: merged.version }),
               ...(merged.properties === undefined ? {} : { properties: merged.properties }),
               ...(merged.na === undefined ? {} : { na: merged.na }),
+              // Read off this command's own argv, which is the only place the fact exists: a
+              // document and a set of `--prop` flags reach the store as the same `properties`, so
+              // the store cannot recover it and a `fix` that named `--prop` was refused by the very
+              // form it was printed for (`asc-i8cs`).
+              via: args.document === undefined ? 'flags' : 'document',
             },
             context,
           );
@@ -818,6 +830,48 @@ export default class RecordEntry extends BaseCommand {
 
       this.emit(format, { columns: ['index', 'id', 'type', 'version'], rows });
     });
+  }
+
+  /**
+   * Refuse what can be refused BEFORE waiting on the caller's input.
+   *
+   * **`asc-kyhh`, measured on a real pty.** `asc record <type> -` reached `readInput` and blocked in
+   * `for await (const chunk of process.stdin)` with *no output at all* -- still running after 6 s,
+   * output empty -- because the type is resolved deep in the write path (`writeAll`'s `findType`)
+   * and the read happened first. A caller who mistyped a type and followed the brief's own line was
+   * therefore met with silence. The `/dev/null` measurement the line's own note rests on exits 1
+   * only because a closed stdin is not a terminal; on a terminal it never gets that far.
+   *
+   * **Two refusals, in this order, because the order is what makes the commoner mistake report
+   * itself.** The type name is the caller's error and the terminal is the environment's, so a
+   * mistyped name is named even at a prompt, and only a known type being read from a terminal
+   * reaches the second.
+   *
+   * **The type check is best-effort, and that is load-bearing rather than cautious.** `openIndex`
+   * refuses a stale index while `writeProducedLines` rebuilds one. Measured: with a stale tree,
+   * `asc types list` refuses and asks for `asc index build`, while `asc record` with a document
+   * records anyway. Refusing here on a stale index would therefore turn a path that self-heals
+   * today into one that needs a manual rebuild -- a new failure mode introduced by an improvement
+   * to a message. `IndexStaleError` is swallowed and the write path's own `findType` reports it
+   * inside the lock, exactly as before. Every other error propagates, because the alternatives are
+   * all worse: this runs before the read, so a project that cannot be opened is better refused
+   * now than after a caller has piped a document into it.
+   */
+  private async refuseBeforeReading(
+    typeName: string,
+    operand: string,
+    version: number | undefined,
+  ): Promise<void> {
+    try {
+      await this.withProject(({ store }) => {
+        requireType(store, typeName, version);
+      });
+    } catch (error) {
+      if (!(error instanceof IndexStaleError)) throw error;
+    }
+
+    const terminal = terminalStdinRefusal(operand, process.stdin.isTTY);
+    if (terminal !== undefined) throw usageError(terminal);
   }
 
   /**

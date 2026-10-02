@@ -51,6 +51,17 @@ export interface RecordRequest {
   readonly version?: number;
   readonly properties?: Readonly<Record<string, unknown>>;
   readonly na?: readonly string[];
+  /**
+   * How the caller offered this entry, carried through to `validateEntry` so a `fix` names a form
+   * the caller can actually use.
+   *
+   * It travels here rather than being decided at the point the error is rendered because only the
+   * caller knows: `asc record` reads the answer off its own argv, and the store must not guess it
+   * from the shape of `properties` -- an entry supplied as a document is byte-identical, at this
+   * interface, to one supplied as flags. Omitted means the flags form, so every existing caller is
+   * unchanged (`asc-i8cs`).
+   */
+  readonly via?: 'flags' | 'document';
 }
 
 /**
@@ -254,6 +265,10 @@ export function recordEntry(
   const input: EntryInput = {
     ...(request.properties === undefined ? {} : { properties: request.properties }),
     ...(request.na === undefined ? {} : { na: request.na }),
+    // Spread rather than defaulted, so `via` stays ABSENT when the caller did not say -- the field's
+    // own doc says absent means flags, and writing `via: 'flags'` here would make the store assert
+    // something it was not told.
+    ...(request.via === undefined ? {} : { via: request.via }),
   };
   const validated = validateEntry(type.spec, input);
 

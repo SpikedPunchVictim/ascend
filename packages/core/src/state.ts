@@ -44,6 +44,23 @@ export interface ValidationIssue {
 export interface EntryInput {
   readonly properties?: Readonly<Record<string, unknown>>;
   readonly na?: readonly string[];
+  /**
+   * How the caller offered this entry, which decides what a `fix` may tell them to do.
+   *
+   * **A `fix` that cannot be run is not a fix, and `--prop` cannot be run beside a document.**
+   * Measured (`asc-i8cs`): the advertised `asc record <type> -` refuses entry flags -- *"a document
+   * (-) and entry flags (--prop/--na/--evidence) cannot be combined: they describe the same entry
+   * twice"* -- so a caller who piped `{}` and was answered `Supply the value with
+   * --prop=chosen=<value>` had been handed a command the command they were running refuses. The
+   * document has its own vocabulary for the same two facts, and it is the one that caller has.
+   *
+   * **Absent means the flags form**, which is what every caller that has not considered the
+   * question means, so no existing call site changes a byte. `asc import` and `asc ingest` are
+   * such callers: their entries are written by machinery rather than typed as flags, and their
+   * fixes are read by whoever is diagnosing a derived entry, so the flag spelling remains the
+   * standing behaviour for both rather than a claim about how they were supplied.
+   */
+  readonly via?: 'flags' | 'document';
 }
 
 export interface ValidatedEntry {
@@ -71,6 +88,22 @@ function recordCommand(spec: TypeSpec, property: string, value: string): string 
 }
 
 /**
+ * How a caller who supplied a **document** supplies a value, which is never a flag.
+ *
+ * The document's field names are the vocabulary: a property is a key under its `properties`, and
+ * "does not apply" is a name in its `na` array. Stated as an edit rather than as a command because
+ * the document may be a file, or a pipe, or something a model wrote -- there is no one command line
+ * that would fix it, and printing one would be printing a command that does not exist.
+ */
+function documentFix(property: string, example: string | undefined): string {
+  return example === undefined
+    ? `Give "${property}" a value in the document's properties, or list it in its "na" array if ` +
+        `it does not apply.`
+    : `Set the document's "${property}" to ${JSON.stringify(example)}, or list "${property}" in ` +
+        `its "na" array if it does not apply.`;
+}
+
+/**
  * Validate a recording against a type definition and resolve every property's state.
  *
  * Pure: no clock, no I/O. Returns a fresh object and never mutates its input, so a
@@ -82,6 +115,11 @@ export function validateEntry(spec: TypeSpec, input: EntryInput): ValidatedEntry
 
   const offered = input.properties ?? {};
   const naInput = input.na ?? [];
+
+  // Chosen once, and read at the three sites below that name a flag. `asc-i8cs` is why it exists:
+  // a fix that names `--prop` is refused by the document form, so the sentence has to be written
+  // in the vocabulary of the form the caller is already holding.
+  const byDocument = input.via === 'document';
 
   // --- values -----------------------------------------------------------------
   // A null-prototype map, not an object literal, and every membership test below is
@@ -125,9 +163,11 @@ export function validateEntry(spec: TypeSpec, input: EntryInput): ValidatedEntry
         problem: detail,
         fix:
           `'${name}' expects ${describeProperty(property)}. ` +
-          (example === undefined
-            ? `Re-record with --prop=${name}=<value>, or --na ${name} if it does not apply.`
-            : `Re-record with: ${recordCommand(spec, name, example)}`),
+          (byDocument
+            ? documentFix(name, example)
+            : example === undefined
+              ? `Re-record with --prop=${name}=<value>, or --na ${name} if it does not apply.`
+              : `Re-record with: ${recordCommand(spec, name, example)}`),
       });
       continue;
     }
@@ -218,8 +258,11 @@ export function validateEntry(spec: TypeSpec, input: EntryInput): ValidatedEntry
         field: name,
         problem: `'${name}' is both measured and listed as not applicable`,
         fix:
-          `Choose one. Keep the value (drop it from --na), or keep the N/A ` +
-          `(re-record with: asc record ${spec.name} --na ${name} and without --prop=${name}=...).` +
+          (byDocument
+            ? `Choose one: keep "${name}" in the document's properties, or list it in the ` +
+              `document's "na" array.`
+            : `Choose one. Keep the value (drop it from --na), or keep the N/A ` +
+              `(re-record with: asc record ${spec.name} --na ${name} and without --prop=${name}=...).`) +
           (property === undefined ? '' : ` Accepted: ${describeProperty(property)}.`),
       });
     }
@@ -235,15 +278,17 @@ export function validateEntry(spec: TypeSpec, input: EntryInput): ValidatedEntry
       problem: `'${property.name}' is required and has no decision recorded`,
       fix:
         `Required means a value OR an explicit N/A -- not necessarily a value. ` +
-        (example === undefined
-          ? // No runnable `--prop` command: ascend has nothing to put in it, and printing a
-            // placeholder would be printing a command that stores the placeholder. Naming the
-            // flag without a command line is the honest half -- a recorder supplies the value,
-            // which is the whole point of the property being required.
-            `Supply the value with --prop=${property.name}=<value>; ascend cannot invent one. ` +
-            `Or record that it does not apply: asc record ${spec.name} --na ${property.name}`
-          : `Record: ${recordCommand(spec, property.name, example)}, ` +
-            `or: asc record ${spec.name} --na ${property.name}`),
+        (byDocument
+          ? documentFix(property.name, example)
+          : example === undefined
+            ? // No runnable `--prop` command: ascend has nothing to put in it, and printing a
+              // placeholder would be printing a command that stores the placeholder. Naming the
+              // flag without a command line is the honest half -- a recorder supplies the value,
+              // which is the whole point of the property being required.
+              `Supply the value with --prop=${property.name}=<value>; ascend cannot invent one. ` +
+              `Or record that it does not apply: asc record ${spec.name} --na ${property.name}`
+            : `Record: ${recordCommand(spec, property.name, example)}, ` +
+              `or: asc record ${spec.name} --na ${property.name}`),
     });
   }
 

@@ -28,7 +28,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * moved the rendering of a failure from oclif to `errors.ts`, which dropped a `›` and the gutter
  * spaces from every continuation line; the arms were NOT re-run afterwards, and the two counts here
  * were re-measured directly against the built binary instead (240 and 2,000 properties: 70,154 and
- * 588,075 bytes, n=1 each). What the 24 runs established is an EQUALITY between two arms -- guard
+ * 588,075 bytes, n=1 each). **The first of those two is now historical rather than current** --
+ * `asc-i8cs` shortened the required-property sentence on the document path, so 240 properties
+ * measure 61,034 bytes and this file's constant is 300 (76,274); the 2,000-property figure has not
+ * been re-measured. What the 24 runs established is an EQUALITY between two arms -- guard
  * absent, guard present, same bytes -- and a change to how a line is rendered moves both arms
  * together, so that equality is not something the renderer can affect. That is what the numbers in
  * this paragraph are evidence for, and it is why the study is cited rather than repeated.
@@ -109,13 +112,27 @@ const TYPE = 'demanding';
  * How many required properties the fixture declares.
  *
  * Derived from a measurement rather than picked for roundness: `asc record` renders one line per
- * missing required property, and each line with its prose runs roughly 314 bytes, so the message
- * crosses the pipe's capacity somewhere near 210 properties. 240 lands at 75,441 bytes -- over the
- * line with margin, so that re-wording the message does not quietly drop this test back under the
- * threshold where it would pass without testing anything. The first test asserts that margin
- * rather than trusting this paragraph.
+ * missing required property, and each line runs roughly 254 bytes, so the message crosses the
+ * pipe's capacity somewhere near 260 properties. 300 lands at 76,274 bytes -- over the line with
+ * margin, so that re-wording the message does not quietly drop this test back under the threshold
+ * where it would pass without testing anything. The first test asserts that margin rather than
+ * trusting this paragraph.
+ *
+ * **This constant was 240, and `asc-i8cs` is what moved it.** 240 was chosen when a missing
+ * required property's fix, on the document path, was the flags sentence -- `Supply the value with
+ * --prop=<name>=<value>; ascend cannot invent one.` -- at roughly 314 bytes a line. The document
+ * path now names the document instead (*"Give \"<name>\" a value in the document's properties, or
+ * list it in its \"na\" array if it does not apply."*), which is about 27 bytes a line shorter, and
+ * 240 properties then measured **61,034** bytes: **4,502 under** the pipe, which is exactly the
+ * state this file's first test exists to refuse. Measured at 240/260/280/300 properties: 61,034 /
+ * 66,114 / 71,194 / 76,274 -- 254.0 bytes per property, and the constant is set at the top of that
+ * range rather than just over the line.
+ *
+ * **The margin is what caught it, and nothing else would have.** The sentence the fix renders is
+ * not covered by any size assertion anywhere; the fixture's own relevance check is the only thing
+ * in the suite that noticed a message had become too short to be testing anything.
  */
-const REQUIRED_PROPERTIES = 240;
+const REQUIRED_PROPERTIES = 300;
 
 /**
  * The pipe capacity, which is what a truncation lands on.
@@ -191,10 +208,14 @@ function pipedStderr(): Buffer {
   //
   // **The specific reason once given for this is now wrong, and is corrected rather than deleted.**
   // It said the message contains `›` and `…`. Measured against the built binary after `asc-98c`:
-  // this fixture's stderr is 70,154 bytes and holds no code point above U+007E at all -- the `›`
-  // was oclif's gutter, and ascend no longer writes one. The Buffer is still the right unit, for a
-  // reason that does not depend on today's bytes: the message is built from a type's own property
-  // names, and `output.ts` marks an over-wide cell with `…`, so nothing here promises ASCII.
+  // this fixture's stderr was 70,154 bytes and held no code point above U+007E at all -- the `›`
+  // was oclif's gutter, and ascend no longer writes one. That count is historical on both counts
+  // now: `asc-i8cs` shortened the required-property sentence and this file's constant moved from
+  // 240 to 300, so the message is 76,274 bytes, and the ASCII claim below is the part this
+  // paragraph is evidence for -- it has not been re-measured since. The Buffer is still the right
+  // unit, for a reason that does not depend on today's bytes: the message is built from a type's
+  // own property names, and `output.ts` marks an over-wide cell with `…`, so nothing here
+  // promises ASCII.
   const result = spawnSync(process.execPath, [bin, 'record', TYPE, '-'], {
     cwd: dir,
     env: env(dir),

@@ -2683,6 +2683,148 @@ context. It is not: the deriver reads it from the transcripts. *I did not check 
 **Status**: Complete (2026-10-01). Gate below. Nothing committed — the conservative profile reports
 and waits.
 
+### E12.16 — the two findings of that review which are commands ascend itself refuses (`asc-i8cs` +
+`asc-kyhh`, P3 ×2, planned 2026-10-02)
+
+**Goal** — close the two findings of the E12.14 adversarial review that survived it as beads. They
+are one class: a message ascend prints that the caller cannot act on from where ascend printed it.
+`asc-i8cs` hands back a flag the command refuses beside the document it was reached from; `asc-kyhh`
+prints nothing at all, because `asc record -` at a prompt waits for a document nobody is sending.
+
+**Neither defect is in the new line, and that is the point of fixing both now.** E12.14's brief moved
+to the operand form; both defects sit underneath it, on the document path every session reaches by
+default. The brief did not create them — it made a human far more likely to meet them.
+
+#### Stage 1 — `asc-i8cs`: a fix names the form the entry was supplied in
+
+**The measurement.** `asc record decision -` with `{}` on stdin — the form the brief advertises —
+answered:
+
+```
+Error: 1 problem(s) with this decision entry, so nothing was recorded:
+  chosen: 'chosen' is required and has no decision recorded
+    Supply the value with --prop=chosen=<value>.
+```
+
+Applying that advice to the form it was reached from:
+
+```
+Error: a document (-) and entry flags (--prop/--na/--evidence) cannot be combined
+```
+
+exit **2**. The recovery ascend prescribed is refused by the command ascend printed it from — and
+`IMPLEMENTATION_PLAN.md:2478-2480` records *that recovery* as the criterion for preferring stdin over
+the flag form, so the rationale rested on a dead end. The `--na` half is the same: a real command in
+general, equally refused beside a document.
+
+**Why the store cannot decide this for itself.** An entry offered as a document is byte-identical, at
+`RecordRequest`, to one offered as flags. Only the caller knows which it did, so the answer travels
+with the request rather than being inferred at the point the error is rendered.
+
+**Implementation.** `EntryInput` (`core/state.ts`) gains `via?: 'flags' | 'document'`; `RecordRequest`
+(`store/recorder.ts`) carries it and spreads it into the `EntryInput` literal; `record.ts` reads it
+off its own argv, which is the one place that knows. **Absent means flags** — spread, never defaulted
+— so every existing caller is unchanged and no caller opts in to the old wording. Three sites in
+`validateEntry` branch through one `documentFix` helper: invalid value, measured-and-NA-at-once, and
+required-missing. It names the document's `properties` and its `na` array where the flags path names
+`--prop` / `--na`.
+
+**Tests (RED first)** — `core/test/state.test.ts` gained a five-test block: one per branching site,
+one sweep asserting that across *every* error a document entry produces no `fix` matches
+`/--(prop|na|evidence)\b/`, and a control proving the flags path still names the flag. RED measured
+before a line of source moved: **4 failed / 67 passed**.
+
+#### Stage 2 — `asc-kyhh`: refuse before waiting
+
+**The measurement, on a real pty.** `asc record <type> -` at a prompt with nothing piped: for both
+`bogus_type` and a type that *is* registered, the process was **still running after 6 s, output
+empty**. `record` read stdin before it resolved the type, and on a terminal
+`for await (const chunk of process.stdin)` never yields — so the unknown type it was about to report
+was never reached, and nothing was printed at all. On an open non-TTY pipe it blocked **4.1 s** until
+the writer closed. It exits 1 only when stdin is closed, which is what Claude Code's Bash tool does —
+so the session path was never affected and a human following the brief's own line was.
+
+**Implementation — two guards, and their order is the decision (owner, 2026-10-02: type check first,
+then the TTY guard).**
+
+1. `refuseBeforeReading` resolves the type before the read, through the existing read-only
+   `withProject` pre-open. It **swallows `IndexStaleError`, deliberately**: `openIndex` refuses a
+   stale index where `writeProducedLines` calls `buildIndex` first and self-heals — so on a stale tree
+   the guard steps aside and the read proceeds to the path that repairs the index, rather than
+   introducing a new failure mode on a path that works today.
+2. Then `terminalStdinRefusal(operand, isTTY)` (`cli/input.ts`) refuses `-` on a terminal with the
+   pipe message. It is **a pure function of the two facts it needs**, so the decision is testable
+   without allocating a pty — which is the measurement that found the defect and is not something a
+   portable suite can depend on. `isTTY !== true` reads as "go ahead": the flag is `undefined`
+   wherever there is no terminal at all, and refusing a read that would have worked is the worse
+   error.
+
+Type first because it is the more specific and more actionable failure, and because it does not depend
+on the terminal at all; the TTY refusal is what remains for a caller whose type is fine.
+
+**Tests (RED first)** — `cli/test/record.test.ts` gained four: the document path's fix names no flag,
+the flags path still names `--prop=rationale` (the control), an unknown type is named **before** the
+read, and the stale-index self-heal still records. One **existing** test needed updating rather than
+adding: *"does NOT print a runnable command whose value ascend had to invent"* piped `{}` — the
+document path — while asserting `--prop=missing=<value>` and `asc record pair --na missing`. Those two
+expectations encoded this very defect; the test was green because it asserted the shape of the
+message rather than acting on it. Its load-bearing half is kept (never print a runnable
+`asc record … --prop=` line, never invent a value, write nothing), the document's vocabulary replaces
+the flag's, and **the flag spelling is kept as a control** on a second, flag-driven invocation of the
+same type — so the change reads as a branch rather than a replacement.
+
+#### Stage 3 — the fixture that proves a message is long enough said it no longer was
+
+**Found by the gate, not by design, and it is the only thing in the suite that could have found
+it.** `packages/cli/test/8pp-truncation.test.ts` drives a real `asc record` whose error is large
+enough to exceed a pipe, and its first test asserts that the fixture's own message **is** larger
+than the pipe's 65,536 bytes — *"below the pipe capacity no truncation is possible, so the tests in
+this file would pass without the fix."* The gate reported:
+
+```
+AssertionError: the fixture's error message is 61034 bytes, which does not exceed the 65536-byte
+pipe. Raise REQUIRED_PROPERTIES: ...
+```
+
+**That is `asc-i8cs` arriving from the other side.** The fixture feeds a *document*, so its one line
+per missing required property carried the flags sentence
+(`Supply the value with --prop=<name>=<value>; ascend cannot invent one.`) at ~314 bytes a line. The
+document wording is ~27 bytes a line shorter, and at 240 required properties the message fell
+**4,502 bytes under** the pipe. Nothing in the change touched this file; the fixture's relevance
+check is what noticed that a message had become too short to be testing anything.
+
+**Fix, and the constant it moves.** Measured at 240/260/280/300 properties: **61,034 / 66,114 /
+71,194 / 76,274** bytes (254.0 per property, linear). `REQUIRED_PROPERTIES` moves **240 → 300**,
+restoring a margin comparable to the one the old constant had (10,738 bytes against the previous
+9,905). Two stale counts in the same file are corrected rather than left: the constant's own comment
+(it had reasoned from "roughly 314 bytes a line" and "240 lands at 75,441 bytes") and the present
+-tense "this fixture's stderr is 70,154 bytes" in `pipedStderr`, both now marked historical with the
+measurement that replaced them. `packages/cli/src/streams.ts` cites 75,441 twice and is **left
+alone**: both sit inside sentences already framed as a dated 2026-09-14 re-measurement, so they are
+a record of a study rather than a claim about today's bytes.
+
+#### Stage 4 — gate, records, close
+
+Full gate to a file, never `| tail`. Both beads closed with their reasons. Two dogfood records
+written — `dogfood/0051` (the refused recovery) and `dogfood/0052` (the report that arrives after
+the wait) — because filing the bead is not the same as saying how it was found, and the index is
+reconciled by NUMBER against disk (52 records, 52 rows, no gap) rather than by arithmetic.
+
+**`brief-text.ts` is not touched, so the SessionStart budget is unchanged** — 3,438 bytes on stdout
+/ 3,437 as `asc doctor` counts it (4,563 free), E12.15's figures re-read here rather than assumed.
+
+**Status**: Complete (2026-10-02). Gate **green** to a file: 124 files / **2,918** passed, 2 skipped;
+`format:check` 0, typecheck 0, lint 0, `align` **green** (baselined debt 20 → 20). The baseline was
+2,909, and the +9 are the five `core/test/state.test.ts` and four `cli/test/record.test.ts` tests
+added here — the one *changed* existing test is not a new one. **Driven live on a scratch project**,
+not only in tests: `printf '{}' | asc record decision -` now answers *"Give "chosen" a value in the
+document's properties, or list it in its "na" array if it does not apply."*, `asc record decision
+--prop=rationale=x` still answers *"Supply the value with --prop=chosen=<value>"*, `printf '{}' | asc
+record bogus_type -` names the unknown type **without** the terminal message, and under a real pty
+(`script -q /dev/null`) `record decision -` returns immediately with *"standard input is a terminal,
+so nothing is being piped into it"* where it previously ran past 6 s with empty output. Nothing
+committed — the conservative profile reports and waits.
+
 ---
 
 ## Stage 2: Claude Code adapter + backfill — epic E5

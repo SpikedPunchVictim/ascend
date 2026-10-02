@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -284,7 +284,10 @@ describe('asc record', () => {
       join(dir, 'pair.json'),
       JSON.stringify({
         name: 'pair',
-        properties: [{ name: 'missing', type: 'string', required: true }],
+        properties: [
+          { name: 'missing', type: 'string', required: true },
+          { name: 'other', type: 'string', required: true },
+        ],
       }),
     );
     expect(asc(['types', 'define', join(dir, 'pair.json')], dir).status).toBe(0);
@@ -295,15 +298,25 @@ describe('asc record', () => {
 
     expect(run.status).toBe(1);
     const message = flatten(run.stderr);
-    // It still refuses, and still names the flag -- a recorder is told the shape to supply.
-    expect(message).toContain('--prop=missing=<value>');
-    // And it still offers the half ascend CAN stand behind: an explicit N/A is a real command.
-    expect(message).toContain('asc record pair --na missing');
+    // It still refuses, and still says where the value goes -- which on THIS path is the document
+    // rather than a flag. This assertion read `--prop=missing=<value>` until `asc-i8cs`: `asc
+    // record pair -` refuses `--prop`/`--na` beside a document, so the spelling this test
+    // required was a command the command itself refuses, and the N/A half it also required
+    // (`asc record pair --na missing`) was refused the same way. The document's own vocabulary
+    // is what a caller holding a document can act on.
+    expect(message).toContain('"missing"');
+    expect(message).toContain('"na" array');
     // What it must never again do is hand back a `--prop=` COMMAND LINE for a value ascend has
     // no way to know. Asserted on the command form rather than on the placeholder text, because
     // the next placeholder would not be spelled `<string>`.
     expect(message).not.toMatch(/asc record \S+ --prop=/);
     expect(stored(dir)).toEqual([]);
+
+    // The control, and the reason this is a branch rather than a replacement: the SAME two
+    // properties recorded with a flag still get the flag spelling, because that caller can use it.
+    const byFlag = flatten(asc(['record', 'pair', '--prop=other=x'], dir).stderr);
+    expect(byFlag).toContain('--prop=missing=<value>');
+    expect(byFlag).toContain('asc record pair --na missing');
   });
 
   it('refuses an unregistered type, and lists the ones that exist', () => {
@@ -1845,5 +1858,68 @@ describe('asc record --scaffold', () => {
       note: 'filled',
       rounds: 0,
     });
+  });
+});
+
+/**
+ * Two refusals the E12.14 review measured on the line the brief now prints (`asc record TYPE -`),
+ * both of them about a failure that arrives too late or cannot be acted on.
+ *
+ * `asc-i8cs` -- the fix `asc record` offers for an incomplete document named `--prop`, which the
+ * document form refuses. `asc-kyhh` -- an unknown type was reported only *after* standard input had
+ * been read, so on a terminal nothing was printed at all (measured on a real pty: still running
+ * after 6s, output empty).
+ */
+describe('the document path refuses before it waits, and its fix is reachable (asc-i8cs, asc-kyhh)', () => {
+  it('offers a document edit, not a flag, when a piped document is incomplete', () => {
+    const run = asc(['record', 'decision', '-'], project(), '{}');
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('chosen');
+    // The whole finding: this sentence is printed by a command that refuses `--prop` alongside a
+    // document, so following it exits 2 (measured). A fix that cannot be run is not a fix.
+    expect(run.stderr).not.toMatch(/--(prop|na|evidence)\b/);
+    expect(flatten(run.stderr)).toContain('document');
+  });
+
+  it('still names the flag when there is no document to edit', () => {
+    // The control arm: the flags path keeps the sentence it had, so the change is scoped to the
+    // form that cannot use it.
+    const run = asc(['record', 'decision', '--prop=chosen=a'], project());
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('--prop=rationale');
+  });
+
+  it('names an unknown type BEFORE reading the document (asc-kyhh)', () => {
+    // Measured before the fix: this answered `standard input is not valid JSON`, because the type
+    // was resolved deep in the write path and the read happened first. The type is the caller's
+    // mistake and the document is not, so the type is what has to be reported.
+    const run = asc(['record', 'bogus_type', '-'], project(), '');
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('bogus_type');
+    expect(run.stderr).not.toContain('not valid JSON');
+  });
+
+  it('does not let the earlier check become a new refusal when the index is stale', () => {
+    // The check is best-effort by design: `openIndex` refuses a stale index while
+    // `writeProducedLines` rebuilds one, so refusing here would turn a path that self-heals today
+    // into one that needs `asc index build`. A stale tree must still record.
+    const dir = project();
+    asc(['record', 'decision', '--prop=chosen=a', '--prop=rationale=b'], dir);
+
+    // A blank line appended to the type tree is enough to make the index stale: measured, a read
+    // then refuses with "the index ... is not current for this tree", while `asc record` with a
+    // document self-heals (it rebuilds and records). That asymmetry is the whole risk here.
+    const types = join(dir, '.ascend', 'types', '0001.jsonl');
+    writeFileSync(types, readFileSync(types, 'utf8') + '\n');
+
+    const run = asc(
+      ['record', 'decision', '-'],
+      dir,
+      '{"properties":{"chosen":"a","rationale":"b"}}',
+    );
+    expect(run.status).toBe(0);
   });
 });

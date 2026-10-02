@@ -86,3 +86,34 @@ export async function readInput(ref: string): Promise<string> {
     throw usageError(`${ref} could not be read: ${messageOf(error)}.`);
   }
 }
+
+/**
+ * The refusal for a `-` operand on a terminal, or `undefined` when the read should go ahead.
+ *
+ * **`-` says "read standard input", and a terminal has no document on it.** A caller who runs a
+ * command line at a prompt is not piping anything in, so `readStdin`'s loop waits for a document
+ * nobody is sending -- and, measured on a real pty before this existed, printed nothing at all
+ * while it waited (`asc-kyhh`: still running after 6 s, output empty). This is the missing-operand
+ * rule at the top of this file, one step on: there the operand was absent, here it is present and
+ * the *input* is.
+ *
+ * **A pure function of the two facts it needs**, rather than a `process.stdin.isTTY` read at each
+ * call site, for two reasons: the decision is then testable without allocating a pty -- which is
+ * the measurement that found the defect and is not something a portable suite can depend on -- and
+ * commands that share this file cannot drift into disagreeing about when the refusal applies.
+ *
+ * `isTTY !== true` reads as "go ahead", deliberately. `process.stdin.isTTY` is `undefined` rather
+ * than `false` wherever there is no terminal at all, and the refusal must fire only on the case
+ * that is certain -- refusing a read that would have worked is the worse error.
+ */
+export function terminalStdinRefusal(
+  operand: string,
+  isTTY: boolean | undefined,
+): string | undefined {
+  if (operand !== STDIN || isTTY !== true) return undefined;
+
+  return (
+    `standard input is a terminal, so nothing is being piped into it: ascend would wait for a ` +
+    `document nobody is sending. Pass a file path instead of ${STDIN}, or pipe a document in.`
+  );
+}

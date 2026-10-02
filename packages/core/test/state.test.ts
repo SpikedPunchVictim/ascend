@@ -530,3 +530,77 @@ describe('an inherited name is not a recorded value', () => {
     expect(canonicalJson(result.properties)).toBe('{"__proto__":"v"}');
   });
 });
+
+/**
+ * `asc-i8cs`: a `fix` is only a fix if the caller can run it from where they are standing.
+ *
+ * Every flag-naming sentence below was measured as a **dead end** on the document path. `asc record
+ * decision -` refuses `--prop`/`--na` alongside a document -- *"a document (-) and entry flags
+ * (--prop/--na/--evidence) cannot be combined: they describe the same entry twice"* (`record.ts`) --
+ * so a caller who piped `{}` and was told `Supply the value with --prop=chosen=<value>` had been
+ * handed a command that the command they were running refuses. `IMPLEMENTATION_PLAN.md` recorded
+ * that exact recovery as the reason the stdin form was chosen over the flag form, so the rationale
+ * rested on a dead end (`asc-fkp1`'s review; `dogfood/0028`).
+ *
+ * The document has its own vocabulary for the same two facts, and it is what a document caller can
+ * actually act on: a property is a key under the document's `properties`, and "does not apply" is a
+ * name in its `na` array.
+ */
+describe('a fix names the form the entry was supplied in (asc-i8cs)', () => {
+  const asDocument = (input: { properties?: Record<string, unknown>; na?: string[] }) =>
+    validateEntry(SPEC, { ...input, via: 'document' });
+
+  it('does not name --prop when a value is invalid', () => {
+    const issue = asDocument({ properties: { outcome: 'maybe', reviewer: 'r' } }).errors.find(
+      (e) => e.field === 'outcome',
+    );
+    expect(issue?.problem).toContain('approved');
+    expect(issue?.fix).not.toContain('--prop');
+    expect(issue?.fix).toContain('document');
+  });
+
+  it('does not name --na when a property is both measured and not applicable', () => {
+    const issue = asDocument({
+      properties: { comments: 1 },
+      na: ['comments', 'reviewer'],
+    }).errors.find((e) => e.field === 'comments');
+    expect(issue?.fix).not.toContain('--na');
+    expect(issue?.fix).not.toContain('--prop');
+  });
+
+  it('does not name --prop when a required property has no decision', () => {
+    const issue = asDocument({ properties: { comments: 1 } }).errors.find(
+      (e) => e.field === 'reviewer',
+    );
+    expect(issue?.fix).not.toContain('--prop');
+    expect(issue?.fix).toContain('"na"');
+  });
+
+  it('holds for EVERY error a document can produce, not only the three measured sites', () => {
+    // One input that trips all three at once, so this fails if a fourth site is added later and
+    // forgets the branch -- which is the way this defect would come back.
+    const result = asDocument({
+      properties: { outcome: 'maybe', comments: 1 },
+      na: ['comments'],
+    });
+    expect(result.errors.map((e) => e.field).sort()).toEqual(['comments', 'outcome', 'reviewer']);
+    for (const issue of result.errors) {
+      expect(issue.fix).not.toMatch(/--(prop|na|evidence)\b/);
+    }
+  });
+
+  it('still gives the runnable command to a caller who used flags', () => {
+    // The control, and the reason the field defaults rather than being required: every caller that
+    // has not thought about the question keeps exactly the sentence it had.
+    const byDefault = validateEntry(SPEC, {
+      properties: { outcome: 'maybe', reviewer: 'r' },
+    }).errors;
+    const byFlag = validateEntry(SPEC, {
+      properties: { outcome: 'maybe', reviewer: 'r' },
+      via: 'flags',
+    }).errors;
+
+    expect(byDefault[0]?.fix).toContain('--prop');
+    expect(byDefault[0]?.fix).toEqual(byFlag[0]?.fix);
+  });
+});
