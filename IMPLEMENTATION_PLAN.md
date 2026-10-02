@@ -1720,10 +1720,11 @@ as the store itself.
     **What is still not measured, and it is the criterion's weak half:** no foreign repository was
     migrated. Everything here is home-field — this repo's corpus, and a copy of it on the same
     machine — so `EV-34`'s own "n=1, and it is the corpus the migration is FOR" caveat still stands.
-- **E12.5 — the guards the blocked beads own.** `asc-2ezs` (one id, two contents, refused at read),
-  `asc-98e1` (id-set superset of each parent — EV-31 measured that the markers-and-parse half alone
-  passes exactly the resolution that loses a record), `asc-8uzh` (per-record size limit, byte-bounded
-  rollover).
+- **E12.5 — the guards the blocked beads own (done 2026-10-02, below).** `asc-2ezs` (one id, two
+  contents, refused at read), `asc-98e1` (id-set superset of each parent — EV-31 measured that the
+  markers-and-parse half alone passes exactly the resolution that loses a record), `asc-8uzh`
+  (per-record size limit, byte-bounded rollover). **`asc-2ezs` and `asc-8uzh` are complete;
+  `asc-98e1` is not in that stage** and stays open.
 - **E12.6 — the version a type line states about itself (`asc-i5tj.6`, done 2026-09-30).** A
   `TypeLine` carried no version, so a type's version was read from the line's POSITION — and
   `.ascend/.gitattributes` is `*.jsonl merge=union`, a writer that interleaves without asking, so the
@@ -2249,6 +2250,163 @@ more at v1. The plan's own Stage 2 placed the "a stated version must continue th
 `registerType`; **that placement is overturned by a red test** and recorded in `EV-37`, because the
 registry cannot see the target store's history and the message it produced blamed the caller's
 well-formed file. The check lives at the two call sites that can see both sides instead.
+
+---
+
+### E12.5 — the two guards the blocked beads own: a contradiction refused, and a record that cannot grow without bound (`asc-2ezs` + `asc-8uzh`, P1 + P2, planned 2026-10-02)
+
+**Goal** — close the two guard beads `asc-i5tj` was blocking. Both are the *unfinished* half of a rule
+E12.1 already shipped half of, which is why they read as smaller than they are: the duplicate half of
+`asc-2ezs` is done and only the contradiction remains, and the byte-bounded rollover half of
+`asc-8uzh` is done and only the per-record limit remains.
+
+**Both are read/write guards on `packages/store/src/jsonl-files.ts`**, the file layer, and neither
+needs SQLite — which is the file's own standing rule (no index, no DB, in this module).
+
+#### Measured before planning (2026-10-02, on this repo's own tree)
+
+| | |
+|---|---|
+| **Blast radius of the refusal** | `.ascend/entries/*/*.jsonl`: **6,822 lines, 6,822 distinct ids, 0 ids appearing twice at all** — so nothing here is bricked, and `dedupeByIdentity` is currently a no-op on this tree (it exists for merge scenarios, not for this one) |
+| **Blast radius of the cap** | entries + annotations: **10,727 record lines, max 9,046 B, p99 2,420 B, p99.9 6,632 B, 0 over 10,000 B, 0 over 1 MiB** — the largest single line is 1/116th of the cap |
+| **Can the refusal fire on a normal path?** | No. Annotation ids are random UUIDs (`by_kind` et al.) or content hashes (`inv-<sha256>`), so distinct content already implies a distinct id; derived *entry* ids are `derived:claude-code:<type>:<session>:<key>`, not content-addressed, so a changed re-ingest *can* produce the shape — and the ingest path already catches exactly that before writing, by comparing fingerprints and reporting a collision (`cli/src/commands/ingest/claude-code.ts:829-848`) |
+
+#### Stage 1 — `asc-2ezs`: one id with two distinct contents is refused at read
+
+**What exists.** `dedupeByIdentity` (`jsonl-files.ts:292-302`, applied at `:530-531`) already collapses
+byte-identical lines on their **canonical serialization**, which is the whole of the bead's second
+half. What does not exist is the refusal: `readRecordTree` returns **both** lines today, and two tests
+assert exactly that (`jsonl-files.test.ts:315-330`, `:828-847`). The only refusal anywhere is
+incidental and unhelpful — `buildIndex` → `replayEntry` → `recordEntry` throws a content-blind
+`DuplicateEntryError` naming **only the id** (`recorder.ts:277-278`), with no file and no line.
+
+**Tests (RED first)** — in `store/test/jsonl-files.test.ts`:
+- **S3, both lines in one file** (what a union merge actually produces): `readRecordTree` **throws**,
+  and the message names the id *and both coordinates* (`<file>:<line>` for each).
+- **S3 across two files** (the rollover variant): both coordinates still named, and they differ.
+- **S2 control**: the same id written twice with **identical** canonical text still collapses to one
+  line and does **not** throw — the refusal must sit *after* the dedupe, or every re-ingest refuses.
+- **Control against over-refusing**: two lines with *different* ids and the *same* content are both
+  kept — the rule is one id with two contents, not duplicate content.
+- **Annotations too**: same id, two contents, refused by the same rule (annotations dedupe today for
+  exactly the reasons entries do, and a hand-edited tree can hold the shape even though no producer
+  emits it).
+- The test at `:315-330` (*"orders two records that share an id by their text"*) **is replaced by the
+  refusal test** — its premise was that the two lines survive to be ordered.
+
+**Implementation**: `readRecordTree` must carry each line's coordinate, which it already computes and
+throws with (`parsed.where`, see the kind and partition guards at `:518-534`) but currently discards.
+Collect `{line, where}` per kind and have the dedupe function refuse: on a second line bearing an id
+already seen **with a different canonical text**, throw naming the id, the first coordinate and the
+second. Dedupe **first**, then the id check, so byte-identical duplicates are removed rather than
+reported. `rewrite.ts:17` is *"the only code that reads a tree `readRecordTree` would refuse"* — its
+doc gains the second class it cannot repair, because a contradiction is not resolvable by a rewrite
+either: the repair is a hand-edit, and the message must say so.
+
+**Status**: Complete (2026-10-02). `onePerIdentity` (`jsonl-files.ts`) replaces `dedupeByIdentity` and
+carries both halves in one loop, **dedupe first**: a byte-identical line collapses, and an id seen
+again with different canonical text is refused naming `item.where`, `earlier.where` and the id.
+`readRecordTree` now collects `{line, where}` per kind (`Filed`) instead of discarding the coordinate
+it already computed. `inRecordedOrder` lost its third key, because the shape that key existed to order
+is now refused, so `(time, id)` is total on its own — and the ORDER bullet that defended the key
+(*"content-addressed … ONE id legitimately carries TWO contents"*) was rewritten to say both halves of
+that sentence were false. `rewrite.ts`'s header gained the class it cannot repair: a rewrite relaxes a
+rule it can satisfy by rewriting, and a contradiction is not one of them. **6 tests** in
+`jsonl-files.test.ts` — 5 net new (S3 in one file, S3 across two files, the S2 collapse control, the
+different-ids-same-content control, the annotation arm) plus the same-timestamp ordering test that
+*replaced* the old orders-by-text one, whose reason to exist went with the shape it manufactured.
+`roundTrip` reads the tree back, so a test asserting the refusal's text needs a write-only path —
+that is the `write` helper beside it, and both refusal tests moved onto it.
+
+#### Stage 2 — `asc-8uzh`: a record over 1 MiB is refused at write time
+
+**What exists.** `RecordWriter.append` (`jsonl-files.ts:643-675`) already computes the record's exact
+byte length at `:655` and accumulates it; the **file** cap deliberately never refuses a record
+(`:657-658`, tested at `:512-519`). There is **no per-record check anywhere**.
+
+**The cap, decided by the owner 2026-10-02: 1 MiB (1,048,576 B), refused.** 116× the largest line
+measured above.
+
+**Tests (RED first)** — in `store/test/jsonl-files.test.ts`:
+- A line over `maxBytesPerRecord` is refused; the message names **the largest field** and its size;
+  **nothing is written** (`written` empty, and the file it would have gone into does not exist).
+- A line at exactly the cap is written (the boundary is `>`, not `>=`).
+- The **default** is the owner's number: `MAX_BYTES_PER_RECORD` is exported and asserted, the way
+  `MAX_RECORDS_PER_FILE` already is.
+- `maxBytesPerRecord` of `0` and `-1` is refused at writer construction with the existing
+  `"... must be positive, but it is ..."` shape (`:610-622`, tested at `:563-571`).
+- **The two caps are different rules, and the test says so**: the existing *"writes a record larger
+  than the cap instead of rolling forever"* stays **green** — a file cap still never refuses — while a
+  record cap does. One asserts the rollover arithmetic, the other the write refusal.
+
+**Status**: Complete (2026-10-02). `MAX_BYTES_PER_RECORD = 1024 * 1024` with `RecordWriterOptions.
+maxBytesPerRecord`, validated beside the other two in `openRecordWriter` in the same
+`"... must be positive, but it is ..."` shape. The check sits in `append` immediately after `bytes` is
+computed and **before the roll and any `mkdirSync`**, so a refusal leaves the tree exactly as it was.
+`largestField` walks the line's own strings with a path (`stringsIn`) and returns the longest with its
+byte size, so the message names `properties.enormous` rather than only a total; `lineLabel` names the
+record by the identity its kind carries. **The file cap's own comment had to change** — *"the cap
+bounds how many records share a file, it never refuses a record"* is true of the file cap and was about
+to read as true of the writer, so it now says which cap and names the other rule beside it, and the
+rollover test's comment carries the same correction. **3 tests** added (over the cap naming the field;
+the largest field; exactly at the cap) plus the default assertion in *"defaults to the measured
+thresholds"* and the two non-positive arms. Every one of the three went RED first.
+
+#### Stage 3 — what the refusal takes away, and the docs that must stop saying the opposite
+
+**The ORDER rule loses its third key.** `inRecordedOrder` (`:255-268`) sorts entries and annotations by
+`(time, id, serialized text)`, and the third key exists *only* because `(time, id)` could tie — which
+required one id with two contents, the exact shape Stage 1 now refuses. After Stage 1 at most one line
+per id can reach the sort, so `(time, id)` is total and the key is unreachable. **Remove it** and
+rewrite the ORDER bullet at `:58-63`, which currently says *"an entry's id is derived and
+content-addressed for derived entries, so ONE id legitimately carries TWO contents"* — two claims, and
+**both are false**: derived ids are `session:key`, not content hashes, and the shape is now refused
+rather than legitimate. The decorate-sort-undecorate structure exists to avoid recomputing the
+serialization in the comparator; with the key gone it goes too.
+
+**`dedupeByIdentity`'s doc (`:289-290`) says the opposite of what ships.** *"Distinct content under ONE
+id is deliberately not collapsed… owned by `asc-2ezs`"* — after this, it is not collapsed, it is
+**refused**, and the sentence must say that and why (collapsing would lose a record; refusing keeps
+both coordinates and lets a human choose).
+
+**Status**: Complete (2026-10-02). Both done, and the second one moved rather than edited: the
+`dedupeByIdentity` doc was **replaced by `onePerIdentity`**, which states the two rules and why the
+order between them is the whole design (dedupe first, or every re-ingest of an unchanged transcript
+refuses). The ORDER bullet was rewritten, and the orphaned doc comment above `OrderableLine` — which
+claimed *"the serialized text is a final tiebreak"* — had its claim replaced, since after Stage 1 the
+tiebreak is unreachable and the reader's total order comes from `onePerIdentity` instead. The
+decorate-sort-undecorate structure the plan expected to find at `:255-268` was there and did go with
+it: `inRecordedOrder` built `{line, time, text}` per line and sorted the records, deliberately
+avoiding a `serializeCorpus` call inside a comparator that runs O(n log n) times. With the text key
+gone, the decoration lost its only use and the function is a plain sort on two fields — a slightly
+larger edit than "remove a key" suggests, and one `git diff` shows rather than an argued
+reconstruction.
+
+#### Stage 4 — gate, records, close
+
+`pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && pnpm align`, full output to a file,
+never `| tail`. A red `align check` is blocking. Two dogfood records — one per finding: the
+contradiction that was loud but unusable (an id, no coordinates) and the unbounded record that no cap
+covered, each with its measurement and what was *not* looking. Both beads closed with their reasons.
+
+**Status**: Complete (2026-10-02). Full gate **green** to a file (`/tmp/e125-gate2.txt`): `format:check`
+0, `typecheck` 0, `lint` 0, **124 files / 2926 passed / 2 skipped**, `align` green — *"baselined debt:
+20 → 20 (0)"*, `verdict: green`. The baseline was 2,919 and the +7 is **9 tests added and 2 removed**:
+the old *"orders two records that share an id by their text"* and the old *"S3: one id with two contents
+keeps both"* are replaced by the tests that assert the refusal, since both premises were that the
+refused shape survives. Two dogfood records: **`dogfood/0053`** (the contradiction that was refused
+with one coordinate, and the ORDER rule that documented the shape as legitimate) and **`dogfood/0054`**
+(the file that had a cap and the record that had none, with the suite's own green test standing over
+the absence). Index reconciled by NUMBER: `grep -c '^| \[0'` **54**, `ls dogfood/ | grep -E '^[0-9]{4}-'
+| wc -l` **55** = 54 records plus `0000-template.md`, no gap and no repeat. Both beads closed with the
+reason they were open.
+
+**A claim corrected before it shipped.** Stage 3's status first read *"the decorate-sort-undecorate
+structure the plan expected to find was already gone"*, asserted from the plan's own prose rather than
+from the file. `git diff` showed it was there — `inRecordedOrder` built `{line, time, text}` per line
+and sorted the records to keep `serializeCorpus` out of an O(n log n) comparator — so the sentence was
+rewritten to say it existed and went with the key. Third instance in this workstream of a claim written
+before it was checked.
 
 ---
 

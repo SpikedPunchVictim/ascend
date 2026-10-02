@@ -20,6 +20,13 @@
  * `CorpusParseOptions.allowVersionlessTypeLines` -- the one this upgrade exists to satisfy. Anything
  * else a reader would refuse, this refuses too.
  *
+ * **A rewrite is the door for a rule it can satisfy by rewriting, and not for the other kind.** The
+ * versionless type line qualifies because this function can derive the missing number. Two lines
+ * sharing one id with different contents (`onePerIdentity`, `jsonl-files.ts`) does not: there is
+ * nothing to derive, because either choice discards a record, so a rewrite would be inventing which
+ * content was meant. That refusal names the hand-edit itself rather than sending the caller here,
+ * which is why this function needs no second option and the parse options stay at one.
+ *
  * ## What it does NOT touch
  *
  * **Only files under `types/` are rewritten. Every other byte of the tree is left exactly as it

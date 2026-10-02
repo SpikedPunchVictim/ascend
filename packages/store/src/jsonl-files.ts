@@ -58,24 +58,33 @@
  *   order WAS carrying the version numbers, and a union merge rewrites it without asking. Files are
  *   still read in numeric order -- the sort is what makes which file a line landed in stop
  *   mattering.
- * - **entry lines sort by `(recorded_at, id, then the serialized line)**.** `recorded_at, id` is
- *   the order the bead names. The third key is not decoration: an entry's id is derived and
- *   content-addressed for derived entries, so ONE id legitimately carries TWO contents (the
- *   spike's S3 builds exactly that), and a merge can put them in either order. Sorting on
- *   `(recorded_at, id)` alone would leave those two tied and fall back to file order, which is the
- *   clone-dependent thing being avoided. Comparing the serialized text makes the order total.
- * - **annotation lines sort by `(created_at, id, then the serialized line)`**, for the entry
- *   reason rather than by analogy: an annotation partitions by name, so a union merge can reorder
- *   it, and nothing about an annotation's meaning depends on which line came first. The bead
- *   named entries only, and annotations were a gap in that sentence -- they carry the reorderable
- *   shape and none of the registration-order meaning, so this applies the bead's rule by its own
- *   reason rather than extending its scope by taste.
+ * - **entry lines sort by `(recorded_at, id)**.** `recorded_at, id` is the order the bead names, and
+ *   it is total on its own: by the time this sort runs, the dedupe below has collapsed
+ *   byte-identical lines and `onePerIdentity` has refused one id with two distinct contents, so no
+ *   two entry lines can tie on it. There used to be a third key -- the serialized text -- justified
+ *   by an entry id that *"legitimately carries TWO contents"*, and `asc-2ezs` made **both halves of
+ *   that sentence false**: that shape is refused rather than legitimate, and a derived id is
+ *   `session:key` rather than content-addressed, so the shape it describes was never reachable from
+ *   the ingest path in the first place. A tiebreak no input can reach is a branch nothing can test,
+ *   so it is gone rather than kept standing against a tree the reader now refuses.
+ * - **annotation lines sort by `(created_at, id)`**, for the entry reason rather than by analogy: an
+ *   annotation partitions by name, so a union merge can reorder it, and nothing about an
+ *   annotation's meaning depends on which line came first. The bead named entries only, and
+ *   annotations were a gap in that sentence -- they carry the reorderable shape and none of the
+ *   registration-order meaning, so this applies the bead's rule by its own reason rather than
+ *   extending its scope by taste.
  * - **entry and annotation lines are DEDUPED on their canonical serialization.** `merge=union`
  *   concatenates both sides and does not dedupe identical lines, and the two sides of a merge are
- *   usually the same bytes -- a derived id comes from its content, so two clones ingesting one
- *   transcript derive the same line. Identical bytes are one record, and a reader that returned
- *   them twice would make every downstream count wrong. This does NOT extend to types and schemes,
- *   where a line is a registration and two identical lines are two versions.
+ *   usually the same bytes -- a derived id is `session:key`, so two clones ingesting one transcript
+ *   derive the same line. Identical bytes are one record, and a reader that returned them twice
+ *   would make every downstream count wrong. This does NOT extend to types and schemes, where a
+ *   line is a registration and two identical lines are two versions.
+ * - **an id that carries two DIFFERENT contents is refused, not ordered.** Deduping first is what
+ *   makes a re-ingest of an unchanged transcript a no-op rather than an error; what survives to
+ *   `onePerIdentity` is two lines that claim the same identity and disagree. There is no tiebreak
+ *   that is not a guess -- neither line is newer, and nothing in the tree says which is right -- so
+ *   the reader names both coordinates and stops. `asc store rewrite` cannot repair this either (it
+ *   cannot choose between the contents), so the message names the hand-edit.
  *
  * Reading returns one flat array: type lines, then scheme lines, then entries, then annotations.
  * Header-shaped kinds first, matching the order `asc export` writes a corpus in.
@@ -122,6 +131,25 @@ export const MAX_RECORDS_PER_FILE = 5_000;
  * a size this corpus has never produced -- 3.2x the p99.
  */
 export const MAX_BYTES_PER_FILE = 20 * 1024 * 1024;
+
+/**
+ * Bytes one record may occupy before the write is refused.
+ *
+ * The two caps above bound how many records share a FILE, and **neither refuses anything**: the
+ * record threshold rolls, and the byte cap only rolls once the file already holds a record. Nothing
+ * bounded a single record, and the fields that carry free text -- `evidence_text`, a `measurement`,
+ * a `note` -- are unbounded, so *"a file is at most 20 MiB"* was only ever true while records stayed
+ * small. This is the one rule about one record.
+ *
+ * **Refused rather than rolled, and 1 MiB because the owner set that value (2026-10-02).** Rolling
+ * cannot make a record smaller, so the choice is to write a 30 MiB record as a 30 MiB file or not at
+ * all, and a record that large is a runaway field rather than a big one. 1,048,576 B is 116x the
+ * largest line this repo's tree holds -- 9,047 B, measured 2026-10-02 over 10,732 record lines with a
+ * 2,421 B p99 and 0 over the cap (EV-32's entries measurement put the same maximum at 9,046 B without
+ * the trailing newline) -- so the boundary is far outside anything measured and the refusal cannot
+ * fire on ordinary use.
+ */
+export const MAX_BYTES_PER_RECORD = 1024 * 1024;
 
 /** The file that tells git to union-merge these files instead of conflicting on them. */
 export const GITATTRIBUTES_NAME = '.gitattributes';
@@ -238,43 +266,62 @@ function fileIndexOf(name: string): number | undefined {
 
 /**
  * The order an entry's or an annotation's lines are presented in, after a merge may have put them
- * in any order at all. Total by construction: the serialized text is a final tiebreak, so two
- * lines that agree on the first two keys still have one determined order.
+ * in any order at all. Total by construction, but not by a tiebreak: `onePerIdentity` runs first and
+ * puts at most one line per id into this sort, so `(time, id)` is already total when it is reached.
+ * See `ORDER` in the file header.
  */
 /** The two kinds whose file order is an artifact of merging rather than meaning, and which
  *  therefore carry the timestamp their recorded order is taken from. */
 type OrderableLine = EntryLine | AnnotationLine;
 
 /**
- * Sort by the recorded order, then by the serialized text so the order is total.
+ * Sort by the recorded order: the timestamp, then the id.
  *
- * Decorate-sort-undecorate rather than recomputing `serializeCorpus` inside the comparator: a
- * comparator runs O(n log n) times and the serialization is the expensive part, so the text is
- * computed once per line and carried.
+ * **Total without a third key**, and that is a consequence of `onePerIdentity` rather than an
+ * assumption about the data: it has already collapsed identical lines and refused one id with two
+ * contents, so at most one line per id reaches this sort and `(time, id)` cannot tie. It used to
+ * sort on `(time, id, serialized text)`, and the text key existed for exactly the case that is now
+ * refused. Removing a key is not the same as losing one -- a key that no input can exercise is a
+ * branch a reader has to reason about and no test can cover.
  */
 function inRecordedOrder(lines: readonly OrderableLine[]): readonly OrderableLine[] {
-  const keyed = lines.map((line) => ({
-    line,
-    time: line.kind === 'entry' ? line.recorded_at : line.created_at,
-    text: serializeCorpus([line]),
-  }));
-  keyed.sort((a, b) => {
-    if (a.time !== b.time) return a.time < b.time ? -1 : 1;
-    if (a.line.id !== b.line.id) return a.line.id < b.line.id ? -1 : 1;
-    if (a.text === b.text) return 0;
-    return a.text < b.text ? -1 : 1;
+  return [...lines].sort((a, b) => {
+    const mine = a.kind === 'entry' ? a.recorded_at : a.created_at;
+    const theirs = b.kind === 'entry' ? b.recorded_at : b.created_at;
+    if (mine !== theirs) return mine < theirs ? -1 : 1;
+    if (a.id === b.id) return 0;
+    return a.id < b.id ? -1 : 1;
   });
-  return keyed.map((entry) => entry.line);
+}
+
+/** A line together with where it was read from, so a refusal can name both coordinates. */
+interface Filed {
+  readonly line: OrderableLine;
+  readonly where: string;
 }
 
 /**
- * One line per distinct record, for the kinds whose order is imposed rather than meaningful.
+ * One line per distinct record: byte-identical duplicate lines collapse, and **one id with two
+ * distinct contents is refused**.
  *
- * A `merge=union` concatenates both sides of a merge and **does not dedupe identical lines**
- * (measured against real git, in `spike/git-layout/`), and the common case rather than the rare one
- * is that the two sides hold the same bytes: a derived entry's id comes from its content, so two
- * clones that ingest the same transcript derive the same id and write the same line. Every count
- * this store produces is a count of records, so a duplicated line is a wrong answer downstream.
+ * The order of those two rules is the whole design, so it is stated rather than left to the reader
+ * of the loop:
+ *
+ * 1. **Identical lines collapse first.** A `merge=union` concatenates both sides of a merge and
+ *    **does not dedupe identical lines** (measured against real git, in `spike/git-layout/`), and
+ *    the common case rather than the rare one is that the two sides hold the same bytes: two clones
+ *    that ingest the same transcript derive the same id and write the same line. Every count this
+ *    store produces is a count of records, so a duplicated line is a wrong answer downstream.
+ * 2. **What survives may still share an id, and then the two lines disagree about what that record
+ *    SAYS.** That cannot be collapsed -- collapsing loses a record -- and it cannot be resolved,
+ *    because neither line is newer than the other and nothing in the tree says which branch was
+ *    right. So it is refused, naming the id and BOTH coordinates: the repair is a hand-edit.
+ *    `asc store rewrite` exists to relax the rules a rewrite can repair by rewriting, and this is
+ *    not one of them -- it would have to invent which content was meant.
+ *
+ * The two failure modes this order avoids are opposite and both real: deduping by the ID instead of
+ * by the content would silently drop one of a contradicting pair, and refusing before the dedupe
+ * would fail every re-ingest of an unchanged transcript.
  *
  * Applied to entries and annotations ONLY -- the boundary is the same one the ordering rule draws,
  * for the same reason. For a flat append-only kind, file order is meaning and a line is a
@@ -285,18 +332,27 @@ function inRecordedOrder(lines: readonly OrderableLine[]): readonly OrderableLin
  * The key is the canonical serialization rather than the parsed object. The parser has a closed key
  * set and normalizes absent optionals, so the canonical text is a record's identity in the format's
  * one spelling -- and it is the same text the writer emitted for it.
- *
- * **Distinct content under ONE id is deliberately not collapsed.** That is a different mechanism
- * (the spike's S3 shape, owned by `asc-2ezs`), and collapsing it would lose a record.
  */
-function dedupeByIdentity(lines: readonly OrderableLine[]): readonly OrderableLine[] {
+function onePerIdentity(filed: readonly Filed[]): readonly OrderableLine[] {
   const seen = new Set<string>();
+  const byId = new Map<string, Filed>();
   const kept: OrderableLine[] = [];
-  for (const line of lines) {
-    const identity = serializeCorpus([line]);
+  for (const item of filed) {
+    const identity = serializeCorpus([item.line]);
     if (seen.has(identity)) continue;
     seen.add(identity);
-    kept.push(line);
+    const earlier = byId.get(item.line.id);
+    if (earlier !== undefined) {
+      throw new Error(
+        `${item.where}: the id '${item.line.id}' already appears at ${earlier.where} with ` +
+          `different contents, so this tree records one thing as two and no reader can choose ` +
+          `between them. Neither line is newer and nothing in the tree says which is right, so ` +
+          `this is refused rather than resolved. Edit the file by hand to keep the line that is ` +
+          `correct and delete the other one.`,
+      );
+    }
+    byId.set(item.line.id, item);
+    kept.push(item.line);
   }
   return kept;
 }
@@ -488,8 +544,8 @@ export function readRecordTree(
 ): readonly CorpusLine[] {
   const types: TypeLine[] = [];
   const schemes: SchemeLine[] = [];
-  const entries: EntryLine[] = [];
-  const annotations: AnnotationLine[] = [];
+  const entries: Filed[] = [];
+  const annotations: Filed[] = [];
 
   for (const { relative, kind: expected, partition } of recordFiles(root)) {
     const segments = relative.split('/');
@@ -519,16 +575,17 @@ export function readRecordTree(
       }
       if (parsed.line.kind === 'type') types.push(parsed.line);
       else if (parsed.line.kind === 'scheme') schemes.push(parsed.line);
-      else if (parsed.line.kind === 'entry') entries.push(parsed.line);
-      else annotations.push(parsed.line);
+      else if (parsed.line.kind === 'entry')
+        entries.push({ line: parsed.line, where: parsed.where });
+      else annotations.push({ line: parsed.line, where: parsed.where });
     }
   }
 
   return [
     ...inVersionOrder(types),
     ...inVersionOrder(schemes),
-    ...inRecordedOrder(dedupeByIdentity(entries)),
-    ...inRecordedOrder(dedupeByIdentity(annotations)),
+    ...inRecordedOrder(onePerIdentity(entries)),
+    ...inRecordedOrder(onePerIdentity(annotations)),
   ];
 }
 
@@ -592,6 +649,61 @@ export interface RecordWriterOptions {
   readonly maxRecordsPerFile?: number;
   /** Defaults to `MAX_BYTES_PER_FILE`. */
   readonly maxBytesPerFile?: number;
+  /** Defaults to `MAX_BYTES_PER_RECORD`. */
+  readonly maxBytesPerRecord?: number;
+}
+
+/** Every string a value carries, each paired with the path that names it. Arrays are indexed so a
+ *  runaway element is distinguishable from a runaway field. */
+function* stringsIn(value: unknown, path: string): Generator<readonly [string, string]> {
+  if (typeof value === 'string') {
+    yield [path, value];
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      yield* stringsIn(item, `${path}[${String(index)}]`);
+    }
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      yield* stringsIn(item, path === '' ? key : `${path}.${key}`);
+    }
+  }
+}
+
+/**
+ * The largest string a record carries, named by its path -- `properties.body`, `evidence_text`,
+ * `note`.
+ *
+ * The byte count alone is not actionable; the field that blew the cap is. Only strings are walked,
+ * because no combination of numbers and punctuation can be what a record over 1 MiB is made of: the
+ * line format's own scaffolding is a few hundred bytes, so whatever crossed the cap is free text,
+ * and naming it turns *"your record is too big"* into *"this field is too big"*.
+ */
+function largestField(line: CorpusLine): readonly [string, number] | undefined {
+  let largest: readonly [string, number] | undefined;
+  for (const [path, text] of stringsIn(line, '')) {
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (largest === undefined || bytes > largest[1]) largest = [path, bytes];
+  }
+  return largest;
+}
+
+/** How a refusal names the record it is about. Every kind answers with the identity it carries --
+ *  a type and a scheme state their name, an entry and an annotation their id. */
+function lineLabel(line: CorpusLine): string {
+  switch (line.kind) {
+    case 'entry':
+      return `entry '${line.id}'`;
+    case 'annotation':
+      return `annotation '${line.id}'`;
+    case 'type':
+      return `type '${line.document.name}'`;
+    case 'scheme':
+      return `scheme '${line.name}'`;
+  }
 }
 
 /**
@@ -610,8 +722,9 @@ export interface RecordWriterOptions {
 export function openRecordWriter(root: string, options: RecordWriterOptions = {}): RecordWriter {
   const maxRecords = options.maxRecordsPerFile ?? MAX_RECORDS_PER_FILE;
   const maxBytes = options.maxBytesPerFile ?? MAX_BYTES_PER_FILE;
-  // `!(x > 0)` rather than `x <= 0`, so NaN is refused too. Both are refused HERE rather than at the
-  // first append because a threshold of 0 is not an error the writer could report later: the roll
+  const maxRecordBytes = options.maxBytesPerRecord ?? MAX_BYTES_PER_RECORD;
+  // `!(x > 0)` rather than `x <= 0`, so NaN is refused too. All three are refused HERE rather than at
+  // the first append because a threshold of 0 is not an error the writer could report later: the roll
   // condition is true before the first record, so a fresh tree starts at index 0002 with 0001 never
   // created, and the symptom is a different layout rather than a failure.
   if (!(maxRecords > 0)) {
@@ -619,6 +732,9 @@ export function openRecordWriter(root: string, options: RecordWriterOptions = {}
   }
   if (!(maxBytes > 0)) {
     throw new Error(`maxBytesPerFile must be positive, but it is ${String(maxBytes)}.`);
+  }
+  if (!(maxRecordBytes > 0)) {
+    throw new Error(`maxBytesPerRecord must be positive, but it is ${String(maxRecordBytes)}.`);
   }
   const heads = new Map<string, Head>();
   const written: string[] = [];
@@ -654,8 +770,28 @@ export function openRecordWriter(root: string, options: RecordWriterOptions = {}
       const text = `${serializeCorpus([line])}\n`;
       const bytes = Buffer.byteLength(text, 'utf8');
 
+      // Before the roll and before any `mkdirSync`: a refused record must leave the tree exactly as
+      // it was, not a new directory holding nothing. Rolling is not an escape here -- it cannot make
+      // a record smaller, so a record over the cap is one this writer will not store at all.
+      if (bytes > maxRecordBytes) {
+        const largest = largestField(line);
+        throw new Error(
+          `${lineLabel(line)} serializes to ${String(bytes)} bytes, over the ` +
+            `${String(maxRecordBytes)}-byte per-record cap` +
+            (largest === undefined
+              ? ''
+              : `; its largest field is ${largest[0]} at ${String(largest[1])} bytes`) +
+            `. The store sizes a record, not only a file, so this is refused rather than written: ` +
+            `roll it into a file of its own and the file is just as large. Split the field, or ` +
+            `record the smaller thing and let a second entry carry the rest.`,
+        );
+      }
+
       // `head.records > 0` so a single record larger than the cap is still written rather than
-      // rolling forever: the cap bounds how many records share a file, it never refuses a record.
+      // rolling forever: the FILE cap bounds how many records share a file, and it never refuses a
+      // record -- a file holding one oversized record rolls AFTER it rather than around it. That is
+      // the FILE cap's rule and not the writer's: `maxRecordBytes` above is the rule about one
+      // record, and it refuses. Neither cap can do the other's job.
       if (head.records >= maxRecords || (head.records > 0 && head.bytes + bytes > maxBytes)) {
         head = { segments, index: head.index + 1, records: 0, bytes: 0 };
         heads.set(key, head);

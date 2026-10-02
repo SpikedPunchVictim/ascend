@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   GITATTRIBUTES_BODY,
+  MAX_BYTES_PER_RECORD,
   MAX_RECORDS_PER_FILE,
   openRecordWriter,
   readRecordTree,
@@ -149,6 +150,33 @@ function roundTrip(
   const writer = openRecordWriter(root, options);
   for (const line of lines) writer.append(line);
   return { written: writer.written, read: readRecordTree(root) };
+}
+
+/** Write a set of lines and read NOTHING.
+ *
+ *  For the trees `readRecordTree` refuses: `roundTrip` would throw on the read, so a test that wants
+ *  to assert the refusal's text has to build the tree without reading it. */
+function write(
+  root: string,
+  lines: readonly CorpusLine[],
+  options?: Parameters<typeof openRecordWriter>[1],
+): void {
+  const writer = openRecordWriter(root, options);
+  for (const line of lines) writer.append(line);
+}
+
+/** The message a refusal throws.
+ *
+ *  `toThrow` answers "did it refuse", and a refusal naming the WRONG two coordinates passes that.
+ *  This returns the text so a test can assert what the refusal actually says, and it fails loudly
+ *  when nothing was thrown rather than quietly returning an empty string. */
+function refusal(run: () => unknown): string {
+  try {
+    run();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error('expected a refusal, but nothing was thrown');
 }
 
 /** The canonical order `readRecordTree` promises, applied to what was written. */
@@ -313,20 +341,19 @@ describe('read order is imposed, never inherited from the file', () => {
     ]);
   });
 
-  it('orders two records that share an id by their text, so the order does not depend on the file', () => {
-    // The spike's S3 shape: one derived id, two contents, and a union merge that may put them
-    // either way round. Sorting on (recorded_at, id) alone would tie here and fall back to file
-    // order, which is the clone-dependent thing being avoided.
-    const first = entry(7, { id: 'derived:note:key-1' });
-    const second: EntryLine = { ...first, properties: { body: 'a different note entirely' } };
+  it('orders two records with the same timestamp by id, so the order does not depend on the file', () => {
+    // The surviving tiebreak is the ID. It used to be the serialized TEXT, and the test here used
+    // the spike's S3 shape (one id, two contents) to manufacture a tie -- but `asc-2ezs` now refuses
+    // that shape at read, which took the text tiebreak's only reason to exist with it. Two distinct
+    // ids at one timestamp is the tie that is still reachable, and it is the one asserted here.
+    const first = entry(7, { id: 'hand:a', seconds: 5 });
+    const second = entry(8, { id: 'hand:b', seconds: 5 });
 
     const ab = roundTrip(scratch(), [first, second]).read;
     const ba = roundTrip(scratch(), [second, first]).read;
 
-    expect(ab.map((line) => serializeCorpus([line]))).toEqual(
-      ba.map((line) => serializeCorpus([line])),
-    );
-    expect(ab).toHaveLength(2);
+    expect(ab.map((line) => (line.kind === 'entry' ? line.id : ''))).toEqual(['hand:a', 'hand:b']);
+    expect(ba.map((line) => (line.kind === 'entry' ? line.id : ''))).toEqual(['hand:a', 'hand:b']);
   });
 
   it('orders type and scheme lines by (name, version), so a reordered file reads as an ordered one', () => {
@@ -510,12 +537,55 @@ describe('rollover', () => {
   });
 
   it('writes a record larger than the cap instead of rolling forever', () => {
+    // The FILE cap's rule, and it is not the writer's only rule: a file holding one oversized record
+    // rolls after it rather than around it. The test below is the other rule -- one record over
+    // `maxBytesPerRecord` is refused outright -- and both must stay green together, because a file
+    // cap that started refusing records would break rollover and a record cap that started rolling
+    // would not bound anything.
     const root = scratch();
     const huge: EntryLine = { ...entry(1), properties: { body: 'x'.repeat(5_000) } };
     const { written, read } = roundTrip(root, [huge], { maxBytesPerFile: 100 });
 
     expect(written.map(fileShape)).toEqual(['entries/<partition>/0001.jsonl']);
     expect(read).toHaveLength(1);
+  });
+
+  it('refuses a record over the per-record cap, naming the field and the size', () => {
+    // The FILE cap never refuses a record (the test above pins that, and it stays true). This is a
+    // DIFFERENT rule: nothing bounds one record, and `evidence_text`, `measurement` and `note` are
+    // unbounded free text, so the count cap bounds a file only while records stay small.
+    const root = scratch();
+    const writer = openRecordWriter(root, { maxBytesPerRecord: 200 });
+    const big: EntryLine = { ...entry(1), properties: { body: 'x'.repeat(500) } };
+
+    const message = refusal(() => writer.append(big));
+    expect(message).toContain('properties.body');
+    expect(message).toContain(String(Buffer.byteLength(`${serializeCorpus([big])}\n`, 'utf8')));
+    expect(message).toContain('200');
+    // Nothing written -- not the line, and not the directory it would have gone into.
+    expect(writer.written).toEqual([]);
+    expect(existsSync(join(root, 'entries'))).toBe(false);
+  });
+
+  it('names the LARGEST field, which is the actionable half of the refusal', () => {
+    const root = scratch();
+    const writer = openRecordWriter(root, { maxBytesPerRecord: 300 });
+    const line: EntryLine = {
+      ...entry(1),
+      properties: { small: 'y'.repeat(50), enormous: 'x'.repeat(900) },
+    };
+
+    expect(refusal(() => writer.append(line))).toContain('properties.enormous');
+  });
+
+  it('writes a record exactly at the per-record cap', () => {
+    // The boundary is `>`, not `>=`: a cap that refused its own value would make the number in the
+    // message one byte less than the number that works.
+    const line: EntryLine = { ...entry(1), properties: { body: 'x'.repeat(10) } };
+    const exact = Buffer.byteLength(`${serializeCorpus([line])}\n`, 'utf8');
+    const writer = openRecordWriter(scratch(), { maxBytesPerRecord: exact });
+
+    expect(writer.append(line)).toMatch(/0001\.jsonl$/);
   });
 
   it('defaults to the measured thresholds', () => {
@@ -527,6 +597,9 @@ describe('rollover', () => {
     // assumed, because a default of 1 would be a silent multiplication of file count.
     expect(new Set(writer.written).size).toBe(1);
     expect(MAX_RECORDS_PER_FILE).toBe(5_000);
+    // The per-record cap is the owner's number (2026-10-02), and it is asserted rather than
+    // described: 116x the largest line measured in this repo's tree (9,046 B).
+    expect(MAX_BYTES_PER_RECORD).toBe(1024 * 1024);
   });
 
   it('derives the head count once, and does not re-read the file on later appends', () => {
@@ -568,6 +641,8 @@ describe('rollover', () => {
     expect(() => openRecordWriter(scratch(), { maxRecordsPerFile: 0 })).toThrow(/positive/);
     expect(() => openRecordWriter(scratch(), { maxRecordsPerFile: -1 })).toThrow(/positive/);
     expect(() => openRecordWriter(scratch(), { maxBytesPerFile: 0 })).toThrow(/positive/);
+    expect(() => openRecordWriter(scratch(), { maxBytesPerRecord: 0 })).toThrow(/positive/);
+    expect(() => openRecordWriter(scratch(), { maxBytesPerRecord: -1 })).toThrow(/positive/);
   });
 
   it('ignores a stray non-record file in a record directory', () => {
@@ -826,7 +901,13 @@ describe("the spike's S1-S4 shapes round-trip", () => {
     expect(new Set(read.map((line) => line.kind === 'entry' && line.id)).size).toBe(50);
   });
 
-  it('S3: one id with two contents keeps both, in one determined order', () => {
+  it('S3: one id with two distinct contents is refused, naming the id and both coordinates', () => {
+    // The spike's S3 shape, and the one thing `merge=union` can do that no reader can resolve: two
+    // branches write one derived id with different content and BOTH lines survive the merge. The
+    // store used to return both, in a determined order, and let the INDEX refuse later -- with a
+    // message that named the id and nothing else, so a reader could not tell which two lines
+    // disagreed. Collapsing them would lose a record; refusing keeps both coordinates and lets a
+    // human choose, which is the only resolution that does not invent a content.
     const root = scratch();
     const mine: EntryLine = {
       ...entry(1, { id: 'derived:claude-code:spike_type:key-1' }),
@@ -834,16 +915,72 @@ describe("the spike's S1-S4 shapes round-trip", () => {
     };
     const theirs: EntryLine = { ...mine, properties: { body: 'theirs' } };
 
-    const { read } = roundTrip(root, [
-      ...Array.from({ length: 5 }, (_, n) => entry(10 + n)),
-      mine,
-      theirs,
-    ]);
-    const bodies = read
-      .filter((line): line is EntryLine => line.kind === 'entry' && line.id === mine.id)
-      .map((line) => line.properties['body']);
+    write(root, [...Array.from({ length: 5 }, (_, n) => entry(10 + n)), mine, theirs]);
 
-    expect(bodies.sort()).toEqual(['mine', 'theirs']);
+    const message = refusal(() => readRecordTree(root));
+    expect(message).toContain('derived:claude-code:spike_type:key-1');
+    // Both coordinates, and the file they share: five entries went first, so the pair is 6 and 7.
+    expect(message).toContain('0001.jsonl line 6');
+    expect(message).toContain('0001.jsonl line 7');
+    // And it names the repair, because there is no command that can choose between two contents.
+    expect(message).toMatch(/hand-edit|edit the file/i);
+  });
+
+  it('refuses the same contradiction across two files, naming both of them', () => {
+    // The rollover variant: the two sides need not land in one file, and a message that named two
+    // line numbers in one file would be a lie here.
+    const root = scratch();
+    const mine: EntryLine = {
+      ...entry(1, { id: 'derived:claude-code:spike_type:key-2' }),
+      properties: { body: 'mine' },
+    };
+    const theirs: EntryLine = { ...mine, properties: { body: 'theirs' } };
+    // `maxRecordsPerFile: 1` puts each line in its own file, so the pair spans 0001 and 0002.
+    write(root, [mine, theirs], { maxRecordsPerFile: 1 });
+
+    const message = refusal(() => readRecordTree(root));
+    expect(message).toContain('0001.jsonl line 1');
+    expect(message).toContain('0002.jsonl line 1');
+  });
+
+  it('collapses a byte-identical duplicate rather than refusing it', () => {
+    // This is what the dedupe is FOR: two clones ingest the same transcript, derive the same id and
+    // write the same bytes. Refusing here would fail every re-ingest, so the check must sit AFTER
+    // the dedupe -- which is the ordering this test pins.
+    const root = scratch();
+    const line = entry(1, { id: 'derived:claude-code:spike_type:key-3' });
+    roundTrip(root, [line, { ...line }], { maxRecordsPerFile: 1 });
+
+    const read = readRecordTree(root);
+    expect(read).toHaveLength(1);
+  });
+
+  it('keeps two lines with different ids and the same content', () => {
+    // The control against over-refusing: the rule is one ID with two contents, not duplicate
+    // content. Two hand entries that happen to say the same thing are two records.
+    const root = scratch();
+    const shared = { properties: { body: 'the same words' } };
+    roundTrip(root, [
+      { ...entry(1, { id: 'hand:a' }), ...shared },
+      { ...entry(2, { id: 'hand:b' }), ...shared },
+    ]);
+
+    expect(readRecordTree(root)).toHaveLength(2);
+  });
+
+  it('refuses one annotation id with two distinct contents by the same rule', () => {
+    // No producer emits this shape (annotation ids are random UUIDs or content hashes), but a
+    // hand-edited tree can hold it, and annotations dedupe for exactly the reasons entries do --
+    // so the rule is one rule, not an entry-only rule.
+    const root = scratch();
+    const mine = annotation(1, { scheme: 'review' });
+    const theirs = { ...mine, label: 'bad' };
+    write(root, [mine, theirs], { maxRecordsPerFile: 1 });
+
+    const message = refusal(() => readRecordTree(root));
+    expect(message).toContain(mine.id);
+    expect(message).toContain('0001.jsonl line 1');
+    expect(message).toContain('0002.jsonl line 1');
   });
 
   it('S4: a backdated record reads in timestamp order, not where it was written', () => {
