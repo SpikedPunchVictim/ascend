@@ -614,6 +614,35 @@ describe('the layer refuses what it cannot file faithfully', () => {
     expect(readRecordTree(root)).toHaveLength(3);
   });
 
+  it('files two names that fold to one slug separately, and reads both back by name', () => {
+    // The test above pins TRAVERSAL, not injectivity: `../../evil`, `a/b` and `..` fold to `evil`,
+    // `a_b` and the empty string -- three DISTINCT slugs -- so its `new Set(partitions).size` would
+    // still read 3 if the digest were deleted from `encodeSegment` and the bare slug returned. The
+    // digest does have one test that needs it, `keeps two names that differ only in case`, which
+    // measures that a collision is RESOLVED; nothing measured the two halves this one adds.
+    //
+    // First, that the read half is name-addressed. `a/b` and `a b` are names a caller may type that
+    // fold to the same slug for a reason other than case -- punctuation, not capitalization -- and
+    // one file each (`a_b-b941543fecce`, `a_b-faaee53168b5`, measured on a real store) only gets us
+    // halfway: the name travels on every line and nothing is ever decoded from the directory, so
+    // what has to hold is that BOTH names come back, neither lost to the other's fold. The case
+    // test counts rows and cannot see a name that was mangled while the row survived.
+    const root = scratch();
+    const writer = openRecordWriter(root);
+    writer.append(annotation(1, { scheme: 'a/b' }));
+    writer.append(annotation(2, { scheme: 'a b' }));
+
+    const partitions = writer.written.map((path) => path.split('/')[1] ?? '');
+    expect(partitions).toHaveLength(2);
+    expect(new Set(partitions).size).toBe(2);
+    for (const partition of partitions) expect(partition).toMatch(/^[a-z0-9_-]+$/);
+
+    const schemes = readRecordTree(root)
+      .flatMap((line) => (line.kind === 'annotation' ? [line.scheme] : []))
+      .sort();
+    expect(schemes).toEqual(['a b', 'a/b']);
+  });
+
   it('refuses a tree where a record directory is a file, rather than reading it as empty', () => {
     // `readdir` on a file raises ENOTDIR, and the catch was written for ENOENT but took everything,
     // so a malformed tree read as an EMPTY corpus -- the worst answer a store whose whole value is

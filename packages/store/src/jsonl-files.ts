@@ -40,10 +40,13 @@
  * `<nnnn>.jsonl` at various depths, and a gitattributes pattern matches at any depth, so
  * `*.jsonl` is the pattern that covers them.
  *
- * `<type_name>` and `<scheme>` are not the name verbatim: bytes outside `[A-Za-z0-9._-]` are
- * percent-encoded by `encodeSegment`, which is what keeps a scheme named `a/b` or `..` from
- * deciding a path above its own directory. See that function -- the short version is that a scheme
- * name is any non-empty string the store will accept, so the segment has to be total over it.
+ * `<type_name>` and `<scheme>` are not the name verbatim: `encodeSegment` folds the name to a
+ * lowercase `[a-z0-9_-]` slug and appends a fixed-width digest of the ORIGINAL name. That is what
+ * keeps a scheme named `a/b` or `..` from deciding a path above its own directory -- and what keeps
+ * `a/b` and `a b`, which fold to the same slug, from deciding the SAME one. It is a slug and a
+ * digest rather than a percent-encoding for three measured reasons (injectivity, `NAME_MAX`, and
+ * case-folding) spelled out on that function; a scheme name is any non-empty string the store will
+ * accept, so the segment has to be total over it.
  *
  * ## ORDER
  *

@@ -2825,6 +2825,56 @@ record bogus_type -` names the unknown type **without** the terminal message, an
 so nothing is being piped into it"* where it previously ran past 6 s with empty output. Nothing
 committed — the conservative profile reports and waits.
 
+### E12.17 — a scheme name stays any string, and the encoder that files it becomes an invariant (`asc-i5tj.5`, P2, resolved 2026-10-02)
+
+**Goal** — answer `asc-i5tj.5`'s open question (*should* a scheme name be any string?) and, on the
+answer, remove the last place where the store's safety still rested on a convention rather than a
+test. The bead came out of E12.1 (`dogfood/0030`) carrying two stale claims, which is the same defect
+one level up: a written record that describes code it no longer matches.
+
+**Owner decision: keep any string, harden it.** A scheme name stays any non-empty string
+`requireName` accepts; nothing narrows, nothing migrates, no user-visible change. Recorded as
+decision `0000359f-11a0-4d7d-b575-8c46a74210df` with both options and their costs — narrowing would
+make the layout's problem disappear at the source, but `hand-denial`, `rule-denial` and
+`shuffled-denial` are already recorded under names outside `[a-z0-9_-]`, so it is a migration over
+data this repo holds, and it would make the store the authority on what a person may call a scheme.
+
+**What made the answer cheap: the survey found no second sink.** Every place a scheme name leaves the
+store was walked — one protected function (`encodeSegment`); no SQL identifier, shell argument, URL
+component, JSON key or regex built from a name; all scheme-name SQL binds `?`; view and index
+identifiers come from TYPE/PROPERTY names through `ident()`. Hostile names (`a/b`, `..`, `a b`,
+`A-B`, `x;DROP TABLE entries`, `unicode-é`) are accepted, safely encoded, and round-trip through
+`asc export | asc import`.
+
+**Two corrections, one of them a comment that described the function below it wrongly.**
+`jsonl-files.ts:43-45` said bytes outside `[A-Za-z0-9._-]` "are percent-encoded by `encodeSegment`";
+the function folds to a lowercase slug and appends a 12-hex-char digest of a lossless spelling of the
+name, and its own header (`:142-166`) records percent-encoding being tried and rejected on three
+measured counts. That comment is exactly what sends a reviewer hunting a fourth encoder that does not
+exist. Fixed in place. The bead's description repeated the same claim and cited `requireName` at
+`:394` rather than `:358-374`; both corrected in a comment rather than by rewriting the description,
+so the record of what was found survives beside the correction.
+
+**The coverage that was missing, and the mutation that proves it.** `store/test/jsonl-files.test.ts`
+gained *"files two names that fold to one slug separately, and reads both back by name"*: `a/b` and
+`a b` fold to the same slug `a_b` and must land in two directories (`a_b-b941543fecce`,
+`a_b-faaee53168b5`, measured), **and** both names must read back — the name travels on every line and
+nothing is ever decoded from the directory, which is the invariant the round trip pins. Bind-checked
+by mutation: dropping the digest from `encodeSegment` fails this test plus three others, while the
+older traversal test (*"keeps every name inside one safe, traversal-free path segment"*) stays
+**green** under that mutation — the measurement behind the claim that it pins traversal and not
+injectivity. **A claim I got wrong first**: I wrote in this test's comment that nothing exercised the
+digest's collision role; `keeps two names that differ only in case` does, for case-only collisions.
+The comment was corrected before the test was committed, and what is genuinely new is the
+punctuation-fold case and the read-back half.
+
+**Status**: Complete (2026-10-02). Gate below; 124 files / **2,919** passed, 2 skipped. Two `.ts`
+files changed (`jsonl-files.ts`, `jsonl-files.test.ts`, +1 test). No dogfood record: the finding is
+`asc-i5tj.5`'s own and already recorded at `dogfood/0030`, and the stale comment did not become a
+bead of its own — it is resolved on the bead it misdescribes. `asc-i5tj.5` closed; all 16 of
+`asc-i5tj`'s children are now closed, so **the E12 epic is closeable** — reported, not closed, since
+it unblocks `asc-2ezs` and `asc-8uzh` and that is the owner's call. Nothing committed.
+
 ---
 
 ## Stage 2: Claude Code adapter + backfill — epic E5
