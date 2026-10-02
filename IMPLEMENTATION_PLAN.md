@@ -3127,9 +3127,28 @@ proportions; cursor stability under concurrent writes; token-budget truncation r
 
 **Success Criteria** — an LLM-authored rule applies across the corpus and reports matches *and*
 unclassified remainder; back-test yields real precision/recall against a hand-labelled sample; two
-competing schemes annotate the same entries simultaneously and `asc kappa` scores agreement; dropping
-a scheme loses no entry data; invalidation works as a reserved scheme; every proportion carries a
-Wilson interval and small groups are flagged.
+competing schemes annotate the same entries and `asc kappa` scores agreement; dropping a scheme loses
+no entry data; invalidation works as a reserved scheme; every proportion carries a Wilson interval and
+small groups are flagged.
+
+**Amended 2026-10-02, on closing `asc-k6p`.** Verified against the tree. Five of the six hold:
+`matchingEntryIds`/`schemeCensus` report matches and the remainder (`annotations.ts:333/1431`, kept
+non-negative and ordered biggest-class-first); `backtest` reports Wilson-bounded precision/recall and
+writes nothing (`analysis/src/backtest.ts:155`, `annotate.ts:313-465`); `cohenKappa` scores two schemes
+over the same entries (`agreement.ts:177`); invalidation is a reserved scheme (`reserved.ts`,
+`sql.ts:100`); and Wilson intervals with `[SMALL GROUP]` flagging cover every proportion the module
+enumerates (`proportion.ts:199`, `output.ts:181`). Three corrections:
+
+- **"dropping a scheme loses no entry data" is UNBUILT, and vacuously true.** No drop operation exists
+  anywhere, so nothing can lose data by dropping — the false-green shape, not a satisfied criterion.
+  Filed as `asc-4uex`; the property is deliberate (annotations are additive) but the operation it
+  describes was never written.
+- **"automatically applied" was never true.** `annotations.ts` claimed a rule is "automatically applied
+  to entries recorded next month"; `matchingEntryIds`' only caller is `asc annotate`, and a stored rule
+  cannot be replayed without retyping it (`annotate.ts:266-271`). Comment corrected; filed as
+  `asc-cx9w`.
+- **"simultaneously" is untested.** Two schemes coexist over the same entries and kappa scores them
+  (`cli/test/annotations.test.ts:1148`), but by sequential invocations; nothing exercises concurrency.
 
 **Tests** — `packages/analysis` against fixtures with hand-computed expected values (Wilson, kappa,
 chi-square, log-odds, FP-growth support/confidence, CUSUM changepoints); scheme isolation;
@@ -3146,15 +3165,17 @@ measured against a real model in a real session (EV-16, 2026-09-21) rather than 
 back **negative**: 0 of 15 sessions recorded anything, so the brief's causal claim was retired in
 favour of its selection job. See the status line below.
 
-**Status: In Progress** (`asc-xgo`, `asc-k6p`, `asc-4so`) — E10 (`asc-4so`) **complete**: 7/7
-children, and the epic's own resolution — *"E10 should keep the hook for that job and stop claiming
-the other one"* (2026-09-21) — is now carried in the shipped text. `ARCHITECTURE.md`'s recall section
-states what EV-16 invalidated (0 of 15 sessions; the brief does not cause recording) and what
-survives (the selection job), the risks table and Stage 0's Q6 carry the measured answer, and
-`install-hook`'s header and `init`'s `offerRecall` say the same. E7 (`asc-xgo`) is 9/9 complete. E8
-(`asc-k6p`) is 7/8: the one open child, retraction (`asc-k6p.2`), stays **deferred** by owner decision
-(2026-09-28) on an unfired trigger — `asc-k6p.3` declined to strike a case *because* retraction does
-not exist, so the deferral is load-bearing rather than stale.
+**Status: In Progress** (`asc-xgo`, `asc-k6p`, `asc-4so`) — E10 (`asc-4so`) **complete** and E8
+(`asc-k6p`) **complete**; each carried a criterion its own resolution named and the shipped text had
+not delivered, now either built or recorded. E10: the epic's comment (2026-09-21) said *"E10 should
+keep the hook for that job and stop claiming the other one"* — the second half was unfulfilled, and
+`ARCHITECTURE.md`'s recall section, its risks row, Stage 0's Q6, `install-hook`'s header and `init`'s
+`offerRecall` all now state what EV-16 invalidated (0 of 15 sessions; the brief does not cause
+recording) and what survives (the selection job). E8: 7/8 children, with the criteria amended above —
+retraction (`asc-k6p.2`) stays **deferred** by owner decision (2026-09-28) on an unfired trigger that
+`asc-k6p.3` actively relied on, and the two unbuilt capabilities are filed (`asc-cx9w` replay a stored
+scheme, `asc-4uex` drop one). **E7 (`asc-xgo`) is 9/9 complete and eligible for close**; left open
+because it was not in scope for this pass.
 
 ---
 

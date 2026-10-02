@@ -5,9 +5,13 @@
  * predicate or an FTS query), ascend applies it deterministically across the corpus, and reports the
  * match count beside the UNCLASSIFIED REMAINDER -- which is the signal that the taxonomy is
  * incomplete. Classification is then a compiled artifact rather than a transcript: cheap,
- * reproducible, auditable, and automatically applied to entries recorded next month. This module is
- * the storage half of that; the proposal half is the model's, and the reporting half is `asc
- * annotate`.
+ * reproducible, auditable. **"Compiled" stops short of "automatic", and this comment used to claim
+ * otherwise.** It read "...and automatically applied to entries recorded next month"; nothing applies
+ * it. `matchingEntryIds` has exactly one caller, `asc annotate`, so a rule reaches new entries when
+ * someone runs the command, not when an entry is written -- and a stored rule cannot even be replayed
+ * from storage, because `asc annotate` refuses a run with neither `--rule` nor `--ids`
+ * (`annotate.ts:266-271`), so re-applying a scheme means retyping its rule (asc-cx9w). This module is
+ * the storage half; the proposal half is the model's, and the reporting half is `asc annotate`.
  *
  * A SCHEME STORES ITS RULE, NOT ONLY ITS LABELS. The vocabulary alone would record what was said
  * about the corpus and lose why, and `asc kappa` -- the direct measurement of whether a
