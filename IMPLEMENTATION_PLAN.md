@@ -3162,13 +3162,34 @@ not exist, so the deferral is load-bearing rather than stale.
 
 **Goal** — keep the registry from fragmenting; make the per-project split analytically harmless.
 
-**Success Criteria** — reports dead types, near-duplicate names, drift across versions, per-property
-na/unmeasured ratios, and missing exports; `asc query --across` unions multiple project DBs;
-`asc types import` round-trips a definition preserving `type_hash`.
+**Success Criteria** — reports dead types, near-duplicate names, drift across versions, and
+per-property na/unmeasured fill (counts, not ratios — see below); `asc query --across` unions multiple
+project DBs; `asc types import` round-trips a definition preserving `type_hash`.
+
+**Amended 2026-10-02, on closing `asc-20p`.** Two words in the original criterion were wrong, and the
+shipped behaviour is the honest one:
+
+- *"missing exports"* is not reportable. `asc export` writes to stdout and leaves no trace in the
+  store, so whether an export exists is not a fact anything holds. `exportStatus` states that it
+  cannot see one and how much is at stake (`doctor.ts:249-267`, pinned by `doctor.test.ts:251`), which
+  is the whole of what "reporting a missing export" can honestly mean. Detection would mean inventing
+  a filename convention and reporting false absences.
+- *"ratios"* became **counts**, deliberately: a ratio over 3 entries reads like one over 300, so
+  `propertyStates` reports `measured N of M` and names a group under `MIN_N` an anecdote
+  (`doctor.ts:172-174`). The denominator is *declared* entries, which is why the fourth profile state
+  `not_declared` sits outside it — an entry that never declared the property is a coverage question,
+  not a fill-rate one.
+- Two checks the design review routed here have **no signal to read**, and `doctor.ts`'s header states
+  them as such rather than faking them: types past their threshold but never analysed (`asc stats`
+  runs are not recorded anywhere), and whether an export exists.
 
 **Tests** — fixture registry with known duplicates and one dead type; two-DB ATTACH union.
 
-**Status: Not Started** (`asc-20p`)
+**Status: Complete** (`asc-20p`) — 2/2 children. Verified against the tree 2026-10-02: `deadTypes`,
+`nearDuplicates`, `versionDrift`, `propertyStates`, `briefSize` and `exportStatus` are all present and
+test-pinned (`doctor.test.ts:80/105/126/187/212/251`); `--across` unions project DBs via ATTACH and
+`types import` verifies each document's `type_hash` before writing. Criterion 5 is met as amended
+above, not as first written.
 
 ---
 
