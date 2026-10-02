@@ -1,11 +1,16 @@
 /**
  * `asc install-hook` -- wire recall into this project's Claude Code settings.
  *
- * The problem this solves is the product's primary failure mode: an empty database. `asc init`
- * creates the store and the starter types, but nothing makes a *session* know they exist, so the
- * model records nothing because it never learned what to record. `ARCHITECTURE.md` calls the
- * resulting `SessionStart` hook "the primary recall mechanism" -- the digest lands in context every
- * session "with no dependence on the model remembering, and no `CLAUDE.md` instruction to decay".
+ * The problem this solves is narrower than the product's headline failure mode (an empty database),
+ * and saying so is the point. `docs/evidence/EV-16.md` measured 0 of 15 sessions recording anything
+ * with the brief available -- the full brief delivered in arm C, and read voluntarily in arm E rep
+ * 2, still produced nothing. A `SessionStart` brief does not *cause* recording.
+ *
+ * What it does is the *selection* job: `asc init` creates the store and the starter types, and this
+ * hook is what puts them in front of a session that has already decided to record, so that session
+ * picks the right type and fills the right fields. The digest lands in context every session, with
+ * no dependence on the model remembering and no `CLAUDE.md` instruction to decay -- but landing in
+ * context is not the same as causing a record, and the measured difference is the whole point.
  *
  * **The settings write is append-only, and that is the whole difficulty.** Measured, not assumed:
  * this repository's own `.claude/settings.json` already carries `bd prime --hook-json` on

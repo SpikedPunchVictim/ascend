@@ -285,9 +285,17 @@ fires, carries `tool_input.skill`, fires inside subagents with `agent_id`, and i
 - Only four events inject stdout as context Claude can see: `UserPromptSubmit`,
   `UserPromptExpansion`, `SessionStart`, `PostModelSwitch`.
 
-So: **a `SessionStart` hook running `asc types brief`** — the primary recall mechanism. The digest
-lands in context every session with no dependence on the model remembering, and no `CLAUDE.md`
-instruction to decay.
+So: **a `SessionStart` hook running `asc types brief`** is how a session comes to know which types
+exist — the digest lands in context every session with no dependence on the model remembering, and
+no `CLAUDE.md` instruction to decay.
+
+**It does not make a session record, and this design claimed for months that it did.**
+`docs/evidence/EV-16.md` (2026-09-21) delivered the brief in full, in arm C, and recorded 0 of 3;
+arm E rep 2 read the entire brief voluntarily, before the file its task named, and recorded 0.
+Availability is not adoption, and attention is not either. What survives is the *selection* job:
+once a session has decided to record, the brief is what tells it which type to use and which fields
+to fill — the job `asc-1q9` actually verified, and the one still unmeasured (`asc-4so.3` is the arm
+that measures whether a task asking for a record produces one).
 
 Constraints on it:
 - Offered by `asc init` and installed by `asc install-hook`, but the settings write always requires
@@ -517,6 +525,10 @@ real session transcripts already on disk before any of the above is built.
    `SessionStart` hook injecting the brief, does a model record entries unprompted during real work?
    Measure the rate, and how large the brief has to be before it stops being ignored — that number
    sets the context tax the hook imposes on every session.
+   **ANSWERED, NEGATIVE (EV-16, 2026-09-21): 0 of 15 sessions recorded anything across five
+   availability conditions.** The hook arm recorded 0 of 3 with the brief verified present in the
+   stream, and the "how large" sub-question is moot — it presupposes the brief works at 1,353 B, and
+   it does not. The hook survives for its *selection* job, which Q6 never tested.
 7. What is oclif's cold-start cost for `asc record` on this machine?
 
 Write results to `spike/FINDINGS.md` with measured numbers, not prose. **If Q2 or Q6 comes back
@@ -591,7 +603,7 @@ Track these in `IMPLEMENTATION_PLAN.md` in the repo per the global workflow; del
 
 | Risk | Mitigation |
 |---|---|
-| **Nothing ever gets recorded** — the primary failure mode | Stage 0 Q6 tests it before building; optional `SessionStart` hook injects the brief automatically; discovery wired into error paths |
+| **Nothing ever gets recorded** — the primary failure mode | Stage 0 Q6 tested it, and the `SessionStart` hook is NOT the fix: `docs/evidence/EV-16.md` recorded 0 of 15 sessions across five availability conditions, so an available brief is not adoption. The replacement mechanism is open (`asc-4so`); transcript ingest supplies day-one N with no model action, and the brief keeps its selection job |
 | `SessionStart` hook becomes a context tax on unrelated sessions | Opt-in only; brief output kept minimal; guarded no-op if the binary is absent |
 | Runtime-defined types drift into near-duplicates | Small bounded spec vocabulary; immutable versioned types; `type_hash` per entry; define-time similarity check; `asc doctor` |
 | Per-project storage fragments the corpus below useful N | `--across` ATTACH union + `types import` with hash preservation, designed in from Stage 1 |

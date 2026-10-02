@@ -568,8 +568,10 @@ export default class Init extends BaseCommand {
   private offerRecall(): void {
     this.warn(
       'recall: ascend can add a SessionStart hook that runs `asc types brief`, so each session ' +
-        'starts knowing which types exist and when to record them -- the failure this product ' +
-        'actually faces is an empty database, not a bad one. ascend will not edit your settings ' +
+        'starts knowing which types exist and when to record them. It does not make a session ' +
+        'record -- availability was measured not to be adoption (docs/evidence/EV-16.md), and this ' +
+        'hook is the selection half, not the recall half -- but it is what tells a session that has ' +
+        'already decided to record which type to use. ascend will not edit your settings ' +
         'to do it: `asc install-hook` adds it, with your explicit consent, and ' +
         '`asc install-hook --dry-run` shows exactly what it would write before anything does.',
     );

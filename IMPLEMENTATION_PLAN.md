@@ -3140,12 +3140,21 @@ immutability of annotated entries.
 `tool_name × project` verdict, plus the explicit limitation that it catches marginal-driven artifacts
 but not definitional ones.
 
-**Empirical gate:** `asc-9an [EMPIRICAL]` — brief size vs recording rate. This is Stage 0's
-unanswered Q6, and it is the **primary failure mode** of the whole product: an empty database.
-Per `empirical-planning`, this must be measured against a **real model in a real session**, not
-inferred.
+**Empirical gate:** `asc-9an [EMPIRICAL]` — brief size vs recording rate. This was Stage 0's Q6, and
+the **primary failure mode** of the whole product: an empty database. Per `empirical-planning` it was
+measured against a real model in a real session (EV-16, 2026-09-21) rather than inferred — and it came
+back **negative**: 0 of 15 sessions recorded anything, so the brief's causal claim was retired in
+favour of its selection job. See the status line below.
 
-**Status: Not Started** (`asc-xgo`, `asc-k6p`, `asc-4so`)
+**Status: In Progress** (`asc-xgo`, `asc-k6p`, `asc-4so`) — E10 (`asc-4so`) **complete**: 7/7
+children, and the epic's own resolution — *"E10 should keep the hook for that job and stop claiming
+the other one"* (2026-09-21) — is now carried in the shipped text. `ARCHITECTURE.md`'s recall section
+states what EV-16 invalidated (0 of 15 sessions; the brief does not cause recording) and what
+survives (the selection job), the risks table and Stage 0's Q6 carry the measured answer, and
+`install-hook`'s header and `init`'s `offerRecall` say the same. E7 (`asc-xgo`) is 9/9 complete. E8
+(`asc-k6p`) is 7/8: the one open child, retraction (`asc-k6p.2`), stays **deferred** by owner decision
+(2026-09-28) on an unfired trigger — `asc-k6p.3` declined to strike a case *because* retraction does
+not exist, so the deferral is load-bearing rather than stale.
 
 ---
 
