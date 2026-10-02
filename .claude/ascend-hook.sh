@@ -20,6 +20,10 @@ root=${CLAUDE_PROJECT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null &
 # file one project's transcripts into another project's database, silently and irreversibly.
 cd "$root" || exit 0
 
+# To record an entry by hand, run: asc record TYPE -  (a JSON entry on stdin)
+# The resolution below is THIS script's own job -- how a hook finds a binary that is not on
+# PATH -- and is not a form to copy: an allow rule matches the literal text of a command, so a
+# path form is a different command to the one an allow-list entry names, and is refused.
 if [ -n "$ASCEND_BIN" ] && [ -f "$ASCEND_BIN" ]; then
   bin="$ASCEND_BIN"
 elif [ -f "$root/node_modules/.bin/asc" ]; then

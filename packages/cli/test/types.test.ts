@@ -219,11 +219,26 @@ const REVIEW = {
  *
  * It is the `SessionStart` payload's contract, and this file drives the real binary rather than
  * importing from it -- a test that asserted the constant it had just imported could not fail when
- * that constant was the wrong thing to print, which is the whole question `asc-uftd` asks. The
- * form is `ARCHITECTURE.md:333`'s primary path for `asc record`; the flag form is the convenience
- * path and `asc record --help` is where a reader finds it.
+ * that constant was the wrong thing to print, which is the whole question `asc-uftd` asks.
+ *
+ * **Named after the constant it mirrors.** The source exports `RECORD_COMMAND` (the command) and
+ * `RECORD_COMMAND_LINE` (that command inside the sentence), and this holds the second; hardcoding
+ * is required, but reusing the first's name for the second's value would put two different strings
+ * under one identifier in the artifacts that exist to make one spelling authoritative
+ * (`.agents/research/2026-10-01-bug-hunt-e12-13.md`, F4).
+ *
+ * **The input note is part of the line, and it is the correction `asc-k0l9` made.** The bare
+ * `asc record TYPE -` reads the entry from standard input; advertised without saying so, it exits 1
+ * with `standard input is not valid JSON` on a session that runs it as printed. `ARCHITECTURE.md`
+ * states its primary path with that qualifier, and this line's first rendering had dropped it.
+ *
+ * **The command is the operand form, and that is the correction `asc-fkp1` made.** E12.13 rendered
+ * `ARCHITECTURE.md:333`'s `--json -` spelling -- which `record.ts:15-26` records as a deviation the
+ * CLI had already abandoned, because `--json` is the versioned-output flag and cannot also mean
+ * "read JSON here". `asc record --help` and both `README.md` examples teach `asc record <type> -`,
+ * and this line now matches them.
  */
-const RECORD_COMMAND = 'Record with: asc record TYPE --json -';
+const RECORD_COMMAND_LINE = 'Record with: asc record TYPE -  (a JSON entry on stdin)';
 
 /** REVIEW with every guidance field declared (asc-bli). Same shape, so the same hash. */
 const REVIEW_GUIDED = {
@@ -553,9 +568,12 @@ describe('asc types brief', () => {
     // were `asc ingest` (6, all inside "Never by hand" prose) and `asc query` (1). A session that
     // therefore had to *discover* the verb read `.claude/ascend-hook.sh` instead, and learned a
     // form the documented allowlist refuses -- it tried that form four times and stopped
-    // (`dogfood/0028`). The header costs one line against a cap with 4,618 bytes free.
+    // (`dogfood/0028`). The header costs one line against a cap with 4,618 bytes free -- the cap
+    // less the 3,382 bytes stdout carried then, which is the session's object. `brief-text.ts`
+    // states the same headroom as 4,619, against the 3,381 `asc doctor` reports: one moment, two
+    // objects, and F3 is about the two being quoted as if they were one.
     expect(run.stdout.trim().split('\n')).toEqual([
-      RECORD_COMMAND,
+      RECORD_COMMAND_LINE,
       'review_completed -- Record when a review of a change reaches a verdict.',
     ]);
   });
@@ -676,10 +694,10 @@ describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
     // that a session is least likely to have learned the verb by hand. It is charged to the cap
     // like everything else -- `BRIEF_CAP_BYTES` bounds the whole payload, so the count of dropped
     // types below is a count of TYPES and the header is not one of them.
-    expect(run.stdout.split('\n')[0]).toBe(RECORD_COMMAND);
+    expect(run.stdout.split('\n')[0]).toBe(RECORD_COMMAND_LINE);
     // ...and the file the pointer names is the same payload, header included, so a reader who
     // follows the pointer does not get a shorter document than the one it was cut from.
-    expect(written.split('\n')[0]).toBe(RECORD_COMMAND);
+    expect(written.split('\n')[0]).toBe(RECORD_COMMAND_LINE);
 
     // Every active type is in the file, including the ones stdout had to drop.
     for (const name of names) expect(written).toContain(`${name} -- `);
@@ -698,13 +716,13 @@ describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
     // and the note's own count has to be a count of THOSE. A header counted as a type would make
     // the note claim one more was shown than was.
     const lines = shown.slice(1, -1);
-    expect(shown[0]).toBe(RECORD_COMMAND);
+    expect(shown[0]).toBe(RECORD_COMMAND_LINE);
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.length).toBeLessThan(names.length);
     expect(note).toContain(`[${String(lines.length)} of ${String(names.length)} types shown`);
     // A byte slice would leave a partial sentence in the head; a boundary cut leaves whole lines,
     // each of which is a line of the file verbatim.
-    for (const row of [RECORD_COMMAND, ...lines]) expect(written).toContain(row);
+    for (const row of [RECORD_COMMAND_LINE, ...lines]) expect(written).toContain(row);
   });
 
   it('leaves the payload whole, and writes no file, when it fits', () => {
@@ -713,7 +731,7 @@ describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
 
     const run = asc(['types', 'brief'], dir);
     expect(run.stdout.trim()).toBe(
-      `${RECORD_COMMAND}\nreview_completed -- Record when a review of a change reaches a verdict.`,
+      `${RECORD_COMMAND_LINE}\nreview_completed -- Record when a review of a change reaches a verdict.`,
     );
     // Nothing was dropped, so nothing points anywhere -- and a project that never crosses the cap
     // should never find a file appearing inside its store directory.

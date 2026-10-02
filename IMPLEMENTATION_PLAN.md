@@ -2453,7 +2453,235 @@ no gap on either side.
 **Full gate green: 124 files / 2909 passed, 2 skipped (baseline 2900); `format:check`, `typecheck`,
 `lint` 0; `align` green.** Nothing committed — the conservative profile reports and waits.
 
-**Status**: Not started. Baseline before the work: 124 files / 2900 passed, 2 skipped, `align` green.
+**Status**: Complete (2026-10-01). Committed as `275bf38`, on top of `fe9135f` which carried the
+derived entries the ingest had left uncommitted.
+
+---
+
+### E12.14 — the line E12.13 added names a command that cannot run, and its second half was never delivered (`asc-k0l9` + `asc-q1mm`, P2, planned 2026-10-01)
+
+**Goal** — close the two P2 defects a bug hunt over E12.13 found, and the class behind the second
+one. Full record: `.agents/research/2026-10-01-bug-hunt-e12-13.md`; both findings were reported
+through `ReportFindings`, so they are in the store as `review_finding` entries as well.
+
+**F1 (`asc-k0l9`, `assumption_audit`) — the advertised command exits 1.** `asc record TYPE --json -`
+reads the entry from **standard input**, and the payload supplies none and never says so. Measured in
+a scratch project: `record review_completed --json - < /dev/null` → `standard input is not valid
+JSON: Unexpected end of JSON input.`, exit 1. `ARCHITECTURE.md:333` writes the same spelling *with*
+the qualifier — *"**`asc record <type> --json -`** (stdin) is the primary path"* — and the brief's
+rendering dropped it.
+
+**Decided by the owner (2026-10-01): keep the stdin form and restore the qualifier.** The
+alternative — advertise the `--prop` form — was offered with its case (it matches `README.md`
+§Quickstart and fails prescriptively) and declined, because it overrides `ARCHITECTURE.md:333`'s
+designated primary path, and `--prop`'s shell-escaping cost on long `evidence_text` is exactly what
+that document chose stdin to avoid. No form is literally runnable with placeholders, so the choice
+is which form a session should be *handed*, and the criterion is which failure teaches the next step:
+piping `{}` yields *"chosen is required … Supply the value with `--prop=chosen=<value>`"*.
+
+**The note goes in a constant of its own, not appended to `RECORD_COMMAND`.** Both artifacts need
+it — the brief's line and the hook script's by-hand comment name the same command — and appending it
+to `RECORD_COMMAND` would make that name stop meaning *the command*. So `RECORD_COMMAND_INPUT` is
+exported beside it and both sites interpolate it, which is E12.13's own structural argument applied
+one level down: the two artifacts cannot disagree about the input requirement either.
+
+**F2 (`asc-q1mm`, `data_lifecycle`) — the fix was never delivered where it was measured.**
+`dogfood/0028`'s Status cell asserts present-tense that `.claude/ascend-hook.sh` carries the by-hand
+comment. In this repository it does not:
+
+```
+$ ls -la .claude/ascend-hook.sh   →  2127 Sep 27 15:30
+$ grep -c "To record an entry by hand" .claude/ascend-hook.sh   →  0
+$ git status --short .claude/   →  clean
+```
+
+`asc install-hook` is the only writer and it is consent-gated and user-triggered, so the general case
+is that every existing install keeps teaching the path form until its owner re-runs the command, with
+nothing reporting the skew. **The class, not the instance**: a generated artifact whose generator
+changed and whose currency nothing checks.
+
+#### Stage 1 — the brief's line names its input (`asc-k0l9`)
+
+**Tests (RED first)** — the assertions the current text fails:
+- `cli/test/types.test.ts`: the brief's line 1 is exactly
+  `Record with: asc record TYPE --json -  (a JSON entry on stdin)`; and the header appears in
+  `.ascend/brief.txt` in the capped case too.
+- `cli/test/init.test.ts`: the starter project's line 1, same text.
+- `cli/test/install-hook.test.ts`: the script's comment carries the *note* as well as the command,
+  so the two artifacts agree on both — asserted as one literal, in both.
+
+**Implementation** — `RECORD_COMMAND_INPUT = 'a JSON entry on stdin'` in `brief-text.ts`;
+`RECORD_COMMAND_LINE` gains `  (${RECORD_COMMAND_INPUT})`; `install-hook.ts`'s `byHand` first line
+gains the same interpolation. Cost: **63** bytes for the line -- 62 characters plus the newline the
+cap charges -- against the **4,581** free at the time of measurement, and it is charged to
+`BRIEF_CAP_BYTES` by the same `Buffer.byteLength` expression, so nothing else moves.
+
+> **Corrected 2026-10-01 by the adversarial review of this change.** This paragraph said "62 bytes
+> ... the 4,543 free", which is wrong twice. 4,543 subtracts the E12.13 header's 38 bytes a second
+> time: the measurement was taken *after* E12.13, when the brief read 3,419 as `asc doctor` counts
+> it, so headroom was 8,000 − 3,419 = **4,581** — the figure
+> `.agents/research/2026-10-01-bug-hunt-e12-13.md:110` states verbatim. And "62 bytes" silently
+> dropped the newline, which is what the cap is charged for; the consistent figure is 63. The plan is
+> a record, so the numbers stand as written above only where they were true when written.
+
+**Status**: Complete (2026-10-01). `RECORD_COMMAND_INPUT` exported beside `RECORD_COMMAND`; both
+artifacts interpolate it; `doctor.test.ts`'s arithmetic corrected 86 → 111. RED first: 6 failures
+across the three suites, every one on the header text, before a line of source moved.
+
+#### Stage 2 — the second half is delivered here, and the record stops overstating (`asc-q1mm`)
+
+**Goal** — this tree matches its own generator, and no durable record claims more than the tree shows.
+
+**No test can assert this** (it is a committed file in this repository, not a behaviour), so the
+evidence is the byte comparison: `asc install-hook` in this repository reports the script
+`upgraded`, and the regenerated file contains the by-hand block. `dogfood/0028`'s Status cell — the
+correction channel, the body staying immutable — is amended to say the *generator* carries the
+comment and to name the delivery gap rather than assert the artifact.
+
+**Status**: Complete (2026-10-01). `asc install-hook --dry-run` reported `would upgrade` against the
+committed script, and the real run rewrote it: `.claude/ascend-hook.sh` now carries
+`# To record an entry by hand, run: asc record TYPE --json -  (a JSON entry on stdin)` above the
+resolution block, and git tracks the change. `dogfood/0028`'s Status cell corrected — the claim now
+names the generated artifact and records the gap as `(5)`, with `asc-mu20` filed for the guard.
+
+#### Stage 3 — DEFERRED to `asc-mu20` (2026-10-01)
+
+Not done here. The measured defect F2 names — the stale script at its own dogfood site — is closed
+by Stage 2, and the general case is *reasoned* from `asc install-hook` being the only writer rather
+than measured on a second checkout. The guard is a new capability (moving `hookScript` and friends
+out of `commands/install-hook.ts` into a leaf module so `doctor.ts` can reach them, plus a
+filesystem read where every existing `doctor` check is pure), so it is filed as `asc-mu20` with its
+four arms written down rather than half-built here. **Nothing in E12.14 depends on it.**
+
+#### Stage 4 — gate, records, close
+
+Full gate to a file; `dogfood/0028`'s Status cell amended with corrections **(4)** (the line named a
+command that exits 1) and **(5)** (the cell asserted the installed script carried a comment it did
+not), the earlier three left intact and the count moved from Three to Five; both beads closed with
+their reasons; and this round's F3/F4 reconciled — the pre-change byte count now names its object at
+all four sites (`3,382` bytes as a session received them, `3,381` as `asc doctor` counts them), and
+`test/types.test.ts`'s local constant is `RECORD_COMMAND_LINE`, the source's own name for the value
+it holds.
+
+**Status**: Complete (2026-10-01). Driven live, not only in tests: `asc types brief` prints the new
+line and measures **3,445 bytes** on stdout / **3,444** as `asc doctor` reports it (4,555 free);
+piping a document per the note records successfully (`{"properties":{"chosen":"a",…}} | asc record
+decision --json -` → one entry, index 0) — the probe entry was invalidated afterwards with the
+reason, since its values were placeholders and the store's design is that a mistake is struck rather
+than deleted; and `asc install-hook --yes` in this repository regenerated `.claude/ascend-hook.sh`,
+which now carries the by-hand block (git tracks the change). The one probe write is why Stage 2 is
+not "no side effects": driving the real thing writes to the real store.
+
+**Test counts**: Stage 1 RED 6 failed / 129 passed across `types`, `init`, `install-hook`; GREEN
+once `doctor.test.ts`'s byte arithmetic moved 86 → 111 (63-byte header -- 62 characters and the
+newline the cap charges -- plus `note -- ` (8) plus 40).
+Five suites green: **163 passed**.
+
+---
+
+### E12.15 — the line E12.14 added taught the one spelling the rest of the tree had left, and the
+review of the fix found its arithmetic wrong at four sites (`asc-fkp1`, P2, planned 2026-10-01)
+
+**Goal** — an adversarial review of the E12.14 change, and the corrections it found. The review was
+run by three independent agents reading the same diff; the findings below are the ones that survived
+being handed back with the numbers.
+
+**F1 (`asc-fkp1`, the highest-ranked finding) — the fix taught a spelling three other artifacts had
+already abandoned.** E12.14 rendered `ARCHITECTURE.md:333`'s spelling literally:
+`asc record TYPE --json -`. That document is the design record; three *later* artifacts had all
+moved away from it, and the brief is the one a session reads first:
+
+```
+$ grep -n 'record ' packages/cli/src/commands/record.ts   # :15-26, "There is no spelling that keeps both."
+$ asc record --help                                       # [DOCUMENT]  Path to an entry document, or `-` for standard input
+$ grep -n 'asc record' README.md                          # cat reviews.json | asc record review_completed -
+```
+
+`--json` is the versioned-**output** flag on every command in this CLI and cannot also mean "read
+JSON here", so the two flags collide and `record.ts` chose. The brief was teaching the collision.
+
+**Decided by the owner (2026-10-01): switch the brief to the operand form, `asc record TYPE -`.**
+`-` is the operand meaning standard input, which is what `asc record --help` and both `README.md`
+examples already teach, so the digest moves to the spelling the rest of the tree uses.
+
+**F2 — the arithmetic mixed its units.** `brief-text.ts`'s byte paragraph read *"The line cost 38 of
+them then and costs 62 now"*. Those are not the same object: 38 is 37 characters **plus** the newline
+the cap is charged for, and 62 was 62 characters **without** it — the code charges 63. Found
+independently three times (my own re-derivation, agent 1's arithmetic, agent 2's measured line
+lengths 37/38/62/63). Every figure in the file now states its unit and its newline.
+
+**F3 — the plan asserted a number that was never true.** E12.14's Implementation paragraph claimed
+**4,543** free. That subtracts E12.13's 38-byte header a second time: the measurement was taken after
+E12.13, so headroom was 8,000 − 3,419 = **4,581**, which
+`.agents/research/2026-10-01-bug-hunt-e12-13.md:110` states verbatim. Corrected in place with the
+correction visible, because the plan is a record.
+
+**F4 — `dogfood/0028` carried two unreconciled byte counts.** The body measured 3,603 on 2026-09-28
+against a larger active registry; the Status cell's 3,381/3,444 were measured on 2026-10-01. Neither
+said which registry it measured. Reconciled as claim **(6)**, since the body is immutable and the
+Status cell is the correction channel.
+
+#### Stage 1 — the brief and the script teach the operand form (`asc-fkp1`)
+
+**Tests (RED first)** — `RECORD_COMMAND` is interpolated into four expectations, so the change is
+red before it is made:
+- `cli/test/types.test.ts`: the local constant (named `RECORD_COMMAND_LINE`, matching the source's
+  own name for the value) → `Record with: asc record TYPE -  (a JSON entry on stdin)`.
+- `cli/test/init.test.ts`: the starter project's line 1, same text.
+- `cli/test/install-hook.test.ts`: the `command` constant the loop asserts against the brief *and*
+  the script.
+- `cli/test/doctor.test.ts`: `111 bytes` → `104`.
+
+**Implementation** — `RECORD_COMMAND = 'asc record TYPE -'` in `brief-text.ts`, with its doc comment
+rewritten to name the operand form as `record.ts`'s recorded deviation and to cite `asc-fkp1`; no
+other constant moves. Cost: **56** bytes for the line — 55 characters plus the newline — where
+E12.14's spelling cost 63, so the operand form takes **7** back.
+
+**Status**: Complete (2026-10-01). RED first: 6 failures / 129 passed across `types`, `init`,
+`install-hook`, every one on the header text, before a line of source moved. GREEN: 4 files /
+**160 passed**.
+
+#### Stage 2 — four sites state their unit, and the plan's bad number is corrected
+
+`brief-text.ts`'s byte paragraph now gives all three generations with their newlines — 38 bytes when
+E12.13 added the line (37 + 1), 63 at E12.14 (62 + 1), 56 now (55 + 1) — and states the served
+digest as **3,437 bytes** as `asc doctor` counts it (**3,438** on stdout, the same text plus the
+newline `this.log` appends), leaving **4,563** free *on the same basis* as the 4,619 above it, which
+is the qualifier E12.14's paragraph was missing. `test/types.test.ts`'s `4,618 bytes free` comment now
+names its object and cross-references `brief-text.ts`'s 4,619, and `test/doctor.test.ts`'s figure is
+`104` with its arithmetic written out. `IMPLEMENTATION_PLAN.md`'s "4,543" carries the correction
+above it. `dogfood/0028`'s Status cell gains claim **(6)**; `dogfood/README.md`'s index row moves
+*Five* → *Six*.
+
+#### Stage 3 — the generated script is regenerated, because the constant it interpolates moved
+
+The change moves a constant `install-hook.ts` reads, so the committed `.claude/ascend-hook.sh` is
+stale the moment the source is — which is exactly `asc-q1mm`'s defect class, found here by the review
+rather than by a user. Regenerated with `asc install-hook --yes` after rebuilding `dist/`.
+
+**Status**: Complete (2026-10-01). Line 23 of the regenerated script reads
+`# To record an entry by hand, run: asc record TYPE -  (a JSON entry on stdin)`, and git tracks the
+change. The general guard remains `asc-mu20`.
+
+#### Stage 4 — gate, records, close
+
+Full gate to a file (never `| tail`); `asc-fkp1` closed with its reason. Two P3 beads filed for the
+findings that did **not** warrant a code change here.
+
+**The review is counted, not just described.** All three agents reported through `ReportFindings`, so
+the findings are `review_finding` entries rather than prose: **8** in one batch, every one carrying
+`captured_by: reported` and a lens from the frozen nine —
+`cross_implementation_divergence` 4, `environment_divergence` 1, `boundary_conditions` 1,
+`data_lifecycle` 1, `assumption_audit` 1. That the dominant lens is cross-implementation divergence
+is the shape of the round: the defect was a brief disagreeing with `record.ts`, with `--help`, and
+with `README.md` about one command, and the arithmetic errors are the same disagreement inside a
+single file. **A note that this paragraph first asserted the opposite** — that the agents reported in
+prose and the round was uncounted — is left here rather than silently replaced, because it was
+written from the assumption that `ReportFindings` output would be visible as tool text in my own
+context. It is not: the deriver reads it from the transcripts. *I did not check before claiming.*
+
+**Status**: Complete (2026-10-01). Gate below. Nothing committed — the conservative profile reports
+and waits.
 
 ---
 

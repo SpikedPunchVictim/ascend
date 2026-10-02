@@ -9,7 +9,10 @@
  * "no header" rule** (`asc-uftd`, `dogfood/0028`). That rule was argued on the same budget the
  * paragraph above states, and EV-16 measured the budget as real -- but measured against the text
  * the rule produced, the digest named every type and never the verb that writes one: `asc record`
- * occurred **0 times in 3,382 bytes**, while `asc ingest` occurred 6 and `asc query` 1, both as
+ * occurred **0 times in the 3,382 bytes a session received** (3,381 as `asc doctor` counts it --
+ * the same text without the trailing newline; one measurement, two objects, and F3 of
+ * `.agents/research/2026-10-01-bug-hunt-e12-13.md` is what found them being quoted interchangeably),
+ * while `asc ingest` occurred 6 and `asc query` 1, both as
  * prose inside derived types' descriptions. A session asked to record therefore had to go looking,
  * and the artifact it found, `.claude/ascend-hook.sh`, teaches a form an allow rule cannot match
  * (`ARCHITECTURE.md`'s allow-list note; measured in `spike/ev16-arms.mjs` arm F, four denials).

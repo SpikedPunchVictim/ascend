@@ -567,10 +567,12 @@ describe('asc init', () => {
     const brief = asc(['types', 'brief'], dir);
     const lines = brief.stdout.split('\n').filter((line) => line.trim() !== '');
     // Line 1 is the recording command (`asc-uftd`), which is not a type: the digest named every
-    // type and never the verb that writes one (`asc record` occurred 0 times in 3,382 bytes), so a
-    // session had to go looking for it. The count guarded here is the one below it -- one line per
-    // starter type, so a later starter cannot quietly double the digest.
-    expect(lines[0]).toBe('Record with: asc record TYPE --json -');
+    // type and never the verb that writes one (`asc record` occurred 0 times in the 3,382 bytes a
+    // session received, 3,381 as `asc doctor` counts it), so a session had to go looking for it.
+    // The count guarded here is the one below it -- one line per starter type, so a later starter
+    // cannot quietly double the digest. Line 1 also states that the entry arrives on stdin, because
+    // without that clause the command a session runs as printed exits 1 (`asc-k0l9`).
+    expect(lines[0]).toBe('Record with: asc record TYPE -  (a JSON entry on stdin)');
     expect(lines.slice(1)).toHaveLength(4);
     expect(brief.stdout.length).toBeLessThan(2500);
   });

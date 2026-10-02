@@ -439,7 +439,8 @@ describe('asc install-hook: upgrading a stale script without touching settings.j
  * `asc-l38f`, `dogfood/0028`: the script is the artifact a session reads when it goes looking.
  *
  * **The defect was an asymmetry, not a missing line.** Nothing in the brief named the recording
- * command (`asc record` occurred **0 times in 3,382 bytes**), so a session asked to record had to
+ * command (`asc record` occurred **0 times in the 3,382 bytes a session received**, 3,381 as
+ * `asc doctor` counts it), so a session asked to record had to
  * discover it -- and the one artifact it found, this script, taught
  * `node "$root"/path/to/bin.js record ...`. Measured in `spike/ev16-arms.mjs` arm F: the session
  * that read the script tried that form **four times**, was denied, and stopped. The reason is
@@ -462,9 +463,20 @@ describe('asc install-hook: the script says what to run by hand (asc-l38f)', () 
     // The command spelling, asserted against BOTH artifacts at once. A test that only checked the
     // script could pass while the two drifted apart, which is the defect: the artifact and the
     // digest naming the same program two different ways.
-    const command = 'asc record TYPE --json -';
-    expect(asc(['types', 'brief'], dir).stdout).toContain(command);
-    expect(readFileSync(scriptPath(dir), 'utf8')).toContain(command);
+    const command = 'asc record TYPE -';
+    // **The input note travels with it** (`asc-k0l9`). The command reads the entry from stdin, and
+    // both artifacts told a reader to run it as printed, where it exits 1. One literal, asserted in
+    // both, for the same reason the command is: a note on one artifact and not the other rebuilds
+    // the asymmetry this test exists to catch.
+    const note = 'a JSON entry on stdin';
+    for (const artifact of [
+      asc(['types', 'brief'], dir).stdout,
+      readFileSync(scriptPath(dir), 'utf8'),
+    ]) {
+      expect(artifact).toContain(command);
+      expect(artifact).toContain(note);
+      expect(artifact).toContain(`${command}  (${note})`);
+    }
   });
 
   it('says it by hand, and says the path form below it is not the form to copy', () => {

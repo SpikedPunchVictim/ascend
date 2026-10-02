@@ -211,11 +211,13 @@ describe('propertyStates', () => {
 describe('briefSize', () => {
   it('measures the brief as `asc types brief` renders it, and passes a small registry', () => {
     const [finding] = briefSize([summary('note', { recordWhen: 'x'.repeat(40) })]);
-    // `Record with: asc record TYPE --json -` (37) + newline + `note -- ` + 40 characters = 86.
-    // It read `48 bytes` before the recording command existed; the 38-byte difference is the point
-    // (`asc-uftd`) -- this check exists to report the size of what the payload prints, so a line
-    // the payload prints is a line it has to count.
-    expect(finding?.detail.startsWith('86 bytes,')).toBe(true);
+    // `Record with: asc record TYPE -  (a JSON entry on stdin)` (55) + newline + `note -- ` (8) +
+    // 40 characters = 104. It read `48 bytes` before the recording command existed, `86` once it
+    // did (`asc-uftd`), and `111` once the input note was added (`asc-k0l9`); spelling the command
+    // as the operand takes it back to `104` (`asc-fkp1`). This check exists to report the size of
+    // what the payload prints, so every line the payload prints -- and every edit to that line --
+    // is something it has to count.
+    expect(finding?.detail.startsWith('104 bytes,')).toBe(true);
     expect(finding?.status).toBe('ok');
   });
 

@@ -69,7 +69,8 @@ export function briefLine(summary: TypeSummary): string {
 }
 
 /**
- * The command that writes an entry, in `ARCHITECTURE.md:333`'s primary spelling for `asc record`.
+ * The command that writes an entry, in the form this CLI documents for it -- the document as an
+ * **operand**, which is `record.ts`'s own recorded deviation from `ARCHITECTURE.md`.
  *
  * **A constant of its own, so the two artifacts that name it cannot disagree.** The brief prints it
  * (composed into `RECORD_COMMAND_LINE` below) and the comment in the generated
@@ -79,8 +80,55 @@ export function briefLine(summary: TypeSummary): string {
  * granted and resolves nowhere when the binary is off `PATH`. Sharing one spelling is how the class
  * is stopped rather than the instance. The `--prop=` flags are the convenience path, and
  * `asc record --help` is where a reader finds those.
+ *
+ * **E12.13 rendered `ARCHITECTURE.md:333`'s spelling -- `asc record <type> --json -` -- and that
+ * was one artifact teaching what three others had moved away from** (`asc-fkp1`, finding 1 of this
+ * change's adversarial review). `--json` is already the versioned-**output** contract on every
+ * command, so a `--json` that also meant "read JSON here" would be two meanings for one flag on one
+ * command; `record.ts:15-26` records the deviation in full and implements the operand instead
+ * (*"There is no spelling that keeps both"*). `asc record --help` documents it -- `[DOCUMENT]  Path
+ * to an entry document, or \`-\` for standard input` -- and both of `README.md`'s examples are of the
+ * form `cat reviews.json | asc record review_completed -`. This line is the spelling those three
+ * teach; `--json` is a flag a caller adds for the envelope, not part of the path a reader is handed.
+ * `ARCHITECTURE.md:333` itself still names the old spelling and is the document to reconcile -- the
+ * brief is deliberately not the artifact carrying that.
  */
-export const RECORD_COMMAND = 'asc record TYPE --json -';
+export const RECORD_COMMAND = 'asc record TYPE -';
+
+/**
+ * What the reader has to supply for `RECORD_COMMAND` to run at all: the entry, on standard input.
+ *
+ * **A constant of its own for the same reason `RECORD_COMMAND` is one.** Both artifacts that name
+ * the command -- the brief's line and the hook script's by-hand comment -- need this clause, and a
+ * note present on one and absent from the other is the asymmetry `RECORD_COMMAND` exists to
+ * prevent, one level down. It is not appended to `RECORD_COMMAND` itself because that name means
+ * *the command*: appending it would leave this file with no name for the bare string
+ * `asc record --help` documents, and every consumer wanting that would have to parse the note back
+ * off the end. (The doc here once justified that with a consumer that does not exist -- the
+ * script's resolution comment names no command at all -- which finding 2 of this change's review
+ * caught. The reason is the name, not a caller.)
+ *
+ * **Without it the command a session runs as printed exits 1** (`asc-k0l9`). Measured in a scratch
+ * project created by `asc init`, on the form the line now teaches:
+ *
+ * ```
+ * $ node packages/cli/dist/bin.js record review_completed - < /dev/null
+ * Error: standard input is not valid JSON: Unexpected end of JSON input.
+ * exit=1
+ * ```
+ *
+ * `ARCHITECTURE.md:333` states its own spelling *with* this qualifier -- *"**`asc record <type>
+ * --json -`** (stdin) is the primary path"* -- and the first rendering of this line dropped it. The
+ * failure that left is the one `dogfood/0028` is about, one step further on: a session that has just
+ * been told the verb runs it, gets an error about a document it never intended to write, and has to
+ * work out from the error alone that the entry was supposed to arrive on stdin.
+ *
+ * **That `exit=1` is the closed-stdin case, which is not every case.** With stdin a TTY, or a pipe
+ * its writer has not closed, the same command blocks in `readInput` -- called at `record.ts`, before
+ * `findType` resolves the type -- and prints nothing at all, not even the unknown-type error. A tool
+ * call closes stdin and does not meet this; a terminal does (`asc-fkp1`'s sibling finding).
+ */
+export const RECORD_COMMAND_INPUT = 'a JSON entry on stdin';
 
 /**
  * The one line naming the command that writes an entry, printed first (`asc-uftd`).
@@ -89,7 +137,10 @@ export const RECORD_COMMAND = 'asc record TYPE --json -';
  * brief's contract was "one line per type, `name -- record_when`, and nothing else -- no header, no
  * rule, no counts", on the argument that this payload is injected into every session and every
  * extra line is a context tax. Measured on 2026-10-01, that contract produced a digest where
- * **`asc record` occurred 0 times in 3,381 bytes**: the only `asc <verb>` strings in the whole
+ * **`asc record` occurred 0 times in the 3,382 bytes a session received** (3,381 as `asc doctor`
+ * counts it -- the same text without the newline `this.log` appends; the two numbers name different
+ * objects, and `.agents/research/2026-10-01-bug-hunt-e12-13.md` F3 found this file and three others
+ * quoting one of them as if it were the other): the only `asc <verb>` strings in the whole
  * document were `asc ingest` (6, all inside derived types' "Never by hand" text) and `asc query`
  * (1). It named every type and never the verb that writes one, so a session asked to record had to
  * *discover* the command -- and the artifact it found when it went looking, `.claude/ascend-hook.sh`,
@@ -100,14 +151,24 @@ export const RECORD_COMMAND = 'asc record TYPE --json -';
  *
  * The counter-argument the old rule was making is real and is why this is exactly one line rather
  * than a rule or a count: the payload's budget is a measured constraint (`BRIEF_CAP_BYTES`, and
- * EV-16 measured its cost as linear in lines), and it had 4,619 bytes free. The line costs 38 of
- * them, and the digest this repo serves now measures 3,419 bytes -- the number `asc doctor` reports,
- * which is this text's byte length because both go through here.
+ * EV-16 measured its cost as linear in lines), and it had **4,619 bytes free** -- the cap less the
+ * 3,381 the check reports. A headroom figure needs its object named as much as a size does, and F3
+ * of `.agents/research/2026-10-01-bug-hunt-e12-13.md` is about the two being quoted as if they were
+ * one.
+ *
+ * **The line's cost is stated here with its newline, every time**, because the newline is what
+ * `commands/types/brief.ts` charges against the cap: `BRIEF_CAP_BYTES -
+ * Buffer.byteLength(`${RECORD_COMMAND_LINE}\n`)`. It cost **38** bytes when E12.13 added it (37
+ * characters plus that newline) and costs **56** now (55 plus the newline) -- the input note adding
+ * 25 and the operand spelling taking 7 back. The digest this repo serves measures **3,437 bytes**
+ * as `asc doctor` counts it (**3,438** on stdout, the same text plus the newline `this.log`
+ * appends), leaving **4,563** free on the same basis as the 4,619 above.
  *
  * Composed from `RECORD_COMMAND` rather than spelled again, so the sentence and the command inside
- * it cannot drift apart.
+ * it cannot drift apart -- and carrying `RECORD_COMMAND_INPUT` for the same reason, because a
+ * command that reads standard input is not a command a reader can run until they are told so.
  */
-export const RECORD_COMMAND_LINE = `Record with: ${RECORD_COMMAND}`;
+export const RECORD_COMMAND_LINE = `Record with: ${RECORD_COMMAND}  (${RECORD_COMMAND_INPUT})`;
 
 /**
  * The type lines, in the order the registry already has them.

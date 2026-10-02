@@ -97,7 +97,7 @@ import { Flags } from '@oclif/core';
 import { HOOK_STAGES, type HookStage } from '@ascend/adapter-claude-code';
 import { STORE_DIR } from '@ascend/store';
 import { BaseCommand } from '../base.js';
-import { RECORD_COMMAND } from '../brief-text.js';
+import { RECORD_COMMAND, RECORD_COMMAND_INPUT } from '../brief-text.js';
 import { refusal, usageError } from '../errors.js';
 import { findProjectRoot } from '../project.js';
 import { shellQuote, symlinkTarget } from '../symlink.js';
@@ -282,8 +282,11 @@ function hookScript(binaryRelativeToRoot: string | undefined): string {
   // The command is interpolated from `RECORD_COMMAND` rather than spelled again: `dogfood/0028`
   // measured `asc record` at 0 occurrences in the brief and this script naming a form four sessions
   // tried and were denied, and two artifacts disagreeing on one spelling is the class this closes.
+  // `RECORD_COMMAND_INPUT` travels with it for the same reason (`asc-k0l9`): the command reads the
+  // entry from standard input, so a reader told to run it without that clause runs something that
+  // exits 1 -- and a note on one artifact and not the other is the same asymmetry again.
   const byHand = [
-    `# To record an entry by hand, run: ${RECORD_COMMAND}`,
+    `# To record an entry by hand, run: ${RECORD_COMMAND}  (${RECORD_COMMAND_INPUT})`,
     "# The resolution below is THIS script's own job -- how a hook finds a binary that is not on",
     '# PATH -- and is not a form to copy: an allow rule matches the literal text of a command, so a',
     '# path form is a different command to the one an allow-list entry names, and is refused.',
