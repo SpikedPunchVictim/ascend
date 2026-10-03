@@ -196,3 +196,82 @@ cutoff. Either could account for a 3-block difference out of 27,462. It is repor
 resolved because both numbers are effectively zero and chasing three blocks would buy nothing — but
 **two methods disagreeing should not be quietly averaged**, and this is the one number in this spike
 that is reported without being understood.
+
+## (a)–(d): the bead's four open questions, measured where they can be
+
+The owner chose to design on measured numbers, so each open question was taken as far as the evidence
+carries it. Two are answered outright; two are answered for today's handlers only.
+
+### (a) Which events are in scope — **12 of 14 `EVENT_KINDS` are required**
+
+Measured over the seven handlers in `./handlers/`, reading every `on:` (including the nested window
+triggers) and every `until:`:
+
+| role | kinds |
+|---|---|
+| top-level trigger | `file.changed` ×3, `file.read`, `review.finding`, `agent.spawn`, `tool.use.start` |
+| window trigger / second trigger | `check.run` ×2, `command.run`, `search.run`, `agent.return`, `model.context` |
+| window bound (`until:`) | `session.end` ×2, `prompt.submit` ×2 |
+
+`check.run`'s role is load-bearing rather than incidental: `read-unused`, `edit-verified` and
+`edit-unverified` all emit *at* it, and the windows they open end at `session.end` / `prompt.submit`,
+so those bounds must be retained for the window to close at all — an `until` is a retention
+requirement even though no handler *keys* on it.
+
+**Referenced by nothing: `tool.use.end` and `segment.start`.** No handler mentions either, and no
+handler references `is_error` (a `tool.use.end` field) or `segment`. So the honest answer to (a) is
+**not** "only the five kinds a handler triggers on" — that would silently drop five more that windows
+need — and it is **not** "all fourteen".
+
+### (b) The byte cap — the mechanism exists, the policy does not
+
+Measured growth: **29,276,075 raw over a ~22-day content span ≈ 1.33 MB/day raw, ≈ 0.28 MB/day gz**
+(6,221,485 gz / 22). Against `asc-8uzh`'s `MAX_BYTES_PER_FILE = 20 MiB`, that is **~15.8 days per
+file** — and rollover **appends a new higher-index file and never drops**; no drop-oldest code exists
+anywhere in `packages/store/src`. So the cap does not bound the log, it bounds a *file*, and the log
+grows ~1.3 MB/day without limit unless a drop policy is chosen. **That is the decision (b) actually
+poses**, and it is now arithmetic rather than a worry.
+
+The hazard the bead names for it is real and unchanged: drop-oldest silently is a count that moves for
+a reason no handler changed — the `derive_version` hazard in reverse.
+
+### (c) Per project or per user — **per project, on the Q-d measurement**
+
+A per-user log pools every project's text. The measured concentration: `ascend` contributes **6 of
+27,472** secret-shaped blocks while four `grizzly` directories contribute **836 of 93,401** — 97% of
+all matches. `asc export` refuses the whole export on **one** match with no override (`asc-42i1`) and
+entries are immutable, so pooling imports other projects' refusal risk into this project's log for no
+benefit this project can use.
+
+### (d) Store type or its own file — **the per-record cap is not a blocker**
+
+`spike/event-log/record-size.mjs`, same scope and cutoff, envelopes built as the deriver would:
+
+```
+events            : 27462
+store per-record cap: 1048576 B (MAX_BYTES_PER_RECORD, refused not rolled)
+max               : 60289 B
+p99.9             : 21448 B
+p99               : 9657 B
+p50               : 431 B
+over the cap      : 0 of 27462
+max / cap         : 0.057x
+```
+
+**The largest event is 5.7% of the cap and nothing exceeds it**, so a store type can hold these events
+without meeting `asc-8uzh`'s refusal. (d) therefore does **not** turn on the size limit — the reason
+to prefer one shape over the other has to come from somewhere other than this measurement. Limitation:
+n = 1 project; a corpus of large file reads could produce a bigger event than `ascend` ever has, and
+this measures `ascend` only.
+
+### The bead's open item (2) — `tool_response` is **not required**
+
+`asc-igg8`'s note says *"if tool_response is retained the byte cap has to be sized against it, which is
+the one number that decides whether (a) above is affordable"*. Measured: **no handler references
+`tool_response`**, and it is not a field of any declared `EVENT_KIND` — `tool.use.end` carries `tool`,
+`id`, `role`, `is_error` (`event.ts:64`), and `duration_ms` rides on `agent.return` (`:116`), which
+*is* needed. So the number that was said to decide (a)'s affordability **does not need to be measured
+for any handler that exists today**: capture can normalize without `tool_response` and the Q1 cost
+basis stands. If a future handler wants output bodies, this reopens — and that is the honest boundary
+of the claim.
+
