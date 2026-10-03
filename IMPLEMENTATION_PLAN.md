@@ -3310,6 +3310,87 @@ and whether the hook can rely on `dist/` being built.
 
 ---
 
+## Stage E14: a caller-settable ratio — `asc-squ`
+
+**Goal** — `asc explore --chars-per-token <n>` sets the ratio the budget's fit assumes, so a caller
+whose store is not Latin can stop the estimate under-counting. The report already echoes
+`chars_per_token`, so the assumption was always visible; this makes it correctable.
+
+**Promoted 2026-10-03, and the promotion condition was corrected rather than met.** The deferral's
+rationale was *"no such evidence in the corpus to calibrate or validate a per-caller override
+against"*, re-measured 2026-09-18 at 0 CJK/Cyrillic/Arabic/emoji across 69 `evidence_text` values.
+Re-measured store-wide today: **6,885 records, 110,050 string values, 0 of every non-Latin script** —
+all 152 non-ASCII values are General Punctuation (155 code points), Arrows (25), Latin-1 (7), Math
+Operators (2) and two `U+FFFD`. **Re-run at the end of this work** (the same script, the store having
+grown): 6,904 records, 110,348 string values, still **0** — the figure is reproducible rather than
+carried, which `spike/asc-squ-ratio-survey.mjs` exists to make possible. That re-run is also what
+caught `dogfood/0059`: the first run after the CJK fixture read **8 non-Latin values in field
+`note`**, because the fixture had written into this repo's store rather than the scratch directory. The condition is unmet and **unsatisfiable from this repo**, which is
+English-language, so waiting on it means waiting on an external report. The rationale also never
+applied to this design: the bead's own accept criterion validates against *"a CJK-heavy fixture"*,
+not real records, and a caller-declared ratio is not calibrated against anything.
+
+**A defect in the accept criterion, corrected by the owner 2026-10-03.** The criterion said *"a value
+below 1 is a usage error (exit 2)"*. Every case the flag was filed for needs a ratio **below 1** — the
+bead's own table measures CJK **0.79**, Korean **0.90**, Japanese **0.96**, emoji **0.33** code points
+per token. At the closest legal value, `1`, a CJK store is still under-estimated ~1.27× and emoji
+~3×, so the criterion as written could not fix the case it exists for. **The bound is therefore
+`> 0`**, refusing `<= 0` and non-finite; the three sub-cases already ≥ 1 (base64/hex 1.23–1.49,
+Cyrillic 1.63, Arabic 1.10) are unaffected.
+
+**Success Criteria** — the flag sets the ratio used by the fit and the report echoes the value
+actually used; a ratio `<= 0` is a usage error (exit 2); `--chars-per-token` without `--max-tokens` is
+a usage error naming the fix, on the `--dry-run`/`--dump` precedent (*"Named rather than ignored"*,
+`explore.ts:832-841`); a CJK-heavy fixture fits at a ratio that DOES make the estimate a ceiling,
+where the default does not; `--dump`'s `file_tokens` and `chars_per_token` use the caller's ratio too.
+
+**Stage 1 — thread the ratio through the fit** (`packages/cli/src/budget.ts`). `estimateTokens`
+gains an optional ratio; `BudgetRequest` gains `charsPerToken`; `settle` uses one value for the
+`chars_per_token` field, every `estimateTokens` call in the fixed point, **and the stability
+assertion** — a mismatch there makes the shipped invariant throw rather than report a wrong number.
+Tests: `budget.test.ts`, the fit as a function.
+
+**Stage 2 — the flag and its refusals** (`commands/explore.ts`). `--max-tokens` and the ratio are one
+concept, so the local becomes a `Budget` object and the five `emitBuilt`/`builtText` call sites pass
+it unchanged. Tests: `explore-budget.test.ts` driving the real binary.
+
+**Stage 3 — the fixture, the records, the gate.** A CJK fixture proving the default under-counts and
+the flag corrects it; `dogfood`/bead records; full gate.
+
+**Status**: **Complete (2026-10-03).** Stage 1: `estimateTokens(text, charsPerToken = CHARS_PER_TOKEN)`,
+`BudgetRequest.charsPerToken`, and `settle` computing **one** `ratio` used for the field, both
+`estimateTokens` calls in the fixed point and the stability assertion — a mismatch there would have
+made the shipped invariant throw rather than report a wrong number. Validation stays at the CLI
+boundary, as `--max-tokens`'s does, so the estimator is arithmetic rather than a second refusal path.
+Stage 2: `--chars-per-token` as a **string** flag (a numeric parser would round 0.79 to 0 or 1),
+refusing `<= 0` and non-finite with a message that says the bound is 0 *because* CJK is 0.79, and
+refusing the flag without `--max-tokens` on the `--dry-run`/`--dump` precedent. The two flags became
+one `BudgetFlags` object passed whole to `builtText`/`emitBuilt`, so a call site cannot apply the
+budget while dropping the ratio. Stage 3: the CJK fixture, the records, the gate.
+
+**Two things the plan did not foresee, both found by driving it.**
+
+1. **The `--dump` manifest needed the ratio too**, and the plan named the requirement without naming
+   the mechanism: `planDump` measures each file with `estimateTokens` and stamps `chars_per_token` on
+   the manifest, so a dump at a caller's ratio would have stated one assumption while its `tokens`
+   rested on another. `planDump` gained a third parameter, defaulted to `CHARS_PER_TOKEN`, so all 15
+   existing calls are unchanged.
+2. **The control arm was the finding.** The default-ratio arm of the CJK fixture was written to prove
+   the new flag changed something, and it instead reproduced the defect end to end: at
+   `--max-tokens 1000` the shipped path answered `estimated_tokens: 786`, `dropped: 0`, about bytes
+   measuring **1990** at 0.79 — **1.99× its budget, 2.53× its reported size** — while the corrected
+   arm refused honestly, naming 1035 as the minimum. Recorded as `dogfood/0058`, which also states
+   that the suite could not have caught it: `explore-budget.test.ts`'s oracle measures with
+   `Array.from(text).length / 2`, the same constant the estimator used, so its honesty assertions
+   agreed with the bug to the token.
+
+Tests: 5 in `budget.test.ts` (the fit as a function, including a sub-1 ratio and the fixed point at
+every ratio), 6 end-to-end in `explore-budget.test.ts` driving the real binary (help, the four
+refusals and the sub-1 acceptance, the honest report at a caller ratio, reach into the search, and the
+CJK ceiling), 1 in `explore-dump.test.ts` for the manifest's stated-versus-used ratio. Every
+pre-existing budget assertion is untouched and green, which is the control arm for "omitting the ratio
+emits today's bytes".
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.

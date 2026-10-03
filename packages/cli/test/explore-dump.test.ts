@@ -182,6 +182,27 @@ describe('dump: the index totals what it lists', () => {
     expect(plan.manifest.ascend_dump).toBe(DUMP_CONTRACT_VERSION);
   });
 
+  it('prices the files at the caller’s ratio, and states that ratio, when one is given', () => {
+    // `asc-squ`. The manifest carries `chars_per_token`, so a dump measured at a caller's ratio must
+    // say so -- otherwise the index states one assumption while its numbers rest on another, and the
+    // file sizes are priced at a ratio nobody asked for. The per-file figure and the manifest field
+    // are asserted together because they are one claim: the stated assumption is the one used.
+    const CJK_CHARS_PER_TOKEN = 0.79;
+    const defaultPlan = planDump([chunk(2)], FILTER);
+    const cjkPlan = planDump([chunk(2)], FILTER, CJK_CHARS_PER_TOKEN);
+
+    expect(cjkPlan.manifest.chars_per_token).toBe(CJK_CHARS_PER_TOKEN);
+    for (const file of cjkPlan.files) {
+      expect(file.tokens).toBe(estimateTokens(file.text, CJK_CHARS_PER_TOKEN));
+    }
+    expect(cjkPlan.manifest.file_tokens).toBe(
+      cjkPlan.manifest.files.reduce((total, file) => total + file.tokens, 0),
+    );
+    // And it is a genuinely different number: a tighter ratio costs more, so the two plans must
+    // disagree -- otherwise this test would pass on a parameter that was never read.
+    expect(cjkPlan.manifest.file_tokens).toBeGreaterThan(defaultPlan.manifest.file_tokens);
+  });
+
   it('says nothing at all about an empty dump, rather than zeroes', () => {
     const plan = planDump([], FILTER);
     expect(plan.files).toStrictEqual([]);

@@ -3,6 +3,10 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+// The shipped default, imported rather than written as `2` so that a change to the constant is a
+// change to this test's expectation too -- the assertions below compare the echoed ratio against the
+// default this CLI ships, not against a number copied into a test file.
+import { CHARS_PER_TOKEN } from '../src/budget.js';
 
 /**
  * `asc explore --max-tokens` -- the flag, driven as the real binary.
@@ -113,6 +117,15 @@ const SPEC = {
 /** Characters of filler in each entry's `note`, which is what sets a row's size. */
 const NOTE = 120;
 
+/** Code points per token for CJK, as measured: `docs/evidence/EV-13.md`, three real tokenizers. */
+const CJK_CHARS_PER_TOKEN = 0.79;
+
+/** One CJK code point (U+6F22), repeated to build the dense fixture. */
+const CJK_FILLER = '漢';
+
+/** CJK code points per entry: enough that a page of them is unambiguously over a small budget at 0.79. */
+const CJK_NOTE = 40;
+
 /**
  * A directory holding an `.ascend/` store with SPEC registered and nothing recorded: a copy of the
  * seed above.
@@ -158,6 +171,32 @@ function record(dir: string, count: number): readonly string[] {
   return ids;
 }
 
+/**
+ * Record `count` entries whose `note` is CJK, for the ratio tests (`asc-squ`).
+ *
+ * The text is deliberately dense rather than merely non-ASCII: `docs/evidence/EV-13.md` measured CJK
+ * at 0.79 code points per token across three real tokenizers, against the 2 the estimator assumes. A
+ * corpus of accented Latin would be a weaker fixture at the same cost, because the ratio there is
+ * near 2 and the two arms would agree.
+ */
+function recordCjk(dir: string, count: number): void {
+  for (let i = 0; i < count; i += 1) {
+    const run = asc(
+      [
+        'record',
+        SPEC.name,
+        '--prop',
+        'outcome=ok',
+        '--prop',
+        `note=${String(i).padStart(4, '0')}${CJK_FILLER.repeat(CJK_NOTE)}`,
+        '--json',
+      ],
+      dir,
+    );
+    expect(run.status).toBe(0);
+  }
+}
+
 interface Envelope {
   readonly rows: readonly Record<string, unknown>[];
   readonly row_count: number;
@@ -189,7 +228,18 @@ const envelope = (stdout: string): Envelope => JSON.parse(stdout) as Envelope;
  * report describes the rendering, not the line discipline of the writer.
  */
 function measuredTokens(stdout: string): number {
-  return Math.ceil(Array.from(stdout.replace(/\n$/, '')).length / 2);
+  return measuredTokensAt(stdout, 2);
+}
+
+/**
+ * The same measurement at a caller-supplied ratio (`asc-squ`).
+ *
+ * The number of code points is a property of the bytes; the ratio is an assumption about them, and
+ * this helper keeps them as two separate steps so a test can hold the bytes fixed and vary the
+ * assumption -- which is the only way to show that a budget honoured at 2 is not honoured at 0.79.
+ */
+function measuredTokensAt(stdout: string, charsPerToken: number): number {
+  return Math.ceil(Array.from(stdout.replace(/\n$/, '')).length / charsPerToken);
 }
 
 /** The one assertion that is the feature: the report is the size of the bytes, inside the budget. */
@@ -549,5 +599,180 @@ describe('asc explore --max-tokens: a budget it cannot meet is refused, and the 
     expect(parsed.rows).toHaveLength(5);
     // And the count is the whole remainder, so nothing was dropped twice or quietly kept.
     expect(parsed.trim?.dropped).toBe(allRows - 5);
+  });
+});
+
+/**
+ * `--chars-per-token` -- the ratio as the caller's own assumption (asc-squ).
+ *
+ * The shipped ratio of 2 is the floor measured for ascend's OWN OUTPUT, which is the wrong number for
+ * a corpus that is not ascend's output. `docs/evidence/EV-13.md` measured CJK at **0.79** code points
+ * per token across three real tokenizers, so at the default the estimate is ~2.5x low -- and a budget
+ * that is 2.5x low does not fail loudly. It reports `estimated_tokens` within the budget, in the
+ * reassuring arithmetic this suite's `expectHonest` checks, about bytes that are well over it. That is
+ * the false-green class, which is why the fixture below is measured at the CJK ratio rather than at
+ * the one the tool chose to believe.
+ *
+ * The oracle stays independent: `Array.from(text).length` for the code points, exactly as above, with
+ * the caller's ratio applied to that measurement rather than to the tool's.
+ */
+describe('asc explore --chars-per-token: the caller sets the ratio', () => {
+  it('documents the flag in --help', () => {
+    const dir = emptyProject();
+    const run = asc(['explore', '--help'], dir);
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('--chars-per-token');
+    expect(flatten(run.stdout)).toContain('code points per token');
+  });
+
+  it('refuses a ratio that is not a positive number, and a ratio below one is NOT refused', () => {
+    const dir = emptyProject();
+
+    for (const value of ['0', '-1', 'abc', 'Infinity']) {
+      const run = asc(
+        ['explore', SPEC.name, '--max-tokens', '500', `--chars-per-token=${value}`],
+        dir,
+      );
+      expect(run.status).toBe(2);
+      expect(run.stdout).toBe('');
+      expect(flatten(run.stderr)).toContain('must be a positive number of code points per token');
+      expect(flatten(run.stderr)).toContain(`Got ${value}`);
+    }
+
+    // **The bound is 0, not 1, and the bead's own table is why.** CJK 0.79, Korean 0.90, Japanese
+    // 0.96 and emoji 0.33 are all below one, so an accept rule of "at least 1" would refuse exactly
+    // the corpora this flag exists for. Asserted rather than assumed, because the natural mistake
+    // here -- reach for a floor of 1 -- passes every other test in this block.
+    const accepted = asc(
+      ['explore', SPEC.name, '--max-tokens', '1000000', '--chars-per-token=0.79'],
+      dir,
+    );
+    expect(accepted.status).toBe(0);
+  });
+
+  it('refuses --chars-per-token without --max-tokens, rather than ignoring it', () => {
+    const dir = emptyProject();
+    record(dir, 3);
+
+    // The ratio has nothing to act on without a budget, and a caller who typed it and saw unfitted
+    // bytes would conclude the flag was broken -- the same reasoning `--dry-run` without `--dump`
+    // is refused under, one flag over.
+    const run = asc(['explore', SPEC.name, '--chars-per-token', '3'], dir);
+    expect(run.status).toBe(2);
+    expect(run.stdout).toBe('');
+    expect(flatten(run.stderr)).toContain('only applies to --max-tokens');
+  });
+
+  it('reports the ratio it used, and the report is the size of the bytes at that ratio', () => {
+    const dir = emptyProject();
+    record(dir, 6);
+
+    // Generous, so the ratio is the only variable: every arm keeps every row and the assertion is
+    // purely about the arithmetic. The oracle measures the bytes on stdout with the SAME ratio the
+    // caller asked for -- which is the whole claim, since a report at ratio 2 about bytes the caller
+    // measures at 0.79 is the false green this flag removes.
+    for (const ratio of ['0.5', '1', '3.5']) {
+      const run = asc(
+        [
+          'explore',
+          SPEC.name,
+          '--page',
+          '--json',
+          '--max-tokens',
+          '1000000',
+          '--chars-per-token',
+          ratio,
+        ],
+        dir,
+      );
+      expect(run.status).toBe(0);
+      const parsed = envelope(run.stdout);
+      expect(parsed.trim?.chars_per_token).toBe(Number(ratio));
+      expect(parsed.trim?.estimated_tokens).toBe(measuredTokensAt(run.stdout, Number(ratio)));
+    }
+  });
+
+  it('reaches the search: one budget keeps fewer rows at a denser ratio', () => {
+    const dir = emptyProject();
+    record(dir, 12);
+    const extra = ['--page', '--json'];
+
+    // Derived from the ratio-1 size, not from the tool's own belief about it, so the budget is a real
+    // 60% of a real measurement and both arms land in the region where a fit drops something.
+    const fullAtOne = asc(
+      ['explore', SPEC.name, ...extra, '--max-tokens', '1000000', '--chars-per-token', '1'],
+      dir,
+    );
+    expect(fullAtOne.status).toBe(0);
+    const budget = Math.ceil(measuredTokensAt(fullAtOne.stdout, 1) * 0.6);
+
+    const atTwo = asc(['explore', SPEC.name, ...extra, '--max-tokens', String(budget)], dir);
+    const atOne = asc(
+      ['explore', SPEC.name, ...extra, '--max-tokens', String(budget), '--chars-per-token', '1'],
+      dir,
+    );
+    expect(atTwo.status).toBe(0);
+    expect(atOne.status).toBe(0);
+    // A ratio of 1 says each character costs twice what 2 says, so at the same budget it must keep
+    // strictly fewer rows. If this were equal the ratio had reached the report but not the search.
+    expect(envelope(atOne.stdout).rows.length).toBeLessThan(envelope(atTwo.stdout).rows.length);
+    expect(envelope(atTwo.stdout).trim?.chars_per_token).toBe(CHARS_PER_TOKEN);
+    expect(envelope(atOne.stdout).trim?.chars_per_token).toBe(1);
+  });
+
+  it('honours a CJK budget that the shipped ratio only claims to honour', () => {
+    const dir = emptyProject();
+    recordCjk(dir, 8);
+    const extra = ['--page', '--json'];
+
+    // The budget is half the page measured at the CALLER's ratio, so one arm has room and the other
+    // should not -- and both are asked the same question.
+    const wholeAtCjk = asc(
+      [
+        'explore',
+        SPEC.name,
+        ...extra,
+        '--max-tokens',
+        '1000000',
+        '--chars-per-token',
+        String(CJK_CHARS_PER_TOKEN),
+      ],
+      dir,
+    );
+    expect(wholeAtCjk.status).toBe(0);
+    const budget = Math.ceil(measuredTokensAt(wholeAtCjk.stdout, CJK_CHARS_PER_TOKEN) / 2);
+
+    // Arm one, the shipped ratio: it reports a fit, and at the measured CJK ratio the bytes are over
+    // the budget. This is the defect the bead was filed for, reproduced end to end rather than
+    // asserted -- and note that it is `estimated_tokens`'s own honesty check that would pass.
+    const shipped = asc(['explore', SPEC.name, ...extra, '--max-tokens', String(budget)], dir);
+    expect(shipped.status).toBe(0);
+    const shippedTrim = envelope(shipped.stdout).trim;
+    expect(shippedTrim?.chars_per_token).toBe(CHARS_PER_TOKEN);
+    expect(shippedTrim?.estimated_tokens).toBeLessThanOrEqual(budget); // "it fits"
+    expect(measuredTokensAt(shipped.stdout, CJK_CHARS_PER_TOKEN)).toBeGreaterThan(budget); // it does not
+
+    // Arm two, the caller's ratio: same budget, same corpus, and the ceiling holds at the ratio the
+    // corpus was actually measured at.
+    const corrected = asc(
+      [
+        'explore',
+        SPEC.name,
+        ...extra,
+        '--max-tokens',
+        String(budget),
+        '--chars-per-token',
+        String(CJK_CHARS_PER_TOKEN),
+      ],
+      dir,
+    );
+    expect(corrected.status).toBe(0);
+    const correctedTrim = envelope(corrected.stdout).trim;
+    expect(correctedTrim?.chars_per_token).toBe(CJK_CHARS_PER_TOKEN);
+    expect(correctedTrim?.estimated_tokens).toBe(
+      measuredTokensAt(corrected.stdout, CJK_CHARS_PER_TOKEN),
+    );
+    expect(measuredTokensAt(corrected.stdout, CJK_CHARS_PER_TOKEN)).toBeLessThanOrEqual(budget);
   });
 });

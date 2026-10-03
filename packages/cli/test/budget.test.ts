@@ -329,3 +329,73 @@ describe('budget: the answer is re-measured rather than trusted', () => {
     expect(() => fitToBudget(req)).toThrow(/not monotone in the row count/);
   });
 });
+
+/**
+ * `--chars-per-token` -- the ratio as something the caller sets (asc-squ).
+ *
+ * The shipped ratio of 2 is "below the smallest ratio measured for ascend's OWN OUTPUT". A caller
+ * whose content is not ascend's output has no way to say so, and for CJK the gap is not marginal:
+ * `docs/evidence/EV-13.md` measured 0.79 code points per token across three real tokenizers, so at 2
+ * the estimate is ~2.5x low and the budget stops being a ceiling. That is a false green of exactly
+ * the class the rest of this file is built to catch -- "this output fits" said about an output that
+ * does not -- which is why the ratio is threaded through the estimator rather than applied afterwards
+ * to the number it produced.
+ *
+ * Two things are asserted here that are easy to get wrong independently. The ratio must reach the
+ * FIXED POINT (the report's own size is measured at the same ratio as everything else, or the number
+ * it prints is not the size of the text it is printed in), and omitting the ratio must be
+ * byte-identical to today -- every existing caller passes nothing, so a default that moved would
+ * silently change every output in the CLI.
+ */
+describe('budget: a caller-settable ratio (asc-squ)', () => {
+  it('defaults to CHARS_PER_TOKEN, so a caller that names no ratio emits today’s bytes', () => {
+    const implicit = fitToBudget(request(40, 2000));
+    const explicit = fitToBudget(request(40, 2000, 1, { charsPerToken: CHARS_PER_TOKEN }));
+    expect(explicit.text).toBe(implicit.text);
+    expect(implicit.trim.chars_per_token).toBe(CHARS_PER_TOKEN);
+  });
+
+  it('estimates with the ratio it is given, including a ratio below one', () => {
+    const text = 'x'.repeat(10);
+    expect(estimateTokens(text, 4)).toBe(3); // ceil(10 / 4)
+    expect(estimateTokens(text, 1)).toBe(10);
+    // Below one is the case that matters: CJK measured 0.79 and emoji 0.33, so a rule that refused a
+    // sub-1 ratio would refuse exactly the corpora this flag exists for.
+    expect(estimateTokens(text, 0.5)).toBe(20);
+  });
+
+  it('fits fewer rows when the ratio says each character costs more', () => {
+    // Same budget, same fixture, one assumption changed. A ratio of 1 is twice as expensive as 2, so
+    // the largest fit must be strictly smaller -- if it were not, the ratio had not reached the search.
+    const atTwo = fitToBudget(request(40, 2000, 1, { charsPerToken: 2 }));
+    const atOne = fitToBudget(request(40, 2000, 1, { charsPerToken: 1 }));
+    expect(atOne.value.rows.length).toBeLessThan(atTwo.value.rows.length);
+    expect(atOne.trim.estimated_tokens).toBeLessThanOrEqual(2000);
+  });
+
+  it('reports the ratio it used, and the fixed point holds at every ratio', () => {
+    for (const ratio of [0.33, 1, 2, 3.5]) {
+      const fitted = fitToBudget(request(40, 2000, 1, { charsPerToken: ratio }));
+      // The assumption is auditable, which is what `Trim.chars_per_token` is for.
+      expect(fitted.trim.chars_per_token).toBe(ratio);
+      // The invariant `settle` asserts in shipped code, re-derived here through the public surface:
+      // the number reported IS the size of the text it was printed in, at this ratio.
+      expect(fitted.trim.estimated_tokens).toBe(estimateTokens(fitted.text, ratio));
+      expect(fitted.trim.estimated_tokens).toBeLessThanOrEqual(2000);
+    }
+  });
+
+  it('under-counts a CJK fixture at the default and is a ceiling at the measured ratio', () => {
+    // Ground truth is EV-13's measurement, not this test's arithmetic: CJK at 0.79 code points per
+    // token, three real tokenizers, ascend's own outputs (docs/evidence/EV-13.md). The fixture is
+    // frozen at 1,000 code points so the implied token count is a constant a reader can check.
+    const CJK_CHARS_PER_TOKEN = 0.79;
+    const doc = '漢'.repeat(1000);
+    const trueTokens = Math.ceil(countCodePoints(doc) / CJK_CHARS_PER_TOKEN); // 1266
+    expect(trueTokens).toBe(1266);
+    // The defect asc-squ was filed for: at the shipped ratio the estimate is under half the real cost.
+    expect(estimateTokens(doc)).toBeLessThan(trueTokens / 2);
+    // And at the measured ratio it is a ceiling rather than an under-estimate.
+    expect(estimateTokens(doc, CJK_CHARS_PER_TOKEN)).toBeGreaterThanOrEqual(trueTokens);
+  });
+});

@@ -639,12 +639,28 @@ function propertyTopRows(property: PropertyProfile): readonly Row[] {
   });
 }
 
+/**
+ * The two flags that configure a fit, read together and passed as one value.
+ *
+ * **Bundled so that a call site cannot mismatch them.** Every mode builds its `BudgetRequest` locally
+ * and hands it to `builtText`; if the budget came from one variable and the ratio from another, a mode
+ * could apply `--max-tokens` while silently dropping `--chars-per-token` -- an output reported as
+ * fitting when it does not, which is the precise failure this flag exists to remove. One object makes
+ * that unrepresentable. `charsPerToken` is optional so the unset case is the same shape as the set
+ * one, rather than a second code path.
+ */
+interface BudgetFlags {
+  readonly maxTokens: number;
+  readonly charsPerToken?: number;
+}
+
 export default class Explore extends BaseCommand {
   static override description = 'Profile an entry type: the map, before any rows.';
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> verification_run',
     '<%= config.bin %> <%= command.id %> skill_activation --json',
+    '<%= config.bin %> <%= command.id %> note --max-tokens 2000 --chars-per-token 0.79',
   ];
 
   static override args = {
@@ -680,6 +696,14 @@ export default class Explore extends BaseCommand {
     'max-tokens': Flags.integer({
       description:
         'Fit the output to a context budget, dropping rows and reporting what it dropped.',
+    }),
+    'chars-per-token': Flags.string({
+      description:
+        'With --max-tokens: the code points per token to estimate with, for content that is not ' +
+        "ascend's own output. Default 2, the floor measured for ascend. Denser scripts are far " +
+        'lower -- CJK measured 0.79, emoji 0.33 -- and at the default their output is estimated ' +
+        '~2.5x too small, so the budget it reports fitting is not one it fits. Any number above 0 ' +
+        'is accepted; the ratio is echoed on the report as chars_per_token.',
     }),
     dump: Flags.string({
       description:
@@ -742,15 +766,16 @@ export default class Explore extends BaseCommand {
    * other mode builds and emits in one step, because nothing else has a side effect to order against.
    */
   private builtText<T>(
-    budget: number | undefined,
-    request: Omit<BudgetRequest<T>, 'maxTokens'>,
+    budget: BudgetFlags | undefined,
+    request: Omit<BudgetRequest<T>, 'maxTokens' | 'charsPerToken'>,
   ): string {
     if (budget === undefined) {
       return request.render(request.build(request.requested), undefined);
     }
     try {
-      // The fitted text, not a re-render of it -- see `Fitted.text`.
-      return fitToBudget({ ...request, maxTokens: budget }).text;
+      // The fitted text, not a re-render of it -- see `Fitted.text`. The flags are spread whole, so a
+      // call site cannot pass a budget from one place and a ratio from another.
+      return fitToBudget({ ...request, ...budget }).text;
     } catch (error) {
       if (error instanceof BudgetFloorError) throw usageError(error.message);
       throw error;
@@ -759,8 +784,8 @@ export default class Explore extends BaseCommand {
 
   /** `builtText`, written. The two steps are separate only for the modes that have a disk to order against. */
   private emitBuilt<T>(
-    budget: number | undefined,
-    request: Omit<BudgetRequest<T>, 'maxTokens'>,
+    budget: BudgetFlags | undefined,
+    request: Omit<BudgetRequest<T>, 'maxTokens' | 'charsPerToken'>,
   ): void {
     this.emitText(this.builtText(budget, request));
   }
@@ -779,6 +804,38 @@ export default class Explore extends BaseCommand {
         `--max-tokens must be a whole number of tokens, at least 1. Got ${String(budget)}.`,
       );
     }
+
+    // The ratio, read here so it is validated before any mode does its own work. It is a STRING flag
+    // because the useful values are not integers -- CJK is 0.79 -- and validated by parsing rather
+    // than by a numeric parser that would round 0.79 to 0 or 1.
+    const ratioRaw = this.optionalFlag(flags['chars-per-token']);
+    const charsPerToken = ratioRaw === undefined ? undefined : Number(ratioRaw);
+
+    if (ratioRaw !== undefined && budget === undefined) {
+      throw usageError(
+        '--chars-per-token only applies to --max-tokens. The ratio is the assumption the fit ' +
+          'estimates with, so without a budget there is nothing for it to estimate against. Add ' +
+          '--max-tokens <n>, or drop --chars-per-token.',
+      );
+    }
+
+    // **The bound is 0, not 1, and that is the whole point of the flag.** CJK measured 0.79 code
+    // points per token, Korean 0.90, Japanese 0.96, emoji 0.33 -- all below one -- so a floor of 1
+    // would refuse exactly the corpora the ratio exists for. Zero and below, and anything that is not
+    // a finite number, are refused: they are not a denser assumption, they are a broken one, and
+    // letting them through would divide by zero or emit `Infinity` tokens.
+    if (charsPerToken !== undefined && (!Number.isFinite(charsPerToken) || charsPerToken <= 0)) {
+      throw usageError(
+        `--chars-per-token must be a positive number of code points per token. Got ` +
+          `${String(ratioRaw)}. A ratio BELOW 1 is expected rather than wrong -- CJK measures 0.79, ` +
+          'emoji 0.33 -- so the bound is 0, not 1.',
+      );
+    }
+
+    const budgetFlags: BudgetFlags | undefined =
+      budget === undefined
+        ? undefined
+        : { maxTokens: budget, ...(charsPerToken === undefined ? {} : { charsPerToken }) };
 
     // CSV is refused rather than silently trimmed, and the reason is the shape of the format. Every
     // other output has somewhere to say that rows went missing -- `--json` has the `trim` block,
@@ -989,7 +1046,13 @@ export default class Explore extends BaseCommand {
 
         // Everything is built and measured BEFORE anything is written, so `--dry-run` and a real
         // dump report the same numbers, and a failure to plan cannot leave a half-written directory.
-        const plan = planDump(chunks, { type: args.type, order: CURSOR_ORDER });
+        const plan = planDump(
+          chunks,
+          { type: args.type, order: CURSOR_ORDER },
+          // The same ratio the fit below uses, so `chars_per_token` on the manifest describes the
+          // numbers on the manifest rather than the default the caller overrode.
+          budgetFlags?.charsPerToken,
+        );
         const target = resolve(process.cwd(), dumpDir);
         const rows = plan.manifest.files.map((file) => dumpFileRow(file, dryRun));
 
@@ -999,7 +1062,7 @@ export default class Explore extends BaseCommand {
         // left a complete five-file dump behind it. The caller asked a question the command declined
         // to answer, and their filesystem changed anyway -- the same defect class as reporting success
         // wrongly, one step further out. The text is built here and written below.
-        const text = this.builtText(budget, {
+        const text = this.builtText(budgetFlags, {
           requested: rows.length,
           // Zero for an empty dump, one otherwise -- and the difference is the message, not the fit.
           // A floor above what the output holds changes nothing about what is emitted (slicing an
@@ -1130,7 +1193,7 @@ export default class Explore extends BaseCommand {
           filter !== undefined || struck,
         );
 
-        this.emitBuilt(budget, {
+        this.emitBuilt(budgetFlags, {
           requested: rows.length,
           // The header rows state what the table IS (the population, and each axis's shape); a
           // budget that cannot afford them cannot afford a crosstab at all.
@@ -1232,7 +1295,7 @@ export default class Explore extends BaseCommand {
           return { rows, sample: chosen.sample };
         };
 
-        this.emitBuilt(budget, {
+        this.emitBuilt(budgetFlags, {
           requested: request.size,
           // One row is the smallest sample the sampler accepts (`SampleSizeError` below that), and a
           // sample of zero would say nothing about the population while still costing a report.
@@ -1319,7 +1382,7 @@ export default class Explore extends BaseCommand {
           }
         };
 
-        this.emitBuilt(budget, {
+        this.emitBuilt(budgetFlags, {
           requested: flags.limit ?? DEFAULT_PAGE_SIZE,
           // Pages cannot be empty: `pageEntries` refuses a limit below one with a `PageSizeError`,
           // so a budget too small for a single entry has no legal page to fall back to.
@@ -1419,7 +1482,7 @@ export default class Explore extends BaseCommand {
       // and only once they are gone, the version rows. That is the cheap-to-expensive order: a
       // property the budget could not afford is one `--json` lookup away, while the counts and the
       // range are what the map was asked for.
-      this.emitBuilt(budget, {
+      this.emitBuilt(budgetFlags, {
         requested: rows.length,
         floor: header,
         build: (keep) => rows.slice(0, keep),

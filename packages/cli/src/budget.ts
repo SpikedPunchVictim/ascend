@@ -81,7 +81,14 @@
  * emitted -- is asserted in the shipped code rather than only in a test.
  */
 
-/** Code points per token, below the smallest ratio measured for ascend's own output. */
+/**
+ * Code points per token, below the smallest ratio measured for ascend's own output.
+ *
+ * **The default, not a constant the estimator is stuck with.** It is right for ascend's own output
+ * and it is what every caller got before `charsPerToken` existed; a caller fitting other content
+ * passes their own ratio, because for CJK this number is ~2.5x too high and the budget stops being a
+ * ceiling. See `estimateTokens` and `BudgetRequest.charsPerToken`.
+ */
 export const CHARS_PER_TOKEN = 2;
 
 /**
@@ -161,14 +168,21 @@ export function countCodePoints(text: string): number {
 }
 
 /**
- * The estimated token count for `text`.
+ * The estimated token count for `text`, at `charsPerToken` code points per token.
  *
  * Rounded UP, because a budget is a ceiling: an output of one character over the ratio is one token
  * as far as a context window is concerned, and truncating the remainder would let a long tail of
  * partial tokens accumulate under the limit.
+ *
+ * **The ratio is a parameter because `CHARS_PER_TOKEN` is a claim about one corpus.** It is the floor
+ * measured for ascend's *own output* (`docs/evidence/EV-13.md`), and content that is not ascend's
+ * output can be far denser than that: the same measurement puts CJK at 0.79 code points per token, so
+ * at the default the estimate is ~2.5x low and the budget is not a ceiling at all. A caller who knows
+ * their content passes their own ratio; a caller who does not gets exactly the behaviour this
+ * function had before the parameter existed.
  */
-export function estimateTokens(text: string): number {
-  return Math.ceil(countCodePoints(text) / CHARS_PER_TOKEN);
+export function estimateTokens(text: string, charsPerToken: number = CHARS_PER_TOKEN): number {
+  return Math.ceil(countCodePoints(text) / charsPerToken);
 }
 
 /** What to fit. `T` is whatever the command builds -- a page, a sample, a list of map rows. */
@@ -200,6 +214,17 @@ export interface BudgetRequest<T> {
   readonly keysOf?: (built: T) => readonly string[];
   /** What a row is called in a refusal, singular and plural. */
   readonly noun: readonly [string, string];
+  /**
+   * Code points per token for THIS content, when the caller has a better number than the default.
+   *
+   * Absent means `CHARS_PER_TOKEN`, which is what every caller passed implicitly before this existed.
+   * Set it when the corpus is not ascend's own output -- see `estimateTokens`. It is used for every
+   * measurement inside the fit, including the fixed point, so the number the report prints is the
+   * size of the text the report is printed in at the caller's own ratio. Validation lives at the CLI
+   * boundary (`usageError`), not here: this is arithmetic, and a fit asked for a nonsense ratio
+   * should compute nonsense rather than throw from inside the estimator.
+   */
+  readonly charsPerToken?: number;
 }
 
 /** The outcome of a fit: what to emit, and the report that goes with it. */
@@ -259,20 +284,24 @@ function settle<T>(
   readonly trim: Trim;
   readonly text: string;
 } {
+  // ONE ratio for the whole fixed point. If the report's `chars_per_token` and the estimate that
+  // filled `estimated_tokens` could differ, the invariant asserted below would compare two different
+  // questions and the report would describe a string nobody emitted.
+  const ratio = request.charsPerToken ?? CHARS_PER_TOKEN;
   const base: Omit<Trim, 'estimated_tokens'> = {
     max_tokens: request.maxTokens,
     dropped,
-    chars_per_token: CHARS_PER_TOKEN,
+    chars_per_token: ratio,
     ...(keys === undefined ? {} : { dropped_keys: keys }),
   };
 
   // Pass 0: measure the output with a report of the right shape but a placeholder count, so the
   // first estimate is already within a few characters of the answer.
-  let guess = estimateTokens(request.render(built, { ...base, estimated_tokens: 0 }));
+  let guess = estimateTokens(request.render(built, { ...base, estimated_tokens: 0 }), ratio);
   let text = request.render(built, { ...base, estimated_tokens: guess });
 
   for (let pass = 0; pass < 4; pass += 1) {
-    const next = estimateTokens(text);
+    const next = estimateTokens(text, ratio);
     if (next === guess) break;
     guess = next;
     text = request.render(built, { ...base, estimated_tokens: guess });
@@ -285,10 +314,10 @@ function settle<T>(
   // render WITHOUT the report and then added the report, and `--max-tokens 400` emitted an output
   // reporting `estimated_tokens: 401`. That is a false green, and it is the reason this is an
   // assertion in the shipped code rather than a line in a test.
-  if (estimateTokens(text) !== guess) {
+  if (estimateTokens(text, ratio) !== guess) {
     throw new Error(
       `budget: the report says ${String(guess)} tokens for an output that measures ` +
-        `${String(estimateTokens(text))}, so the fixed point did not settle`,
+        `${String(estimateTokens(text, ratio))}, so the fixed point did not settle`,
     );
   }
 

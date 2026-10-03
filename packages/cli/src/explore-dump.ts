@@ -27,6 +27,11 @@
  * that stated its own cost would have to be measured after that field was added, so the number would
  * change the thing it measures -- the fixed point `budget.ts` had to iterate to find, and a
  * self-reference this index does not need, since the caller is already holding it.
+ *
+ * **The ratio is a parameter, and it has to be the same one the fit used.** `chars_per_token` on the
+ * manifest is the assumption every `tokens` figure rests on, so a dump asked to measure its files at
+ * a caller's ratio must state that ratio rather than the default -- otherwise one output carries two
+ * assumptions and the file sizes are priced at one the caller did not ask for.
  */
 
 import type { RecordedEntry } from '@ascend/store';
@@ -170,14 +175,18 @@ function chunkText(entries: readonly RecordedEntry[]): string {
  * that computed its sizes by a different path would be a preview of a dump nobody was going to get.
  * It also puts the whole feature under a unit test, since nothing here touches a disk.
  */
-export function planDump(chunks: readonly DumpChunk[], filter: DumpFilter): DumpPlan {
+export function planDump(
+  chunks: readonly DumpChunk[],
+  filter: DumpFilter,
+  charsPerToken: number = CHARS_PER_TOKEN,
+): DumpPlan {
   const files: DumpPlanFile[] = chunks.map((chunk, index) => {
     const text = chunkText(chunk.entries);
     return {
       name: chunkName(index, chunks.length),
       text,
       count: chunk.entries.length,
-      tokens: estimateTokens(text),
+      tokens: estimateTokens(text, charsPerToken),
     };
   });
 
@@ -189,7 +198,7 @@ export function planDump(chunks: readonly DumpChunk[], filter: DumpFilter): Dump
     filter,
     count,
     file_tokens: fileTokens,
-    chars_per_token: CHARS_PER_TOKEN,
+    chars_per_token: charsPerToken,
     files: chunks.map((chunk, index) => {
       const range = recordedRange(chunk.entries);
       return {
