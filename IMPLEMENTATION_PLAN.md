@@ -3154,10 +3154,19 @@ enumerates (`proportion.ts:199`, `output.ts:181`). Three corrections:
 chi-square, log-odds, FP-growth support/confidence, CUSUM changepoints); scheme isolation;
 immutability of annotated entries.
 
-**EV-constraints carried in:** the tautology check and temporal-block control required by
-`EV-patterns` (see Stage 1). Statistics must include the shuffled-label control that produced the
-`tool_name × project` verdict, plus the explicit limitation that it catches marginal-driven artifacts
-but not definitional ones.
+**EV-constraints carried in — AMENDED 2026-10-02, on verifying `asc-xgo` against the tree: two of the
+three are UNBUILT, and the third is unmet on the surface it is stated about.** The tautology check and
+the temporal-block control required by `EV-patterns` (`docs/evidence/EV-patterns.md:126-138`) exist
+nowhere in `packages/*/src` — `grep -rniE "tautolog|temporal.block|functional.depend|within.day"`
+returns nothing, and no bead tracked them; filed as `asc-fwpe`. `asc-xgo.1`'s close reason asserts a
+"NEW REQUIREMENT FOR E7" for an effective-sample-size / pseudoreplication check; `grep -riE
+"pseudoreplic|effective.sample"` returns nothing and no bead tracked it either; filed as `asc-0hys`.
+The shuffled-label control that produced the `tool_name × project` verdict **is** present and
+test-pinned (`association.ts:509`, `association.test.ts:327-379`), but `asc stats` cannot reach it —
+`rankAssociations` takes a single argument at `stats.ts:387`, so `permutations` defaults to 0 and the
+report omits `pPermuted`; filed as `asc-jpka`, which also carries the "catches marginal-driven but not
+definitional artifacts" limitation that lives only in EV-patterns and not in the module. The finding is
+recorded as `dogfood/0055`.
 
 **Empirical gate:** `asc-9an [EMPIRICAL]` — brief size vs recording rate. This was Stage 0's Q6, and
 the **primary failure mode** of the whole product: an empty database. Per `empirical-planning` it was
@@ -3174,8 +3183,13 @@ keep the hook for that job and stop claiming the other one"* — the second half
 recording) and what survives (the selection job). E8: 7/8 children, with the criteria amended above —
 retraction (`asc-k6p.2`) stays **deferred** by owner decision (2026-09-28) on an unfired trigger that
 `asc-k6p.3` actively relied on, and the two unbuilt capabilities are filed (`asc-cx9w` replay a stored
-scheme, `asc-4uex` drop one). **E7 (`asc-xgo`) is 9/9 complete and eligible for close**; left open
-because it was not in scope for this pass.
+scheme, `asc-4uex` drop one). **E7 (`asc-xgo`) — verified 2026-10-02, and not as sound as its 9/9 children
+suggest.** The nine children are genuinely complete, test-pinned and CLI-reachable, which is why the
+epic read as eligible for close; but the epic's own criteria carry the three EV-constraints above, and
+none of the three is built. It was in fact **already closed** (2026-09-18, close reason `Closed`); this
+line previously said "left open", which the tracker contradicted, and that is corrected here —
+`dogfood/0055`. Re-closed with a reason that names the gaps; the gaps are filed (`asc-fwpe`,
+`asc-0hys`, `asc-jpka`).
 
 ---
 
