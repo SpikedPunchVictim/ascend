@@ -3244,6 +3244,72 @@ claim about it is unproven and must be labelled as such.
 
 ---
 
+## Stage E13: the JSONL merge guard — `asc-98e1`
+
+**Goal** — a commit cannot silently lose a record. `asc store verify` refuses a record tree that
+carries conflict markers, that holds an unparseable line, or whose record-id set is not a superset of
+each baseline's. The guard reads git objects read-only and writes nothing.
+
+**Why the lost-id half is the load-bearing one (measured, not assumed).** EV-31 and
+`spike/git-layout/FINDINGS.md` W3 measured the failure mode: a resolution that picks one side of an
+append-only conflict leaves **well-formed JSONL** — every line parses, no markers, no duplicate ids —
+with the other side's appends silently gone (5 expected, 4 present, `rb0` absent, 0 unparseable
+lines). So a markers-and-parse check passes exactly the case that loses the record; only comparing id
+sets catches it. `git pull --rebase --autostash` is the worse path: it exited 0 with 3 conflict-marker
+lines in the file and the local records in the stash.
+
+**Decision (owner, 2026-10-02).** A new `asc store verify` command, not a hook installed by ascend:
+`core.hooksPath` is a single value that beads already owns in this repo, so a command is the only
+shape that a pre-commit hook, CI, and a human can all call. This is ascend's first invocation of the
+`git` binary — read-only (`ls-tree`, `cat-file`, `rev-parse`) — and that dependency is stated in the
+module rather than implied.
+
+**Success Criteria** — each of the three refusals fires on a fixture; a clean `merge=union` merge
+passes with 0 records lost; the lost-id refusal names the missing id(s) and the baseline that holds
+them; `--staged` checks what a commit would contain against `HEAD` (+ `MERGE_HEAD`) and `--against
+<ref>` overrides the baseline for CI; `--json` carries the same content as a versioned shape; exit 0
+clean, 1 on any refusal; nothing is ever written.
+
+**Tests** — `packages/cli/test/record-guard.test.ts`: the pure guard against literal text (markers,
+unparseable lines, a lost id, a clean superset, a legitimately *grown* set). `packages/cli/test/store-verify.test.ts`: the real binary against scratch git repositories, driving a genuine three-way
+merge — a clean `merge=union` merge passes; a naive one-side resolution is REFUSED with the id named;
+a conflicted file with markers is refused; a corrupt line is refused. The `--help` example and the
+`--json` shape are pinned.
+
+**Status: Complete** (2026-10-02, `asc-98e1`) — **buildable, tested, and verified against a real merge;
+NOT yet wired into this repo's own gate, which is filed and open (`asc-9flv`).** Three modules: the
+pure `record-guard.ts` (text in, refusals out — no git, no filesystem), the impure `git-records.ts`
+(ascend's first invocation of the `git` binary, read-only), and the command `commands/store/verify.ts`.
+
+Tests: 20, across `record-guard.test.ts` (11) and `store-verify.test.ts` (9, driving the **built
+binary** against scratch git repositories that run a **genuine three-way merge** — not a fixture
+hand-writing the "after" state, because the defect EV-31 measured is produced by a real resolution and
+a fixture would only prove the guard reads a tree). Suite 126 files / 2946 passed / 2 skipped,
+typecheck 0, lint 0, `format:check` 0, `align` green.
+
+**Two things the plan did not foresee, both found by driving the real binary rather than by a test.**
+(1) A clean run printed `fatal: Needed a single revision`: `execFileSync` inherits the child's stderr,
+so `git rev-parse --verify MERGE_HEAD` finding no merge leaked git's `fatal:` before an otherwise clean
+note — a false alarm on a successful command, from a guard whose whole job is to be trusted. Fixed with
+`stdio: ['ignore','pipe','pipe']` at all three call sites; recorded as `dogfood/0056`, and the fix is
+what makes the caught error carry the real message. It is the *first* finding in the series from
+ascend code that runs a subprocess, so the class had no way to reach the product before this stage.
+(2) `emit` renders the table header even for zero rows — house style, the same shape `asc doctor`
+emits for a clean store — so the clean-run assertion is "no `lost-id`/`unreadable-line` rows", not
+"no bytes"; the first draft asserted the latter and was wrong about its own command.
+
+Verified on this repo's own store: `22 record file(s), 10754 record id(s), 1 baseline(s) — no conflict
+markers, no unreadable lines, no lost record ids`, exit 0, **no `fatal:` on stderr**. Cost is bounded
+by the store's own rollover, not its record count: one `git cat-file` per record FILE and
+`MAX_RECORDS_PER_FILE` is 5,000, so 10,000 records is a handful of subprocesses. Stated rather than
+assumed: **the guard protects nothing until something calls it.** The repository whose store is most at
+risk runs it in no hook and no CI step, so the criterion "a commit cannot silently lose a record" is
+met by the *capability* and not yet by the *repository*. `asc-9flv` carries the wiring, including the
+two things to measure rather than assume: what the added invocation costs inside an already-513s gate,
+and whether the hook can rely on `dist/` being built.
+
+---
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.
