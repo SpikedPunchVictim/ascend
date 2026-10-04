@@ -3428,6 +3428,54 @@ artifact by re-reading it (its own post-conditions, not its writes). Full gate g
 (baselined debt 20 → 20). Not done here: nothing was wired into CI, and the guard still cannot see a
 commit made on a forge or in a web editor — which is what `asc-kq2f` exists to decide.
 
+## Stage E16: the forge's web conflict editor — `asc-kq2f`
+
+`EV-31` measured the server-side PR **merge button** on Forgejo 10.0.3 and GitHub and found every cell
+refuses loudly: nothing lost, nothing corrupted. A refusal leaves a human as the only way such a PR
+can land, so `asc-kq2f` asks the follow-up the bead named in advance — **does the web conflict editor
+honour `merge=union`?** — plus the arm it did not name, VS Code, which is the one GUI client installed
+on this machine.
+
+The fixture is `spike/git-layout/union-fixture.sh` unchanged (two bases differing only in
+`.gitattributes`). The harness is a new pair, `spike/git-layout/union-forge-editor.mjs` and
+`union-forge-editor-drive.mjs`, which stage a cell over the REST API and hand the conflicted PR to a
+real browser — `puppeteer-core` 25.12.0 driving the system Chrome, so the arm adds a driver and no
+browser download. `puppeteer-core` is a **devDependency accepted into `.align/baseline.json`** for
+`security.manifest.new-dependency`: an owner decision, written where that rule keeps such decisions,
+so `align` is green by acceptance rather than red or provisionally green. The arm stays checked in
+because this stage's central claim is an **absence**, and a later Forgejo may grow the editor.
+`records.jsonl` is read back **from the server** after every action, never from the client's report,
+because the failure being hunted is well-formed JSONL with appends silently gone.
+
+**The surface does not exist.** Measured five ways and recorded in full in `EV-40.md`: the
+`/pulls/:index/conflicts` route 404s; the conflicted PR page renders **zero** controls, its only
+affordance a collapsed block of command-line instructions; the binary's symbol table — verified intact
+against control symbols — carries `/pulls/{index}` and no `/conflicts`, no `ConflictEditor`, no
+`conflicts.tmpl`; no config key disables one; and no i18n string for a resolve control exists.
+`EV-31`'s context had carried the belief that the Gitea family ships such an editor at that path; the
+belief is wrong for this version.
+
+The arm also caught a defect **in itself**, which is the reason it is written down: it merged PR a
+immediately, Forgejo returned `"Please try again later"` because it evaluates mergeability lazily, the
+PR did not merge, PR b was therefore trivially mergeable, and the editor 404'd. Had the arm only asked
+whether the page loaded, it would have reported a clean cell for a PR that was never in the conflicted
+state. Reading `records.jsonl` from the server and finding `ra0` absent is what exposed it. The harness
+now settles PR a before merging and **throws** on a refused merge.
+
+**Status**: **Complete (2026-10-03), with its scope boundary stated plainly.** Forgejo 10.0.3's web
+conflict editor is recorded **NOT REACHABLE — surface absent**, explicitly not `0`; `EV-31`'s
+server-side refusal reproduces on a fresh container on both bases (`mergeable=false` on the
+union-declaring tree, while command-line `git` on that same tree merges clean to 5 records).
+**Still UNMEASURED, never `0`:** GitHub's own web conflict editor, GitHub Desktop and JetBrains (not
+installed), and **VS Code** — installed and reachable, but an Electron GUI that `puppeteer` cannot
+drive, so it needs its own mechanism and was not driven. **Gate green**: 126 files / 2,959 passed /
+2 skipped, typecheck 0, lint 0, `format:check` 0, `align` verdict green with baselined debt
+**20 → 21** — the one added entry being the accepted devDependency, not a suppressed violation.
+Nothing here demonstrates a need for `asc store verify` in CI: every reachable forge surface either
+refuses loudly or delegates to `git`, which honours the attribute. And this is a statement about one
+version of one product — Forgejo 10.0.3 — not about GitHub's editor, which is a different
+implementation.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.

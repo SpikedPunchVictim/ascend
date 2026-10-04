@@ -114,6 +114,14 @@
       "contentFingerprint": "f9fbbfe1b80d3f5a"
     },
     {
+      "fingerprint": "b65472f085de78b7",
+      "ruleId": "security.manifest.new-dependency",
+      "file": "package.json",
+      "acceptedAt": 1791097103531,
+      "acceptedBy": "manual",
+      "contentFingerprint": "cf0be43de3e387fc"
+    },
+    {
       "fingerprint": "ba1f69d6d56ae5a3",
       "ruleId": "security.manifest.new-dependency",
       "file": "packages/adapter-claude-code/package.json",
