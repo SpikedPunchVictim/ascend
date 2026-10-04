@@ -3476,6 +3476,60 @@ refuses loudly or delegates to `git`, which honours the attribute. And this is a
 version of one product — Forgejo 10.0.3 — not about GitHub's editor, which is a different
 implementation.
 
+## Stage E17: VS Code's conflict resolution — `asc-kq2f`
+
+E16 closed the forge half of `asc-kq2f` and left VS Code UNMEASURED with a reason that turned out to be
+wrong: *"an Electron GUI that `puppeteer` cannot drive."* `puppeteer` cannot drive VS Code the way it
+drives a page — but it can **attach**. Launched with `--remote-debugging-port`, VS Code exposes the
+Chrome DevTools Protocol, and `puppeteer.connect({ browserURL })` reaches the real workbench, its real
+command palette and its real merge-conflict extension. This stage exists because the reason E16 gave
+for not measuring VS Code was a guess about a mechanism, and the guess was cheap to test.
+
+`spike/git-layout/union-vscode-arm.mjs` is the harness: `--setup` builds both cells from the same
+fixture seed, `--drive` runs **Merge Conflict: Accept All Current** — the naive one-sided resolution,
+chosen over *Accept Current* because it resolves every conflict regardless of cursor position — in
+each. Every reading is taken from `records.jsonl` **on disk** after the drive, never from the editor's
+own report.
+
+**The control is the part that makes the result mean anything.** `plain` was predicted to lose `rb0`
+*before it ran*, and does: 4 records, no markers, every line parsing — the silent-loss shape this
+series hunts, reproduced from the real GUI. Only then does the union cell's **no-op** (5 records, both
+appends, byte-identical before and after) count as a measurement rather than as an instrument that
+never looked.
+
+VS Code 1.139.0's merge code was read out of its own bundle rather than assumed. `merge`, `mergeBranch`
+and `mergeAbort` all shell to the **`git` binary** and so inherit `.gitattributes`. The one exception,
+`mergeFile` → `git merge-file -p <in1> <base> <in2>`, genuinely ignores the attribute — **measured**,
+on `base-union`, where `check-attr` confirms the attribute is live and the attribute is made to match
+the first argument's pathname, and it still conflicts. But `runGitMerge`, its only caller, returns
+unless the active tab is a `TabInputTextMerge`, i.e. a Merge Editor is already open on a conflict. The
+attribute-ignoring path is **downstream of the conflict it would have to cause**, and on `base-union`
+git produces no conflict to open one from.
+
+The arm never disables a security control: VS Code is launched in **single-file mode** (`--goto`, no
+workspace folder), which raises no Workspace Trust prompt at all, so `--disable-workspace-trust` is
+never passed and the guard stays fully in force. Two instrument defects were found by running rather
+than by reading, both the same class as E16's `[type="submit"]` note: `page.keyboard.press('Meta+s')`
+fails — `puppeteer-core` 25's CDP `press` does not split a `+`-joined chord, it asserts
+`Unknown key: "Meta+s"` — and the first `--setup` **deleted its own seed**, because `WORK` was the
+seed's parent and `setup` opens with `rmSync(WORK, {recursive:true})`. The second failed loudly instead
+of measuring an empty directory, which is the only reason it is a note and not a silently wrong number.
+
+**Status**: **Complete (2026-10-04), with its scope boundary stated plainly.** VS Code 1.139.0 is
+recorded **clean / 0 lost on `base-union`** (`EV-41.md`), with the control cell reproducing the loss
+shape first. `EV-41` states its bounds rather than hiding them: in the union cell the merge was
+performed by command-line `git` **on purpose**, because that is the binary VS Code delegates to — the
+cell measures that VS Code adds no conflict of its own on top of git's clean merge, not that a VS Code
+merge path ran; and the resolution was saved but never staged, which is sufficient here because the
+loss is already in the file at that point. The Merge Editor's own accept commands are **not** measured:
+reaching them needs a workspace folder and therefore the trust prompt, and on `base-union` there is
+nothing for them to open on — reasoned from the gating, not driven. **Gate green**: 126 files / 2,959
+passed / 2 skipped, typecheck 0, lint 0, `format:check` 0, `align` verdict green with baselined debt
+**21 → 21** — no dependency change, so no new baseline entry. With this, every client surface for
+`asc-kq2f` that could be reached has been reached and none loses a record on a tree declaring
+`merge=union`; **GitHub's own web conflict editor, GitHub Desktop and JetBrains remain UNMEASURED,
+never `0`**. This is one version of one product on macOS.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.
