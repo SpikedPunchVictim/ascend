@@ -3530,6 +3530,42 @@ passed / 2 skipped, typecheck 0, lint 0, `format:check` 0, `align` verdict green
 `merge=union`; **GitHub's own web conflict editor, GitHub Desktop and JetBrains remain UNMEASURED,
 never `0`**. This is one version of one product on macOS.
 
+## Stage E18: rebase and cherry-pick under `merge=union` — `asc-3ow4`, P3
+
+`asc-3ow4` wrote three predictions before exercising any non-CLI merge path. Two have now been
+refuted by measurement — P2 by the forge arms (squash is refused, because the mergeability gate runs
+before a strategy is chosen) and **P3 here**. P3 predicted that `git rebase` and `git cherry-pick`
+would conflict on `base-union` where the equivalent merge is clean, reasoning from `gitattributes(5)`:
+
+> git itself does not use merge drivers during rebase/cherry-pick, so the driver cannot save it.
+
+Every server-side arm refused at the mergeability gate before any strategy ran, so P3 was never
+exercised and stayed *"untested, not confirmed"* through EV-31, EV-40 and EV-41. The claim is about
+**command-line git**, so it needs no forge, no credentials and no browser — it was left open for want
+of a run, not for want of reach.
+
+`spike/git-layout/union-rebase-arms.sh` runs `merge` / `rebase` / `cherry-pick` on both fixture bases,
+plus all three rebase backends on `base-union`. **P3 is refuted on git 2.50.1**: every operation on
+`base-union` is clean at 5 records with both appends, all three backends agree, and the identical
+operations still conflict on `base-plain` — so the driver is isolated rather than assumed. On the
+conflicting control, a naive one-sided resolution drops an append on every operation, which is the
+shape this series hunts; on `base-union` no conflict arises, so no resolution is ever reached.
+
+Two of this bead's three predictions were refuted by **reasoning from documented behaviour the
+implementation does not follow**, which is the generalizable lesson and is why the arm is checked in:
+the claim is version-dependent git behaviour with no other record of it. The arm found three defects
+in itself, one of which — `git cherry-pick -q` — was a real flag that does not exist (exit **129**,
+tree untouched), which reads exactly like a clean merge with no appends; it was caught by reading an
+exit code rather than an output.
+
+**Status**: **Complete (2026-10-04).** `EV-42.md` records the measurement and its bounds. With this,
+**every git and forge path measured across EV-31 / EV-40 / EV-41 / EV-42 either honours the driver or
+refuses loudly**, so the merge guard is still **not** promoted to CI on this evidence — the threshold
+being a path that ignores the driver *and* still merges. `asc-3ow4` closes with its last open
+prediction resolved and its remaining unmeasured surfaces (GitHub's web conflict editor, GitHub
+Desktop, JetBrains) carried to their own bead. **Gate green**: 126 files / 2,959 passed / 2 skipped,
+typecheck 0, lint 0, `format:check` 0, `align` verdict green with baselined debt **21 → 21**.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.
