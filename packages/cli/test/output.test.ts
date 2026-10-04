@@ -1,4 +1,4 @@
-import { wilson } from '@ascend/analysis';
+import { clusterDesign, wilson } from '@ascend/analysis';
 import {
   OUTPUT_CONTRACT_VERSION,
   render,
@@ -594,6 +594,76 @@ describe('renderProportion', () => {
       }
     }
     expect(failures).toEqual([]);
+  });
+});
+
+/**
+ * The clustering correction, at the renderer (asc-0hys).
+ *
+ * The renderer is where "which N was this computed at" reaches a reader, and it is the ONLY place
+ * the correction can reach one -- a design that exists in the analysis layer and never reaches a
+ * string has not been made. Two things are pinned here and they pull in opposite directions: a
+ * corrected line must state both the observed n and the n it is worth, and an UNCORRECTED line must
+ * print exactly the bytes it always did, because every existing surface passes no design and must
+ * not move.
+ */
+describe('renderProportion with a clustering design', () => {
+  const OUTCOMES = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+  /** Twenty entries from ONE session: the effective N is 1, the observed count is still 20. */
+  const ONE_SESSION = clusterDesign(
+    OUTCOMES,
+    Array.from({ length: 20 }, () => 'only'),
+  );
+
+  /** The same twenty entries, one per session: nothing is clustered, so nothing is corrected. */
+  const TWENTY_SESSIONS = clusterDesign(
+    OUTCOMES,
+    Array.from({ length: 20 }, (_, index) => `s${String(index)}`),
+  );
+
+  it('states the effective N and the clusters behind it, and flags the effective N', () => {
+    // Hand-derived, not read off the implementation: with k=1 the design takes the conservative
+    // bound, so deff = 1 + (20 - 1) * 1 = 20 and n_eff = 1. The interval is `wilson`'s own formula
+    // at n = 1: denom = 1 + z^2 = 4.84145882, center = (0.5 + z^2/2)/denom = 0.5 exactly,
+    // margin = z * sqrt(0.25 + z^2/4)/denom = 0.445391 -> 5.4609 and 94.5391.
+    //
+    // Asserted as the WHOLE LINE, because these bytes are the contract: a renderer that quietly
+    // gained a nested `))` or dropped a comma would still satisfy `toContain` on every fragment of
+    // itself. The marker names n=1 rather than the observed 20 -- flagging on the raw n would print
+    // `n=20 < 20` beside a flag that fired, which contradicts itself.
+    expect(renderProportion(wilson(10, 20, 0.95, ONE_SESSION))).toBe(
+      '50.0% (95% CI 5.5-94.5%, n=20, effective n=1 over 1 cluster, deff 20.0)  ' +
+        '[SMALL GROUP n=1 < 20 -- treat as anecdote, not estimate]',
+    );
+  });
+
+  it('says nothing about a correction when the design corrects nothing', () => {
+    // n_eff equals n and deff is exactly 1, so this is byte-identical to the uncorrected rendering
+    // (the spike anchor, `wilson(25, 100)`, is the other arm of the same claim). Stamping `deff 1.0`
+    // on every uncorrected row is noise that trains a reader to skip the field that matters -- and
+    // this is the arm that fails if the `designEffect > 1` guard is dropped.
+    expect(renderProportion(wilson(10, 20, 0.95, TWENTY_SESSIONS))).toBe(
+      '50.0% (95% CI 29.9-70.1%, n=20)',
+    );
+  });
+
+  it('states the correction without the small-group marker when the effective N clears it', () => {
+    // Thirty clusters of two, each constant inside itself: rho estimates to 1, m = 2, so
+    // deff = 1 + (120/60 - 1) = 2 and n_eff = 30. The correction is real and is stated; 30 clears
+    // the threshold, so no marker. The discrimination is the point -- the flag follows the EFFECTIVE
+    // n in both directions, not merely in the direction that adds a warning.
+    const thirtyClusters = clusterDesign(
+      [...Array.from({ length: 30 }, () => 1), ...Array.from({ length: 30 }, () => 0)],
+      Array.from({ length: 60 }, (_, index) => `c${String(Math.floor(index / 2))}`),
+    );
+    const rendered = renderProportion(wilson(30, 60, 0.95, thirtyClusters));
+    expect(rendered).toContain('effective n=30');
+    expect(rendered).toContain('30 clusters');
+    expect(rendered).toContain('deff 2.0');
+    // The observed count is still there beside it, so the two Ns can be compared.
+    expect(rendered).toContain('n=60,');
+    expect(rendered).not.toContain('SMALL GROUP');
   });
 });
 

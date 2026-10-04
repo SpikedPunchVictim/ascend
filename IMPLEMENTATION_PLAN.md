@@ -3877,10 +3877,45 @@ reviews carry `n_eff = 4` and must read as an anecdote.
 The refusals are deliberate: a design whose `n` disagrees with the `n` argument is two different
 populations in one call, and `wilson(5, 3, 0.95, design)` must not quietly average them.
 
-`renderProportion` (`packages/cli/src/output.ts`) appends the correction **only when present**:
-`61.6% (95% CI 54.4-68.3%, n=3866, effective n=735 over 31 sessions)`.
+`renderProportion` (`packages/cli/src/output.ts`) appends the correction **only when present**, and
+only when it moved something (`designEffect > 1`), so an uncorrected line is byte-identical to today's.
 
-**Status**: Not started.
+**Status**: Complete (2026-10-04). `Proportion` carries `readonly design?: ClusterDesign` — **absent,
+not `undefined`**, since `--json` would otherwise show every consumer a field with no information, and
+the absence is what tells the renderer to print today's bytes. `wilson` gained the 4th parameter and
+computes `effectiveN = design?.effectiveN ?? n`; `successes`, `n` and `p` stay raw, `smallGroup` is
+judged on `effectiveN`, and a design whose `n` disagrees is refused with `ProportionError` naming both
+populations. 5 tests in `proportion.test.ts`, 3 in `cli/test/output.test.ts`.
+
+**Two corrections to this plan's own text, both found by building it.** (1) The example line above was
+wrong: the shipped format says `clusters`, not `sessions` — the cluster key is caller-supplied and may
+be a calendar day, so the renderer must not name a session — and it carries `deff` as well:
+`50.0% (95% CI 5.5-94.5%, n=20, effective n=1 over 1 cluster, deff 20.0)`. The first draft of the
+renderer nested the deff in its own parens inside the CI parens (`... deff 20.0))`), which the
+whole-line assertion caught. (2) The measured table above is a **snapshot, not a constant**: re-running
+`spike/e22-clustering.mjs` the same day, after this session's own entries were ingested, reads
+`verdict=passed` as N=3870 / k=31 / deff 5.20 / n_eff 744, where the table says 3866 / 31 / 5.26 / 735.
+The probe is the live source; quote it, not this page. For today's numbers the correction fragment
+renders `n=3870, effective n=744 over 31 clusters, deff 5.2` and the interval half-width goes
+**3.1pp -> 7.1pp**.
+
+**Bind-checked by mutation, all four arms caught** (a green test that cannot fail is worth nothing,
+and this stage added a parameter whose default must not change any existing output): `smallGroup` on
+the raw `n` fails 1; computing the interval at raw `n` fails 2; rewriting `n` itself to `n_eff` fails
+1; printing the correction when `deff === 1` fails 1. Full gate green: **128 files / 2989 passed /
+2 skipped**, typecheck 0, lint 0, `align` green.
+
+**One thing this stage cost, worth recording.** Writing the renderer's tests, I created
+`packages/cli/test/output.test.ts` under the belief — carried in from a compacted session, and stated
+as a verified fact — that no such file existed. **It did: 659 lines, 55 tests**, covering table
+clipping, CSV neutralisation and the grapheme-cluster rule. The write replaced it with 5 tests, and
+**the gate stayed green** at `128 files / 2936 passed`; the file count was unchanged, so nothing in
+the gate's own output said a test had died. It surfaced only by noticing the pass count disagreed with
+a number from earlier in the session. Restored from `HEAD`, the 3 design tests merged into the
+existing `renderProportion` block (which already had 8 of its own), and verified by name-diffing every
+touched file against `HEAD`: **0 names lost, 3 added**. The lesson is not "read before you write" —
+it is that **a test count is a measurement that needs a stored baseline**, because a deleted test and
+a passing test are the same word in the gate's output.
 
 ### Stage 3 — one surface, driven end to end
 

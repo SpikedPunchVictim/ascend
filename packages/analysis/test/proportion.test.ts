@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isSmallGroup, ProportionError, wilson, type Proportion } from '../src/index.js';
+import {
+  clusterDesign,
+  isSmallGroup,
+  ProportionError,
+  wilson,
+  type Proportion,
+} from '../src/index.js';
 
 /**
  * `proportion.ts` -- the port of `spike/lib/stats.mjs`, checked against the spike's own anchors.
@@ -288,5 +294,78 @@ describe('minimum-N flagging', () => {
       if (w === null) continue;
       expect(w.smallGroup).toBe(isSmallGroup(n));
     }
+  });
+});
+
+/**
+ * The clustering correction, carried on the interval (asc-0hys).
+ *
+ * The design moves the interval to an effective N; it rewrites nothing else. These tests pin BOTH
+ * halves of that, because the tempting bug is to move `n` as well -- and a caller who can no longer
+ * see the count that was observed cannot tell a corrected interval from a mismeasured one.
+ */
+describe('a clustering design, carried on the interval', () => {
+  const OUTCOMES = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+  /** Twenty entries from ONE session: no within-cluster degrees of freedom, so the bound applies. */
+  const ONE_SESSION = clusterDesign(
+    OUTCOMES,
+    Array.from({ length: 20 }, () => 'only'),
+  );
+
+  /** The same twenty entries, one per session: clustering cannot matter. */
+  const TWENTY_SESSIONS = clusterDesign(
+    OUTCOMES,
+    Array.from({ length: 20 }, (_, index) => `s${String(index)}`),
+  );
+
+  function width(proportion: Proportion | null): number {
+    if (proportion === null) throw new Error('expected an estimate');
+    return proportion.upper - proportion.lower;
+  }
+
+  it("is the bead's own acceptance: k entries from one session against k from k sessions", () => {
+    // "the corrected N is smaller and the interval wider". Twenty entries from one session cannot say
+    // how much sessions differ, so they carry one observation's worth of information; twenty entries
+    // from twenty sessions carry twenty.
+    expect(ONE_SESSION.effectiveN).toBe(1);
+    expect(TWENTY_SESSIONS.effectiveN).toBe(20);
+
+    const clustered = wilson(10, 20, 0.95, ONE_SESSION);
+    const independent = wilson(10, 20, 0.95, TWENTY_SESSIONS);
+    expect(width(clustered)).toBeGreaterThan(width(independent));
+  });
+
+  it('keeps the observed counts and the point estimate, and adds the design beside them', () => {
+    // The interval moves to the effective N; `successes`, `n` and `p` do not. A reader has to be able
+    // to see both the count that was observed and the count it is actually worth.
+    const corrected = wilson(10, 20, 0.95, ONE_SESSION);
+    expect(corrected?.successes).toBe(10);
+    expect(corrected?.n).toBe(20);
+    expect(corrected?.p).toBeCloseTo(0.5, 12);
+    expect(corrected?.design).toBe(ONE_SESSION);
+  });
+
+  it('leaves an uncorrected interval with no design property at all', () => {
+    // Not `design: undefined` as an own key: the ABSENCE is what tells a renderer to print today's
+    // bytes, and an own undefined would be a field every `--json` consumer sees and has to handle.
+    expect(wilson(10, 20)).not.toHaveProperty('design');
+  });
+
+  it('judges the small-group flag on the effective N, which is the whole point', () => {
+    // Twenty observations is the threshold and is not a small group. The SAME twenty from one session
+    // is worth one and is. Flagging on the raw n would print a confident interval over what the
+    // correction says is a single observation.
+    expect(wilson(10, 20)?.smallGroup).toBe(false);
+    expect(wilson(10, 20, 0.95, ONE_SESSION)?.smallGroup).toBe(true);
+  });
+
+  it('refuses a design computed over a population the count does not come from', () => {
+    // The design's n and the n argument describe the same observations, or the caller has paired a
+    // correction with a count it was not computed from -- two populations inside one call, which is
+    // exactly the mislabelled denominator this bead exists to remove.
+    const overThree = clusterDesign([1, 0, 1], ['a', 'a', 'b']);
+    expect(() => wilson(1, 2, 0.95, overThree)).toThrow(ProportionError);
+    expect(() => wilson(1, 2, 0.95, overThree)).toThrow(/3/u);
   });
 });

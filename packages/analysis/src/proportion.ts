@@ -42,9 +42,23 @@
  *      estimate)` rendering becomes the rendering of an honest absence rather than a cover for a
  *      dishonest zero.
  *
+ * WHY A DESIGN SITS ON THE RESULT (asc-0hys). A Wilson interval assumes its observations are
+ * independent, and a session contributes many of them -- so the N the interval was computed at is
+ * frequently not the N that was counted. `wilson` takes an optional `ClusterDesign` and computes the
+ * interval at the EFFECTIVE n, while `successes`, `n` and `p` stay the observed counts: a reader has
+ * to be able to see both the count that was observed and the count it is actually worth, or a
+ * corrected interval is indistinguishable from a mismeasured one. `smallGroup` is judged on the
+ * effective n, because that is the number the judgement is about.
+ *
+ * A design that corrects nothing is not stored, so every caller that passes none keeps today's
+ * arithmetic and today's bytes -- which is what lets the correction arrive without moving every
+ * number in the store.
+ *
  * Pure: no `fs`, no clock, no network, no Node builtin at all (enforced by `align check` and
  * `purity-enforcement.test.ts`). Nothing here draws a random number, so there is no seed.
  */
+
+import type { ClusterDesign } from './design-effect.js';
 
 /** Minimum group size below which a proportion is an anecdote, not an estimate. */
 export const MIN_N = 20;
@@ -111,6 +125,19 @@ export interface Proportion {
    * to print its qualification with it.
    */
   readonly smallGroup: boolean;
+  /**
+   * The clustering design the interval was computed at, when one was supplied.
+   *
+   * ABSENT, not `undefined`, on an uncorrected interval. The absence is what tells a renderer to
+   * print today's bytes -- and an own `design: undefined` would be a field every `--json` consumer
+   * sees and has to handle for no information. `exactOptionalPropertyTypes` is what makes the
+   * distinction enforceable rather than a convention.
+   *
+   * Present, it is the whole record of the correction: `successes`, `n` and `p` above are still the
+   * OBSERVED counts, so a reader who has both can see what was counted and what it is worth. Keep
+   * `design.effectiveN`, not `n`, for any question about how much evidence the interval rests on.
+   */
+  readonly design?: ClusterDesign;
 }
 
 /**
@@ -195,23 +222,50 @@ function checkCounts(successes: number, n: number): void {
  * rather than asserting it of the arithmetic behind it.
  *
  * `null` for `n = 0`, never a zero-valued interval. See the module comment, departure 2.
+ *
+ * `design` IS OPTIONAL AND THE DEFAULT IS TODAY'S ARITHMETIC EXACTLY. Omitted, `effectiveN` is `n`
+ * and every expression below is the one that was here before -- so the correction arrives without
+ * moving a single number that nothing asked it to move. Supplied, the interval is computed at
+ * `design.effectiveN` while `successes`, `n` and `p` stay the observed counts, and `smallGroup` is
+ * judged on the effective n: a group of 20 that is worth 1 is a small group, and flagging on the raw
+ * n would print a confident interval over what the correction says is one observation.
+ *
+ * A design over a different population is REFUSED rather than ignored. `design.n !== n` means the
+ * caller has paired a correction with a count it was not computed from, and quietly using it would
+ * produce an interval carrying a denominator neither of them measured -- the mislabelled N this
+ * bead exists to remove, reintroduced at the one place it would be hardest to see.
  */
-export function wilson(successes: number, n: number, confidence: number = 0.95): Proportion | null {
+export function wilson(
+  successes: number,
+  n: number,
+  confidence: number = 0.95,
+  design?: ClusterDesign,
+): Proportion | null {
   checkCounts(successes, n);
   if (!isConfidenceLevel(confidence)) {
     throw new ProportionError(
       `confidence must be one of ${Object.keys(Z_BY_CONFIDENCE).join(', ')}, got ${String(confidence)}`,
     );
   }
+  if (design !== undefined && design.n !== n) {
+    throw new ProportionError(
+      `the design was computed over ${String(design.n)} observations but n is ${String(n)}: the correction and the count must describe the same population, or the interval would be computed at a denominator neither of them measured.`,
+    );
+  }
 
   if (n === 0) return null;
+
+  // The one number the correction moves. Everything else -- the counts, the point estimate -- is
+  // what was observed, and stays that way.
+  const effectiveN = design?.effectiveN ?? n;
 
   const z = Z_BY_CONFIDENCE[confidence];
   const p = successes / n;
   const z2 = z * z;
-  const denom = 1 + z2 / n;
-  const center = (p + z2 / (2 * n)) / denom;
-  const margin = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom;
+  const denom = 1 + z2 / effectiveN;
+  const center = (p + z2 / (2 * effectiveN)) / denom;
+  const margin =
+    (z * Math.sqrt((p * (1 - p)) / effectiveN + z2 / (4 * effectiveN * effectiveN))) / denom;
 
   return {
     successes,
@@ -220,6 +274,7 @@ export function wilson(successes: number, n: number, confidence: number = 0.95):
     lower: Math.max(0, Math.min(p, center - margin)),
     upper: Math.min(1, Math.max(p, center + margin)),
     confidence,
-    smallGroup: isSmallGroup(n),
+    smallGroup: isSmallGroup(effectiveN),
+    ...(design === undefined ? {} : { design }),
   };
 }

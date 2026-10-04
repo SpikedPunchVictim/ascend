@@ -175,6 +175,16 @@ export function renderCoverage(coverage: Coverage): string {
  * columns or opening the CSV under a non-UTF-8 default. The prescription's meaning -- percentage,
  * then interval, then n -- is unchanged by the character.
  *
+ * THE CORRECTION IS PRINTED ONLY WHEN THERE IS ONE (asc-0hys). When the proportion carries a
+ * `design` whose interval actually moved, the line gains `, effective n=<n_eff> over <k> clusters
+ * (deff <d>)` -- the observed count AND the count it is worth, because a reader shown only `n=735`
+ * cannot tell a corrected interval from a mismeasured one. When there is no design, or the design's
+ * effect is exactly 1, the bytes are EXACTLY what they always were: a correction that changed nothing
+ * must not move the output, and a `deff 1.0` stamped on every uncorrected row is noise that trains a
+ * reader to skip the field that matters. The small-group marker names the EFFECTIVE n, since that is
+ * the number the judgement was made on -- a marker reading `n=20 < 20` beside a flag that fired would
+ * contradict itself.
+ *
  * `null` renders as the spike rendered it, `n=0 (no estimate)`, which is now the rendering of an
  * honest absence rather than a cover for a fabricated zero. See `proportion.ts`, departure 2.
  */
@@ -189,10 +199,21 @@ export function renderProportion(proportion: Proportion | null): string {
   const pct = (100 * proportion.p).toFixed(1);
   const low = (100 * proportion.lower).toFixed(1);
   const high = (100 * proportion.upper).toFixed(1);
-  const line = `${pct}% (${level} CI ${low}-${high}%, n=${String(proportion.n)})`;
+
+  // A design whose effect is exactly 1 corrected nothing, and is treated as absent -- so the
+  // uncorrected rendering above is reachable by exactly one code path, not two that could drift.
+  const design = proportion.design;
+  const moved = design !== undefined && design.designEffect > 1 ? design : undefined;
+  const effectiveN = moved === undefined ? proportion.n : Math.round(moved.effectiveN);
+  const correction =
+    moved === undefined
+      ? ''
+      : `, effective n=${String(effectiveN)} over ${String(moved.clusters)} ${moved.clusters === 1 ? 'cluster' : 'clusters'}, deff ${moved.designEffect.toFixed(1)}`;
+
+  const line = `${pct}% (${level} CI ${low}-${high}%, n=${String(proportion.n)}${correction})`;
 
   return proportion.smallGroup
-    ? `${line}  [SMALL GROUP n=${String(proportion.n)} < ${String(MIN_N)} -- treat as anecdote, not estimate]`
+    ? `${line}  [SMALL GROUP n=${String(effectiveN)} < ${String(MIN_N)} -- treat as anecdote, not estimate]`
     : line;
 }
 
