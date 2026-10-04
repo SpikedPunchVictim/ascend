@@ -3766,6 +3766,146 @@ verdict green.
 it and `--from-log` on a fresh clone reads whatever that machine has ingested, or nothing. And nothing
 yet **ages out** the log — this stage makes the count survive the transcript, not the log itself.
 
+## Stage E22: an effective sample size for clustered entries — `asc-0hys`
+
+**The gap.** `asc-xgo.1`'s close reason asserted a "NEW REQUIREMENT FOR E7" for an
+effective-sample-size / pseudoreplication check, `EV-patterns.md:225-230` names it, and E7 was closed
+without it. Measured 2026-10-02 (`grep -riE "pseudoreplic|effective.sample|dwell" packages/*/src`)
+it was never built and no bead tracked it. The failure it exists for: a significance test assumes
+independent observations, and a session contributes many entries — so treating them as independent
+inflates N and shrinks every p-value.
+
+**Measured first, because the correction's SIZE decides its design.** One-way ANOVA intraclass
+correlation on this repo's own store, `deff = 1 + (Σmᵢ²/N − 1)·ρ`:
+
+| outcome | N | sessions k | ρ | deff | **n_eff** | 95% CI half-width |
+|---|---|---|---|---|---|---|
+| `verification_run.verdict=passed` | 3866 | 31 | 0.009 | 5.3 | **735** | 3.1 → 7.2pp |
+| `context_compaction.trigger=auto` | 1044 | 39 | 0.562 | 36.2 | **29** | 3.6 → 22.2pp |
+| `tool_denial.tool_name=Bash` | 760 | 39 | 0.095 | 8.0 | **95** | 4.1 → 11.8pp |
+| `skill_activation.skill=bug-hunt` | 236 | 33 | 0.158 | 4.9 | **48** | 9.9 → 21.6pp |
+| `review_finding.verdict=CONFIRMED` | 142 | 5 | 0.968 | 38.4 | **4** | 13.2 → 65.0pp |
+
+Two of the five drop below `MIN_N = 20` and become anecdotes: the correction is not cosmetic. The
+bead's motivating claim reproduces and is sharper than stated — `tool_denial`'s largest session is
+155 of 760 (20%), but **`recorded_at` 2026-09-28 alone holds 534 of 760 denials (70%)** across 17
+sessions, and `verification_run` holds 2391 of 3866 on one day. A calendar-day key therefore clusters
+harder than a session key, so the cluster key is **the caller's**, never the library's.
+
+**Two of the probes behind that table were wrong, and both looked plausible.** Recorded because a
+wrong number would have gone straight into the design: (1) `sum(c*c)` over a window subquery summed
+c² *per row*, and each row carried its session's size, so it computed Σmᵢ³ — off by one power;
+(2) `case when verdict then 1 else 0 end` returned **0 for `'passed'`**, because SQLite converts text
+to a number for the boolean test and `'passed'` casts to 0 — a probe silently measuring an all-zero
+outcome. The probe now **asserts its own invariants** (`deff ≥ 1`, `n_eff ≤ N`, `n_eff ≤ k` at ρ=1)
+and throws rather than printing anything impossible, which is what caught the third error: using the
+ANOVA sum-of-squares helper `A = Σsᵢ²/mᵢ` where the size factor `Σmᵢ²` was needed, giving `deff = 0.9`.
+
+**The structural constraint.** `packages/analysis` has **no session concept** — `session_id`,
+`agent_id` and the string `session` appear nowhere in `packages/analysis/src`, and that is correct:
+the package is pure and harness-neutral. The correction therefore takes **opaque caller-supplied
+cluster keys**, exactly like `AssociationColumn.name` and `NamedSeries.name`. Separately, the base
+`entries` table has **no `session_id` column** — it lives in `properties_json`, declared per type — so
+**9 of the 16 views have no cluster key at all** (`decision`, `note`, `evidence_record`, `search_miss`,
+`stage_transition`, `stuck_event`, `hand_empty`, `review_completed`). Where it exists (the derived
+types) it is 100% populated: measured 0 nulls on `tool_denial`'s 760 rows. The correction is available
+for the derived types and must refuse, by name, everywhere else.
+
+### Stage 1 — the correction, pure (`packages/analysis/src/design-effect.ts`)
+
+**Not `cluster.ts`.** That name is taken by lexical clustering (TF-IDF, silhouette); this is a
+statistical design effect and gets its own module rather than sharing a name with an unrelated one.
+
+```ts
+export interface ClusterDesign {
+  readonly n: number;             // observations
+  readonly clusters: number;      // k distinct keys
+  readonly largestCluster: number;
+  readonly rho: number;           // the intraclass correlation actually used
+  readonly rhoSource: 'estimated' | 'assumed-perfect' | 'inapplicable';
+  readonly designEffect: number;  // ≥ 1, always
+  readonly effectiveN: number;    // n / designEffect, ≤ n, always
+}
+export function clusterDesign(outcomes: readonly number[], clusters: readonly string[]): ClusterDesign
+```
+
+**The fallback is the load-bearing part.** ρ is only estimable when `k ≥ 2` and `n > k` (the
+within-cluster mean square needs degrees of freedom). Otherwise — a single session, or every cluster a
+singleton — the conservative size-only bound is used: `ρ = 1`, `deff = Σmᵢ²/N`, and `rhoSource` says
+`'assumed-perfect'` so a reader can tell an assumption from a measurement. This is what makes the
+bead's own fixture work: 20 entries from **one** session collapse to `n_eff = 1`, because you cannot
+learn between-session variance from one session. A third value, `'inapplicable'`, covers the
+all-singleton sample, where the size factor is 1 and the correction is 1 for *any* rho — reporting an
+estimated rho there would dress a quantity with zero degrees of freedom as a measurement.
+
+**The universal invariant is `n_eff ≤ clusters` at ρ = 1** (Cauchy–Schwarz), and the probe checks it.
+`ρ` is clamped to `[0, 1]` because the ANOVA estimator can go slightly negative on real data, and a
+negative ρ would *shrink* the interval — an invented precision, the exact opposite of the point.
+
+**Tests (RED first)**, hand-computable anchors rather than the implementation's own output:
+- 3 clusters of 2, `[1,1],[1,1],[1,0]` → ρ **exactly 0**, deff 1, n_eff 6. The outcome that is
+  independent of the cluster must not be "corrected".
+- 4 clusters of 2, `[1,1],[1,0],[0,0],[0,1]` → ρ = 1/7, deff = 8/7, n_eff = 7.
+- 2 clusters of 3, `[1,1,1],[0,0,0]` → ρ = 1, deff = 3, n_eff = 2 = k.
+- **The bead's acceptance, verbatim**: k entries from 1 session vs. k from k sessions — corrected N
+  smaller and the interval wider.
+- 20 singleton clusters → deff 1, n_eff 20, for any outcomes.
+- Refusals: mismatched lengths, a non-0/1 outcome, `n = 0`, and a design whose `n` disagrees with the
+  count it is applied to.
+
+**Status**: Complete (2026-10-04). `clusterDesign` in `design-effect.ts`, exported from `index.ts` with
+`ClusterDesign`, `ClusterDesignError` and `RhoSource`. **11 tests**, RED first (all failing on the
+absent module), and **bind-checked by mutation — both arms measured, neither assumed**: forcing
+`rhoSource` to always read `'estimated'` fails **2**, and dropping the `[0,1]` clamp fails **2**.
+
+One claim in this plan was **wrong when checked and is corrected here**: it said the clamp mutation
+would fail "the exact-0 anchor". It does not — at that anchor the raw estimate is only ≈ −4×10⁻¹⁶,
+which `toBeCloseTo(1, 12)` accepts. The clamp is instead pinned by a case where the estimator is
+exactly **−1** (`[1,0] [1,0]`: MSB 0, MSW 0.5), where an unclamped rho makes `deff = 0` and the
+interval would be computed at `n_eff = ∞`. That case was **added**, which is why the arm now fails 2
+rather than 1 — the mutation found a gap in the test, not a gap in the code.
+
+### Stage 2 — `wilson` carries it, and the renderer states it
+
+**The N a p-value or an interval was computed at is part of the answer.** `Proportion` gains
+`readonly design?: ClusterDesign`, and `wilson(successes, n, confidence = 0.95, design?)` computes
+the interval at `n_eff` **while `successes`, `n` and `p` stay raw** — so no call site changes, the
+existing 53,118-case census still holds, and a caller who passes no design gets today's bytes exactly.
+`smallGroup` is judged on **effective** n, because that is the whole point: 142 findings from 5
+reviews carry `n_eff = 4` and must read as an anecdote.
+
+The refusals are deliberate: a design whose `n` disagrees with the `n` argument is two different
+populations in one call, and `wilson(5, 3, 0.95, design)` must not quietly average them.
+
+`renderProportion` (`packages/cli/src/output.ts`) appends the correction **only when present**:
+`61.6% (95% CI 54.4-68.3%, n=3866, effective n=735 over 31 sessions)`.
+
+**Status**: Not started.
+
+### Stage 3 — one surface, driven end to end
+
+`asc explore <type> --cluster <column>` corrects every Wilson row it prints and states which N it
+used; a column not on the view is refused **by name**. Narrow on purpose: the chi-square and
+permutation **p-values** in `asc stats` need a Rao–Scott correction, not a deff on N — genuinely
+different mathematics — and folding that in is the "shared substrate for three sibling controls" that
+`narrow` was chosen against. `asc stats --help` says so rather than leaving them silently uncorrected.
+
+**Status**: Not started.
+
+### Risks, plainly
+
+- **ρ is outcome-specific, so the correction is too.** The same entries give `deff = 5.3` for
+  `verdict=passed` and `36.2` for `trigger=auto`. A caller who reads one number as a property of the
+  type rather than of the question has the wrong model, and the report must not invite that.
+- **`n_eff` below `MIN_N` reclassifies existing output as anecdote.** On this store that is
+  `context_compaction.trigger=auto` (29) and `review_finding.verdict=CONFIRMED` (4). That is the
+  honest reading, and it will look like the tool got worse.
+- **The correction is unavailable for 9 of 16 types** and the absence is a property of the type
+  declaration, not of the data. Refusing by name is the only honest option; a zero would read as "no
+  clustering".
+- **A single session collapses to `n_eff = 1`.** Correct by the bound, drastic in effect, and it will
+  need saying out loud wherever it fires.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.

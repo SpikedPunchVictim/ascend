@@ -92,6 +92,13 @@ export {
 } from './proportion.js';
 
 export {
+  clusterDesign,
+  ClusterDesignError,
+  type ClusterDesign,
+  type RhoSource,
+} from './design-effect.js';
+
+export {
   AgreementError,
   cohenKappa,
   type Agreement,
