@@ -3391,6 +3391,43 @@ CJK ceiling), 1 in `explore-dump.test.ts` for the manifest's stated-versus-used 
 pre-existing budget assertion is untouched and green, which is the control arm for "omitting the ratio
 emits today's bytes".
 
+## Stage E15: the store guard runs in this repo's own gate — `asc-9flv`
+
+**Goal**: `asc-98e1` built `asc store verify` and nothing called it. Wire `asc store verify --staged`
+into `.githooks/pre-commit` — spliced into `.beads/hooks/pre-commit` by `scripts/install-hooks.mjs` —
+so the repository whose store is most at risk is the one the guard actually protects. Settle the
+freshness question the bead named in advance, and state the choice in the hook.
+
+**Tests**: `packages/cli/test/dev-hooks.test.ts` — the guard runs, asserted on the gate's own output,
+and a refusing guard blocks the commit without printing `ascend gate ok`. Both arms drive the real
+gate file, with **`node` stubbed the way `pnpm` already was** (delegating everything except the guard
+to the real node), because left real the guard would run against *this* checkout's index and the
+gate's control-flow test would quietly become a test of whatever happened to be staged.
+
+**Implementation**: the step sits **after `typecheck`** and not first, because `pnpm typecheck` runs
+`tsc -b` — which *is* this repo's build, the same command as `pnpm build` — so the binary is rebuilt
+from this working tree immediately before it runs.
+
+**The bead's premise was half right, and Q4b of `docs/evidence/EV-hooks.md` records which half.**
+`typecheck` really does not guarantee `dist`: measured, `pnpm typecheck` and `pnpm build` **both exit
+0 with an output file deleted**, because `.tsbuildinfo` carries an input list (`fileNames`,
+`fileInfos`) and no output list, so build mode has nothing to compare an output against and reports
+"up to date". Only `tsc -b --force` (2.0s) restores it. **Decision: the gate does not build
+defensively; it fails loudly** — a missing `dist` file makes the step exit **2** (`command
+store:verify not found`, measured), which blocks the commit. A guard that cannot find its own binary
+must not read like a guard that looked and found nothing, and skipping the check when `dist` looks
+stale would manufacture exactly the silent absence the guard exists to catch.
+
+**Status**: **Complete (2026-10-03).** Cost measured at **~1.0s** against this store — 22 record
+files, 10,810 ids, one baseline — and it reads git objects only, so that is node's startup rather
+than the store's size. The new test was **shown red first**: against the pre-`asc-9flv` gate file it
+fails with `expected '[pre-commit] format:check\n[pre-commi…' to contain '[pre-commit] store verify
+--staged'`, 1 failed / 5 passed. `node scripts/install-hooks.mjs` re-ran and verified the spliced
+artifact by re-reading it (its own post-conditions, not its writes). Full gate green: **126 files /
+2,959 passed / 2 skipped**, typecheck 0, lint 0, `format:check` 0, `align` verdict green
+(baselined debt 20 → 20). Not done here: nothing was wired into CI, and the guard still cannot see a
+commit made on a forge or in a web editor — which is what `asc-kq2f` exists to decide.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.

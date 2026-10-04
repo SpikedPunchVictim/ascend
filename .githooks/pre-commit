@@ -30,8 +30,8 @@
 #
 # Never bypassed: TASKS.md non-negotiable #5 forbids --no-verify and disabled tests.
 #
-#   fast  (default)  format check + typecheck + lint + test   (~10s)
-#   full             everything above + `align check`          (adds a repo scan)
+#   fast  (default)  format check + typecheck + store verify + lint + test   (~10s)
+#   full             everything above + `align check`                        (adds a repo scan)
 #
 # `align check` is not in the fast path because it re-scans the whole repo; it is
 # run by the `quality-gate` script and in CI. It is still part of the definition of
@@ -47,6 +47,22 @@
 
   echo "[pre-commit] typecheck"
   pnpm typecheck
+
+  # The store guard -- `asc store verify` (asc-98e1). It sits AFTER typecheck and not first,
+  # because `pnpm typecheck` runs `tsc -b`, which IS this repo's build, so the binary below has
+  # just been rebuilt from this working tree. Both claims here are measured (EV-hooks Q4):
+  #
+  #   * `asc store verify --staged` against this store: exit 0, ~1.0s, 22 record files / 10,810
+  #     ids. It reads git objects only, so the cost is node's startup, not the store's size.
+  #   * dist is still not GUARANTEED fresh. `.tsbuildinfo` records an input list and no output
+  #     list, so `tsc -b` cannot notice a deleted output -- measured by deleting dist/budget.js
+  #     and re-running both `pnpm typecheck` and `pnpm build`: each exited 0 with the file still
+  #     gone, and `tsc -b --force` was what restored it. In that state this step exits 2
+  #     (`command store:verify not found`, measured) and blocks the commit. That is the direction
+  #     it has to fail in: a guard that cannot find its own binary must not read like a guard that
+  #     looked and found nothing.
+  echo "[pre-commit] store verify --staged"
+  node packages/cli/dist/bin.js store verify --staged
 
   echo "[pre-commit] lint"
   pnpm lint

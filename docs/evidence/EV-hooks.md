@@ -188,6 +188,86 @@ That is now enforced twice over: the gate's own two-arm test above, and the exis
 `purity-enforcement.test.ts`, which drives the linter against a deliberate violation *and* a clean
 control for the same reason.
 
+### Q4 — the store guard: does it run in the gate, what does it cost, and what does `dist` guarantee? (`asc-9flv`)
+
+`asc-98e1` built `asc store verify` and nothing called it. Wiring it into the gate raised the two
+questions the bead named before any edit, and one it did not.
+
+**Q4a — the cost.** Measured against this store:
+
+```
+$ time node packages/cli/dist/bin.js store verify --staged
+Note: 22 record file(s), 10810 record id(s), 1 baseline(s) — no conflict markers, no unreadable
+lines, no lost record ids.
+node packages/cli/dist/bin.js store verify --staged   0.59s user 0.33s system   1.008 total
+$ echo $?
+0
+```
+
+**~1.0s**, and it reads git objects only, so that is node's startup rather than the store's size.
+
+**Q4b — "the command needs `dist/` built, which the gate's own typecheck step does not guarantee."**
+That is *half* right, and the half it gets wrong is load-bearing.
+
+`pnpm typecheck` is `tsc -b && tsc -p tsconfig.eslint.json`, and `tsc -b` **is** this repo's build —
+`pnpm build` is the same command. So in the ordinary case the step directly above the guard has just
+rebuilt `dist/` from this working tree, which is why the guard is placed after it rather than first.
+
+But "rebuilt what changed" is not "the tree is complete," and the difference is measurable:
+
+```
+$ rm packages/cli/dist/budget.js
+$ pnpm typecheck >/dev/null 2>&1; echo "typecheck exit=$?"; ls packages/cli/dist/budget.js
+typecheck exit=0
+ls: packages/cli/dist/budget.js: No such file or directory
+
+$ pnpm build >/dev/null 2>&1; echo "build exit=$?"; ls packages/cli/dist/budget.js
+build exit=0
+ls: packages/cli/dist/budget.js: No such file or directory
+
+$ ./node_modules/.bin/tsc -b --force >/dev/null 2>&1; echo "force exit=$?"; ls -l packages/cli/dist/budget.js
+force exit=0
+-rw-r--r--@ 1 spikedpunchvictim  staff  21656 ... packages/cli/dist/budget.js
+```
+
+**Both exit 0 with an output file missing.** The mechanism is in the artifact rather than the
+behaviour: `packages/cli/dist/.tsbuildinfo` carries `fileNames` and `fileInfos` — an **input** list —
+and no output list at all (`mentions budget.ts: true`, `mentions budget.js: false`), so build mode has
+nothing to compare an output against and reports "up to date." `--force` (2.0s) is what restores it.
+
+**Decision: the gate does not build defensively; it fails loudly, and the choice is stated in the
+hook.** A guard that cannot find its own binary exits **2** — measured by deleting
+`dist/commands/store/verify.js`:
+
+```
+$ node packages/cli/dist/bin.js store verify --staged
+ ›   Error: command store:verify not found
+$ echo $?
+2
+```
+
+Non-zero, so the commit is blocked. That is the direction this has to fail in: *a guard that cannot
+find its own binary must not read like a guard that looked and found nothing.* The alternative —
+skip the check when `dist` looks stale — manufactures exactly the silent absence the guard exists to
+catch, and `tsc -b --force` on every commit spends 2.0s to buy a guarantee that the loud failure
+already provides in the one state where it is needed.
+
+**Q4c — and the arm the bead did not name: is the guard wired in at all?** A step added to a gate is
+believed, so it is tested in both directions. `dev-hooks.test.ts` now stubs `node` the way it already
+stubbed `pnpm` — delegating everything except the guard's invocation to the real node — and asserts
+that the guard runs **and** that a refusing guard blocks the commit. **Shown red first**: against the
+pre-`asc-9flv` gate file the new test fails with
+
+```
+AssertionError: expected '[pre-commit] format:check\n[pre-commi…' to contain
+'[pre-commit] store verify --staged'
+     Tests  1 failed | 5 passed (6)
+```
+
+`node` is stubbed for the same reason `pnpm` is. Left real, the guard would run against *this*
+checkout's index, and the gate's control-flow test would quietly become a test of whatever happened
+to be staged — passing or failing for reasons that are not the gate.
+
 ## Decision
 
 **Q1: the `asc-l4q` close reason was wrong and has been corrected.** It claimed config contained no
@@ -226,6 +306,14 @@ pnpm hook:install      # -> node scripts/install-hooks.mjs
 
 It sets the path **relative** (`core.hooksPath=.beads/hooks`), so a future rename cannot repeat
 this. `pnpm hook:uninstall` removes the gate and leaves beads' hooks as they were.
+
+**Q4: the store guard is wired into the gate, after `typecheck`, and the gate fails loudly rather
+than skipping when it cannot find its own binary.** `asc-9flv`. Cost measured at ~1.0s; the `dist`
+stale case measured as exit 2, which blocks. The claim the bead inherited — that `typecheck` does not
+guarantee `dist` — is true in a narrower way than stated, and Q4b above records exactly how: `tsc -b`
+tracks inputs and no outputs, so it never notices a deleted one, while in the ordinary case it has
+just rebuilt everything that changed. The guard sits below it to use that rebuild, and the loud
+failure covers what the rebuild cannot.
 
 ## Confidence
 

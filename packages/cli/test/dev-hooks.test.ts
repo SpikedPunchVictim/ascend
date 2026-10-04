@@ -108,21 +108,46 @@ describe('git hook wiring', () => {
  * the subshell ran past a failing check, exited 0, and the gate printed
  * "ascend gate ok" with the suite red. Measured: `pnpm test` -> 1, gate -> 0.
  *
- * These two tests pin the behaviour that was wrong, driving the real gate file with
- * a stubbed `pnpm` so neither arm needs the real suite to pass or fail.
+ * These tests pin the behaviour that was wrong, driving the real gate file with a
+ * stubbed `pnpm` and a stubbed `node`, so no arm needs the real suite, the real
+ * binary, or this checkout's index to be in any particular state.
  */
 describe('pre-commit gate', () => {
-  /** Runs the real gate with a fake `pnpm` on PATH that exits `code`. */
-  function runGate(pnpmExitCode: number): { status: number | null; output: string } {
+  /**
+   * Runs the real gate with a fake `pnpm` on PATH that exits `pnpmExitCode`, and a fake
+   * `node` that exits `storeExitCode` for the store-guard invocation and delegates every
+   * other call to the real node.
+   *
+   * `node` is stubbed for the same reason `pnpm` is. Left real, the store guard would run
+   * against THIS checkout's index, and the gate's own control-flow test would become a test
+   * of whatever happens to be staged -- passing or failing for reasons that are not the gate.
+   */
+  function runGate(
+    pnpmExitCode: number,
+    storeExitCode: number = 0,
+  ): { status: number | null; output: string } {
     const bin = mkdtempSync(join(tmpdir(), 'asc-gate-'));
     const fakePnpm = join(bin, 'pnpm');
     writeFileSync(fakePnpm, `#!/bin/sh\nexit ${String(pnpmExitCode)}\n`, 'utf8');
     chmodSync(fakePnpm, 0o755);
 
+    const fakeNode = join(bin, 'node');
+    writeFileSync(
+      fakeNode,
+      '#!/bin/sh\n' +
+        '# Only the store guard is stubbed; anything else is the real node.\n' +
+        'case "$*" in\n' +
+        `  *packages/cli/dist/bin.js*) exit ${String(storeExitCode)} ;;\n` +
+        'esac\n' +
+        `exec ${JSON.stringify(process.execPath)} "$@"\n`,
+      'utf8',
+    );
+    chmodSync(fakeNode, 0o755);
+
     const result = spawnSync('sh', [join(root, '.githooks', 'pre-commit')], {
       cwd: root,
       encoding: 'utf8',
-      // Prepend, so the stub wins over the real pnpm. `git` is left real: the gate
+      // Prepend, so the stubs win over the real pnpm and node. `git` is left real: the gate
       // only uses it to find the toplevel, and this IS the toplevel.
       // Bracketed because `noPropertyAccessFromIndexSignature` is on: `PATH` is not a
       // declared member of `ProcessEnv`, so it comes from the index signature.
@@ -143,5 +168,17 @@ describe('pre-commit gate', () => {
     expect(output).toContain('commit blocked');
     // The specific false green: a passing summary printed over a failing run.
     expect(output).not.toContain('ascend gate ok');
+  });
+
+  it('runs the store guard, and blocks the commit when it refuses (asc-9flv)', () => {
+    // Asserted separately from "the gate fails at all": this is the one step that can lose
+    // data rather than only style, so an unwired guard is worth its own red.
+    const ran = runGate(0);
+    expect(ran.output).toContain('[pre-commit] store verify --staged');
+
+    const refused = runGate(0, 1);
+    expect(refused.status).not.toBe(0);
+    expect(refused.output).toContain('commit blocked');
+    expect(refused.output).not.toContain('ascend gate ok');
   });
 });
