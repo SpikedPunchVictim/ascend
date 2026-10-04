@@ -124,3 +124,13 @@ spike/tmp/
 .ascend/ascend.db-wal
 .ascend/ascend.db-shm
 .ascend/ingest-cursor.json
+
+# `.ascend/events/` is the event log (asc-igg8): the normalizer's output, written down so a handler
+# count survives the transcript it was replayed from. Untracked for a different reason than the
+# three above — it is not derived from the record tree and `asc index build` does not rebuild it.
+# The reason is the one written over `spike/tmp/`: it holds whole normalized events, which is to say
+# whole tool inputs and prompts, measured at ~1.33 MB/day over this project's corpus (`EV-39`), and
+# this repository is public. The cost is stated plainly rather than hidden: a clone does not carry
+# the log, so the counts it preserves are preserved on the machine that ingested. Committing tool
+# inputs to a public repository is the worse of the two, and it is not a close call.
+.ascend/events/

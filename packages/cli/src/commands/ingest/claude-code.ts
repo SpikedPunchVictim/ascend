@@ -142,6 +142,7 @@ import {
 import { BaseCommand } from '../../base.js';
 import { entryDifference, type EntryDifference } from '../../entry-difference.js';
 import { refusal } from '../../errors.js';
+import { openEventLog, type EventLogWriter } from '../../event-log.js';
 import { storePaths } from '../../project.js';
 import { registerDocumentVia } from '../../register-document.js';
 import { identityVocabularyOf, type Disclosing } from '../../redact.js';
@@ -486,7 +487,19 @@ export default class IngestClaudeCode extends BaseCommand {
         // `readFiles` already IS the whole cursor and there is nothing to carry.
         const carriedFiles = knownFiles === undefined ? [] : cursor.files;
 
-        const sweep = await this.sweep(root, includeEphemeral, knownFiles, loaded.typed, specFor);
+        // The event log (asc-igg8). Undefined on a dry run, because "nothing was written" is this
+        // command's contract and a log written by a preview would break it silently -- the one
+        // artifact a preview would leave behind that a caller has no reason to look for.
+        const log = dryRun ? undefined : openEventLog(store.dir);
+
+        const sweep = await this.sweep(
+          root,
+          includeEphemeral,
+          knownFiles,
+          loaded.typed,
+          specFor,
+          log,
+        );
         const writes = this.write(
           projectRoot,
           store,
@@ -572,13 +585,18 @@ export default class IngestClaudeCode extends BaseCommand {
     knownFiles: ReadonlyMap<string, FileStat> | undefined,
     handlers: readonly TypedHandler[],
     specFor: (type: string) => TypeSpec | undefined,
+    log: EventLogWriter | undefined,
   ): Promise<Sweep> {
     const deriver = createDeriver();
     const entries: DerivedEntry[] = [];
     const readFiles: CursorUpdate[] = [];
-    // No normalizer at all when there is no typed handler, so a project without one reads the
-    // corpus exactly as it did before typed handlers existed.
-    const producer = handlers.length === 0 ? undefined : createHandlerProducer(handlers, specFor);
+    // No normalizer at all when there is no typed handler AND no log to write, so a project without
+    // one still reads the corpus exactly as it did before typed handlers existed. A live run now
+    // always needs one -- the log is the normalizer's output -- and a dry run never does.
+    const producer =
+      handlers.length === 0 && log === undefined
+        ? undefined
+        : createHandlerProducer(handlers, specFor, (event) => log?.accept(event));
 
     const totals = await streamCorpus(
       (record, file) => {

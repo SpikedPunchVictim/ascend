@@ -3653,6 +3653,81 @@ an anecdote. `dogfood/0060` is **extended, not corrected**: it scoped itself pla
 **Gate green** to a file: 126 files / 2,959 passed / 2 skipped, typecheck 0, lint 0, `format:check` 0,
 `align` verdict green — identical to the E19 baseline, as expected for a stage that changes no `src`.
 
+## Stage E21: an event log that outlives the transcripts — `asc-igg8`
+
+**Every handler count ascend reports is replayed from `~/.claude/projects`**, which is a harness's local
+cache with a retention window nothing in this repository controls (`spike/event-log/FINDINGS.md` Q2: no
+expiry observable on this machine and no retention setting configured — unproven, not disproven). A rule
+that fired 900 times last quarter cannot be re-checked once the transcript that proved it is gone, and a
+count over a shrinking window drifts for a reason no handler changed. This stage writes down what the
+normalizer produced, so the count survives.
+
+**Three design choices, put to the owner before any file was written** (`AskUserQuestion`, re-confirmed
+in the owner's own words): the log is written **at ingest**, behind the sweep it already runs, rather
+than by a separate command; it is scoped **per project**, in that project's `.ascend/` tree; and it lives
+in **its own tree**, `events/`, beside `entries/`.
+
+**Stored DERIVED, and the derive version is checked on read.** The line written is the `NormalizedEvent`
+itself, not a transcript record, so replaying needs no adapter. That makes the envelope's
+`derive_version` load-bearing: a log derived at another version is **refused**, naming both, because
+`event.ts:45` states exactly what replaying it would do — *"a count moves when this moves, with no
+handler changed."* The check is **per line**, not per file: a log half-written by one version and half by
+another must not replay as one consistent history.
+
+**Not a store type, on purpose.** Handlers consume normalized events, never stored rows
+(`handler-replay.ts`), so registering the log as a type would buy the replay nothing while putting it
+into `asc export`, the SessionStart brief budget, the dead-type check and invalidation semantics that do
+not apply to an event. The volume settles it: **27,462 tool inputs over 21 days** in this project
+(`EV-39`) against 6,582 entries.
+
+**ONE `write()` PER LINE** — not a style choice. `EV-39` Q3 measured `cat >>` tearing lines from 8 KiB
+upward, **4 torn lines in one run and 0 in the next at the same 8192 B**, with line counts still
+matching expectations. A single whole-line write never tore at any size tested to 1 MiB. The safety
+property is the call site, so it is stated at the call site.
+
+**Nothing is ever dropped.** The writer rolls to a higher-numbered file on the store's own caps
+(`MAX_RECORDS_PER_FILE`, `MAX_BYTES_PER_FILE`, reused as constants — not the store's writer, whose
+`CorpusLine` shape this is not). `asc-8uzh`'s drop-oldest was deliberately never built, and a log that
+silently discards its oldest events is the derive-version hazard wearing the other coat. At the measured
+**~1.33 MB/day**, a 20 MiB file rolls about every 15.8 days.
+
+**Concurrency is handled on read, not on write.** Two ingests can sweep one project at once and neither
+is wrong to append, so the append stays lock-free and `readEventLog` **deduplicates by
+`(session_id, agent_id, seq)`, keeping the first**. `seq` is total order within a stream, so a repeat is
+a duplicate of one event, not a second event.
+
+**`.ascend/events/` is gitignored**, for the reason written over `spike/tmp/`: it holds whole normalized
+events — whole tool inputs and prompts — and this repository is public. The cost is stated rather than
+hidden: a clone does not carry the log, so the counts it preserves are preserved on the machine that
+ingested.
+
+### Stage 1 — the write path
+
+`packages/cli/src/event-log.ts`: `openEventLog(tree)` / `readEventLog(tree)`, layout
+`<tree>/events/<session_id>/<agent_id>/0001.jsonl`. Path segments are **refused, not sanitized** — two
+ids that sanitized to the same name would merge two streams into one file, and the count that moved
+would be of something that was never one stream. `createHandlerProducer` gained an optional `onEvent`
+(`typed-handlers.ts`), so the log is written from the same call that offers events to the handlers: a
+second normalizer pass would be a second chance for the log and the handlers to disagree about which
+events a replay saw.
+
+**Status**: **Stage 1 complete (2026-10-04); the read path is not wired yet.** `asc ingest claude-code`
+writes the log; it is `undefined` on `--dry-run`, because "nothing was written" is that command's
+contract and a log a preview wrote would be the one artifact a caller has no reason to look for. Tests:
+`packages/cli/test/event-log.test.ts`, 9 tests — one line per event and one directory per stream, a
+subagent kept in its own stream under its parent session, an unsafe id refused rather than sanitized, a
+repeated `(session, agent, seq)` dropped, a log read back out of a tree with none, a line at another
+derive version refused naming both versions, a non-JSON line refused naming where it is, and two arms
+through the real binary (the events are written and carry this derive version; a **fresh** project's dry
+run reports the sweep it would do and still leaves no `events/`). Stage 1 can therefore prove the log is
+written, well-formed and version-stamped — **not** yet that a handler count reproduces from it, which is
+the bead's own acceptance and needs `replayHandlers` to read the log. That is Stage 2.
+
+**Honest note on test order.** The implementation was written before the test this time, so Stage 1's
+tests were not RED-first — they are the first thing to *exercise* the module, not the thing that drove
+it. The arms were checked for vacuity instead: the dry-run arm was moved onto a **fresh** project after
+noticing that an unchanged-file cursor could have skipped the sweep and passed it for the wrong reason.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.

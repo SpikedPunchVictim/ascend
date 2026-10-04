@@ -162,6 +162,13 @@ export interface HandlerProducer {
 export function createHandlerProducer(
   handlers: readonly TypedHandler[],
   specFor: (type: string) => TypeSpec | undefined,
+  /**
+   * Every normalized event, as it is offered to the handlers (asc-igg8). The event log is written
+   * from here rather than from a second normalizer pass, because the normalizer's output IS the
+   * log's content: a second pass would be a second chance for the log and the handlers to disagree
+   * about which events a replay saw.
+   */
+  onEvent?: (event: NormalizedEvent) => void,
 ): HandlerProducer {
   const normalizer = createNormalizer();
   const runs = handlers.map((one) => ({
@@ -173,6 +180,7 @@ export function createHandlerProducer(
   const sessions = new Map<string, { project: string; cwd?: string; branch?: string }>();
 
   const offer = (event: NormalizedEvent): void => {
+    onEvent?.(event);
     for (const one of runs) one.rows.push(...one.run.accept(event));
   };
 
