@@ -3616,6 +3616,43 @@ other way round, and prose word-counts are not a rate. The `arms` property exist
 arm is *"a queryable field rather than a sentence buried in `measurement`'s prose"* — the same reasoning
 was never applied to predictions.
 
+## Stage E20: is it one type, or every type? — `asc-xqf1`
+
+E19's follow-up scoped itself to **one type and said so**: `dogfood/0060` closes with *"Do not read it as
+'analysis questions are generally unanswerable' — only this one was checked."* The owner widened it,
+and `asc-xqf1` gained a **pre-registration** before any type was enumerated — three predictions with
+falsifiers, and a commitment to report every proportion as an anecdote under `MIN_N`.
+
+`EV-44.md` carries the census: **17 type versions across 14 types, 9 declared analysis questions, 0 rows
+elided by the renderer.** The reading is **DIRECT 4 · OUTSIDE SCHEMA 2 · ABSENT 3**. One prediction
+**held** (P1 — the pattern is not unique to `evidence_record`), one was **incomplete** (P2 — I named one
+answerability mode and there are two), and one was **refuted** (P3 — all 8 derived versions declare zero
+questions, so `handlers/check.ts:112`'s `judged[i]` ↔ `analysis_questions[i]` alignment is used by no
+type in this store).
+
+**The mode the pre-registration missed is the one worth carrying.** For `decision`, Q0 and Q1 *are*
+answerable — `asc invalidate --label superseded --superseded-by` records a reversal and `asc explore
+decision --struck` narrows to the struck rows — but the answer lives in the store's reserved
+invalidation scheme, **not in the type**. So *"does the type carry the data?"* has a third answer: **the
+store does, the type does not**, and a reader asking the question of the schema would conclude it is
+unanswerable when it is not. That is `dogfood/0041`/`asc-9xi0`'s mechanism, reached from a direction
+nobody had approached it from.
+
+**A second defect surfaced while enumerating versions, and it is not about analysis questions.** `asc
+types show NAME` reads the **latest** version only, so **a question dropped between versions becomes
+invisible**: `note` v1 asks *"What share of notes should have been another type?"*, v2 declares none,
+and **19 of `note`'s 22 entries sit at v1**. The survey by name counts 8 questions; by version, 9.
+Caught by noticing the stored type-line count (17) disagreeing with the CLI's type count (14).
+
+**Status**: **Complete (2026-10-04).** `EV-44.md` carries the pre-registration, the verbatim survey
+output, the three-mode table, the prediction verdicts and three instrument notes; `spike/aq-survey.mjs`
+is checked in because the claim is about the schema and moves whenever a type is edited. `asc-xqf1`
+**stays open** — the remedy (bind a question to its answer at registration, or declare the questions
+decorative and remove them, plus a separate answer for the `note` case) is the owner's, and the count is
+an anecdote. `dogfood/0060` is **extended, not corrected**: it scoped itself plainly and was right to.
+**Gate green** to a file: 126 files / 2,959 passed / 2 skipped, typecheck 0, lint 0, `format:check` 0,
+`align` verdict green — identical to the E19 baseline, as expected for a stage that changes no `src`.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.
