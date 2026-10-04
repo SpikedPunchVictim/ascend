@@ -3566,6 +3566,43 @@ prediction resolved and its remaining unmeasured surfaces (GitHub's web conflict
 Desktop, JetBrains) carried to their own bead. **Gate green**: 126 files / 2,959 passed / 2 skipped,
 typecheck 0, lint 0, `format:check` 0, `align` verdict green with baselined debt **21 → 21**.
 
+## Stage E19: the three client surfaces left unmeasured — `asc-y43e`
+
+E18 carried three surfaces out with their own bead because a closing bead's notes are not a tracker.
+`asc-y43e` measured **reachability**, and came back negative on all three: GitHub's web conflict
+editor needs an authenticated browser session and `gh` holds only API/git scopes (`gist`, `read:org`,
+`repo`, `workflow`), while GitHub Desktop and JetBrains are not installed — absent from
+`/Applications`, absent from `~/Applications`, absent from Spotlight, and with no per-user support
+directory left behind. The same two commands return VS Code and Chrome, which are the clients EV-40
+and EV-41 drove, so the absence is of the named apps rather than of a working search. All three close
+as **UNMEASURED, never `0`**.
+
+The substantive output is a **correction**. A hand-off summary written while opening the bead claimed
+the risk was bounded because *"on `base-union` GitHub's server refuses the merge, so no editor opens on
+a state the driver would have made clean."* EV-31 says the opposite in its own words — *"the measured
+refusals make hand-resolution in the web editor the only way these PRs can land, and that is precisely
+the unmeasured path."* **A refusal is the door to the conflict editor, not a barrier in front of it:**
+GitHub refuses because its gate found a conflict, and a conflicted PR is the one that offers *Resolve
+conflicts*. The union base is therefore the base that guarantees the editor is offered, being the only
+base where GitHub sees a conflict while `git` sees none.
+
+`EV-43.md` registers the prediction the bead asked for, before anything is driven, with falsifiers: the
+web editor is predicted **NOT clean** (it presents a marker-bearing file because the server never runs
+the driver, and its one-sided buttons yield 4 well-formed records with an append gone), while GitHub
+Desktop and JetBrains are predicted **clean on `base-union` for the opposite reason** — they delegate to
+`git`, which honours the driver, so no conflict is ever raised to resolve. That asymmetry is the useful
+part: the dangerous surface is the one whose conflict detection is server-side.
+
+**Status**: **Complete (2026-10-04), with its scope boundary stated plainly.** `EV-43.md` records the
+reachability evidence, the corrected bound, and the pre-registration; `asc-y43e` closes with all three
+surfaces UNMEASURED. **The layout decision's state is unchanged by this stage** — the one surface where
+the driver provably buys nothing remains the one surface that is reachable and unmeasured, and the
+correction means it must **not** be recorded as bounded by EV-31. What catches a loss there is
+`asc-98e1`'s lost-id half of the guard, which already exists and already runs in this repository's own
+gate (`asc-9flv`), so this stage adds no new requirement to it. **Gate green** to a file
+(`/tmp/y43e-gate.txt`): 126 files / 2,959 passed / 2 skipped, typecheck 0, lint 0, `format:check` 0,
+`align` verdict green — identical to the E18 baseline, as expected for a stage that changes no code.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.
