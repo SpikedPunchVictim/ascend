@@ -3603,6 +3603,19 @@ gate (`asc-9flv`), so this stage adds no new requirement to it. **Gate green** t
 (`/tmp/y43e-gate.txt`): 126 files / 2,959 passed / 2 skipped, typecheck 0, lint 0, `format:check` 0,
 `align` verdict green — identical to the E18 baseline, as expected for a stage that changes no code.
 
+**Follow-up filed from this stage, and it is not about merge=union.** Writing EV-43 required putting a
+number behind a claim the record was about to make — *"documented behaviour keeps betraying us"*, on the
+strength of `asc-3ow4`'s two refuted predictions — and there was no field to get it from. `asc-xqf1`
+(P3) records why: `evidence_record` declares `analysis_questions[0]`, *"How often did a result
+contradict its pre-registered prediction?"*, and **no property carries a prediction or its outcome** —
+`verdict` belongs to `review_completed`/`review_finding`, which is a *review's* verdict, and
+`analysis_questions` is guidance the renderer and `guidance.ts` validate but nothing consumes
+analytically. `dogfood/0060` carries the finding with its metric. **The claim was withdrawn**: the only
+prose probe available returned **84 HOLDS against 17 REFUTED** over 43 evidence records, which is the
+other way round, and prose word-counts are not a rate. The `arms` property exists precisely so a losing
+arm is *"a queryable field rather than a sentence buried in `measurement`'s prose"* — the same reasoning
+was never applied to predictions.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.
