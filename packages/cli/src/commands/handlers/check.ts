@@ -18,7 +18,8 @@
 import { Args, Flags } from '@oclif/core';
 import { canonicalJson } from '@ascend/core';
 import { BaseCommand } from '../../base.js';
-import { replayHandlers, spreadSample } from '../../handler-replay.js';
+import { refusal } from '../../errors.js';
+import { replayHandlers, spreadSample, type ReplayResult } from '../../handler-replay.js';
 import {
   checkReplayScope,
   FIELD,
@@ -30,12 +31,15 @@ import {
   VALUE,
   type Row,
 } from '../../handler-scope.js';
+import { storePaths } from '../../project.js';
 import { sayStage } from '../../typed-handlers.js';
 
 export default class HandlersCheck extends BaseCommand {
   static override description =
     'Replay handlers over this project’s Claude Code transcripts and report what each would ' +
-    'emit: the parsed handler, its hash, its count, and sample rows. Writes nothing.';
+    'emit: the parsed handler, its hash, its count, and sample rows. Writes nothing. With ' +
+    '--from-log, replay this project’s own event log instead — the events ingest already ' +
+    'normalized, which is what remains once the transcripts expire (asc-igg8).';
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> handlers/edit-unverified.yaml',
@@ -54,6 +58,14 @@ export default class HandlersCheck extends BaseCommand {
 
   static override flags = {
     ...REPLAY_FLAGS,
+    'from-log': Flags.boolean({
+      description:
+        'Replay this project’s own event log (`<project>/.ascend/events`) instead of the Claude ' +
+        'Code transcripts. The log is what is left after the transcripts it was derived from are ' +
+        'gone (asc-igg8), so it is the only source that still answers once they expire. The ' +
+        'transcript flags above do not apply and are refused with it.',
+      default: false,
+    }),
     samples: Flags.integer({
       description: 'Rows to show per handler, spread evenly across the log.',
       default: 3,
@@ -64,17 +76,50 @@ export default class HandlersCheck extends BaseCommand {
   public async run(): Promise<void> {
     const { argv, flags } = await this.parse(HandlersCheck);
     const format = this.resolveFormat(flags);
-    const scope = replayScope({
-      root: this.optionalFlag(flags.root),
-      project: this.optionalFlag(flags.project),
-      'all-projects': flags['all-projects'],
-      'include-ephemeral': flags['include-ephemeral'],
-    });
     const handlers = (argv as string[]).map(load);
-    checkReplayScope(scope);
 
-    const result = await replayHandlers(handlers, scope);
-    const rows: Row[] = logRows(scope.projects, result);
+    let result: ReplayResult;
+    let projects: readonly string[] | 'all';
+    if (flags['from-log']) {
+      // Refused rather than ignored: each of these names a transcript to sweep, and the log is not
+      // one. A flag silently doing nothing is the false-green class -- the command would report a
+      // count from a source the caller did not ask for and had no way to notice.
+      const conflicting = (
+        [
+          ['--root', flags.root !== undefined],
+          ['--project', flags.project !== undefined],
+          ['--all-projects', flags['all-projects']],
+          ['--include-ephemeral', flags['include-ephemeral']],
+        ] as const
+      )
+        .filter(([, present]) => present)
+        .map(([name]) => name);
+      if (conflicting.length > 0) {
+        throw refusal(
+          `--from-log replays this project's event log, so ${conflicting.join(', ')} ` +
+            `${conflicting.length === 1 ? 'does' : 'do'} not apply: the log is one project's ` +
+            `already, and there is no root to sweep.`,
+        );
+      }
+      result = await this.withProjectRoot((root) =>
+        replayHandlers(handlers, { source: 'log', tree: storePaths(root).tree }),
+      );
+      // Empty, not a stand-in label: `logRows` reports the source instead of a set of projects,
+      // because a project label here would name a transcript directory this run never opened.
+      projects = [];
+    } else {
+      const scope = replayScope({
+        root: this.optionalFlag(flags.root),
+        project: this.optionalFlag(flags.project),
+        'all-projects': flags['all-projects'],
+        'include-ephemeral': flags['include-ephemeral'],
+      });
+      checkReplayScope(scope);
+      result = await replayHandlers(handlers, scope);
+      projects = scope.projects;
+    }
+
+    const rows: Row[] = logRows(projects, result);
     for (const replay of result.handlers) {
       const { name, handler } = replay;
       const add = (field: string, value: unknown): void => {

@@ -96,7 +96,7 @@ describe('edit-unverified and edit-verified', () => {
         { name: 'unverified', handler: loadHandler(read('edit-unverified.yaml')) },
         { name: 'verified', handler: loadHandler(read('edit-verified.yaml')) },
       ],
-      { root: corpus(records), projects: [PROJECT] },
+      { source: 'transcripts', root: corpus(records), projects: [PROJECT] },
     );
     const [unverified, verified] = result.handlers;
     if (unverified === undefined || verified === undefined) throw new Error('missing replay');
@@ -144,7 +144,7 @@ describe('read-unused', () => {
   it('emits the reads nothing later used, and never counts one unclosed', async () => {
     const result = await replayHandlers(
       [{ name: 'read-unused', handler: loadHandler(read('read-unused.yaml')) }],
-      { root: corpus(records), projects: [PROJECT] },
+      { source: 'transcripts', root: corpus(records), projects: [PROJECT] },
     );
     const [unused] = result.handlers;
     if (unused === undefined) throw new Error('missing replay');

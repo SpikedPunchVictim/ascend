@@ -175,7 +175,7 @@ describe('the event log: written by ingest', () => {
     const treeDir = join(dir, '.ascend');
     mkdirSync(treeDir);
     buildIndex(treeDir, join(treeDir, INDEX_FILE), { now: new Date().toISOString() });
-    const corpus = join(dir, '.claude', 'projects', '-Users-me-scratch');
+    const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
     mkdirSync(corpus, { recursive: true });
     writeFileSync(
       join(corpus, 's-1.jsonl'),
@@ -229,7 +229,86 @@ describe('the event log: written by ingest', () => {
     // one artifact it left that a caller has no reason to look for.
     expect(existsSync(join(dir, '.ascend', 'events'))).toBe(false);
   });
+
+  it('reproduces a handler count after the transcript is deleted', () => {
+    // THE BEAD'S OWN ACCEPTANCE (asc-igg8): "record events, then delete the transcript, then show
+    // a handler count still reproduces." Everything above only proves the log is written; this is
+    // the one arm that proves it is worth writing.
+    const dir = project();
+    const handler = join(dir, 'shell.yaml');
+    writeFileSync(handler, HANDLER_YAML);
+
+    const before = asc(['handlers', 'check', handler, '--project', PROJECT_DIR, '--json'], dir);
+    expect(before.status, before.stderr).toBe(0);
+    const counted = countedRows(before.stdout);
+    // The fixture's own transcript triggers it, so a zero here would make the whole comparison
+    // below pass while proving nothing.
+    expect(counted.triggers).toBeGreaterThan(0);
+    // No `source` row on a transcript replay: the row is added only for the log, so every existing
+    // report keeps its exact bytes. The absence is the old shape, not a missing fact.
+    expect(counted.source).toBeUndefined();
+
+    const ingest = asc(['ingest', 'claude-code'], dir);
+    expect(ingest.status, ingest.stderr).toBe(0);
+    // Destroy the thing the count came from. This is the whole point: the log is what is left.
+    rmSync(join(dir, '.claude'), { recursive: true, force: true });
+
+    // The ordinary replay has nothing left to read -- otherwise the deletion did not happen and
+    // the arm below would pass against the transcripts it was supposed to be independent of.
+    const gone = asc(['handlers', 'check', handler, '--project', PROJECT_DIR, '--json'], dir);
+    expect(gone.status).not.toBe(0);
+
+    const after = asc(['handlers', 'check', handler, '--from-log', '--json'], dir);
+    expect(after.status, after.stderr).toBe(0);
+    const replayed = countedRows(after.stdout);
+    expect(replayed.source).toBe('event log');
+    // The same count, off a source that never read a transcript.
+    expect(replayed.triggers).toBe(counted.triggers);
+    expect(replayed.rows).toBe(counted.rows);
+  });
+
+  it('refuses the transcript flags with --from-log rather than ignoring them', () => {
+    const dir = project();
+    const handler = join(dir, 'shell.yaml');
+    writeFileSync(handler, HANDLER_YAML);
+
+    // A flag silently doing nothing is the false-green class: the command would report a count
+    // from a source the caller did not ask for, and nothing in the output would say so.
+    const run = asc(['handlers', 'check', handler, '--from-log', '--project', 'x'], dir);
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain('--project');
+  });
 });
+
+/** A handler that fires once per shell segment, so the fixture has something to count. */
+const HANDLER_YAML = [
+  'on: command.run',
+  'description: Every shell segment.',
+  'emit:',
+  "  head: '${head}'",
+  '',
+].join('\n');
+
+/** The handler's own count and the horizon's `source`, out of a `--json` replay report. */
+function countedRows(stdout: string): {
+  triggers: number;
+  rows: number;
+  source: string | undefined;
+} {
+  const parsed = JSON.parse(stdout) as {
+    rows: readonly { field: string; value: unknown }[];
+  };
+  const value = (field: string): unknown => parsed.rows.find((row) => row.field === field)?.value;
+  const source = value('source');
+  return {
+    triggers: Number(value('triggers')),
+    rows: Number(value('rows')),
+    source: typeof source === 'string' ? source : undefined,
+  };
+}
+
+/** The encoded transcript directory name, as `~/.claude/projects` spells it. */
+const PROJECT_DIR = '-Users-me-scratch';
 
 const AT = { cwd: '/Users/me/scratch', gitBranch: 'main' };
 

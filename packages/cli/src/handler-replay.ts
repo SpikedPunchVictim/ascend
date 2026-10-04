@@ -24,6 +24,7 @@ import {
   type HandlerRow,
   type NormalizedEvent,
 } from '@ascend/core';
+import { readEventLog } from './event-log.js';
 
 /**
  * Claude Code's directory name for a project: every character that is not a letter, a digit or a
@@ -81,6 +82,12 @@ export function unitKey(session: string, agent: string, segment: number): string
 }
 
 export interface LogHorizon {
+  /**
+   * Where the events came from. A count is only meaningful over a named population, and "the
+   * transcripts under ~/.claude/projects" and "this project's event log" are two different ones
+   * that produce the same number today (asc-igg8).
+   */
+  readonly source: 'transcripts' | 'log';
   /** Transcripts discovered under the project directory, whether or not they held any events. */
   readonly files: number;
   /** Transcripts that could not be read to the end. A replay over a partial log says so. */
@@ -105,7 +112,9 @@ export interface ReplayResult {
   readonly counters: NormalizeCounters;
 }
 
-export interface ReplayOptions {
+/** The ordinary source: a sweep of Claude Code's transcripts under `root`. */
+export interface TranscriptReplay {
+  readonly source: 'transcripts';
   readonly root: string;
   /**
    * Claude Code's encoded directory names for the projects to replay, e.g.
@@ -119,6 +128,22 @@ export interface ReplayOptions {
    */
   readonly includeEphemeral?: boolean;
 }
+
+/**
+ * This project's own event log (asc-igg8), read INSTEAD of the transcripts -- never as well, which
+ * would count every event twice.
+ *
+ * A separate member of the union rather than two more optional fields, so "the transcript scope
+ * flags do not apply here" is a type error rather than a sentence somebody has to remember. The log
+ * is one project's already; there is no root to sweep and no project to name.
+ */
+export interface LogReplay {
+  readonly source: 'log';
+  /** The store tree holding `events/`, e.g. `<project>/.ascend`. */
+  readonly tree: string;
+}
+
+export type ReplayOptions = TranscriptReplay | LogReplay;
 
 /** Stream the projects' transcripts once, offering every event to every handler. */
 export async function replayHandlers(
@@ -172,18 +197,36 @@ export async function replayHandlers(
     }
   };
 
-  const totals = await streamCorpus(
-    (record, file) => {
-      for (const event of normalizer.accept(record, file)) offer(event);
-    },
-    // The ephemeral skip exists for sweeps over every project (asc-80m). A caller who NAMED a
-    // project asked for it, and skipping it would report a zero over a log that was never read --
-    // found by the default-project test, whose scratch project sits under tmpdir.
-    options.projects === 'all'
-      ? { root: options.root, includeEphemeral: options.includeEphemeral ?? false }
-      : { root: options.root, projects: new Set(options.projects), includeEphemeral: true },
-  );
-  for (const event of normalizer.drain()) offer(event);
+  // The horizon's own numbers, filled by whichever source is read. Declared here rather than
+  // derived from `totals`, because a log has no sweep behind it and `totals` is undefined then.
+  let files = 0;
+  let unreadable = 0;
+  let ephemeral = 0;
+
+  if (options.source === 'transcripts') {
+    const totals = await streamCorpus(
+      (record, file) => {
+        for (const event of normalizer.accept(record, file)) offer(event);
+      },
+      // The ephemeral skip exists for sweeps over every project (asc-80m). A caller who NAMED a
+      // project asked for it, and skipping it would report a zero over a log that was never read --
+      // found by the default-project test, whose scratch project sits under tmpdir.
+      options.projects === 'all'
+        ? { root: options.root, includeEphemeral: options.includeEphemeral ?? false }
+        : { root: options.root, projects: new Set(options.projects), includeEphemeral: true },
+    );
+    files = totals.files;
+    unreadable = totals.failures.length;
+    ephemeral = totals.skipped.filter((entry) => entry.reason === 'ephemeral').length;
+    for (const event of normalizer.drain()) offer(event);
+  } else {
+    // No normalizer ran and no transcript was opened. The log holds the normalizer's own output,
+    // already keyed and ordered, so it is offered straight through -- the same `offer` a swept
+    // event goes through, which is what makes a count from one source checkable against the other.
+    const log = readEventLog(options.tree);
+    files = log.files;
+    for (const event of log.events) offer(event);
+  }
 
   // The log is over. Without this a `scope: session` window that never met its `until` would
   // vanish -- not emitted, not counted -- because `session.end` is one event per STREAM and so
@@ -204,14 +247,19 @@ export async function replayHandlers(
       malformedItems: run.malformedItems,
     })),
     horizon: {
-      files: totals.files,
-      unreadable: totals.failures.length,
-      ephemeral: totals.skipped.filter((entry) => entry.reason === 'ephemeral').length,
+      source: options.source,
+      // A log's `files` are its own files, not transcripts: the row naming the source is printed
+      // beside it, so the number is never read as a sweep that found this many transcripts.
+      files,
+      unreadable,
+      ephemeral,
       events,
       ...(first === undefined ? {} : { first_ts: first }),
       ...(last === undefined ? {} : { last_ts: last }),
     },
     derive_version: EVENT_DERIVE_VERSION,
+    // Zeros when the log was the source, and `logRows` prints none of them for exactly that reason:
+    // the normalizer's counters are a statement about a sweep, and no sweep happened.
     counters: normalizer.counters,
     units: spans,
   };

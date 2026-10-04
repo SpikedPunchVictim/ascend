@@ -3711,22 +3711,60 @@ would be of something that was never one stream. `createHandlerProducer` gained 
 second normalizer pass would be a second chance for the log and the handlers to disagree about which
 events a replay saw.
 
-**Status**: **Stage 1 complete (2026-10-04); the read path is not wired yet.** `asc ingest claude-code`
-writes the log; it is `undefined` on `--dry-run`, because "nothing was written" is that command's
-contract and a log a preview wrote would be the one artifact a caller has no reason to look for. Tests:
-`packages/cli/test/event-log.test.ts`, 9 tests — one line per event and one directory per stream, a
-subagent kept in its own stream under its parent session, an unsafe id refused rather than sanitized, a
+**Status**: **Stage 1 complete (2026-10-04).** `asc ingest claude-code` writes the log; it is
+`undefined` on `--dry-run`, because "nothing was written" is that command's contract and a log a
+preview wrote would be the one artifact a caller has no reason to look for. Tests:
+`packages/cli/test/event-log.test.ts` — one line per event and one directory per stream, a subagent
+kept in its own stream under its parent session, an unsafe id refused rather than sanitized, a
 repeated `(session, agent, seq)` dropped, a log read back out of a tree with none, a line at another
 derive version refused naming both versions, a non-JSON line refused naming where it is, and two arms
-through the real binary (the events are written and carry this derive version; a **fresh** project's dry
-run reports the sweep it would do and still leaves no `events/`). Stage 1 can therefore prove the log is
-written, well-formed and version-stamped — **not** yet that a handler count reproduces from it, which is
-the bead's own acceptance and needs `replayHandlers` to read the log. That is Stage 2.
+through the real binary (the events are written and carry this derive version; a **fresh** project's
+dry run reports the sweep it would do and still leaves no `events/`).
 
 **Honest note on test order.** The implementation was written before the test this time, so Stage 1's
 tests were not RED-first — they are the first thing to *exercise* the module, not the thing that drove
 it. The arms were checked for vacuity instead: the dry-run arm was moved onto a **fresh** project after
 noticing that an unchanged-file cursor could have skipped the sweep and passed it for the wrong reason.
+
+### Stage 2 — the read path, and the bead's acceptance
+
+`ReplayOptions` became a **union of two sources** rather than one shape with `root`/`projects` plus an
+optional log field:
+
+```
+TranscriptReplay { source: 'transcripts'; root; projects; includeEphemeral? }
+LogReplay        { source: 'log'; tree }
+```
+
+A union, so *"the transcript scope flags do not apply here"* is a **type error** rather than a sentence
+somebody has to remember. `replayScope` returns the transcripts member and `checkReplayScope` takes it,
+so every existing caller narrows for free; the compiler named the two test call sites that had
+constructed a `ReplayOptions` literal. The log is read **instead of** the transcripts, never as well —
+replaying both would count every event twice, which is precisely the error the acceptance arm below is
+built to catch.
+
+`asc handlers check --from-log` reads `<project>/.ascend/events`. The transcript flags are **refused**
+with it rather than ignored: a flag that silently does nothing is the false-green class, and the
+command would report a count from a source the caller did not ask for with nothing in the output saying
+so.
+
+`LogHorizon` gained `source`, and `logRows` prints `source: event log` **only for the log** — the same
+move `brief-text.ts` and `search-assist.ts` make — so every existing transcript report keeps its exact
+bytes, and the rows that describe a sweep (project labels, `unreadable`, `ephemeral_skipped`) are
+**absent** rather than zero, because a zero there would read as a sweep that found nothing.
+
+**Status**: **Complete (2026-10-04), and the bead's acceptance now holds.** The test is the bead's own
+words: replay a handler over the transcript (count N), ingest to write the log, **delete
+`~/.claude/`**, show the ordinary replay now refuses (so the deletion was real), then `--from-log`
+reproduces the same `triggers` and `rows` off a source that never read a transcript — plus a second arm
+proving `--from-log --project x` is refused by name. 11 tests in `packages/cli/test/event-log.test.ts`;
+two `ReplayOptions` literals in `project-handlers.test.ts` gained `source: 'transcripts'`. **Gate
+green** to a file: 127 files / 2,970 passed / 2 skipped, typecheck 0, lint 0, `format:check` 0, `align`
+verdict green.
+
+**Limitation, stated plainly.** The log is **gitignored**, so it is per-machine: a clone does not carry
+it and `--from-log` on a fresh clone reads whatever that machine has ingested, or nothing. And nothing
+yet **ages out** the log — this stage makes the count survive the transcript, not the log itself.
 
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 

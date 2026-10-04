@@ -12,8 +12,8 @@ import { refusal, usageError } from './errors.js';
 import {
   encodeProjectDir,
   type NamedHandler,
-  type ReplayOptions,
   type ReplayResult,
+  type TranscriptReplay,
 } from './handler-replay.js';
 import { loadHandler } from './handler-yaml.js';
 import { findGitRoot, findProjectRoot } from './project.js';
@@ -66,7 +66,7 @@ export interface ReplayFlags {
  * The replay the flags ask for. Refuses a flag combination that would do nothing; the directories
  * are checked separately, by `checkReplayScope`, so a handler the loader refuses is reported first.
  */
-export function replayScope(flags: ReplayFlags): ReplayOptions {
+export function replayScope(flags: ReplayFlags): TranscriptReplay {
   const root = resolve(flags.root ?? defaultTranscriptRoot());
   const projects: readonly string[] | 'all' = flags['all-projects']
     ? 'all'
@@ -80,11 +80,11 @@ export function replayScope(flags: ReplayFlags): ReplayOptions {
         'is always read, wherever it lives.',
     );
   }
-  return { root, projects, includeEphemeral: flags['include-ephemeral'] };
+  return { source: 'transcripts', root, projects, includeEphemeral: flags['include-ephemeral'] };
 }
 
 /** Refuse a scope with no log behind it, before anything is replayed. */
-export function checkReplayScope({ root, projects }: ReplayOptions): void {
+export function checkReplayScope({ root, projects }: TranscriptReplay): void {
   if (projects === 'all') {
     if (!isDirectory(root)) {
       throw refusal(`There is no transcript root ${root}, so there is no log to replay.`);
@@ -124,6 +124,21 @@ export function load(path: string): NamedHandler {
 
 export function logRows(projects: readonly string[] | 'all', result: ReplayResult): Row[] {
   const { horizon } = result;
+  if (horizon.source === 'log') {
+    // The event log (asc-igg8), and NOT the transcript rows with zeros in them: the project labels,
+    // the unreadable count and the temp-root skips describe a sweep of `~/.claude/projects`, and no
+    // sweep happened. A zero there would read as a sweep that found nothing, which is a different
+    // and much worse statement than "this count came from somewhere else".
+    const facts: [string, unknown][] = [
+      ['source', 'event log'],
+      ['derive_version', result.derive_version],
+      ['files', horizon.files],
+      ['events', horizon.events],
+    ];
+    if (horizon.first_ts !== undefined) facts.push(['first_ts', horizon.first_ts]);
+    if (horizon.last_ts !== undefined) facts.push(['last_ts', horizon.last_ts]);
+    return facts.map(([field, value]) => ({ [HANDLER]: LOG, [FIELD]: field, [VALUE]: value }));
+  }
   const facts: [string, unknown][] = [
     // One row per named project, so `--json` gets each as a plain string and the table's
     // 60-character elision cannot hide the second one.
