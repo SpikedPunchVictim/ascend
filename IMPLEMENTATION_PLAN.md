@@ -4269,16 +4269,34 @@ has to stay a reading of 2026-10-04. `asc-049w` closes against its acceptance, c
 which is the shape `asc-0hys` was closed in. Any scope left over becomes its own bead rather than
 silence.
 
-**Status**: In Progress (2026-10-05) — one cell is deliberately left, and it is left for a stated
-reason rather than forgotten. `dogfood/0061`'s **Status** still reads `open`, because the cell's own
-convention is `fixed in <sha>` and a sha cannot be written before the commit exists; the body and the
-metric are untouched, as they must be (the metric is a reading of 2026-10-04, and entries are
-immutable). The commit is the one step this session's conservative git profile reserves for approval,
-so it is proposed rather than taken. **Everything else is done**: `asc-pcaw` was filed rather than
-absorbed — the unrelated red this drive met, recorded in `dogfood/0063` with its `loadavg` and its
-two-run spread — and that record carries its own disclosure that its first draft named the wrong cause.
-Scope that did **not** become this bead's problem and is named rather than silenced: the corpus test's
-fixed bound under load (`asc-pcaw`), and the per-file `passed` limitation the `.skip` arm reports.
+**Status**: **Complete (2026-10-05).** The cell that could not be written before a commit now carries
+one: `dogfood/0061`'s **Status** reads `` fixed in `4495e23` ``, and the body and the metric are
+untouched, as they must be (the metric is a reading of 2026-10-04, and entries are immutable).
+
+**Three commits, each gated green by the check this bead added:**
+
+| | |
+|---|---|
+| `4495e23` | the work — 14 files, +1272/−9, including the new file the gate step itself runs |
+| `fba0692` | the store's own derived records (35 lines across four types) |
+| `11531b2` | `dogfood/0061`'s Status cell, one line |
+
+The middle commit's gate printed `test count: 3049 collected / 3047 passed in 132 files -- baseline
+3049 / 3047, 0 above baseline`, so the instrument ran inside the commit that introduced it. `asc-049w`
+is **CLOSED** against its acceptance clause by clause, and `ascend-test-count-baseline` is stored in
+bd so the next session knows that deleting a test reddens the gate and that `pnpm test:baseline` is
+the answer.
+
+**Left outstanding, and it is a permission matter rather than a code matter**: the push. `main` has no
+upstream configured; `git push origin main` is a clean fast-forward of 21 commits (0 behind), but it
+was blocked twice by an auto-mode classifier error and once by a GitHub `HTTP 408` on a 0.8 MiB
+payload. Nothing was pushed, no bypass was attempted, and the exact command is handed to the owner.
+
+**Everything else is done**: `asc-pcaw` was filed rather than absorbed — the unrelated red this drive
+met, recorded in `dogfood/0063` with its `loadavg` and its two-run spread — and that record carries its
+own disclosure that its first draft named the wrong cause. Scope that did **not** become this bead's
+problem and is named rather than silenced: the corpus test's fixed bound under load (`asc-pcaw`), and
+the per-file `passed` limitation the `.skip` arm reports.
 
 **What closes `asc-049w`, clause by clause** — the shape `asc-0hys` was closed in, and the check
 against the acceptance's own words:
@@ -4307,6 +4325,227 @@ against the acceptance's own words:
 - **A partial run writes a partial scan.** The supported path is `pnpm test:baseline`, which runs the
   full suite first; running the raw `update` after `vitest run <file>` would write a baseline drawn
   from one file. The scripts say so, and the printed `before → after` makes it obvious.
+
+## Stage E24: the tautology check and the temporal-block control — `asc-fwpe`
+
+**Goal**: the two controls `docs/evidence/EV-patterns.md:126-138` names as *required additions to E7*
+exist in code and are measured against the real corpus, so the finding list can be re-issued with the
+number of survivors stated **after** the controls rather than before.
+
+**Why they are not optional.** Each guards a finding the shipped tool reports as real. `project × repo`
+scores the corpus's strongest association and **survives the shuffled control** — shuffling destroys the
+identity and the result still looks significant. The "Thursday 41.1 %" finding is a confound whose
+marginal concentration is *real*, so the shuffled control is structurally blind to it. EV-patterns says
+so about itself (`:151-153`): *"the two controls proposed above are untested designs, not measured
+remedies"* — which makes the deliverable a design **and** a measurement.
+
+### Measured before planning (2026-10-05, read-only, `spike/corpus.db`)
+
+The checked-in corpus reproduces EV-patterns **exactly** — `tool-denial` N=409, 35 distinct days,
+Thursday 168/409 = 41.1 %, 2026-09-03 = 143/409 = 35 % — so it is the identical snapshot the finding
+list was published from and the re-issue is a clean before/after with no corpus-growth confound.
+
+**The bead's own premise does not survive contact with the data, and this changed the design.** The
+published prose calls `project × repo` "a deterministic mapping". It is not: `project → repo` is not
+functional (align has `main` and `fix`; grizzly-wip has three) and `repo → project` is not either
+(`main` spans five projects). Measuring determinism `U = 1 − H(Y|X)/H(Y)` across all ten `tool-denial`
+pairs gives a **natural gap**, which is what lets the threshold be justified rather than chosen:
+
+| pair | max determinism |
+|---|---|
+| `project × repo` | **0.828** |
+| *— 2.1× gap —* | |
+| `denial_kind × project` | 0.389 |
+| the seven others | 0.123 – 0.365 |
+
+So **a strict functional-dependency test fires on nothing** — the only true 1.000 is `day × weekday`, a
+derived self-pair nobody reports, while the pair the acceptance names sits at 0.828. A detector written
+to the literal acceptance would pass review, suppress nothing, and report the tautology as the corpus's
+strongest finding.
+
+**The block control works.** Permuting whole days' weekday labels among days (each day keeps its size and
+its rows; the 143-row day draws a random weekday), 5,000 iterations, seeded:
+
+| pair | observed χ² | block-null median | p95 | p |
+|---|---|---|---|---|
+| `project × weekday` | 327.60 | **398.41** | 489.61 | **0.9432** |
+| `weekday × repo` | 348.07 | **439.89** | 543.14 | **0.9594** |
+| `denial_kind × weekday` | 185.50 | **195.39** | 234.68 | **0.6225** |
+| `tool_name × weekday` | 95.88 | **85.68** | 114.37 | **0.2667** |
+
+> **This table supersedes the provisional one this section first carried, and the provisional one was
+> WRONG.** It read 310.58 / 329.28 / 181.71 / 85.34 with different medians and p-values, and none of
+> those four observed statistics could be reproduced from `spike/corpus.db` by any `weekday`
+> derivation or column choice tried (`%w` UTC, `%w` localtime, `%u`; `project` with and without its
+> null bucket; `git_branch`). The numbers above come from the checked-in `spike/spike-controls.mjs`
+> and **agree exactly with the published `docs/evidence/EV-patterns.md` table** — same four χ² values,
+> same N=409, same 35 days, same Thursday 168/409 — which is the check that settles it: the record that
+> was published from the same snapshot is the anchor, and the provisional table was the outlier.
+> Recorded rather than quietly overwritten because a pre-planning measurement that cannot be
+> regenerated is not evidence, and this one had already been used to justify the design. The
+> qualitative conclusion is unchanged: **all four** weekday pairings collapse, and the observed sits
+> *below* the null median in three of the four.
+
+**The null is deliberately not marginal-preserving** — that is precisely why `permutationNull` cannot
+be reused and why the shuffled control cannot see this.
+
+**Decisions (owner, 2026-10-05)**: the threshold is a fixed exported constant with the measured gap in
+its doc comment, and scope reaches the CLI, because `asc-jpka` is the same defect one bead over —
+capability met in the library, unmet on the surface the criterion's sentence sits in.
+
+### Plan correction: the controls live in `association.ts`, not a new `controls.ts`
+
+The approved plan called for `packages/analysis/src/controls.ts`. It cannot be built that way. Stage 3
+requires `rankAssociations` to suppress definitional pairs, so `association.ts` must import the
+detector; but `functionalDependence` is two divisions over `mutualInformation`'s existing output
+(`U(a→b) = bits / entropyB`, verified: 0.752 × 2.493 = 0.828 × 2.264 = 1.875 bits), and that lives in
+`association.ts`. A module holding the controls would therefore have to import the module that imports
+it. This is the `annotations.ts → sql.ts → annotations.ts` cycle that `align` refused in Stage E12, and
+the same two ways out exist: extract a leaf module, or keep the pieces together. Extracting would move
+~500 lines and every importer for no gain, since the controls and the primitives are one concern —
+`association.ts`'s own doc comment already enumerates "three ways that goes wrong" and these are the
+fourth and fifth. Recorded rather than silently edited, because the plan said otherwise.
+
+### Further deviations from the approved plan, recorded rather than silently taken
+
+Three more, all found while building stages 3 and 4:
+
+1. **`PairAssociation` carries `dependence: FunctionalDependence`, not flat `determinism`/`definitional`
+   fields.** The plan said flat. A pair at 0.49 and a pair at 0.05 are both "not definitional" and are
+   not remotely the same finding, so the coefficient has to travel with the verdict; grouping them in
+   the struct that already names both directions keeps the two from drifting apart. The `dependence`
+   field is reported on **every** surviving pair, not only near-misses.
+2. **The CLI needed a second flag the plan did not anticipate: `--temporal`.** The plan assumed
+   `--blocks` alone. It cannot be: a weekday and a project name are both `string`, so nothing in the
+   store can tell which column came from a timestamp, and `AssociationColumn.temporal` is declared
+   **by the caller, never sniffed** — a module that guessed from text "would be right often enough to
+   be believed and wrong often enough to matter". Each flag alone is a request the tool cannot answer
+   (`--blocks` with nothing to permute; `--temporal` with no structure to test against), so both
+   directions refuse rather than default, and both refuse with a non-`assoc` mode.
+   **`--correlate` was deliberately left out**: the plan's stage-4 tests name it, but the block
+   control is a property of a *ranking*, and a single-pair report has no family for its p to sit in.
+3. **`nullFrom(stats, iterations)` was extracted** so `permutationNull` and `blockPermutationNull`
+   share one tail. The two controls would otherwise each have their own copy of the `+1` p-value
+   correction, which is exactly the kind of pair that agrees by coincidence until one is edited.
+
+### Stage 1 — the determinism coefficient — **COMPLETE**
+
+**Tests (RED first)**, `packages/analysis/test/controls.test.ts`, house style: inline fixtures, a local
+`vectorsFrom`-style helper, hand-computed anchors with the arithmetic commented above each assertion,
+`toBe` for exact and `toBeCloseTo(x, 12)` for hand arithmetic. Arms: a strict 1:1 map → 1.0 both ways; a
+near-map at the measured 0.828 shape → `definitional: true`; **a 0.389 pair → `definitional: false`**,
+the arm that fails if the threshold is set by vibes; a one-directional pair → the asymmetry is reported,
+not averaged away; a constant column (H=0) → 0 rather than `NaN`, documented as unreachable from
+`rankAssociations` because `df === 0` pairs are already skipped.
+
+**Implementation**: `functionalDependence(table)` over a `Crosstab`, beside `mutualInformation` and
+`chiSquare`, returning both directions plus `determinism` and `definitional`. `DEFINITIONAL_AT` is
+exported next to `MIN_N`.
+
+### Stage 2 — the block permutation null — **COMPLETE**
+
+**Tests (RED first)**: identity block order reproduces the observed statistic (the mutation that catches
+an accidental no-op shuffle); a block-driven confound puts the observed inside the null; a real
+within-block association puts it outside — **both arms**, per the standing "report the losing arm"
+rule; seeded reproducibility and seed sensitivity, matching `association.test.ts:352-369`; unequal
+block sizes (the 143-vs-1 case) neither throw nor drop rows; the returned shape is `PermutationNull`, so
+callers treat it uniformly.
+
+**Implementation**: `blockPermutationNull(a, b, blocks, options)`, reusing `crosstab`/`chiSquare`,
+`PermutationNull` and the `mulberry32`/`seedOf` generator from `random.ts`. The doc comment states
+plainly that the null is not marginal-preserving **and that this is the point**.
+
+### Stage 3 — wiring, and the disclosure — **COMPLETE**
+
+**Tests (RED first)**, `association.test.ts`: a definitional pair is absent from `report.pairs` and
+present in the report's disclosure with its coefficient; a 0.389 pair stays; `pBlocked` appears only
+with blocks **and** a declared-temporal column, and the key is **omitted rather than `undefined`**
+(`exactOptionalPropertyTypes`), matching the `pPermuted` discipline at `association.ts:663-666`; the FDR
+family counts the **surviving** pairs, pinned by a test, since a definitional pair cannot be a false
+discovery; suppressing every pair yields an empty ranking that says so rather than throwing.
+
+**Implementation**: `AssociationColumn` gains `temporal?: boolean` (the caller declares it — the module
+must not sniff a timestamp); `AssociationOptions` gains `blocks`; `PairAssociation` gains `determinism`,
+`definitional` and optional `pBlocked`; `AssociationReport` gains `suppressed`, because **nothing is
+hidden** — the same rule the struck count is shown under.
+
+### Stage 4 — the CLI surface — **COMPLETE**
+
+**Tests (RED first)**, driving the real binary on a scratch project, the `explore-cluster-cli.test.ts`
+pattern: `--blocks <property>` prints `determinism` per row and `p_blocked` where computed; definitional
+pairs are suppressed from the table **and** disclosed by name; `--blocks` naming a nonexistent property,
+or a request where no column is temporal, refuses rather than silently doing nothing; `--help` states
+which question each flag answers.
+
+**Implementation**: `packages/cli/src/commands/stats.ts`. The temporal/block decision comes from the
+analysis layer's own API rather than being re-spelled in the CLI, the `explore --struck` precedent.
+
+**Two existing CLI tests had to be inverted, and the inversion is the point.** `stats.test.ts`'s
+`perfect(dir)` fixture records ten alpha/early and ten beta/late, so `stage` is a strict function of
+`topic`; the file asserted that pair ranked first and carried exactly one bit. Since asc-fwpe the pair
+is suppressed and disclosed instead, so the file now asserts the pair is **absent from the table and
+present on stderr with `stage x topic at 1.000 (n=20)`**, naming the same hand-derived bit count. The
+old assertion was not wrong about the arithmetic; it was wrong about whether that arithmetic was a
+finding, which is exactly the defect this bead fixes. A new fixture carries the surviving arm: a
+correlated-but-not-definitional pair at exactly 0.1187092 bits, which fails if `DEFINITIONAL_AT` is
+ever set by taste rather than by the measured 0.389–0.828 gap.
+
+**Verified (stages 1–4, 2026-10-05)**: `pnpm format:check` clean, `pnpm typecheck` clean, `pnpm lint`
+clean, `pnpm test` **133 files / 3080 collected / 3078 passed / 2 skipped**, `node
+scripts/test-baseline.mjs` → *"baseline 3049 / 3047, 31 above baseline"*, `align check` → **green**
+(parse 0, architecture 0, security 0 (21 baselined), baselined debt 21 → 21).
+
+### Stage 5 — measure, re-issue, close — **COMPLETE**
+
+The planned deliverable was: a throwaway `spike/spike-controls.mjs` reproducing both tables above so the
+record's numbers are regenerable rather than transcribed; then **re-issue `EV-patterns.md` as a dated
+Amendment** in the file's own house style (`:167`), stating the survivor count after both controls —
+**3 of `tool-denial`'s 10 pairs** (`denial_kind` × `tool_name`, `× project`, `× repo`): 4 flagged by the
+temporal control, 1 suppressed as definitional, 2 already artifacts of marginals — reconciled against
+the existing Amendment's "8 of 16" rather than restated; a bead for the **third** control the Amendment
+names and no bead covers (effective sample size / pseudoreplication; `bd search` for
+`pseudoreplication` and `dwell` both return *No issues found*), since it is out of this acceptance and
+is a different mechanism; and a close for `asc-fwpe`, unblocking `asc-jpka`.
+
+**Outcome, and the count landed exactly as predicted:**
+
+| | |
+|---|---|
+| `spike/spike-controls.mjs` | written; reproduces both tables from the frozen `spike/corpus.db`; `node spike/spike-controls.mjs` prints `3 of 10 pairs survive both controls: denial_kind x project, denial_kind x repo, denial_kind x tool_name` |
+| `docs/evidence/EV-patterns.md` | **Amendment 2026-10-05** appended: the determinism table for all ten pairs, the block-null table, the 8 → 3 survivor reconciliation by named control, the "strict functional-dependency test fires on ZERO pairs" correction, and five plainly stated limits |
+| Third control | filed as **`asc-qt6r`** (P2, discovered-from `asc-fwpe`) — pseudoreplication / dwell, with the 87-runs-from-6,395-lines anchor from the 2026-09-14 Amendment |
+| `dogfood/0064` | written — see below |
+| Bead | `asc-fwpe` closed against its acceptance clause by clause; `asc-jpka` unblocked |
+
+**`dogfood/0064` is a different finding from the one its number was reserved for, and that is the
+deviation worth recording.** The number was written into `DEFINITIONAL_AT`'s doc comment mid-implementation
+as the citation for "why this exists". Running the documented flag line to capture output for that record
+returned a refusal instead: **neither control is reachable on the real store.** No registered type declares
+a repository or branch property, so `project × repo` — the pair the whole bead exists to suppress — cannot
+be formed at all (`asc stats tool_denial --assoc` reports 3 pairs and suppresses none); and no registered
+type declares a date, weekday, day, month, branch or repo property, so `--temporal weekday --blocks day`
+is unrunnable (`'occurred_at' is not a \`string\` or \`enum\` property … Groupable properties: denial_kind,
+project, tool_name`). Both controls were validated against `spike/spike-controls.mjs`, whose `weekday` and
+`repo` are columns **the spike invented over `corpus.db`** — a spike artifact, not the store. The two
+corpora agree on every shared number and disagree on the schema, which is exactly what made it invisible.
+Filed as **`asc-h7nq`** (P2). The doc comment's citation was moved to the EV-patterns Amendment in the same
+commit, because a citation pointing at a record that does not cover it is worse than no citation.
+
+### Risks, plainly
+
+- **The threshold is corpus-specific and will meet a corpus it is wrong for.** 0.5 sits in a 0.389–0.828
+  gap measured on one 409-row corpus from one user on one machine. The mitigant is disclosure, not
+  pretense: every pair reports its own coefficient, so a near-miss is visible.
+- **The block null is not marginal-preserving, and an observed value below the null median is odd.** It
+  may mean the null's variance is inflated by the single 143-row day; a within-day comparison is the
+  named alternative if that turns out to matter.
+- **Suppression can hide a real association.** A genuinely causal 0.83-deterministic pair is suppressed.
+  The disclosure list is the mitigation, and it is only a mitigation if it is read.
+- **The re-issue contradicts a published record** — four "SURVIVES" rows become confounds. Written as a
+  correction with its numbers, never as a quiet edit.
+- **`spike/corpus.db` is a frozen 2026-09-11 snapshot** and the live corpus has grown (~436 denials per
+  the existing Amendment). Using the frozen snapshot is deliberate — it isolates the controls' effect
+  from corpus growth — but the re-issued numbers describe that snapshot, and the record must say so.
 
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 

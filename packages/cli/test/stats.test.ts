@@ -72,7 +72,7 @@ beforeAll(() => {
   seedDir = mkdtempSync(join(tmpdir(), 'asc-stats-seed-'));
   dirs.push(seedDir);
   expect(asc(['init'], seedDir).status).toBe(0);
-  for (const spec of [SPEC, BARE] as readonly Spec[]) {
+  for (const spec of [SPEC, BARE, TIMED] as readonly Spec[]) {
     const file = join(seedDir, `${spec.name}.json`);
     writeFileSync(file, JSON.stringify(spec));
     expect(asc(['types', 'define', file], seedDir).status).toBe(0);
@@ -144,6 +144,24 @@ const BARE = {
   properties: [
     { name: 'topic', type: 'enum', enum_values: ['alpha', 'beta'] },
     { name: 'stage', type: 'enum', enum_values: ['early', 'late'] },
+  ],
+};
+
+/**
+ * The corpus the two controls need, and the one `finding` cannot be.
+ *
+ * `day` and `weekday` are BOTH `string`, because that is the point of the pair: a weekday and a
+ * project name are the same type, so nothing in the store can tell which one came from a timestamp
+ * and the CLI has to be TOLD (`--temporal`). `weekday` is a strict function of `day`, which makes
+ * `day x weekday` a definitional pair by construction -- the exact shape the tautology check exists
+ * to suppress, and the reason this fixture rather than a correlated one is the interesting case.
+ */
+const TIMED = {
+  name: 'timed',
+  properties: [
+    { name: 'day', type: 'string' },
+    { name: 'weekday', type: 'string' },
+    { name: 'kind', type: 'string' },
   ],
 };
 
@@ -261,37 +279,90 @@ describe('asc stats --assoc', () => {
   it('compares only the `string` and `enum` properties', () => {
     const dir = project();
     perfect(dir);
-    const list = rows(asc(['stats', 'finding', '--assoc', '--json'], dir));
+    const run = asc(['stats', 'finding', '--assoc', '--json'], dir);
+    const list = rows(run);
 
     // Three categorical properties -- topic, stage, label -- make C(3,2) = 3 pairs. `body` (text),
     // `at` (timestamp) and `size` (integer) contribute none: a crosstab of `size` against `topic`
     // would have one row per distinct size and report a Cramer's V near 1 that measured nothing.
-    expect(list).toHaveLength(3);
+    //
+    // Counted as REPORTED PLUS DISCLOSED, because this fixture's `stage` is a function of `topic`:
+    // since asc-fwpe the pair is suppressed from the table and named on stderr instead, and a test
+    // that only counted the table would now read a suppression as a property having gone missing.
+    // The claim under test is about which PROPERTIES are compared, so it has to count both.
+    const named = list.map((row) => `${String(row['a'])}/${String(row['b'])}`).sort();
+    expect(named).toEqual(['label/stage', 'label/topic']);
 
     // Pair names are `label/...` and `stage/topic` rather than the order this file declared them in,
     // because `defineType` sorts a spec's properties by canonical name (`core/spec.ts`: "Property
     // order is an authoring artifact, not part of the definition"). The pairs are therefore
     // (label, stage), (label, topic), (stage, topic) -- the upper triangle of the SORTED list.
-    const named = list.map((row) => `${String(row['a'])}/${String(row['b'])}`).sort();
-    expect(named).toEqual(['label/stage', 'label/topic', 'stage/topic']);
+    const disclosed = flatten(run.stderr).match(/stage x topic at [\d.]+/);
+    expect(disclosed).not.toBeNull();
+    expect(named.length + 1).toBe(3);
   });
 
-  it('measures exactly one bit between two properties that determine each other', () => {
+  it('suppresses a pair that determines itself, and discloses it by name', () => {
     const dir = project();
     perfect(dir);
-    const list = rows(asc(['stats', 'finding', '--assoc', '--json'], dir));
-    // Found by the SET of names rather than by position: which of the two is `a` is decided by the
-    // spec's canonical sort, and this test is about the bit between them, not about their order.
+    const run = asc(['stats', 'finding', '--assoc', '--json'], dir);
+    const list = rows(run);
+
+    // The pair is GONE from the table. This is the whole behaviour: `stage` is a function of `topic`
+    // (every alpha is early, every beta is late), so the association is one fact told twice.
     const pair = list.find(
       (row) => [row['a'], row['b']].sort().join() === ['topic', 'stage'].sort().join(),
     );
-    expect(pair).toBeDefined();
+    expect(pair).toBeUndefined();
 
-    // The hand computation above, to the bit.
-    expect((pair as Row)['mutual_information_bits']).toBe(1);
-    expect((pair as Row)['uncertainty']).toBe(1);
-    expect((pair as Row)['n']).toBe(20);
-    expect((pair as Row)['excluded']).toBe(0);
+    // ...and it is NOT gone from the report. A suppression nobody can see is indistinguishable from
+    // a pair the corpus never had, so the line names both properties, the coefficient and the n.
+    // The coefficient is exactly 1, hand-derived: each of the two values of `topic` maps to exactly
+    // one value of `stage` and back, so knowing either removes ALL of the other's 1 bit.
+    const said = flatten(run.stderr);
+    expect(said).toContain('SUPPRESSED as DEFINITIONAL');
+    expect(said).toContain('stage x topic at 1.000 (n=20)');
+  });
+
+  /**
+   * The arm that decides what ships. A threshold that suppressed every association would pass the
+   * test above perfectly, so a correlated-but-not-definitional pair is fed through the real command
+   * and its bit count claimed to the bit.
+   *
+   * On paper, 10 alpha and 10 beta, each split 7/3 the opposite way: H(topic) = H(outcome) = 1 bit,
+   * and MI = 2 * (0.35 log2(0.35/0.25) + 0.15 log2(0.15/0.25)) = 2 * (0.1698994 - 0.1105448)
+   * = 0.1187092. That is 0.119 in each direction -- under the 0.5 threshold by a wide margin, which
+   * is the assertion that fails if `DEFINITIONAL_AT` is ever set by taste instead of by the measured
+   * gap. Neither number comes from running the command.
+   */
+  it('keeps a correlated pair that does not determine itself', () => {
+    const dir = project();
+    const entries: Record<string, unknown>[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      entries.push({ topic: 'alpha', stage: i < 7 ? 'early' : 'late' });
+      entries.push({ topic: 'beta', stage: i < 7 ? 'late' : 'early' });
+    }
+    record(dir, 'bare', entries);
+    const list = rows(asc(['stats', 'bare', '--assoc', '--json'], dir));
+
+    const pair = list.find(
+      (row) => [row['a'], row['b']].sort().join() === ['stage', 'topic'].sort().join(),
+    ) as Row;
+    expect(pair).toBeDefined();
+    expect(pair['mutual_information_bits']).toBeCloseTo(0.1187092, 6);
+    expect(pair['determinism']).toBeCloseTo(0.1187092, 6);
+    expect(pair['n']).toBe(20);
+  });
+
+  it('reports the determinism coefficient on every pair it keeps', () => {
+    const dir = project();
+    perfect(dir);
+    const list = rows(asc(['stats', 'finding', '--assoc', '--json'], dir));
+    // `definitional` alone would be enough to suppress with and not enough to argue with: a pair at
+    // 0.49 and a pair at 0.05 are both "not definitional" and are not remotely the same finding.
+    // `label` is constant here, so H = 0 and the ratio is 0/0 -- reported as 0, never NaN.
+    for (const row of list) expect(typeof row['determinism']).toBe('number');
+    expect(list.map((row) => row['determinism'])).toEqual([0, 0]);
   });
 
   it('flags a pair below MIN_N as a small group rather than refusing it', () => {
@@ -323,6 +394,167 @@ describe('asc stats --assoc', () => {
     const run = asc(['stats', 'lonely', '--assoc'], dir);
     expect(run.status).toBe(1);
     expect(flatten(run.stderr)).toContain("'lonely' declares 1 categorical property (topic)");
+  });
+});
+
+/**
+ * The two controls on the surface the acceptance criterion's sentence sits in.
+ *
+ * `asc-jpka` is the same defect one bead over -- a capability met in the analysis layer and unmet on
+ * the command that a reader actually runs -- so `asc-fwpe` reaches the CLI deliberately rather than
+ * shipping the library alone. These tests drive the real binary.
+ *
+ * THE FIXTURE IS THE CORPUS'S SHAPE, NOT A CONVENIENCE. Four days of unequal size (16, 14, 6, 4)
+ * with `weekday` a strict function of `day` is the smallest thing that has both defects at once:
+ * `day x weekday` is the tautology, and the uneven days are what a block permutation has to survive.
+ * `kind` alternates globally, so it is independent of BOTH the day and the weekday -- every day and
+ * every weekday is split evenly, which makes every observed chi-square exactly 0 by hand.
+ */
+describe('asc stats --assoc, with the tautology and block controls', () => {
+  /** The 40-entry fixture above, recorded as `day`, `weekday` and a globally alternating `kind`. */
+  function timed(dir: string): void {
+    const plan: readonly (readonly [string, string, number])[] = [
+      ['D1', 'Thu', 16],
+      ['D2', 'Thu', 14],
+      ['D3', 'Tue', 6],
+      ['D4', 'Wed', 4],
+    ];
+    const entries: Record<string, unknown>[] = [];
+    for (const [day, weekday, count] of plan) {
+      for (let i = 0; i < count; i += 1) {
+        entries.push({ day, weekday, kind: entries.length % 2 === 0 ? 'a' : 'b' });
+      }
+    }
+    record(dir, 'timed', entries);
+  }
+
+  it('suppresses the pair that is one fact twice, and names it', () => {
+    const dir = project();
+    timed(dir);
+    const run = asc(['stats', 'timed', '--assoc', '--json'], dir);
+    const list = rows(run);
+
+    // Every DAY maps to exactly one weekday, so knowing the day removes all of the weekday's
+    // uncertainty and the coefficient is exactly 1 -- the day IS the weekday, restated. (The
+    // reverse is not total here, because D1 and D2 share `Thu`; `determinism` is the stronger of the
+    // two directions, which is the one that matters.) The pair is gone from the table.
+    const names = list.map((row) => `${String(row['a'])}/${String(row['b'])}`);
+    expect(names).not.toContain('day/weekday');
+
+    // ...and named on stderr with its coefficient, so a reader can see what left and why.
+    const said = flatten(run.stderr);
+    expect(said).toContain('SUPPRESSED as DEFINITIONAL');
+    expect(said).toContain('day x weekday at 1.000 (n=40)');
+  });
+
+  it('runs the block control on the temporal pairs and leaves the others alone', () => {
+    const dir = project();
+    timed(dir);
+    const run = asc(
+      ['stats', 'timed', '--assoc', '--temporal', 'weekday', '--blocks', 'day', '--json'],
+      dir,
+    );
+    const list = rows(run);
+
+    // `kind` alternates globally, so every weekday's `kind` split is even and the observed
+    // chi-square is exactly 0 -- and so is every permuted one, because relabelling whole days
+    // cannot change a split that is even in every day. p_blocked is therefore 1, which is the
+    // finding: the weekday explains nothing that the day structure did not already explain.
+    const temporalRow = list.find(
+      (row) => String(row['a']) === 'kind' && String(row['b']) === 'weekday',
+    );
+    expect(temporalRow).toBeDefined();
+    expect(temporalRow?.['p_blocked']).toBe(1);
+
+    // THE OTHER ARM. A pair with no temporal column has no block structure to be tested against, and
+    // the key is OMITTED rather than set to 0 or undefined -- "no control was run" and "the control
+    // found nothing" are different facts and must not serialise alike (`exactOptionalPropertyTypes`).
+    const otherRow = list.find((row) => String(row['a']) === 'day' && String(row['b']) === 'kind');
+    expect(otherRow).toBeDefined();
+    expect('p_blocked' in (otherRow as Row)).toBe(false);
+
+    // The disclosure says what ran, over how many blocks, at how many iterations -- a control whose
+    // own parameters are invisible is a number a reader cannot check.
+    const said = flatten(run.stderr);
+    expect(said).toContain('block control ran');
+    expect(said).toContain('4 distinct blocks');
+  });
+
+  it('omits p_blocked entirely when no block control was asked for', () => {
+    const dir = project();
+    timed(dir);
+    const list = rows(asc(['stats', 'timed', '--assoc', '--json'], dir));
+    // Absent, not `null` and not `0`: a consumer that read a missing control as a zero would be
+    // reading "the block structure explains nothing" out of a question nobody asked.
+    for (const row of list) expect('p_blocked' in row).toBe(false);
+  });
+
+  it('refuses each flag without its partner rather than doing half the job', () => {
+    const dir = project();
+    timed(dir);
+
+    const noTemporal = asc(['stats', 'timed', '--assoc', '--blocks', 'day'], dir);
+    expect(noTemporal.status).toBe(2);
+    expect(flatten(noTemporal.stderr)).toContain('--blocks was given without --temporal');
+
+    const noBlocks = asc(['stats', 'timed', '--assoc', '--temporal', 'weekday'], dir);
+    expect(noBlocks.status).toBe(2);
+    expect(flatten(noBlocks.stderr)).toContain('--temporal was given without --blocks');
+  });
+
+  it('refuses a property the type does not declare, naming the ones it does', () => {
+    const dir = project();
+    timed(dir);
+    const run = asc(
+      ['stats', 'timed', '--assoc', '--temporal', 'weekday', '--blocks', 'session'],
+      dir,
+    );
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain("'session' is not a `string` or `enum` property");
+    expect(flatten(run.stderr)).toContain('day, kind, weekday');
+  });
+
+  it('refuses an entry with no block rather than dropping it or inventing one', () => {
+    const dir = project();
+    // Four entries with a day and one without. Dropping the fifth would change the corpus being
+    // tested; grouping it with another day would invent a block. Both are silent, so it refuses.
+    record(dir, 'timed', [
+      { day: 'D1', weekday: 'Thu', kind: 'a' },
+      { day: 'D1', weekday: 'Thu', kind: 'b' },
+      { day: 'D2', weekday: 'Thu', kind: 'a' },
+      { day: 'D2', weekday: 'Thu', kind: 'b' },
+      { weekday: 'Wed', kind: 'a' },
+    ]);
+    const run = asc(
+      ['stats', 'timed', '--assoc', '--temporal', 'weekday', '--blocks', 'day', '--json'],
+      dir,
+    );
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain("1 of 5 entries have no 'day'");
+  });
+
+  it('refuses the two flags with a mode that has no block structure to test against', () => {
+    const dir = project();
+    timed(dir);
+    // A flag honoured by no output is the silently-ignored class this command refuses everywhere
+    // else: `--changepoints` would have printed a table that quietly dropped the control.
+    const run = asc(
+      ['stats', 'timed', '--changepoints', '--temporal', 'weekday', '--blocks', 'day'],
+      dir,
+    );
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('only `--assoc` runs');
+  });
+
+  it('states in its help which question each flag answers', () => {
+    const run = asc(['stats', '--help'], project());
+    expect(run.status).toBe(0);
+    const said = flatten(run.stdout);
+    // The two questions are genuinely different and the help has to say so: the q-values ask
+    // "could this be chance", the block control asks "is this the block structure instead".
+    expect(said).toContain('came from a TIMESTAMP');
+    expect(said).toContain('the day each entry belongs to');
+    expect(said).toContain('--temporal weekday --blocks day');
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AssociationError,
+  DEFINITIONAL_AT,
   benjaminiHochberg,
   chiSquare,
   chiSquarePValue,
@@ -388,20 +389,42 @@ describe('rankAssociations', () => {
     { name: 'noise', values: ['m', 'n', 'm', 'n', 'm', 'n', 'm', 'n', 'm', 'n', 'm', 'n'] },
   ];
 
-  it('puts the real association first and reports the family it corrected against', () => {
+  it('suppresses a pair that is the same partition twice, and discloses it by name', () => {
     const report = rankAssociations(columns);
 
-    expect(report.family).toBe(3);
-    expect(report.items).toBe(12);
-    expect(report.pairs).toHaveLength(3);
+    // `left` and `mirror` are the SAME partition of the twelve items -- every `a` is a `p` and every
+    // `b` is a `q` -- so the pair is a tautology rather than a finding, however strong its statistics
+    // look. This test asserted the opposite until asc-fwpe: it required `left:mirror` to rank FIRST,
+    // which is exactly the defect `docs/evidence/EV-patterns.md` reports as the corpus's strongest
+    // association. The inversion is the point of the change and is left visible here rather than
+    // quietly deleted.
+    expect(report.suppressed).toHaveLength(1);
+    expect(report.suppressed[0]?.a).toBe('left');
+    expect(report.suppressed[0]?.b).toBe('mirror');
+    expect(report.suppressed[0]?.determinism).toBe(1);
+    expect(report.suppressed[0]?.n).toBe(12);
+    expect(report.pairs.map((pair) => `${pair.a}:${pair.b}`)).not.toContain('left:mirror');
 
-    const top = report.pairs[0];
-    expect(top?.a).toBe('left');
-    expect(top?.b).toBe('mirror');
-    expect(top?.cramersV).toBe(1);
-    // `left` and `mirror` are the same partition, so each tells the other exactly one bit.
-    expect(top?.mutualInformation).toBeCloseTo(1, 12);
-    expect(top?.uncertainty).toBeCloseTo(1, 12);
+    // What remains is the two pairs the tautology was outranking, and the family the correction was
+    // computed over is those two. Suppression happens BEFORE the FDR step on purpose: a definitional
+    // pair cannot be a false discovery, so leaving it in would tax every real pair for a test nobody
+    // should have run.
+    expect(report.pairs).toHaveLength(2);
+    expect(report.family).toBe(2);
+    expect(report.items).toBe(12);
+  });
+
+  it('reports the determinism coefficient on every pair it keeps', () => {
+    const report = rankAssociations(columns);
+    // The verdict would be enough to suppress with, and not enough to argue with: a pair at 0.49 and
+    // a pair at 0.05 are both "not definitional" and are not remotely the same finding.
+    for (const pair of report.pairs) {
+      expect(pair.dependence.definitional).toBe(false);
+      expect(pair.dependence.determinism).toBeLessThan(DEFINITIONAL_AT);
+    }
+    // `left x noise` is exactly independent, so neither column tells the other anything.
+    const independent = report.pairs.find((pair) => pair.a === 'left' && pair.b === 'noise');
+    expect(independent?.dependence.determinism).toBeCloseTo(0, 12);
   });
 
   it('holds left against noise at no effect at all', () => {
@@ -415,16 +438,20 @@ describe('rankAssociations', () => {
   });
 
   it('counts rows it dropped, and offers absence as a level instead', () => {
+    // Neither mode is a perfect map, deliberately: this test is about `excluded`, and a fixture whose
+    // only pair was definitional would now be asserting suppression and exclusion at once. The first
+    // fixture tried here failed that test -- with three values in `x` and two in `y`, adding the
+    // absence row pushed the coefficient to 0.54 and the pair was suppressed in `level` mode.
     const withGaps: AssociationColumn[] = [
-      { name: 'x', values: ['a', 'a', null, 'b', 'b', null] },
-      { name: 'y', values: ['p', 'p', 'q', 'q', null, 'q'] },
+      { name: 'x', values: ['a', 'a', 'b', 'b', null, 'a'] },
+      { name: 'y', values: ['p', 'q', 'q', 'p', 'q', 'p'] },
     ];
 
     const excluded = rankAssociations(withGaps);
     expect(excluded.items).toBe(6);
-    // Rows 2, 4 and 5 (zero-based) are missing one side or the other.
-    expect(excluded.pairs[0]?.n).toBe(3);
-    expect(excluded.pairs[0]?.excluded).toBe(3);
+    // Row 4 (zero-based) is missing its `x`.
+    expect(excluded.pairs[0]?.n).toBe(5);
+    expect(excluded.pairs[0]?.excluded).toBe(1);
 
     const asLevel = rankAssociations(withGaps, { absent: 'level' });
     expect(asLevel.pairs[0]?.n).toBe(6);
@@ -433,20 +460,28 @@ describe('rankAssociations', () => {
 
   it('flags a pair measured on too few rows as an anecdote', () => {
     const report = rankAssociations(columns);
-    // MIN_N is 20 and there are 12 items, so every pair here is under it.
+    // MIN_N is 20 and there are 12 items, so every surviving pair here is under it.
     for (const pair of report.pairs) expect(pair.underpowered).toBe(true);
 
     const relaxed = rankAssociations(columns, { minN: 5 });
     for (const pair of relaxed.pairs) expect(pair.underpowered).toBe(false);
   });
 
-  it('omits the permutation p entirely rather than reporting it as undefined', () => {
+  it('omits a control it did not run rather than reporting it as undefined', () => {
     const without = rankAssociations(columns);
-    expect('pPermuted' in (without.pairs[0] as object)).toBe(false);
+    for (const pair of without.pairs) {
+      expect('pPermuted' in (pair as object)).toBe(false);
+      expect('pBlocked' in (pair as object)).toBe(false);
+    }
 
     const controlled = rankAssociations(columns, { permutations: 100, seed: 'ranked' });
-    // The top pair is a perfect association, so no shuffle can match it: the floor, 1/(100+1).
-    expect(controlled.pairs[0]?.pPermuted).toBeCloseTo(1 / 101, 12);
+    // The surviving pairs here are exactly independent, so a shuffle ties the observed statistic
+    // every iteration and the p is the top of the scale. The FLOOR -- 1/(iterations+1), the value a
+    // perfect association is limited to -- can no longer be reached from `rankAssociations` at all,
+    // because a perfect association is definitional and gets suppressed; that assertion now lives in
+    // `permutationNull`'s own suite, where a perfect table is still a legal input.
+    expect(controlled.pairs[0]?.a).toBe('left');
+    expect(controlled.pairs[0]?.pPermuted).toBe(1);
   });
 
   it('is fully ordered, so two runs over one corpus agree', () => {
@@ -473,5 +508,123 @@ describe('rankAssociations', () => {
         { name: 'x', values: ['p'] },
       ]),
     ).toThrow(/duplicate column name/);
+  });
+});
+
+describe('rankAssociations, with the two controls wired in (asc-fwpe)', () => {
+  /**
+   * The corpus's SHAPE, at a size that fits in a test: four days of unequal size (16, 14, 6, 4 --
+   * the real one is 143 down to 1), two of them sharing a weekday, and `kind` balanced inside every
+   * day so it is exactly independent of both `day` and `weekday`.
+   *
+   * `weekday` is a function of `day` -- that is what a timestamp-derived label IS -- so `day x
+   * weekday` is definitional and gets suppressed. `kind` and `project` are balanced enough inside
+   * every day that neither is a map in either direction, so both survive and can carry `pBlocked`.
+   */
+  const DAYS = [
+    { id: 'D1', weekday: 'Thu', size: 16 },
+    { id: 'D2', weekday: 'Thu', size: 14 },
+    { id: 'D3', weekday: 'Tue', size: 6 },
+    { id: 'D4', weekday: 'Wed', size: 4 },
+  ];
+  const day: string[] = [];
+  const weekday: string[] = [];
+  const kind: string[] = [];
+  const project: string[] = [];
+  {
+    let index = 0;
+    for (const entry of DAYS) {
+      for (let i = 0; i < entry.size; i += 1) {
+        day.push(entry.id);
+        weekday.push(entry.weekday);
+        kind.push(index % 2 === 0 ? 'P' : 'Q');
+        project.push(index % 4 < 2 ? 'X' : 'Y');
+        index += 1;
+      }
+    }
+  }
+
+  const columns: AssociationColumn[] = [
+    { name: 'day', values: day, temporal: true },
+    { name: 'weekday', values: weekday, temporal: true },
+    { name: 'kind', values: kind },
+    { name: 'project', values: project },
+  ];
+
+  it('suppresses the temporal pair that is a function of its own day, and keeps the rest', () => {
+    const report = rankAssociations(columns);
+
+    // Six pairs over four columns; one of them is the tautology.
+    expect(report.suppressed).toHaveLength(1);
+    expect(report.suppressed[0]?.a).toBe('day');
+    expect(report.suppressed[0]?.b).toBe('weekday');
+    // Every day carries exactly one weekday, so knowing the day removes ALL of the weekday's
+    // entropy. This is the corpus's `project x repo` shape, and it is measured rather than assumed.
+    expect(report.suppressed[0]?.determinism).toBe(1);
+    expect(report.suppressed[0]?.n).toBe(40);
+
+    expect(report.pairs).toHaveLength(5);
+    expect(report.family).toBe(5);
+    expect(report.pairs.map((pair) => `${pair.a}:${pair.b}`)).not.toContain('day:weekday');
+  });
+
+  it('runs the block control on the pairs a block-derived column is in, and nowhere else', () => {
+    const report = rankAssociations(columns, {
+      blocks: day,
+      blockPermutations: 200,
+      seed: 'blocked',
+    });
+    const found = (a: string, b: string): (typeof report.pairs)[number] | undefined =>
+      report.pairs.find((pair) => pair.a === a && pair.b === b);
+
+    // `weekday` is the temporal column and `day` is the block, and each day holds one weekday -- the
+    // exact precondition `blockPermutationNull` states. `kind` is balanced inside every day, so the
+    // observed statistic is 0 and every arrangement ties it: p is the top of the scale, which is the
+    // control saying "the day structure explains nothing here because there is nothing to explain".
+    const weekdayKind = found('weekday', 'kind');
+    expect(weekdayKind?.pBlocked).toBe(1);
+
+    // A pair with NO temporal column is not a question the block control can ask, and the key is
+    // omitted rather than set -- "the control does not apply" and "the control returned nothing" are
+    // different facts and must not serialise alike.
+    const kindProject = found('kind', 'project');
+    expect(kindProject).toBeDefined();
+    expect('pBlocked' in (kindProject as object)).toBe(false);
+  });
+
+  it('does not run the block control when it was not asked for, or given nothing to permute', () => {
+    for (const pair of rankAssociations(columns).pairs)
+      expect('pBlocked' in (pair as object)).toBe(false);
+
+    // Iterations without blocks: there is no block structure, so there is no null to compute. The
+    // pair is reported without the key rather than with a fabricated one.
+    for (const pair of rankAssociations(columns, { blockPermutations: 200 }).pairs)
+      expect('pBlocked' in (pair as object)).toBe(false);
+  });
+
+  it('refuses blocks that do not cover the corpus, once, up front', () => {
+    // Length is a property of the whole request, not of a pair, so it fails once rather than
+    // producing a ranking in which every pair silently lacks a control.
+    expect(() =>
+      rankAssociations(columns, { blocks: day.slice(0, 10), blockPermutations: 10 }),
+    ).toThrow(/blocks has 10 entries, expected 40/);
+
+    const holed: (string | null)[] = [...day];
+    holed[7] = null;
+    expect(() => rankAssociations(columns, { blocks: holed, blockPermutations: 10 })).toThrow(
+      /item 7 has no block/,
+    );
+  });
+
+  it('returns an empty ranking that says so rather than throwing when nothing survives', () => {
+    // Two columns that are the same partition, and nothing else: every pair is definitional.
+    const report = rankAssociations([
+      { name: 'a', values: ['p', 'p', 'q', 'q'] },
+      { name: 'b', values: ['x', 'x', 'y', 'y'] },
+    ]);
+    expect(report.pairs).toHaveLength(0);
+    expect(report.family).toBe(0);
+    expect(report.suppressed).toHaveLength(1);
+    expect(report.suppressed[0]?.determinism).toBe(1);
   });
 });

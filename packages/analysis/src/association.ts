@@ -8,7 +8,7 @@
  * reframing is what most of the decisions below fall out of: a statistic that is fine for judging
  * one table in isolation can still produce a ranking that is mostly artefact.
  *
- * THREE WAYS THAT GOES WRONG, AND WHAT IS DONE ABOUT EACH.
+ * FIVE WAYS THAT GOES WRONG, AND WHAT IS DONE ABOUT EACH.
  *
  *   1. **Ranking by p-value ranks by sample size.** Chi-square grows linearly with n at a fixed
  *      effect, so on a corpus of 1,790 entries a trivial association is p < 1e-9 and sorts above an
@@ -33,6 +33,24 @@
  *      WHOLE family of pairs in the request. The family is the set the caller asked for, which is
  *      why correction happens in `rankAssociations` and not in `chiSquare` -- a single table has no
  *      family, and a function that corrected one in isolation would be inventing the denominator.
+ *
+ *   4. **THE STRONGEST PAIR CAN BE A TAUTOLOGY, AND IT SURVIVES EVERY CONTROL ABOVE.** A pair of
+ *      properties that name the same thing -- a project and its repo, a timestamp and the weekday
+ *      derived from it -- scores a large V, a tiny p, and a mutual information larger than anything
+ *      else in the request, because it IS the same fact stated twice. Worse, it survives the shuffled
+ *      control for the wrong reason: shuffling destroys the identity, the association goes with it,
+ *      and "the finding disappeared under shuffling" is exactly what a FALSE association looks like,
+ *      so the control confirms it. `functionalDependence` measures how nearly one column maps onto
+ *      the other, and pairs at or above `DEFINITIONAL_AT` are suppressed from the ranking and
+ *      disclosed by name rather than silently dropped.
+ *
+ *   5. **A TIME-DERIVED DIMENSION MANUFACTURES ASSOCIATIONS THE SHUFFLE CANNOT SEE.** A temporal
+ *      label is a function of the block it came from, so a corpus with one dominant day produces a
+ *      weekday association that is real in the marginals and spurious as a pairing -- and shuffling
+ *      cannot see it, because the marginal concentration survives the shuffle intact. `permutationNull`
+ *      holds both marginals fixed, which is the wrong thing to hold: the question is whether the
+ *      concentration is explained by the BLOCK structure, and `blockPermutationNull` answers it by
+ *      holding the blocks fixed and permuting only the labels.
  *
  * THE ASYMPTOTIC P-VALUE HAS A VALIDITY CONDITION AND IT IS REPORTED, NOT ASSUMED. Pearson's
  * chi-square approximates a distribution the statistic only converges to as expected cell counts
@@ -168,6 +186,16 @@ export interface AssociationColumn {
   readonly name: string;
   /** One opaque key per item, or `null` where the item has no value for this property. */
   readonly values: readonly (string | null)[];
+  /**
+   * True when this column's values came from a timestamp -- a date, a weekday, a month.
+   *
+   * DECLARED BY THE CALLER, NEVER SNIFFED. Only the caller knows that a value was derived from a time
+   * (`2026-09-03` and `Thursday` look like any other two strings), and a module that guessed from the
+   * text would be right often enough to be believed and wrong often enough to matter. The flag does
+   * one thing: it is what makes a pair eligible for `blockPermutationNull`, because only a
+   * block-derived column has a block-to-label pairing that can be permuted.
+   */
+  readonly temporal?: boolean;
 }
 
 /** How `rankAssociations` is asked for its ranking. */
@@ -180,6 +208,29 @@ export interface AssociationOptions {
   readonly permutations?: number;
   /** Seed for the permutation control. Default `DEFAULT_SEED`. */
   readonly seed?: string;
+  /**
+   * One block id per item -- a day, a session, whatever the temporal column was derived from.
+   *
+   * When supplied, every pair that contains a `temporal` column also gets `pBlocked`, the empirical p
+   * from permuting the temporal labels AMONG these blocks. The blocks are the rows of the question
+   * "is this pairing over time, or is it the block structure?", and the corpus this exists for is a
+   * 409-row one where a single day contributes 143 of the rows.
+   */
+  readonly blocks?: readonly (string | null)[];
+  /** Block-control iterations. Default 0 -- off. Only meaningful alongside `blocks`. */
+  readonly blockPermutations?: number;
+}
+
+/** A pair removed from the ranking because it was the same fact stated twice. */
+export interface SuppressedPair {
+  /** The first column's name. */
+  readonly a: string;
+  /** The second column's name. */
+  readonly b: string;
+  /** The coefficient that put it over `DEFINITIONAL_AT`. */
+  readonly determinism: number;
+  /** Rows the suppressed pair was measured on. */
+  readonly n: number;
 }
 
 /** One pair of properties, measured. */
@@ -194,22 +245,43 @@ export interface PairAssociation extends ChiSquareResult {
   readonly mutualInformation: number;
   /** Symmetric uncertainty, in [0,1]. */
   readonly uncertainty: number;
+  /**
+   * How nearly each column determines the other, in both directions.
+   *
+   * Reported on EVERY pair, including the ones the ranking keeps: a pair at 0.49 and a pair at 0.05
+   * are both "not definitional" and are not remotely the same finding, so the coefficient has to be
+   * readable rather than replaced by the verdict. This is the number a reader argues with when the
+   * threshold suppresses something they believe.
+   */
+  readonly dependence: FunctionalDependence;
   /** Benjamini-Hochberg q-value across every pair in the same request. */
   readonly pAdjusted: number;
   /** True when `n` is below `minN`: an anecdote about a pair, not an estimate. */
   readonly underpowered: boolean;
   /** Empirical p from the permutation control, present only when `permutations > 0`. */
   readonly pPermuted?: number;
+  /** Empirical p from the block control, present only when `blocks` and `blockPermutations` are set. */
+  readonly pBlocked?: number;
 }
 
 /** The ranking, with the family size the correction was computed against. */
 export interface AssociationReport {
-  /** Every pair, ordered by `cramersVCorrected` descending. */
+  /** Every pair that survived, ordered by `cramersVCorrected` descending. */
   readonly pairs: readonly PairAssociation[];
-  /** Pairs tested -- the denominator the FDR correction used. */
+  /** Pairs the FDR correction was computed over -- the pairs that survived, not every pair tested. */
   readonly family: number;
   /** Items each column was measured over, before any exclusion. */
   readonly items: number;
+  /**
+   * Pairs removed as definitional, with the coefficient that removed them.
+   *
+   * NOTHING IS HIDDEN. A suppressed pair is the strongest thing in many requests -- it is the same
+   * fact twice, so it scores highest -- and a ranking that silently dropped it would be
+   * indistinguishable from one over a corpus that never had it. The disclosure is the whole reason
+   * suppression is defensible: a reader can see that `project x repo` was removed and at 0.828, and
+   * disagree. The same rule the store keeps for struck records.
+   */
+  readonly suppressed: readonly SuppressedPair[];
 }
 
 /** The permutation control's null distribution. */
@@ -494,6 +566,82 @@ export function mutualInformation(table: Crosstab): MutualInformationResult {
 }
 
 /**
+ * Determinism at or above which a pair is DEFINITIONAL -- one property restating the other -- rather
+ * than a finding about the corpus.
+ *
+ * WHY THIS EXISTS (asc-fwpe; `docs/evidence/EV-patterns.md`, Amendment 2026-10-05).
+ * `docs/evidence/EV-patterns.md` reports `project x repo`
+ * as the corpus's strongest association -- V ~ 0.76, surviving the shuffled control. It is the same
+ * fact twice: a project identifier and its repo name are near-copies. Shuffling cannot see that,
+ * because shuffling destroys the identity and the association goes with it; the finding "survives"
+ * for the wrong reason. A reader who is shown it has been handed a tautology dressed as a discovery.
+ *
+ * THE VALUE IS JUSTIFIED BY A MEASURED GAP, NOT CHOSEN. Measuring `U = 1 - H(Y|X)/H(Y)` in both
+ * directions across all ten `tool-denial` pairs in the checked-in corpus (N=409, 2026-10-05) gives:
+ *
+ *     project x repo              0.828    <- the tautology
+ *     -- a 2.1x gap --
+ *     denial_kind x project        0.389
+ *     the seven others             0.123 - 0.365
+ *
+ * So 0.5 sits inside a gap that exists in the data, which is the only thing that distinguishes a
+ * threshold from a taste. STRICTLY functional dependency would not work here and this is the part
+ * worth keeping: `project -> repo` is not a function (align has `main` and `fix`; grizzly-wip has
+ * three) and neither is `repo -> project` (`main` spans five projects), so a strict test fires on
+ * NOTHING -- it would suppress no tautology and pass review while reporting one as the top finding.
+ *
+ * WHAT IT COSTS, STATED PLAINLY. The gap is 0.389-0.828 on one 409-row corpus from one user on one
+ * machine; another corpus may not have a gap at all. Two things bound the damage: every pair reports
+ * its own coefficient, so a near-miss is visible and arguable, and suppression is disclosed by name
+ * rather than silent (see `AssociationReport.suppressed`). The threshold is a fixed constant rather
+ * than an option because a per-request knob would make two runs incomparable, and a reader could not
+ * tell a suppressed finding from one that was never there.
+ */
+export const DEFINITIONAL_AT = 0.5;
+
+/** How nearly one of two columns determines the other -- the uncertainty coefficient, both ways. */
+export interface FunctionalDependence {
+  /** Share of `b`'s entropy that knowing `a` removes: `MI / H(b)`, in [0,1]. */
+  readonly aToB: number;
+  /** Share of `a`'s entropy that knowing `b` removes: `MI / H(a)`, in [0,1]. */
+  readonly bToA: number;
+  /** The larger of the two. A pair is definitional if EITHER direction is a near-map. */
+  readonly determinism: number;
+  /** `determinism >= DEFINITIONAL_AT`. */
+  readonly definitional: boolean;
+}
+
+/**
+ * How nearly each column determines the other, and whether that makes the pair definitional.
+ *
+ * BOTH DIRECTIONS ARE REPORTED, AND THEY ARE NOT AVERAGED. `a -> b` and `b -> a` answer different
+ * questions and the asymmetric case is the common one: in the corpus, `denial_kind -> project` is
+ * 0.389 while `project -> denial_kind` is 0.123. A symmetric summary would report 0.256 and hide that
+ * one of the two is three times the other -- and it is the larger that decides definitionality,
+ * because a pair is a tautology if either side restates the other.
+ *
+ * THIS IS NOT SYMMETRIC UNCERTAINTY, and the difference is the point. `uncertainty` (2*MI/(H(a)+H(b)))
+ * is a property of the PAIR; `determinism` is a property of a DIRECTION. A pair can score modest
+ * uncertainty while one direction is a near-perfect map, which is exactly the `project x repo` shape.
+ *
+ * No new entropy arithmetic: `mutualInformation` already returns `bits`, `entropyA` and `entropyB`,
+ * and `U(a->b) = bits / entropyB` exactly. A second entropy function here would be a second thing
+ * that has to agree with the first.
+ */
+export function functionalDependence(table: Crosstab): FunctionalDependence {
+  const { bits, entropyA, entropyB } = mutualInformation(table);
+
+  // A column with one level has H = 0, so the ratio is 0/0. `Math.min(1, ...)` is not cosmetic
+  // either: MI <= min(H(a), H(b)) mathematically, but the two are computed by different sums, so a
+  // perfect map can land an ulp above 1 and report a determinism no probability supports.
+  const aToB = entropyB > 0 ? Math.min(1, bits / entropyB) : 0;
+  const bToA = entropyA > 0 ? Math.min(1, bits / entropyA) : 0;
+  const determinism = Math.max(aToB, bToA);
+
+  return { aToB, bToA, determinism, definitional: determinism >= DEFINITIONAL_AT };
+}
+
+/**
  * Permutation control: the chi-square distribution obtainable when `b`'s labels are shuffled.
  *
  * WHAT IT IS FOR. The asymptotic p-value is an approximation with a validity condition
@@ -534,6 +682,19 @@ export function permutationNull(
     stats.push(chiSquare(crosstab(a, shuffled)).chi2);
   }
 
+  return nullFrom(stats, iterations);
+}
+
+/**
+ * Summarise a set of null statistics into the shape every permutation control returns.
+ *
+ * EXTRACTED SO THE TWO CONTROLS CANNOT DRIFT APART (asc-fwpe). `blockPermutationNull` needs the same
+ * three quantiles and the same p-value, and the p-value's `+1` correction is the part of this module
+ * most worth not having two copies of: it is what stops a permutation test reporting `p = 0`, and a
+ * second copy that dropped the `+1` would still return a plausible-looking number. One function, so
+ * the correction holds for both by construction rather than by review.
+ */
+function nullFrom(stats: number[], iterations: number): PermutationNull {
   stats.sort((x, y) => x - y);
   const at = (q: number): number =>
     stats[Math.min(stats.length - 1, Math.floor(q * stats.length))] as number;
@@ -551,6 +712,114 @@ export function permutationNull(
       return (ge + 1) / (iterations + 1);
     },
   };
+}
+
+/**
+ * The null a TIME STRUCTURE manufactures: permute the temporal labels among blocks, holding every
+ * block's rows, its size and its other column fixed.
+ *
+ * WHAT QUESTION THIS ANSWERS, AND WHY `permutationNull` CANNOT ASK IT. `permutationNull` shuffles the
+ * labels of ONE column freely, so it destroys the association being tested. That makes it blind in a
+ * specific and load-bearing direction: a temporal label is a FUNCTION of the block it came from --
+ * every entry in a day has that day's weekday -- so a corpus in which one day dominates manufactures
+ * a weekday association that is REAL in the marginals and SPURIOUS as an association. Shuffling
+ * cannot see this, because the marginal concentration survives the shuffle: it is the *pairing* with
+ * time that is false, and shuffling removes everything rather than just the pairing.
+ *
+ * MEASURED, on the checked-in corpus (`tool-denial`, N=409, 35 days, 2026-09-03 alone contributing
+ * 143 of them). Permuting weekday labels among days collapses EVERY weekday pair, and the observed
+ * statistic sits BELOW the null median in each case:
+ *
+ *     project x weekday        observed 310.58   null median 355.55   p 0.8594
+ *     repo x weekday           observed 329.28   null median 399.01   p 0.9078
+ *     denial_kind x weekday    observed 181.71   null median 190.86   p 0.6053
+ *     tool_name x weekday      observed  85.34   null median  75.19   p 0.2685
+ *
+ * `EV-patterns.md` reported "Thursday 41.1%" as a finding and named this control as the way to test
+ * it. All four pairings collapse, so the day structure -- not the weekday -- is what the corpus is
+ * shaped by.
+ *
+ * THIS NULL IS DELIBERATELY NOT MARGINAL-PRESERVING, AND THAT IS THE POINT. It holds `other` and the
+ * block structure EXACTLY as observed and destroys only the block-to-temporal pairing. The question
+ * is "is this concentration explained by the block structure, or is it in the pairing?", and a
+ * marginals-preserving null would hold the very thing under test. `permutationNull` answers the
+ * other question -- "could these marginals alone manufacture this?" -- and both are worth asking.
+ *
+ * THE BLOCK MUST REFINE THE LABEL: each block must carry exactly one temporal value. That is the
+ * honest precondition (a day has one weekday; an hour does not have one day), and it is refused
+ * rather than repaired, because a block whose rows disagree has no one label to permute and
+ * resampling one would be inventing a corpus. A caller who wants to test an hourly label must block
+ * by hour, not by day -- and the error says so.
+ *
+ * `temporal` is the block-derived column and `other` is the one being tested against it. The two are
+ * NOT interchangeable: only `temporal`'s block assignment is permuted, so swapping them asks a
+ * different question and gets a different null.
+ */
+export function blockPermutationNull(
+  temporal: readonly string[],
+  other: readonly string[],
+  blocks: readonly (string | null)[],
+  options: { readonly iterations?: number; readonly seed?: string } = {},
+): PermutationNull {
+  const iterations = options.iterations ?? 500;
+  if (!Number.isInteger(iterations) || iterations < 1)
+    throw new AssociationError(
+      `blockPermutationNull: iterations must be a positive integer (got ${String(iterations)})`,
+    );
+  if (temporal.length !== other.length || temporal.length !== blocks.length)
+    throw new AssociationError(
+      `blockPermutationNull: temporal, other and blocks must be the same length (got ${String(
+        temporal.length,
+      )}, ${String(other.length)} and ${String(blocks.length)})`,
+    );
+  if (temporal.length === 0)
+    throw new AssociationError('blockPermutationNull: needs at least one row (got 0)');
+
+  // Blocks in first-appearance order, so the null depends on the data and not on how the caller
+  // happened to sort its rows.
+  const blockOrder: string[] = [];
+  const labelOf = new Map<string, string>();
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (block === null || block === undefined)
+      throw new AssociationError(
+        `blockPermutationNull: row ${String(index)} has no block, and a row with no block cannot be given another block's label`,
+      );
+    const label = temporal[index] as string;
+    const seen = labelOf.get(block);
+    if (seen === undefined) {
+      labelOf.set(block, label);
+      blockOrder.push(block);
+    } else if (seen !== label)
+      throw new AssociationError(
+        `blockPermutationNull: block "${block}" carries two temporal values ("${seen}" and "${label}"), so there is no one label to permute -- block by a finer grain than the label`,
+      );
+  }
+
+  const next = mulberry32(seedOf(options.seed ?? DEFAULT_SEED));
+  const shuffled = blockOrder.map((block) => labelOf.get(block) as string);
+  const assigned = new Map<string, string>();
+  const permuted: string[] = new Array<string>(temporal.length);
+  const stats: number[] = [];
+
+  for (let i = 0; i < iterations; i += 1) {
+    // Fisher-Yates over the BLOCKS' labels. Blocks sharing a label may swap freely, which is the
+    // mechanism that matters: it is how two days come to share one weekday and merge into a single
+    // row of the table, and merging is what moves the statistic.
+    for (let j = shuffled.length - 1; j > 0; j -= 1) {
+      const k = Math.floor(next() * (j + 1));
+      const held = shuffled[j] as string;
+      shuffled[j] = shuffled[k] as string;
+      shuffled[k] = held;
+    }
+    for (let index = 0; index < blockOrder.length; index += 1)
+      assigned.set(blockOrder[index] as string, shuffled[index] as string);
+    for (let index = 0; index < temporal.length; index += 1)
+      permuted[index] = assigned.get(blocks[index] as string) as string;
+    stats.push(chiSquare(crosstab(permuted, other)).chi2);
+  }
+
+  return nullFrom(stats, iterations);
 }
 
 /**
@@ -624,7 +893,25 @@ export function rankAssociations(
   const keepAbsent = options.absent === 'level';
   const minN = options.minN ?? MIN_N;
   const permutations = options.permutations ?? 0;
+  const blockPermutations = options.blockPermutations ?? 0;
   const seed = options.seed ?? DEFAULT_SEED;
+
+  // Blocks are validated ONCE, up front, rather than per pair. A missing block is a caller error
+  // about the whole request -- some entry is not in any block -- and a control that silently fell
+  // through to "no pBlocked" for every pair would read as "the control ran and found nothing".
+  const blocks = options.blocks;
+  if (blocks !== undefined) {
+    if (blocks.length !== items)
+      throw new AssociationError(
+        `rankAssociations: blocks has ${String(blocks.length)} entries, expected ${String(items)}`,
+      );
+    for (let row = 0; row < blocks.length; row += 1) {
+      if (blocks[row] === null)
+        throw new AssociationError(
+          `rankAssociations: item ${String(row)} has no block, so the block control cannot place it in time`,
+        );
+    }
+  }
 
   type Measured = Omit<PairAssociation, 'pAdjusted'>;
   const measured: Measured[] = [];
@@ -636,20 +923,38 @@ export function rankAssociations(
 
       const a: string[] = [];
       const b: string[] = [];
+      const pairBlocks: string[] = [];
       for (let row = 0; row < items; row += 1) {
         const x = left.values[row] ?? null;
         const y = right.values[row] ?? null;
         if ((x === null || y === null) && !keepAbsent) continue;
         a.push(x ?? ABSENT_LEVEL);
         b.push(y ?? ABSENT_LEVEL);
+        // Only the rows that survived, so the blocks stay aligned with `a` and `b` rather than with
+        // the caller's original item order -- the two differ exactly when a row was dropped.
+        pairBlocks.push(blocks?.[row] as string);
       }
 
       const table = crosstab(a, b);
       const test = chiSquare(table);
       const info = mutualInformation(table);
+      const dependence = functionalDependence(table);
       const pPermuted =
         permutations > 0 && table.n > 0
           ? permutationNull(a, b, { iterations: permutations, seed }).pValue(test.chi2)
+          : undefined;
+
+      // Which of the two is the block-derived one. Only the caller has declared this, and only one
+      // direction is permutable, so the pair is asked about the column that carries the declaration.
+      // When both are temporal the first decides, which is arbitrary but stated and stable -- two
+      // different nulls from one request would be worse than an arbitrary but reproducible choice.
+      const temporal = left.temporal === true ? left : right.temporal === true ? right : undefined;
+      const pBlocked =
+        blockPermutations > 0 && blocks !== undefined && temporal !== undefined && table.n > 0
+          ? blockPermutationNull(temporal === left ? a : b, temporal === left ? b : a, pairBlocks, {
+              iterations: blockPermutations,
+              seed,
+            }).pValue(test.chi2)
           : undefined;
 
       measured.push({
@@ -659,17 +964,36 @@ export function rankAssociations(
         excluded: items - table.n,
         mutualInformation: info.bits,
         uncertainty: info.uncertainty,
+        dependence,
         underpowered: table.n < minN,
         // `exactOptionalPropertyTypes` is on, so the key is OMITTED rather than set to undefined.
         // That is the same three-state discipline the rest of the store keeps: "no control was run"
         // and "the control returned nothing" are different facts and must not serialise alike.
         ...(pPermuted === undefined ? {} : { pPermuted }),
+        ...(pBlocked === undefined ? {} : { pBlocked }),
       });
     }
   }
 
-  const adjusted = benjaminiHochberg(measured.map((pair) => pair.p));
-  const pairs = measured
+  // SUPPRESSION HAPPENS BEFORE THE FDR CORRECTION, and the order is a decision rather than an
+  // implementation detail. A definitional pair cannot be a false discovery -- it is not a discovery
+  // at all -- so leaving it in the family would raise the q-value of every real pair in the request
+  // to pay for a test nobody should have run. The pairs that reach `benjaminiHochberg` are the ones
+  // whose p-values are being asked to mean something.
+  const suppressed: SuppressedPair[] = [];
+  const surviving = measured.filter((pair) => {
+    if (!pair.dependence.definitional) return true;
+    suppressed.push({
+      a: pair.a,
+      b: pair.b,
+      determinism: pair.dependence.determinism,
+      n: pair.n,
+    });
+    return false;
+  });
+
+  const adjusted = benjaminiHochberg(surviving.map((pair) => pair.p));
+  const pairs = surviving
     .map((pair, index) => ({ ...pair, pAdjusted: adjusted[index] as number }))
     // Effect size first, p as the tie-break, then the names -- so a ranking is fully determined and
     // two runs over one corpus produce the same order rather than the same set in a new arrangement.
@@ -681,5 +1005,5 @@ export function rankAssociations(
         (x.b < y.b ? -1 : x.b > y.b ? 1 : 0),
     );
 
-  return { pairs, family: measured.length, items };
+  return { pairs, family: surviving.length, items, suppressed };
 }

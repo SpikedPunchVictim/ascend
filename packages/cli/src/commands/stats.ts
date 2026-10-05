@@ -8,6 +8,7 @@
  *
  * ```bash
  * asc stats tool_denial --assoc                        # rank property pairs by association
+ * asc stats tool_denial --assoc --temporal weekday --blocks day   # + the block control
  * asc stats tool_denial --correlate a --correlate b    # one pair, with the table under it
  * asc stats tool_denial --rules                        # association rules (FP-growth)
  * asc stats tool_denial --changepoints                 # breaks in the entry rate over time
@@ -79,6 +80,20 @@
  * schema, so two types would be scanned on two different clocks with nothing in the output saying
  * which. Instead the axis is always named in the output, and a scan that collapses to too few
  * periods names the `timestamp` properties the type does declare.
+ *
+ * **`--assoc` CARRIES TWO CONTROLS THE Q-VALUES CANNOT STAND IN FOR, AND BOTH ARE WHY THE RANKING IS
+ * SHORTER THAN THE PAIR COUNT** (`asc-fwpe`; `docs/evidence/EV-patterns.md:126-138` named both as
+ * required additions and neither existed). A pair whose two properties are the same fact twice --
+ * `project x repo`, at determinism 0.828 on the real corpus -- survives every other control, because
+ * shuffling destroys the identity and the result still looks significant. Such pairs are suppressed
+ * BEFORE the FDR family is computed (a definitional pair cannot be a false discovery, so leaving it
+ * in would tax every real pair for a test nobody should have run) and DISCLOSED on stderr with their
+ * coefficient, because a suppression nobody can see is indistinguishable from a pair the corpus
+ * never had. `--temporal` + `--blocks` add the second: a null that permutes whole blocks' temporal
+ * labels, answering "is this pairing real over time, or is it the day structure?" -- a question the
+ * ordinary shuffled control is STRUCTURALLY blind to, since the marginal concentration it would
+ * destroy is real and it is the pairing that is spurious. Both flags are declared by the caller
+ * rather than sniffed, because a weekday and a project name are both just strings.
  */
 
 import { Args, Flags } from '@oclif/core';
@@ -90,6 +105,7 @@ import {
   cluster,
   collapseNearDuplicates,
   crosstab,
+  DEFINITIONAL_AT,
   distinctiveTerms,
   MIN_N,
   mutualInformation,
@@ -126,6 +142,18 @@ const MODES = [
 ] as const;
 
 type Mode = (typeof MODES)[number];
+
+/**
+ * How many times the block control permutes the temporal labels among the blocks.
+ *
+ * Hard-coded rather than exposed as a flag, and 500 rather than the 5,000 the measurement used:
+ * this is a control that runs while the user waits, and its answer is a p-value compared against a
+ * threshold. At 500 the standard error of a p near 0.05 is about 0.01, which is enough to decide
+ * whether a pairing is inside the block structure's own noise -- and a reader who wants the
+ * measured 5,000-iteration numbers can run `spike/spike-controls.mjs`, which is where those were
+ * produced. A `--permutations` flag is `asc-jpka`'s subject and is deliberately not invented here.
+ */
+const BLOCK_ITERATIONS = 500;
 
 /** A day, as `YYYY-MM-DD`, from an ISO timestamp. */
 function dayOf(timestamp: string): string {
@@ -179,6 +207,7 @@ export default class Stats extends BaseCommand {
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> tool_denial --assoc',
+    '<%= config.bin %> <%= command.id %> tool_denial --assoc --temporal weekday --blocks day',
     '<%= config.bin %> <%= command.id %> tool_denial --correlate tool_name --correlate denial_kind',
     '<%= config.bin %> <%= command.id %> tool_denial --rules',
     '<%= config.bin %> <%= command.id %> tool_denial --changepoints --period week',
@@ -209,6 +238,20 @@ export default class Stats extends BaseCommand {
     }),
     rules: Flags.boolean({
       description: 'Mine association rules over categorical property values (FP-growth).',
+    }),
+    temporal: Flags.string({
+      multiple: true,
+      description:
+        'A property whose values came from a TIMESTAMP -- a weekday, a date, a month. Needs ' +
+        '--blocks. Only the caller knows a value was derived from time (a weekday and a project ' +
+        'name are both just strings), so this is declared rather than guessed, and it is what makes ' +
+        'a pair eligible for the block control.',
+    }),
+    blocks: Flags.string({
+      description:
+        "Test every temporal pairing against this property's block structure -- the day each entry " +
+        'belongs to. Answers a DIFFERENT question from the q-values: "is this pairing real over ' +
+        'time, or is it the block structure?". Needs --temporal.',
     }),
     changepoints: Flags.boolean({
       description: 'Scan the entry rate over time for a break. With --by, one series per value.',
@@ -293,6 +336,17 @@ export default class Stats extends BaseCommand {
     const mode = chosen[0] as Mode;
     const limit = this.positiveInteger(flags.limit, 'limit') ?? 20;
 
+    // `--temporal`/`--blocks` configure the block control, which only `--assoc` runs. Refused
+    // rather than ignored, for the same reason two modes are: a caller handed a table that quietly
+    // dropped their control would read it as a control that ran and found nothing.
+    if (mode !== 'assoc' && ((flags.temporal ?? []).length > 0 || flags.blocks !== undefined)) {
+      throw usageError(
+        `--temporal and --blocks configure the block control, which only \`--assoc\` runs, and ` +
+          `--${mode} was given. They were checked against a block structure in --assoc's own ` +
+          `report; nowhere else has one.`,
+      );
+    }
+
     await this.withProject(({ store }) => {
       const version = findType(store.db, args.type);
       if (version === undefined) {
@@ -315,7 +369,7 @@ export default class Stats extends BaseCommand {
 
       switch (mode) {
         case 'assoc':
-          this.runAssoc(format, version.spec, entries, limit);
+          this.runAssoc(format, version.spec, entries, limit, flags.temporal ?? [], flags.blocks);
           return;
         case 'correlate':
           this.runCorrelate(format, version.spec, entries, flags.correlate ?? []);
@@ -395,10 +449,64 @@ export default class Stats extends BaseCommand {
     spec: TypeSpec,
     entries: readonly RecordedEntry[],
     limit: number,
+    temporalNames: readonly string[],
+    rawBlocks: string | undefined,
   ): void {
     const names = this.categoricalOrRefuse(spec, 2);
+
+    // Refused rather than defaulted, in both directions, because each flag alone is a request the
+    // tool cannot answer and silently ignoring one would look like a control that ran and found
+    // nothing. `--blocks` without `--temporal` has nothing to permute; `--temporal` without
+    // `--blocks` has no structure to permute against.
+    if (rawBlocks !== undefined && temporalNames.length === 0) {
+      throw usageError(
+        `--blocks was given without --temporal, so nothing declares which columns came from a ` +
+          `timestamp and the block control would have nothing to permute. Name them: ` +
+          `\`--temporal <property> --blocks <property>\`.`,
+      );
+    }
+    if (rawBlocks === undefined && temporalNames.length > 0) {
+      throw usageError(
+        `--temporal was given without --blocks, so the declared columns have no block structure to ` +
+          `be tested against. Name the day (or session) each entry belongs to: ` +
+          `\`--blocks <property>\`.`,
+      );
+    }
+
+    const temporal = new Set(
+      temporalNames.map((name) => this.categoricalName(spec, name, '--temporal')),
+    );
+    const blockName =
+      rawBlocks === undefined ? undefined : this.categoricalName(spec, rawBlocks, '--blocks');
+
+    let blocks: string[] | undefined;
+    if (blockName !== undefined) {
+      const column = valueColumn(entries, blockName);
+      const missing = column.filter((value) => value === null).length;
+      // Checked here as well as in the analysis layer, because the layer can only report that some
+      // ITEM has no block while the CLI knows which PROPERTY and how many entries -- and the fix
+      // belongs to the caller.
+      if (missing > 0) {
+        throw refusal(
+          `${String(missing)} of ${String(entries.length)} entries have no '${blockName}', so the ` +
+            `block control cannot place them in time. A block has to cover every entry: a row with ` +
+            `no block cannot be given another block's label, and dropping it would change the ` +
+            `corpus being tested.`,
+        );
+      }
+      blocks = column.map((value) => value as string);
+    }
+
     const report = rankAssociations(
-      names.map((name) => ({ name, values: valueColumn(entries, name) })),
+      names.map((name) => ({
+        name,
+        values: valueColumn(entries, name),
+        // `exactOptionalPropertyTypes`: an undeclared column omits the key rather than carrying
+        // `false`, so "not declared temporal" and "declared not-temporal" cannot be told apart --
+        // which is right, because the module only ever asks whether it was declared.
+        ...(temporal.has(name) ? { temporal: true } : {}),
+      })),
+      blocks === undefined ? {} : { blocks, blockPermutations: BLOCK_ITERATIONS },
     );
 
     this.warn(
@@ -407,6 +515,35 @@ export default class Stats extends BaseCommand {
         `${String(report.family)}, which is every pair in THIS run -- asking about ten properties ` +
         `and asking twice about five are different questions with different q-values.`,
     );
+
+    // The disclosure, not a note. A suppressed pair is usually the STRONGEST thing in the request --
+    // it is the same fact twice, so it scores highest -- and a ranking that dropped it in silence
+    // would be indistinguishable from one over a corpus that never had it.
+    if (report.suppressed.length > 0) {
+      this.warn(
+        `${String(report.suppressed.length)} pair(s) SUPPRESSED as DEFINITIONAL, at or above a ` +
+          `determinism of ${String(DEFINITIONAL_AT)} in either direction -- one property restating ` +
+          `the other, so the pair is the same fact twice rather than two findings: ` +
+          report.suppressed
+            .map(
+              (pair) =>
+                `${pair.a} x ${pair.b} at ${pair.determinism.toFixed(3)} (n=${String(pair.n)})`,
+            )
+            .join(', ') +
+          `. Determinism is reported for every pair below, so a near-miss can be argued with.`,
+      );
+    }
+
+    if (blockName !== undefined) {
+      this.warn(
+        `the block control ran on every pair containing ${[...temporal].join(' or ')}: those labels ` +
+          `were permuted among the ${String(new Set(blocks ?? []).size)} distinct blocks of ` +
+          `'${blockName}' over ${String(BLOCK_ITERATIONS)} iterations. A HIGH p_blocked means the ` +
+          `observed association is inside what the block structure alone manufactures. It is absent ` +
+          `(--json) or blank (table) where the pair has no temporal column, because that pair ` +
+          `cannot be asked the question.`,
+      );
+    }
 
     this.emit(format, {
       columns: [
@@ -421,6 +558,8 @@ export default class Stats extends BaseCommand {
         'p_adjusted',
         'mutual_information_bits',
         'uncertainty',
+        'determinism',
+        'p_blocked',
         'asymptotic_valid',
         'small_group',
       ],
@@ -436,6 +575,12 @@ export default class Stats extends BaseCommand {
         p_adjusted: pair.pAdjusted,
         mutual_information_bits: pair.mutualInformation,
         uncertainty: pair.uncertainty,
+        // The coefficient, not just the verdict. `definitional` alone would be enough to suppress
+        // with and not enough to argue with: 0.49 and 0.05 are both "not definitional".
+        determinism: pair.dependence.determinism,
+        // Omitted, never zeroed, where the control did not run -- `TASKS.md` #7, and the difference
+        // is the whole point: a p_blocked of 0 would say the block structure explains nothing.
+        ...(pair.pBlocked === undefined ? {} : { p_blocked: pair.pBlocked }),
         // Carried because `p` is only trustworthy where this is true, and a reader who sorts on
         // `p_adjusted` without it is ranking approximations that did not apply.
         asymptotic_valid: pair.asymptoticValid,

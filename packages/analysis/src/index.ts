@@ -111,11 +111,14 @@ export {
 
 export {
   AssociationError,
+  DEFINITIONAL_AT,
   benjaminiHochberg,
+  blockPermutationNull,
   cell,
   chiSquare,
   chiSquarePValue,
   crosstab,
+  functionalDependence,
   mutualInformation,
   permutationNull,
   rankAssociations,
@@ -124,9 +127,11 @@ export {
   type AssociationReport,
   type ChiSquareResult,
   type Crosstab,
+  type FunctionalDependence,
   type MutualInformationResult,
   type PairAssociation,
   type PermutationNull,
+  type SuppressedPair,
 } from './association.js';
 
 export {
