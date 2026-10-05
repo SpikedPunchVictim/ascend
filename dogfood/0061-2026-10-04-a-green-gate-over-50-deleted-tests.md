@@ -7,7 +7,7 @@
 | **Surfaced by** | writing the renderer's tests for Stage 2 of `asc-0hys`; a `Write` replaced an existing 659-line test file, and the gate that ran over the result reported green |
 | **Entry type(s)** | `verification_run` (derived) |
 | **Severity** | P1 |
-| **Status** | open |
+| **Status** | fixed in `4495e23` |
 
 ## What was found
 
