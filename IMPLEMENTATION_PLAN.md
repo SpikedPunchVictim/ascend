@@ -4069,6 +4069,245 @@ impression of a silent gap in either direction.
 - **A single session collapses to `n_eff = 1`.** Correct by the bound, drastic in effect, and it will
   need saying out loud wherever it fires.
 
+## Stage E23: the gate cannot see a deleted test — `asc-049w`
+
+**Goal**: the gate fails when the number of collected tests drops below a baseline carried in the
+repo, and an intentional removal moves that baseline in the same commit, visibly. Recorded as
+`dogfood/0061`: a `Write` replaced a 659-line, 55-test file with 5 tests, the full gate ran over the
+result three times, and **every run was green** — `Test Files 128 passed (128)`, the same 128 as
+before, because a file hollowed out is still a file. The pass count moved (`2981 -> 2936`) and nothing
+compared it to anything.
+
+**Why it is worth building, in the record's own words**: *"`ascend` already applies this reasoning to
+two neighbours and not to this one"* — `align` baselines debt (`baselined debt: 21 → 21 (0)`) and
+`asc store verify --staged` baselines record ids, and the gate runs the second one. The test count is
+the one measured quantity in the gate with no baseline, and the one whose regression is silent,
+because a suite that loses tests keeps printing `passed`.
+
+**The design decisions, and what each one rejects.**
+
+- **The count comes from the RUNNER, never from the files.** `grep -c "it("` was wrong twice while
+  measuring `dogfood/0061` — it misses `it.each` expansion and a double-quoted name — and it fails in
+  the same direction it is meant to detect. So vitest writes the count: a reporter in the shape this
+  repo already has (`vitest.failure-log.ts`), which is also the only way to get a per-file number.
+- **Per-file floors, not a single total.** A total catches `dogfood/0061`'s case; it cannot name it,
+  and the record's complaint is precisely that the loss was nameless. The same run yields per-file
+  counts for one extra loop, and a failure that says *which file* is the difference between a gate
+  that reports and a gate that accuses. The cost is paid in one place: a renamed or split test file
+  needs a re-baseline, which is a visible diff — the acceptance asks for exactly that.
+- **Floors, not equality.** The acceptance says *drops below*. Equality would red the gate on every
+  test added anywhere, which is how the record's own warning comes true: *"a baseline becomes a number
+  people edit until it stops complaining"*. A floor never nags on growth, moves only on a loss, and
+  the movement is printed in `align`'s shape, so raising one is a deliberate, visible act.
+- **`passed` is floored beside `collected`.** A test converted to `it.skip` keeps the collected count
+  flat and loses its coverage; `collected` cannot see it and `TASKS.md` non-negotiable #1 names
+  disabling tests as forbidden. Two integers, one class closed.
+- **Rejected: auto-ratchet** (the check rewrites the baseline when counts grow). It would keep the
+  baseline tight, which is the honest fix for floor drift — but it makes a *check* mutate a tracked
+  file in the middle of a commit, and a hook that edits the working tree has to re-stage to be
+  honest. The drift is instead made visible on every green run, which is the boring half of the same
+  benefit. Measured size of the drift: `127 / 2,970 → 131 / 3,036` over the E22 arc, +66 tests.
+
+### Stage 1 — the runner writes its count down
+
+**Goal**: one full run produces `.testcount/scan.json`, written by vitest, so the number exists and
+comes from the runner.
+
+**Tests**: not a unit test — a **reconciliation**, and it is the load-bearing check of this stage:
+run `pnpm test`, then assert the scan's `tests`/`files` are **exactly** the numbers vitest prints on
+its own `Test Files` / `Tests` summary lines. If the reporter and the summary disagree, the baseline
+measures something other than what a reader believes it measures, and every later stage inherits the
+error.
+
+**Implementation**: `vitest.test-count.ts` at the root (beside `vitest.failure-log.ts`), registered
+in `vitest.config.ts`'s `reporters`. It walks the collected tasks exactly as `failure-log.ts` does and
+writes `{ at, files, tests, passed, byFile }`. `mkdirSync` for the directory, which a fresh clone
+does not have. `.testcount/scan.json` joins `.gitignore` beside `.align/last-scan.json` — it is
+evidence about one run on one machine, not the product.
+
+**Status**: Complete (2026-10-05). The reconciliation **is** the measurement, and it is exact: one
+full run printed `Test Files 131 passed (131)` and `Tests 3037 passed | 2 skipped (3039)`, and the
+scan it wrote read `files 131 / tests 3039 / passed 3037`, with 131 `byFile` keys summing to 3039. So
+collected = passed + skipped, every collected file is present, and the per-file map has no gap. One
+thing the reconciliation surfaced rather than hid: a file created **during** a run may or may not be
+collected, because it is picked up when a worker reaches it — the first full run here collected
+`dev-hooks.test.ts` at 7 but never saw `test-baseline.test.ts`, written two minutes into it. A scan is
+therefore only trustworthy from a run over a frozen tree, which is what the gate always does and what
+`pnpm test:baseline` is written to do.
+
+### Stage 2 — the baseline, and a check that can refuse
+
+**Goal**: `.testcount/baseline.json` (tracked) and `scripts/test-baseline.mjs`, with the comparison
+covered by tests that can go red.
+
+**Tests (RED first)**: `packages/cli/test/test-baseline.test.ts`, driving the real script by
+subprocess over fixtures it writes into a temp dir — the shape `dev-hooks.test.ts` established for
+this repo's gate tooling. Arms: every floor met → 0, headroom printed; a file's count below its floor
+→ 1, **the message names the file and the delta**; a baselined file absent from the scan → 1, named;
+the total below its floor → 1; `passed` below its floor with `collected` flat (a `.skip`) → 1; growth
+only → 0; `update` writes the scan's numbers and prints the movement; a missing scan → refuses rather
+than passing. Written red first, against a script that does not exist.
+
+**Implementation**: the script takes `--baseline` and `--scan` explicitly, defaulting to the
+`.testcount/` paths — which is what makes the fixtures possible and removes a hidden cwd assumption at
+the same time. Default action is `check`; `update` regenerates from the scan. The baseline is
+`{ files, tests, passed, byFile }`, and `update` prints `before → after` so the diff is legible before
+it is read in git. `package.json` gains `"test:baseline": "pnpm test && node scripts/test-baseline.mjs
+update"` — the supported update path always runs a full suite first, so an update can never be taken
+from a partial run.
+
+**Status**: Complete (2026-10-05). 10 tests in `packages/cli/test/test-baseline.test.ts`, all green,
+and **bind-checked by mutation** — four mutations, each caught by the test written for it: an equal
+count made to fire fails the two green arms; removing the collected-total check fails exactly the
+total arm; removing the `passed` check fails exactly the skip arm; a missing input exiting 0 instead
+of 2 fails all three `CANNOT CHECK` arms. Stated plainly, because this plan said otherwise and the
+substitution is the honest part of this line: **the script was written before its tests, not
+red-first.** The mutation pass is what replaces the red, and it is a weaker check than a real one —
+it proves the tests bind to this implementation, not that they were derived from a failure.
+
+### Stage 3 — the gate runs it
+
+**Goal**: the check is a step in the gate, after the run whose count it reads, and the hook's own
+stale claim about its cost is corrected.
+
+**Tests**: `packages/cli/test/dev-hooks.test.ts` — the step appears in the gate's output, and a
+refusing check blocks the commit without printing `ascend gate ok`. The fake `node` gains a
+`*scripts/test-baseline.mjs*` case beside its `*packages/cli/dist/bin.js*` one, for the reason that
+file already states: left real, the check would run against *this* checkout's scan and the gate's
+control-flow test would become a test of whatever the last real run happened to leave on disk.
+
+**Implementation**: a step after `pnpm test` in `.githooks/pre-commit`:
+
+```sh
+  echo "[pre-commit] test count"
+  node scripts/test-baseline.mjs
+```
+
+It runs inside the same subshell, so it inherits all three of the hook's measured invariants and adds
+none: it does not exit the shell above beads' block, and its failure is the subshell's failure. A
+**missing scan is a hard failure**, not a skip — the run was supposed to write it, and a check that
+silently declines to run when its input is absent is the class of defect this whole stage exists to
+close. Then `node scripts/install-hooks.mjs`, which re-reads the spliced artifact and verifies it
+rather than trusting its own writes, and `quality-gate` gains the step ahead of `align`.
+
+**One thing folded in, named rather than silent**: the hook's header says the fast path costs
+`~10s`. Measured this session the fast path is **216–611 s**, dominated by `pnpm test`, so the claim
+is stale by one to two orders of magnitude in the file that describes the gate. It is a comment, not a
+report, so it does not earn a dogfood record — but it is the same shape as the finding (`a claim about
+the gate nobody re-measured`), and it is corrected in the file being edited anyway.
+
+**Correction to the sentence above, made when the correction actually happened.** This paragraph was
+written in Stage 3 in the present tense — *"it is corrected"* — while the header still read `~10s`.
+The edit landed in Stage 4, and the number was re-measured there as **229–672 s** rather than the
+`216–611 s` above, so both the tense and the range were wrong until corrected. Recorded rather than
+quietly fixed, because a plan claiming work it has not done is the same defect this stage exists to
+close, one layer up.
+
+**Status**: Complete (2026-10-05, the wiring; driven in Stage 4). The step sits after `pnpm test`
+inside the same subshell, so it inherits the three measured invariants and adds none.
+`dev-hooks.test.ts` gained the `*scripts/test-baseline.mjs*` stub beside the store guard's, for the
+reason that file already states — the check's input is a file the stubbed `pnpm test` never writes,
+so left real it would compare whatever the last real run happened to leave on disk — and a seventh
+test asserting the step is present and that a refusal blocks the commit.
+**Bind-checked by mutation**: removing the step from `.githooks/pre-commit` fails exactly that test
+(1 failed / 6 passed). `node scripts/install-hooks.mjs` re-ran and verified the spliced artifact by
+re-reading it, not by trusting its own writes. `typecheck` 0, `lint` 0, `format:check` clean across
+every new and edited file.
+
+### Stage 4 — driven end to end
+
+**Goal**: the acceptance's last clause — *"Driven once end to end by deleting a test and observing a
+red gate."* — performed, not unit-tested.
+
+**The drive**, four arms, each with its exact command and output:
+
+1. **Delete tests from a real file** and run the full gate → red at the new step, naming the file and
+   the delta, and `[pre-commit] ascend gate FAILED`; not `ascend gate ok`.
+2. **`pnpm test:baseline`** with the deletion in place → the baseline moves down and
+   `git diff .testcount/baseline.json` shows it; the gate is green again, because the removal is now
+   accepted rather than invisible.
+3. **Restore the tests** → green (growth over the lowered floor), then **`pnpm test:baseline`** again
+   → the baseline returns, visible in the diff. Both directions, so a ratchet that only ever falls is
+   not mistaken for one that tracks.
+4. **Convert one `it(` to `it.skip(`** → red on `passed` with `collected` flat, which is the arm that
+   the total count cannot see. Reported with its limitation: the message names the count, not the
+   file, because per-file `passed` is not in the baseline.
+
+**Evidence**: a **Q5** in `docs/evidence/EV-hooks.md`, in that file's Question / Method / Measurement
+/ Decision shape, carrying the exact output rather than a paraphrase. This is the repo's own
+instrument for gate invariants — its three existing ones live there, and `scripts/install-hooks.mjs`
+is likewise verified by measurement rather than by unit test.
+
+**Status**: Complete (2026-10-05). All four arms driven with the full gate; the outputs are in
+`docs/evidence/EV-hooks.md` **Q5b–Q5e**, quoted rather than paraphrased here. **The deletion arm is the
+finding**: `Test Files 132 passed (132)` — the file count *unchanged* — with `Tests 3028 passed | 2
+skipped (3030)` against a baseline of `3049 / 3047`, and the check naming
+`SHRANK packages/cli/test/output.test.ts 58 -> 39 (-19)` before `ascend gate FAILED (exit 1) -- commit
+blocked`. **The update arm** moved the baseline to `3030 / 3028`, readable as a diff of the tracked
+file, and `check` then read `0 above baseline`. **The restore arm** returned the file byte-identical to
+`HEAD` (`git diff --stat` empty), went green at `19 above baseline` against the *lowered* floor — growth
+does not nag, which is the property floors were chosen for — and `update` raised it back
+(`RAISED packages/cli/test/output.test.ts 39 -> 58`). **The `.skip` arm** is the one a collected-count
+baseline alone would bless: file count flat, **collected flat at 3049**, every per-file floor met, and
+only `BELOW passed tests 3047 -> 3046 (-1)` caught it — naming the count and not the file, the
+limitation its own message states. **The header's stale `~10s`** was corrected here, with the measured
+range **229–672 s** (Q5i); see the correction note in Stage 3. **One arm took two full gate runs and
+the first failed for a reason unrelated to the check**: the live-corpus test carries its own `180_000`
+ms bound, exceeded it under machine load — `loadavg 95.34 63.96 40.16` on 12 cores, against `2.8–4.0`
+on a quiet one — and the same test passed at `29489 ms` on the next run over an unchanged tree. Filed
+as `dogfood/0063` / `asc-pcaw` (a recurrence of `dogfood/0007`'s class) rather than absorbed, because a
+gate that reddens for reasons outside the diff is the class this whole stage exists to close. Fast path
+measured **229 s** quiet, **672 s** loaded.
+
+### Stage 5 — records, and the close
+
+**Goal**: the finding's record and the bead agree with what shipped.
+
+**Implementation**: `dogfood/0061`'s **Status** cell moves from `open` to the fixing commit — the
+body and the metric are left untouched, because entries are immutable and the metric is the part that
+has to stay a reading of 2026-10-04. `asc-049w` closes against its acceptance, clause by clause,
+which is the shape `asc-0hys` was closed in. Any scope left over becomes its own bead rather than
+silence.
+
+**Status**: In Progress (2026-10-05) — one cell is deliberately left, and it is left for a stated
+reason rather than forgotten. `dogfood/0061`'s **Status** still reads `open`, because the cell's own
+convention is `fixed in <sha>` and a sha cannot be written before the commit exists; the body and the
+metric are untouched, as they must be (the metric is a reading of 2026-10-04, and entries are
+immutable). The commit is the one step this session's conservative git profile reserves for approval,
+so it is proposed rather than taken. **Everything else is done**: `asc-pcaw` was filed rather than
+absorbed — the unrelated red this drive met, recorded in `dogfood/0063` with its `loadavg` and its
+two-run spread — and that record carries its own disclosure that its first draft named the wrong cause.
+Scope that did **not** become this bead's problem and is named rather than silenced: the corpus test's
+fixed bound under load (`asc-pcaw`), and the per-file `passed` limitation the `.skip` arm reports.
+
+**What closes `asc-049w`, clause by clause** — the shape `asc-0hys` was closed in, and the check
+against the acceptance's own words:
+
+| the acceptance says | measured |
+|---|---|
+| *"fails, or reports a regression, when the number of collected tests drops below a baseline carried in the repo"* | Q5b: exit 1, `SHRANK packages/cli/test/output.test.ts 58 -> 39 (-19)`, `BELOW collected tests 3049 -> 3030`; Q5e: exit 1 on `passed` alone with collected flat |
+| *"a baseline carried in the repo"* | `.testcount/baseline.json`, tracked, written only by `pnpm test:baseline` |
+| *"an intentional removal updates that baseline in the same commit and the change is visible in the diff"* | Q5c/Q5d: `update` moves it both ways and the movement is a diff of a tracked file |
+| *"Driven once end to end by deleting a test and observing a red gate"* | Q5b, full gate, `sh .githooks/pre-commit`, `FAILED (exit 1) -- commit blocked` |
+
+### Risks, plainly
+
+- **A floor drifts, and drift is the price of not nagging.** A file that grows from 55 to 300 tests
+  keeps a floor of 55, so deleting 200 from it would pass. The mitigant is that the check prints its
+  headroom on every green run, so a lagging baseline is visible exactly where it would be looked for.
+  It is not a fix, and calling it one would be the overselling this document is supposed to avoid.
+- **The baseline is a new way to make the gate red for the wrong reason** — `dogfood/0061`'s own
+  warning. The answers are that growth never nags, that the movement is printed, and that the update
+  is a command that runs the whole suite rather than a number edited by hand. A developer can still
+  reach for the number; nothing in the mechanism can prevent that, and the file says so.
+- **The count is machine- and platform-dependent.** A test guarded by `it.runIf(...)` collects on one
+  platform and not another, so a baseline written on macOS is not portable to Linux. There is no CI in
+  this repo today, so the exposure is a teammate's clone, not a pipeline. Stated rather than
+  discovered later.
+- **A partial run writes a partial scan.** The supported path is `pnpm test:baseline`, which runs the
+  full suite first; running the raw `update` after `vitest run <file>` would write a baseline drawn
+  from one file. The scripts say so, and the printed `before → after` makes it obvious.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.

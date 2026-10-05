@@ -39,6 +39,12 @@ node_modules/
 .align/last-scan.json
 .align/.lock
 
+# The test-count scan (asc-049w): what the LAST run on THIS machine collected, written by
+# `vitest.test-count.ts`. Ignored for the same reason `.align/last-scan.json` is -- it is evidence
+# about one run on one checkout. The BASELINE it is compared against is the opposite: it is
+# `.testcount/baseline.json`, tracked, because that is the number a future run is judged by.
+.testcount/scan.json
+
 # OS cruft. No global core.excludesFile is configured in this checkout, so nothing
 # else would catch these — macOS writes .DS_Store without being asked.
 .DS_Store

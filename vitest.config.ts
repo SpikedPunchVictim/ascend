@@ -44,8 +44,9 @@ export default defineConfig({
      * Not a fitted constant: 12 cores, and a worker with one live `asc` child is two processes,
      * so six workers is the hardware. The measurement agrees with the arithmetic.
      */
-    // `default` for the terminal; the failure log so a rare red run keeps its name (asc-9ac).
-    reporters: ['default', './vitest.failure-log.ts'],
+    // `default` for the terminal; the failure log so a rare red run keeps its name (asc-9ac);
+    // the test count so a baseline has something to compare against (asc-049w).
+    reporters: ['default', './vitest.failure-log.ts', './vitest.test-count.ts'],
     poolOptions: {
       forks: {
         // `minForks` must not exceed `maxForks`, and it defaults to the core count -- setting

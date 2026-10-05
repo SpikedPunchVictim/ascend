@@ -30,8 +30,17 @@
 #
 # Never bypassed: TASKS.md non-negotiable #5 forbids --no-verify and disabled tests.
 #
-#   fast  (default)  format check + typecheck + store verify + lint + test   (~10s)
+#   fast  (default)  format check + typecheck + store verify + lint + test   (minutes)
 #   full             everything above + `align check`                        (adds a repo scan)
+#
+# `minutes`, not a number, because this cost moves with the MACHINE and not with the diff.
+# Measured 2026-10-05, `time sh .githooks/pre-commit`: 229 s on a quiet machine and 672 s
+# under load, dominated in both cases by `pnpm test` (full-suite runs that day: 207.48,
+# 207.50, 247.87, 229, 442.69, 672.53 s). This header read `~10s` until this edit. That was
+# never a measurement of this step list, and a stale claim printed over a moving cost is the
+# shape `dogfood/0063` records costing a real commit: the red run there was captured at
+# `loadavg: 95.34 63.96 40.16` on 12 cores, against 2.8-4.0 on a quiet one. Read this as
+# cost, not as a bound -- there is no budget on `pnpm test` anywhere in this repo.
 #
 # `align check` is not in the fast path because it re-scans the whole repo; it is
 # run by the `quality-gate` script and in CI. It is still part of the definition of
@@ -69,6 +78,18 @@
 
   echo "[pre-commit] test"
   pnpm test
+
+  # The test-count baseline (asc-049w). `dogfood/0061` is a green gate over a file whose 55 tests had
+  # become 5: the suite printed a pass count, and nothing compared that count to anything, so a
+  # deleted test and a passing test were the same word here. The run just above wrote what it
+  # collected to `.testcount/scan.json` (through `vitest.test-count.ts`), and this compares it
+  # against the baseline the repo carries.
+  #
+  # Its exit codes are deliberately distinct: 1 is a breached floor, 2 is "an input was missing, so
+  # nothing was compared". A guard that cannot find its own input must not read like a guard that
+  # looked and found nothing -- the same reason the store guard's missing binary exits 2 (Q4).
+  echo "[pre-commit] test count"
+  node scripts/test-baseline.mjs
 
   if [ "${ASCEND_PRECOMMIT_FULL:-0}" = "1" ]; then
     echo "[pre-commit] align check"

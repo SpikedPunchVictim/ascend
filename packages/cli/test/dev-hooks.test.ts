@@ -115,16 +115,20 @@ describe('git hook wiring', () => {
 describe('pre-commit gate', () => {
   /**
    * Runs the real gate with a fake `pnpm` on PATH that exits `pnpmExitCode`, and a fake
-   * `node` that exits `storeExitCode` for the store-guard invocation and delegates every
-   * other call to the real node.
+   * `node` that exits `storeExitCode` for the store-guard invocation, `countExitCode` for the
+   * test-count check, and delegates every other call to the real node.
    *
    * `node` is stubbed for the same reason `pnpm` is. Left real, the store guard would run
    * against THIS checkout's index, and the gate's own control-flow test would become a test
    * of whatever happens to be staged -- passing or failing for reasons that are not the gate.
+   * The test-count check is stubbed for that same reason (asc-049w): its input is
+   * `.testcount/scan.json`, which the stubbed `pnpm test` never writes, so left real it would
+   * compare whatever the last real run happened to leave on disk.
    */
   function runGate(
     pnpmExitCode: number,
     storeExitCode: number = 0,
+    countExitCode: number = 0,
   ): { status: number | null; output: string } {
     const bin = mkdtempSync(join(tmpdir(), 'asc-gate-'));
     const fakePnpm = join(bin, 'pnpm');
@@ -135,9 +139,10 @@ describe('pre-commit gate', () => {
     writeFileSync(
       fakeNode,
       '#!/bin/sh\n' +
-        '# Only the store guard is stubbed; anything else is the real node.\n' +
+        '# Only the two stubbed steps are faked; anything else is the real node.\n' +
         'case "$*" in\n' +
         `  *packages/cli/dist/bin.js*) exit ${String(storeExitCode)} ;;\n` +
+        `  *scripts/test-baseline.mjs*) exit ${String(countExitCode)} ;;\n` +
         'esac\n' +
         `exec ${JSON.stringify(process.execPath)} "$@"\n`,
       'utf8',
@@ -177,6 +182,19 @@ describe('pre-commit gate', () => {
     expect(ran.output).toContain('[pre-commit] store verify --staged');
 
     const refused = runGate(0, 1);
+    expect(refused.status).not.toBe(0);
+    expect(refused.output).toContain('commit blocked');
+    expect(refused.output).not.toContain('ascend gate ok');
+  });
+
+  it('runs the test-count check, and blocks the commit when it refuses (asc-049w)', () => {
+    // Asserted separately for the same reason the store guard is: the whole point of `dogfood/0061`
+    // is that a step which is present but unwired is invisible, so an unwired one is worth its own
+    // red. The stub is what makes this testable without a real scan on disk.
+    const ran = runGate(0);
+    expect(ran.output).toContain('[pre-commit] test count');
+
+    const refused = runGate(0, 0, 1);
     expect(refused.status).not.toBe(0);
     expect(refused.output).toContain('commit blocked');
     expect(refused.output).not.toContain('ascend gate ok');

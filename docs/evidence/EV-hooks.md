@@ -268,6 +268,135 @@ AssertionError: expected '[pre-commit] format:check\n[pre-commi…' to contain
 checkout's index, and the gate's control-flow test would quietly become a test of whatever happened
 to be staged — passing or failing for reasons that are not the gate.
 
+### Q5 — the test count: can the gate see a deleted test, and does the check it gained redden for the wrong reason? (`asc-049w`)
+
+`dogfood/0061` is a green gate over a file whose 55 tests had become 5. The gate ran the whole suite
+and printed a pass count; nothing compared that count to anything, so a deleted test and a passing
+test were the same word in its output. `asc-049w` gives it something to compare against. Two questions
+were named before any edit: **does the count come from the runner**, and **can the check be driven
+red**?
+
+**Q5a — the count comes from the runner, and this is the reconciliation that says so.** The reporter
+is `vitest.test-count.ts`, registered in `vitest.config.ts`'s `reporters`; it writes
+`.testcount/scan.json` on `onFinished`. A reporter's output cannot be asserted into existence from a
+unit test, so it was reconciled against a real run:
+
+```
+$ pnpm test 2>&1 | grep -E "Test Files|^ *Tests "
+ Test Files  131 passed (131)
+      Tests  3037 passed | 2 skipped (3039)
+
+$ node -e "const s=require('./.testcount/scan.json'); console.log(s.files, s.tests, s.passed, Object.keys(s.byFile).length, Object.values(s.byFile).reduce((a,b)=>a+b,0))"
+131 3039 3037 131 3039
+```
+
+The suite printed `3037 passed | 2 skipped (3039)`; the scan reads `3039` collected, `3037` passed,
+and **131 `byFile` keys summing to 3039** — the per-file floors account for every collected test and
+none twice. The count is the runner's, not a `grep -c "it("`, which `dogfood/0061` measured wrong
+twice (it misses `it.each` expansion and a double-quoted name) and wrong in the direction the check
+exists to detect.
+
+**Q5b — a removal the file count cannot see, driven end to end.** `packages/cli/test/output.test.ts`
+was backed up and truncated from 729 to 668 lines, removing its final `describe` block (2 `it.each` ×
+8 shapes + 3 `it` = 19 tests). The full gate was then run with `sh .githooks/pre-commit`:
+
+```
+ Test Files  132 passed (132)
+      Tests  3028 passed | 2 skipped (3030)
+
+[pre-commit] test count
+test count: 3030 collected / 3028 passed in 132 files -- baseline 3049 / 3047, 19 BELOW baseline
+  SHRANK  packages/cli/test/output.test.ts  58 -> 39 (-19)
+  BELOW   collected tests  3049 -> 3030 (-19)
+  BELOW   passed tests  3047 -> 3028 (-19) -- a test skipped or gone, not necessarily deleted
+[pre-commit] ascend gate FAILED (exit 1) -- commit blocked
+```
+
+**`Test Files 132 passed (132)` — the file count is identical to the run before it**, which is exactly
+the defect `dogfood/0061` recorded, and the check now names the file that was hollowed out.
+
+**Q5c — the removal becomes legible rather than silent.** Against that run's scan:
+
+```
+$ node scripts/test-baseline.mjs update
+test baseline: 132 files / 3049 collected / 3047 passed -> 132 files / 3030 collected / 3028 passed
+  LOWERED  packages/cli/test/output.test.ts  58 -> 39
+
+$ node scripts/test-baseline.mjs
+test count: 3030 collected / 3028 passed in 132 files -- baseline 3030 / 3028, 0 above baseline
+$ echo $?
+0
+```
+
+The move is a diff of a tracked file — `3049 -> 3030` collected, `3047 -> 3028` passed,
+`LOWERED packages/cli/test/output.test.ts 58 -> 39` — so an intentional removal is now something a
+reviewer reads in the commit instead of something that never appears.
+
+**Q5d — and it goes back up, so this is a floor that tracks rather than a ratchet that only falls.**
+The file was restored byte-identical to `HEAD` (`git diff --stat` empty) and the gate re-run:
+
+```
+ Test Files  132 passed (132)
+      Tests  3047 passed | 2 skipped (3049)
+
+[pre-commit] test count
+test count: 3049 collected / 3047 passed in 132 files -- baseline 3030 / 3028, 19 above baseline
+[pre-commit] ascend gate ok
+```
+
+Green **against the lowered baseline** — `19 above baseline` — which is the property that matters:
+failures are drops, so growth never nags. `update` then raised it back
+(`RAISED packages/cli/test/output.test.ts 39 -> 58`, `132 / 3049 / 3047`). Both directions measured,
+because a baseline that can only fall is not tracking anything.
+
+**Q5e — the arm a collected-count baseline alone would bless.** One `it(` in the same file was flipped
+to `it.skip(` — one line, `git diff --stat` reading `1 insertion(+), 1 deletion(-)` — and the full gate
+run:
+
+```
+ Test Files  132 passed (132)
+      Tests  3046 passed | 3 skipped (3049)
+
+[pre-commit] test count
+test count: 3049 collected / 3046 passed in 132 files -- baseline 3049 / 3047, 0 BELOW baseline
+  BELOW   passed tests  3047 -> 3046 (-1) -- a test skipped or gone, not necessarily deleted
+[pre-commit] ascend gate FAILED (exit 1) -- commit blocked
+```
+
+The file count is flat, **the collected count is flat at 3049**, and every per-file floor is met. Only
+the `passed` floor catches it. Its limitation is stated in the message itself and is real: it names the
+count, not the file, because per-file `passed` is not carried in the baseline — the per-file floors are
+collected counts.
+
+**Q5f — the check was shown to bind to its implementation.** The script was written before its tests,
+not red-first, so four mutations were run, each against the test written for it: an equal count made to
+fire failed the two green arms; removing the collected-total check failed exactly the total arm;
+removing the `passed` check failed exactly the `.skip` arm; a missing input exiting `0` instead of `2`
+failed all three `CANNOT CHECK` arms. Removing the step from `.githooks/pre-commit` failed exactly the
+new `dev-hooks.test.ts` test (1 failed / 6 passed). The script was restored byte-identical
+(`diff -q`). This is a weaker check than a real red would be: it proves the tests bind to this
+implementation, not that they were derived from a failure.
+
+**Q5g — two exit codes, and the arm that reads like a pass is the one that is a refusal.** A guard that
+cannot find its own input must not read like a guard that looked and found nothing, which is the same
+reason `asc store verify` exits 2 when its binary is missing (Q4). `check` exits **1** for a breached
+floor and **2** for a missing or unreadable input, and a missing scan is a **hard failure rather than a
+skip** — the run above it was supposed to write it.
+
+**Q5h — the limitation this drive actually met, which is not a property of the check.** One arm took
+three attempts, and the two failures were not the check's. A pre-existing test over the *live*
+transcript corpus carries its own `180_000` ms bound; under machine load it exceeded it, `pnpm test`
+exited 1, and the gate blocked before the count step was reached. Two runs of the same gate over an
+unchanged tree: red with the failing test at `duration_ms 180086` and `loadavg: 95.34 63.96 40.16` on
+12 cores, green with the same test at `29489 ms`. The gate's own fast path measured **229 s** on the
+quiet run and **672 s** on the loaded one. That is `dogfood/0063`, a recurrence of `dogfood/0007`'s
+class; it is recorded there, and it is named here because the gate's cost and its verdicts both move
+with the machine, which is the thing a reader of this file most needs to know.
+
+**Q5i — the hook's header said the fast path cost `~10s`.** Measured: 229–672 s, dominated by
+`pnpm test`. The header was corrected with the measured range rather than a rounded number, since the
+cost is a function of the machine rather than of the diff.
+
 ## Decision
 
 **Q1: the `asc-l4q` close reason was wrong and has been corrected.** It claimed config contained no
@@ -314,6 +443,20 @@ guarantee `dist` — is true in a narrower way than stated, and Q4b above record
 tracks inputs and no outputs, so it never notices a deleted one, while in the ordinary case it has
 just rebuilt everything that changed. The guard sits below it to use that rebuild, and the loud
 failure covers what the rebuild cannot.
+
+**Q5: the gate compares the suite's collected count — per file and in total — against a baseline the
+repo carries, and it separates "a floor was breached" (exit 1) from "an input was missing" (exit 2).**
+`asc-049w`, closing `dogfood/0061`. The count comes from the runner through `vitest.test-count.ts`,
+reconciled against a real run in Q5a because a reporter's output cannot be asserted into existence; the
+check is driven red on a deleted file and on a skipped test (Q5b, Q5e); and the movement is shown as a
+diff in both directions (Q5c, Q5d), because a baseline that can only fall is not tracking anything.
+`passed` is floored beside `collected` because `it.skip` leaves the collected count flat while losing
+the coverage, and per-file floors are what let the message name the file. The costs are stated rather
+than discovered later: a floor drifts, so the headroom is printed on every green run; per-file `passed`
+is not carried, so a `.skip` is named by count and not by file; and a baseline written on one platform
+does not carry to another where `it.runIf` collects differently. Two facts about this drive are not
+about the check and are recorded as such — the fast path costs minutes and moves with machine load, and
+`dogfood/0063` is the class of unrelated red that cost one arm three attempts.
 
 ## Confidence
 
