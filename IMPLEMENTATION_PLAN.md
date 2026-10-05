@@ -4040,6 +4040,21 @@ green` with `baselined debt: 21 → 21`. Against the Stage 2 baseline (128 files
 all: the gate prints a file count and a pass count and compares neither against anything, so the
 only thing that can see a deleted test is a number carried forward by hand.
 
+**`asc-0hys` closed 2026-10-05 against its ACCEPTANCE, and the description is not fully built.** All
+three acceptance clauses hold: the analysis layer computes an effective N; the surfaces that report a
+p-value or a Wilson interval state which N they used; and a fixture with known clustering shows the
+corrected N smaller and the interval wider (`design-effect.test.ts:88` is the bead's own case — ten
+entries from one session, `effectiveN 1`, `deff 10`, against the CLI control arm's `n=7` → effective
+`n=3` and `4.5-77.1%` where the uncorrected row reads `8.2-64.1%`). The description's stronger
+sentence — *"or otherwise correct for the clustering, **wherever N is quoted as the basis of a
+significance claim**"* — is **not** met: every p-value in `asc stats` still quotes an uncorrected N as
+its basis, and `--rules`' `ci_lower`/`ci_upper` is a proportion interval at the raw
+`antecedent_support`. That work is carried by **`asc-n168`**, filed the same day, because it is not
+one mechanism: a deff on N is not Rao–Scott on a chi-square statistic and its df, and it is not the
+cluster-level block permutation `--distinctive` needs. Splitting it is the judgement that made this
+stage narrow in the first place, so it would be inconsistent for this document to leave the
+impression of a silent gap in either direction.
+
 ### Risks, plainly
 
 - **ρ is outcome-specific, so the correction is too.** The same entries give `deff = 5.3` for
