@@ -28,10 +28,20 @@
  * two keys a cell's share could be of its row, its column or the grand total, and picking one
  * silently would be answering a question the caller did not ask; counts are reported instead, with a
  * header row stating that the denominator is the caller's choice.
+ *
+ * **A ONE-KEY CELL IS CORRECTED WHEN `--cluster` ASKS FOR IT, OVER THAT SAME `total`.** The
+ * correction is passed in rather than looked up here, and the lookup key is the spelling `cellRow`
+ * itself renders (`value ?? state`) -- so a mismatch is not a silently-uncorrected cell but the
+ * refusal `ClusterDesigns` makes of a miss on a non-empty population. The population a group cell
+ * divides by is EVERY entry, not the measured ones, and a group cell can literally BE a state; that
+ * is why its design is keyed separately from a `top` row's, which divides by `measured` instead.
+ * A two-key table is refused `--cluster` outright: it prints counts, so there is no proportion to
+ * correct.
  */
 
 import { isSmallGroup, MIN_N, wilson } from '@ascend/analysis';
 import type { GroupResult } from '@ascend/store';
+import type { ClusterDesigns } from './explore-cluster.js';
 import { renderProportion, type Row } from './output.js';
 
 /** `--group-by a,b` as the keys, in the order typed. */
@@ -81,7 +91,12 @@ const TWO_KEY_DENOMINATOR_ROW: Row = {
 
 /** One cell, as a row: the key values in order, the count, and -- for one key only -- the
  * qualified proportion of `total` this cell represents. */
-function cellRow(cell: GroupResult['cells'][number], keys: readonly string[], total: number): Row {
+function cellRow(
+  cell: GroupResult['cells'][number],
+  keys: readonly string[],
+  total: number,
+  designs?: ClusterDesigns,
+): Row {
   const row: Record<string, unknown> = { count: cell.count };
   keys.forEach((key, index) => {
     const cellValue = cell.values[index];
@@ -97,7 +112,16 @@ function cellRow(cell: GroupResult['cells'][number], keys: readonly string[], to
   });
 
   if (keys.length === 1) {
-    const proportion = wilson(cell.count, total);
+    // The cell's own key, as `cellRow` renders it above (`value ?? state`) -- the SAME spelling this
+    // lookup is keyed by in `designsFromCells`, so a mismatch is not a silently-uncorrected row but
+    // the refusal `ClusterDesigns` makes of a miss on a non-empty population.
+    const key = keys[0] ?? '';
+    const proportion = wilson(
+      cell.count,
+      total,
+      0.95,
+      designs?.groupKey(key, String(row[key]), total),
+    );
     row['value'] = renderProportion(proportion);
     row['proportion'] = proportion;
     row['denominator'] = 'total';
@@ -123,6 +147,7 @@ export function buildGroupOutput(
   result: GroupResult,
   keys: readonly string[],
   filtered: boolean,
+  designs?: ClusterDesigns,
 ): { readonly columns: readonly string[]; readonly rows: readonly Row[] } {
   const header: Row[] = [{ field: 'count', value: result.total }];
   if (filtered) header.push(filterRow(result.total, result.unfiltered));
@@ -131,7 +156,7 @@ export function buildGroupOutput(
   const anecdote = smallGroupRow(result.total);
   if (anecdote !== undefined) header.push(anecdote);
 
-  const cells = result.cells.map((cell) => cellRow(cell, keys, result.total));
+  const cells = result.cells.map((cell) => cellRow(cell, keys, result.total, designs));
 
   return {
     columns: ['field', 'value', ...keys, 'count'],

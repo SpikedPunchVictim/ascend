@@ -93,8 +93,10 @@ export {
 
 export {
   clusterDesign,
+  clusterDesignFromGroups,
   ClusterDesignError,
   type ClusterDesign,
+  type ClusterGroup,
   type RhoSource,
 } from './design-effect.js';
 

@@ -221,6 +221,23 @@ describe('asc stats: one mode per run', () => {
     expect(run.status).toBe(1);
     expect(flatten(run.stderr)).toContain("'finding' has no entries");
   });
+
+  /**
+   * The help has to say these p-values are uncorrected, and a sentence in help text that nothing
+   * checks is exactly the kind of claim that drifts away from the behaviour it describes.
+   *
+   * `asc-0hys` shipped a design-effect correction on `asc explore <type> --cluster`'s Wilson rows
+   * and deliberately did NOT reach the chi-square and permutation p-values here: those need a
+   * Rao-Scott correction, which adjusts the test statistic and its degrees of freedom rather than
+   * scaling N. Correcting one surface and staying silent on the other would leave a reader to assume
+   * the flag reached both, so the description names the corrected surface by name.
+   */
+  it('says in its help that its p-values are not corrected for clustering', () => {
+    const run = asc(['stats', '--help'], project());
+    expect(run.status).toBe(0);
+    expect(flatten(run.stdout)).toContain('NOT corrected for clustering');
+    expect(flatten(run.stdout)).toContain('asc explore <type> --cluster');
+  });
 });
 
 describe('asc stats --assoc', () => {

@@ -258,6 +258,16 @@ export {
 } from './migrate.js';
 
 export {
+  clusterCells,
+  ClusterCellsError,
+  PROPERTY_STATES,
+  type ClusterCells,
+  type InvalidationClusterCell,
+  type PropertyClusterCell,
+  type PropertyStateName,
+} from './cluster-cells.js';
+
+export {
   profileType,
   TOP_K,
   type InvalidatedLabelCount,

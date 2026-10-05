@@ -3925,7 +3925,120 @@ permutation **p-values** in `asc stats` need a Rao–Scott correction, not a def
 different mathematics — and folding that in is the "shared substrate for three sibling controls" that
 `narrow` was chosen against. `asc stats --help` says so rather than leaving them silently uncorrected.
 
-**Status**: Not started.
+**The design, measured before it was written.** `spike/e22-row-clusters.mjs` drives the real store
+(`tool_denial`, 763 entries, clustered by `session_id`) and answers the four questions the design
+turns on. **The correction is worth building**: it moves **25 of 42** rows, and the rows it moves
+most are the ones a reader would trust most — `tool_name=Bash` goes `4.1pp -> 11.7pp` at
+`n_eff 96.6` from `n=763`, and the aggregate `invalidated` row goes from `0.9pp` to `27.6pp` at
+`n_eff 10.3`. **It is loud**: 16 of 42 rows are pushed below `MIN_N = 20`, most of them rows whose
+naive `n` was the whole type. **Every invariant held on every row** (`deff >= 1`, `n_eff <= N`, and
+`n_eff <= k` at ρ = 1), checked on all 42 rather than on the five hand-picked ones.
+
+**One query per property, not one per row — and that is checked, not reasoned.** Asking per printed
+row costs **42 statements**; collapsing each property's rows into one `GROUP BY
+<prop>_state, <prop>, cluster` costs **8**. The collapse is sound for a non-obvious reason:
+`json_extract` is NULL exactly when the state is not `measured`, so one grouping serves the state rows
+*and* the top-value rows together — `(measured, V, c)` is a top-value cell and `(na|nm, NULL, c)` is a
+declared count. The spike compares the two constructions **cell for cell on all 55 rows** rather than
+trusting the clever one. It caught a real error in doing so: the first "reference" arm for the
+aggregate `invalidated` row used the outcome `1 = 1`, which counts every entry as a success and
+reports `deff 1` for a row whose real design effect is **74.12** — the collapsed arm was right and the
+reference arm was wrong, which is only visible because the two are compared.
+
+**A degenerate case the plan did not foresee, found by running it.** The aggregate `invalidated` row
+reads **ρ = 1.0000** — not from the one-cluster fallback, but because with 2 successes, one in each of
+two singleton clusters, `A = S` and so `MSW = 0` exactly: the estimator sees *no* within-cluster
+variation and concludes perfect clustering. It fails safe (ρ = 1 is the conservative end, and the
+`[0, 1]` clamp already guards the other direction), so it is **not a bug** — but it is a second way to
+reach the maximum correction than the "one session" path this plan already names as a risk, and it
+fires on exactly the rare outcomes whose intervals are widest and least informative.
+
+**Three decisions, taken rather than asked, because each is reversible and none ships a format:**
+
+1. **`packages/analysis` gains a grouped entry point.** `clusterDesign(outcomes, clusters)` takes
+   one element per observation; the store can only ever produce `(mᵢ, sᵢ)` per cluster. So
+   `clusterDesignFromGroups(groups)` becomes the primitive and `clusterDesign` **delegates** to it —
+   one arithmetic path, exactly as this plan's own text anticipated. The alternative (expanding
+   3,870-element arrays in the CLI to re-do the aggregation the SQL just did) adds a place to get a
+   length wrong and buys nothing.
+2. **The store gains two cell queries, not a `ProfileOptions.cluster`.** Cells are dead weight for
+   `doctor.ts`, `profileType`'s other caller, and threading a cluster dimension through its eight
+   existing queries is a larger change to a surface that does not need it. `propertyClusterCells`
+   and `invalidationClusterCells` are additive functions taking the same scope `--filter`/`--struck`
+   already build.
+3. **The row→design assembly is pure, and lives in `packages/cli/src/explore-cluster.ts`** — a
+   sibling of `explore-group.ts`, for that module's own reason: a second row shape that is not the
+   command's story. `designsFromCells` is unit-testable over hand-built cells, before any SQL exists.
+
+**Nulls are refused, never bucketed.** An entry with a null cluster key belongs to no cluster, so the
+design's `n` would be smaller than the row's `n` — and `wilson` already refuses a mismatched pair
+(Stage 2). Rather than invent a `(none)` bucket that would *lower* the size factor and so narrow the
+interval, the command refuses up front, naming the property and the count. `session_id` is 100%
+populated on the derived types, so this fires only for a declared-but-optional key.
+
+**Status**: Complete (2026-10-04). `asc explore <type> --cluster <column>` corrects every Wilson row
+the command prints and states the effective n it used; a column this type does not declare is refused
+by name, and `asc stats`' help now says its own p-values are uncorrected. Shipped: `clusterCells`
+(`packages/store/src/cluster-cells.ts`) returning `{properties, invalidations}`; `explore-cluster.ts`
+(`designsFromCells`, `ClusterDesigns`, `ClusterDesignsError`); the `--cluster` flag, its inert-mode
+refusals, and the five Wilson sites in `commands/explore.ts` and `explore-group.ts`. 11 unit tests in
+`cli/test/explore-cluster.test.ts` over hand-built cells, 12 in `store/test/cluster-cells.test.ts` for
+the cells themselves, 11 CLI tests in `cli/test/explore-cluster-cli.test.ts` driving the real binary,
+and 1 in `cli/test/stats.test.ts` for the help sentence. **The constant-outcome defect this stage
+found is filed as `asc-n007`** and fixed here (below), not deferred, and recorded in `dogfood/0062`.
+
+**Three corrections to this plan's own text, all found by building it.** (1) The plan names **two**
+store functions, `propertyClusterCells` and `invalidationClusterCells`; **one** `clusterCells`
+shipped, returning both lists. One query function is what the callers actually need — both are always
+read together, over the same scope — and two entry points would have been two places to build the
+`--filter`/`--struck` scope. (2) The plan's **nulls-are-refused** paragraph is right about the
+mechanism and wrong about its reach: the refusal fires not only for a declared-but-optional key but on
+the `--filter` composition too, because filtering to a population that excludes entries lacking the
+key is a *second* way to satisfy it. Both are kept — the message names the fix rather than the
+symptom. (3) **`PROPERTY_STATES` had to become a value in `@ascend/store`.** `propertyStateRows`
+prints a row for every state INCLUDING the ones at zero (`not_applicable 0` is a finding, not noise),
+and such a row still divides by `declared` — so a design built only for the states present in the
+cells leaves that row with a live population and no design. The first drive of the built binary
+failed with `--cluster: the cells hold no design for property.denial_kind.not_applicable, but that row
+reports a population of 763`. The list moved into the store, where the row printer and the
+design builder now read one array instead of two.
+
+**A constant outcome was being reported as an uncorrected one, and the help would have said so
+wrongly in the ANTICONSERVATIVE direction.** Found by driving the built binary, not by review: on
+`tool_denial` clustered by `session_id`, **24 of 71 corrected rows** were reported at `rho: 0,
+rhoSource: 'estimated'`. Those are exactly the rows where every observation carries the same value —
+none of a property's entries measured, or all of them — so `S = 0` (or `S = N`), `A = S`, both mean
+squares are exactly 0, and the intraclass correlation is **0/0**. The old guard returned `rho = 0`
+from the `denominator === 0` branch, which reads as "the correction does not apply" and states an
+independence nobody measured. Measured on the zero-success state row
+`property.denial_kind.not_applicable`, same count, before and after: the old code prints
+`0.0% (95% CI 0.0-0.5%)` where the bound prints `0.0% (95% CI 0.0-27.1%)`, at 764 entries over 40
+clusters (`deff 74.03`, `n_eff 10.3` — so the interval is computed at ten observations' worth of
+information rather than 764). Fixed by falling back to `rho = 1, rhoSource = 'assumed-perfect'` — the
+same conclusion the one-cluster branch already reaches, so there is one spelling of one fact. Three
+tests pin it, including a control that a *single* constant cluster still ESTIMATES (a branch written
+for `totalOnes === 0` would pass the zero arm and fail the all-ones arm). **Mutation-checked**:
+reverting the branch fails exactly 2 of the 11 CLI tests (`reports a constant outcome at the bound`
+and the `--filter` composition, whose filtered `top.draft` row is also constant) and 1 of the 23
+analysis tests; forcing the state rows over the type total instead of `declared` fails 4, all by
+`wilson`'s own refusal — `Error: the design was computed over 7 observations but n is 6` — which is the
+reason a wrong denominator cannot pass this file silently.
+
+**And a number in a comment was wrong, caught the same way.** The comment above the new branch first
+read *"18 of 71 corrected rows land here"*. Re-measured on the shipped build as
+`rhoSource === 'assumed-perfect'` with `clusters >= 2` — which is *exactly* that set, since the
+one-cluster route contributes 0 rows on this map — the count is **24**. The 14 rows still at
+`deff == 1` are all `rhoSource: 'estimated'` with `rho === 0`, i.e. genuine measurements of no
+clustering, and they must stay distinguishable from the 24; that is what `rhoSource` is for.
+
+**The gate.** `pnpm format:check && pnpm typecheck && pnpm lint && pnpm test && pnpm align` — green,
+exit 0. `Test Files 131 passed (131)`, `Tests 3036 passed | 2 skipped (3038)`, `align` `verdict:
+green` with `baselined debt: 21 → 21`. Against the Stage 2 baseline (128 files / 2,989 / 2) that is
+**3 files and 47 tests**, and the three files are exactly the three this stage added —
+`cli/test/explore-cluster.test.ts`, `cli/test/explore-cluster-cli.test.ts`,
+`store/test/cluster-cells.test.ts`. `dogfood/0061` is the reason that arithmetic is stated here at
+all: the gate prints a file count and a pass count and compares neither against anything, so the
+only thing that can see a deleted test is a number carried forward by hand.
 
 ### Risks, plainly
 

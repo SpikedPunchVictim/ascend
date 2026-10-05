@@ -57,7 +57,16 @@
 export type RhoSource =
   /** Estimated from the data: at least two clusters and at least one within-cluster degree of freedom. */
   | 'estimated'
-  /** Not estimable from one cluster, so the conservative bound `rho = 1` was assumed. */
+  /**
+   * NOT ESTIMABLE, so the conservative bound `rho = 1` was assumed instead of measured.
+   *
+   * Two routes reach it, and both are 0/0 rather than a measurement: one cluster (no
+   * within-cluster degrees of freedom at all), and a CONSTANT outcome (every observation the same
+   * value, so both mean squares are exactly 0 and there is no variation to estimate from). They
+   * share this value because they share the conclusion -- the arithmetic ran out and the bound is
+   * the only defensible answer -- and a second spelling of one fact is how two surfaces come to
+   * disagree.
+   */
   | 'assumed-perfect'
   /** Every cluster is a singleton, so the correction is 1 for any rho and rho carries no information. */
   | 'inapplicable';
@@ -112,11 +121,29 @@ export interface ClusterDesign {
 }
 
 /**
+ * One cluster's contribution, in the shape a `GROUP BY` returns.
+ *
+ * This is the primitive's input rather than the observation list because SQL aggregates: what comes
+ * out of a query is `(size, successes)` per cluster and never the observations themselves. An
+ * observation-shaped API would force every store caller to expand counts back into arrays it just
+ * aggregated, and would add a place to get a length wrong for no arithmetic gain.
+ */
+export interface ClusterGroup {
+  /** How many observations the cluster holds. A positive integer. */
+  readonly size: number;
+  /** How many of them are successes -- the `1` outcome. An integer in `[0, size]`. */
+  readonly successes: number;
+}
+
+/**
  * The clustering correction for one binary outcome over one caller-chosen partition.
  *
  * `outcomes[i]` and `clusters[i]` describe the same observation, so the two must be the same length
  * and in the same order. `outcomes` is 0 or 1 and nothing else; `clusters` are opaque labels whose
  * meaning is the caller's -- this module compares them for equality and never interprets them.
+ *
+ * This counts the clusters and then DELEGATES, so there is exactly one arithmetic path. Keeping a
+ * second copy of the estimator for the grouped entry point is how two surfaces come to disagree.
  */
 export function clusterDesign(
   outcomes: readonly number[],
@@ -128,13 +155,6 @@ export function clusterDesign(
         `same length and in the same order: they describe the same observations.`,
     );
   }
-  const n = outcomes.length;
-  if (n === 0) {
-    throw new ClusterDesignError(
-      'There are no observations to design over. An empty sample has no effective N, and 0 would ' +
-        'read as a measured absence rather than as an absent measurement.',
-    );
-  }
   outcomes.forEach((value, index) => {
     if (value !== 0 && value !== 1) {
       throw new ClusterDesignError(
@@ -144,9 +164,11 @@ export function clusterDesign(
     }
   });
 
-  // One pass: each cluster's size, its ones, and its contribution to the two sums of squares.
+  // One pass: each cluster's size and its ones. The keys are compared for equality and then dropped
+  // -- the arithmetic below needs only the counts, and taking the labels no further keeps the
+  // estimator's input in exactly the shape `clusterDesignFromGroups` accepts.
   const groups = new Map<string, { size: number; ones: number }>();
-  for (let index = 0; index < n; index += 1) {
+  for (let index = 0; index < outcomes.length; index += 1) {
     const key = clusters[index] ?? '';
     const group = groups.get(key) ?? { size: 0, ones: 0 };
     group.size += 1;
@@ -154,15 +176,55 @@ export function clusterDesign(
     groups.set(key, group);
   }
 
-  const k = groups.size;
+  return clusterDesignFromGroups(
+    [...groups.values()].map((group) => ({ size: group.size, successes: group.ones })),
+  );
+}
+
+/**
+ * The same estimator over `(size, successes)` per cluster -- the form a `GROUP BY` produces, and so
+ * the form every store caller has. `clusterDesign` delegates here; this is the primitive.
+ *
+ * The refusals are the reason this is a public entry point and not a helper. A `successes` above its
+ * own `size` is a numerator above its denominator, and one repaired silently would widen an interval
+ * for a reason no reader could name; a non-integer or non-positive size is a count that never came
+ * from a `COUNT(*)` and so means the caller has lost track of what it is describing.
+ */
+export function clusterDesignFromGroups(groups: readonly ClusterGroup[]): ClusterDesign {
+  groups.forEach((group, index) => {
+    if (!Number.isInteger(group.size) || group.size <= 0) {
+      throw new ClusterDesignError(
+        `group ${String(index)} has size ${String(group.size)}; a cluster's size is a COUNT(*) of ` +
+          `observations, so it must be a positive integer.`,
+      );
+    }
+    if (!Number.isInteger(group.successes) || group.successes < 0 || group.successes > group.size) {
+      throw new ClusterDesignError(
+        `group ${String(index)} has ${String(group.successes)} successes in a cluster of ` +
+          `${String(group.size)}; successes must be a whole number between 0 and the size, or the ` +
+          `numerator and the denominator describe different populations.`,
+      );
+    }
+  });
+
+  const k = groups.length;
+  if (k === 0) {
+    throw new ClusterDesignError(
+      'There are no observations to design over. An empty sample has no effective N, and 0 would ' +
+        'read as a measured absence rather than as an absent measurement.',
+    );
+  }
+
+  let n = 0;
   let totalOnes = 0;
   let sumSquaresOfSizes = 0;
   let between = 0;
   let largestCluster = 0;
-  for (const { size, ones } of groups.values()) {
-    totalOnes += ones;
+  for (const { size, successes } of groups) {
+    n += size;
+    totalOnes += successes;
     sumSquaresOfSizes += size * size;
-    between += (ones * ones) / size;
+    between += (successes * successes) / size;
     if (size > largestCluster) largestCluster = size;
   }
 
@@ -185,9 +247,32 @@ export function clusterDesign(
     const meanSquareWithin = (totalOnes - between) / (n - k);
     const adjustedSize = (n - sizeFactor) / (k - 1);
     const denominator = meanSquareBetween + (adjustedSize - 1) * meanSquareWithin;
-    const raw = denominator === 0 ? 0 : (meanSquareBetween - meanSquareWithin) / denominator;
-    rho = Math.min(1, Math.max(0, raw));
-    rhoSource = 'estimated';
+    if (denominator === 0) {
+      // A CONSTANT OUTCOME, AND THE RATIO IS 0/0. When every observation carries the same value --
+      // none of a property's entries measured, or all of them -- both mean squares are exactly 0,
+      // so there is no within-cluster variation to compare against between-cluster variation and
+      // the estimator has nothing to say. This is the SECOND route to a non-estimable rho, and it
+      // is not the one-cluster case above: measured 2026-10-04 on `tool_denial` clustered by
+      // `session_id`, 24 of 71 corrected rows land here -- every zero-count state row and every
+      // value no entry took. (`rhoSource === 'assumed-perfect'` with `clusters >= 2` is exactly
+      // this set, which is how it is counted; the one-cluster route on the same map is 0 rows.)
+      //
+      // The two available answers are 0 and the bound, and 0 is the one that must not be given.
+      // `rho = 0` reads as "the correction does not apply", which at 764 entries over 40 clusters
+      // states an independence nobody measured -- and it is the ANTICONSERVATIVE direction: it
+      // prints `0.0% (95% CI 0.0-0.5%)` where the bound gives `0.0% (95% CI 0.0-27.1%)` for the
+      // same count. A zero can also never be told from an estimated one, whereas the bound comes
+      // with `rhoSource` saying `'assumed-perfect'`: an assumption, named as one.
+      //
+      // The counts here are a reading of a LIVE store (this repo's own), so they move as entries
+      // are recorded; the ratio and the direction do not.
+      rho = 1;
+      rhoSource = 'assumed-perfect';
+    } else {
+      const raw = (meanSquareBetween - meanSquareWithin) / denominator;
+      rho = Math.min(1, Math.max(0, raw));
+      rhoSource = 'estimated';
+    }
   }
 
   const designEffect = 1 + (sizeFactor - 1) * rho;

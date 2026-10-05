@@ -54,6 +54,17 @@
  * corpus can still say -- what it looks like -- and a silent report would let it be quoted as an
  * estimate.
  *
+ * **EVERY P-VALUE HERE IS UNCORRECTED FOR CLUSTERING, AND THE HELP SAYS SO.** `--assoc`,
+ * `--correlate` and `--distinctive` print a chi-square or permutation p; `--changepoints` prints a
+ * Benjamini-Hochberg-corrected one. All of them are computed at the RAW entry count, and the
+ * observations behind them are not independent -- one session contributes many entries. Correcting
+ * a p needs a Rao-Scott correction, which adjusts the TEST STATISTIC and its degrees of freedom
+ * rather than scaling N, and that is genuinely different mathematics from the design effect
+ * `asc explore <type> --cluster` applies to a Wilson interval (`asc-0hys`). Shipping it here is
+ * scope that bead took narrowly and declined, so the honest move is to name which numbers carry a
+ * correction and which do not, rather than to leave a reader assuming the flag on one surface
+ * reaches the other.
+ *
  * **`--changepoints` SCANS ONE SERIES BY DEFAULT -- the entry rate -- and one per value of a
  * property when `--by` is given.** Both go through `rankChangepoints`, so the p-values are
  * Benjamini-Hochberg corrected across whatever family the caller asked for. Scanning ten series and
@@ -162,7 +173,9 @@ function rateSeries(labels: readonly string[], stepDays: number): SeriesPoint[] 
 export default class Stats extends BaseCommand {
   static override description =
     'Run one analysis over a type: association, rules, changepoints, distinctive terms, ' +
-    'lexical clustering, or near-duplicate collapse.';
+    'lexical clustering, or near-duplicate collapse. Every p-value it prints is computed at the ' +
+    'raw entry count and is NOT corrected for clustering; a corrected N is reported by ' +
+    '`asc explore <type> --cluster` instead.';
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> tool_denial --assoc',

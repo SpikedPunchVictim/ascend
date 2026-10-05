@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { clusterDesign, ClusterDesignError, type ClusterDesign } from '../src/index.js';
+import {
+  clusterDesign,
+  clusterDesignFromGroups,
+  ClusterDesignError,
+  type ClusterDesign,
+} from '../src/index.js';
 
 /**
  * `design-effect.ts` -- the effective sample size for entries that are not independent (asc-0hys).
@@ -182,5 +187,199 @@ describe('clusterDesign: refusals', () => {
 
   it('refuses an empty sample rather than reporting a zero design', () => {
     expect(() => clusterDesign([], [])).toThrow(/empty|no observations/u);
+  });
+});
+
+/**
+ * `clusterDesignFromGroups` -- the same estimator, over the shape a GROUP BY actually produces.
+ *
+ * WHY THE GROUPED FORM IS THE PRIMITIVE. `clusterDesign` takes one element per OBSERVATION, which is
+ * a shape no store can hand back: SQL aggregates, so what comes out of a query is `(m_i, s_i)` per
+ * cluster and never the observations themselves. Expanding counts back into arrays in the caller
+ * would re-do the aggregation the query just did, and would add a place to get a length wrong.
+ *
+ * The anchors below are stated directly in group form and derived by hand, so a reader checks the
+ * arithmetic rather than the implementation's agreement with itself -- and the delegation from
+ * `clusterDesign` is checked separately, so a wrong delegation cannot hide behind a shared bug.
+ */
+describe('clusterDesignFromGroups', () => {
+  it('is the intraclass correlation, computed straight from (size, successes)', () => {
+    // Two clusters of 2, the first all-success and the second all-failure: N=4, k=2, S=2, A = 4/2 + 0
+    // = 2, sum(m^2) = 8, so the size factor is 8/4 = 2.
+    //   MSB = (2 - 4/4)/1 = 1 ;  MSW = (2 - 2)/2 = 0 ;  m0 = (4 - 8/4)/1 = 2
+    //   rho = (1 - 0)/(1 + (2-1)*0) = 1 ;  deff = 1 + (2-1)*1 = 2 ;  n_eff = 2 = k.
+    const d = clusterDesignFromGroups([
+      { size: 2, successes: 2 },
+      { size: 2, successes: 0 },
+    ]);
+    expect(d.rho).toBe(1);
+    expect(d.rhoSource).toBe('estimated');
+    expect(d.designEffect).toBe(2);
+    expect(d.effectiveN).toBe(2);
+    expect(d.clusters).toBe(2);
+  });
+
+  it('reproduces the fraction case the observation form is already anchored on', () => {
+    // [1,1] [1,0] [0,0] [0,1] as groups: N=8, k=4, S=4, A = 2 + 1/2 + 0 + 1/2 = 3, sum(m^2) = 16.
+    //   MSB = (3 - 16/8)/3 = 1/3 ;  MSW = (4 - 3)/4 = 1/4 ;  m0 = (8 - 2)/3 = 2
+    //   rho = (1/3 - 1/4)/(1/3 + 1/4) = (1/12)/(7/12) = 1/7 ;  deff = 1 + (2-1)/7 = 8/7.
+    const d = clusterDesignFromGroups([
+      { size: 2, successes: 2 },
+      { size: 2, successes: 1 },
+      { size: 2, successes: 0 },
+      { size: 2, successes: 1 },
+    ]);
+    expect(d.rho).toBeCloseTo(1 / 7, 12);
+    expect(d.designEffect).toBeCloseTo(8 / 7, 12);
+    expect(d.effectiveN).toBeCloseTo(7, 12);
+  });
+
+  it('corrects nothing when every cluster is a singleton, whatever its outcomes', () => {
+    // The size factor is sum(m^2)/N = 3/3 = 1, so deff is 1 for ANY rho -- and rho carries no
+    // information here, which `rhoSource` says rather than dressing a zero-degree-of-freedom
+    // quantity as a measurement.
+    const d = clusterDesignFromGroups([
+      { size: 1, successes: 1 },
+      { size: 1, successes: 0 },
+      { size: 1, successes: 1 },
+    ]);
+    expect(d.rhoSource).toBe('inapplicable');
+    expect(d.designEffect).toBe(1);
+    expect(d.effectiveN).toBe(3);
+  });
+
+  it('falls back to the conservative bound for a single cluster', () => {
+    // No within-cluster degrees of freedom, so rho is not estimable -- and the bound is the answer:
+    // deff = sum(m^2)/N = 25/5 = 5, so five observations from one cluster are worth ONE.
+    const d = clusterDesignFromGroups([{ size: 5, successes: 2 }]);
+    expect(d.rhoSource).toBe('assumed-perfect');
+    expect(d.rho).toBe(1);
+    expect(d.designEffect).toBe(5);
+    expect(d.effectiveN).toBe(1);
+  });
+
+  it('clamps a negative estimate, which would otherwise invent precision', () => {
+    // N=8, k=4, S=2, A = 1/2 + 0 + 0 + 1/2 = 1, sum(m^2) = 16.
+    //   MSB = (1 - 4/8)/3 = 1/6 ;  MSW = (2 - 1)/4 = 1/4 ;  m0 = (8 - 2)/3 = 2
+    //   raw rho = (1/6 - 1/4)/(1/6 + 1/4) = -1/5, clamped to 0.
+    // An unclamped rho below zero SHRINKS the interval: precision invented out of a subtraction.
+    const d = clusterDesignFromGroups([
+      { size: 2, successes: 1 },
+      { size: 2, successes: 0 },
+      { size: 2, successes: 0 },
+      { size: 2, successes: 1 },
+    ]);
+    expect(d.rho).toBe(0);
+    expect(d.designEffect).toBe(1);
+    expect(d.effectiveN).toBe(8);
+  });
+
+  it('assumes the bound for a constant outcome, which the estimator cannot measure', () => {
+    // Every observation the same value, so S = N and A = sum(m^2/m) = N: both mean squares are
+    // exactly 0 and the ratio is 0/0. The estimator has nothing to say -- but "nothing to say"
+    // must not be reported as "no correction applies", which at 3 sessions of 20 would print an
+    // interval computed at N=60 for what is at most 3 observations' worth of evidence.
+    const d = clusterDesignFromGroups([
+      { size: 20, successes: 0 },
+      { size: 20, successes: 0 },
+      { size: 20, successes: 0 },
+    ]);
+    expect(d.rhoSource).toBe('assumed-perfect');
+    expect(d.rho).toBe(1);
+    expect(d.designEffect).toBe(20);
+    expect(d.effectiveN).toBe(3);
+  });
+
+  it('treats all-successes exactly as it treats all-failures', () => {
+    // The constant case has two arms and they are the same case: an outcome that never varies.
+    // Only testing the zero arm would pass with a branch written for `totalOnes === 0`.
+    const zeros = clusterDesignFromGroups([
+      { size: 20, successes: 0 },
+      { size: 20, successes: 0 },
+      { size: 20, successes: 0 },
+    ]);
+    const ones = clusterDesignFromGroups([
+      { size: 20, successes: 20 },
+      { size: 20, successes: 20 },
+      { size: 20, successes: 20 },
+    ]);
+    expect(ones).toEqual(zeros);
+  });
+
+  it('still estimates when only ONE cluster is constant', () => {
+    // The boundary the branch must not overreach. A cluster with no successes is not a constant
+    // outcome: A = 4/2 = 2, so MSB = (2 - 4/6)/2 = 2/3 while MSW = (2 - 2)/3 = 0, and the
+    // denominator is 2/3 rather than 0 -- the estimator runs and finds real clustering.
+    const d = clusterDesignFromGroups([
+      { size: 2, successes: 2 },
+      { size: 2, successes: 0 },
+      { size: 2, successes: 0 },
+    ]);
+    expect(d.rhoSource).toBe('estimated');
+    expect(d.rho).toBe(1);
+    expect(d.designEffect).toBe(2);
+    expect(d.effectiveN).toBe(3);
+  });
+
+  it('agrees with the observation form on every case, so the delegation is not a second estimator', () => {
+    // The delegation is the point: two arithmetic paths would be two surfaces that can disagree.
+    // This checks the OTHER direction from `clusterDesign`'s own tests -- same answer, different input
+    // shape -- which is what would catch a delegation that dropped or double-counted a group.
+    const cases: readonly (readonly (readonly number[])[])[] = [
+      [
+        [1, 1],
+        [1, 0],
+        [0, 0],
+        [0, 1],
+      ],
+      [
+        [1, 1, 1],
+        [0, 0, 0],
+      ],
+      [[1], [0], [1], [0], [1]],
+      [
+        [1, 1],
+        [1, 1],
+        [1, 0],
+      ],
+      [[0, 0, 0, 1], [1, 1, 0, 0], [1]],
+    ];
+    for (const groups of cases) {
+      const label = JSON.stringify(groups);
+      const grouped = clusterDesignFromGroups(
+        groups.map((group) => ({
+          size: group.length,
+          successes: group.reduce((sum, outcome) => sum + outcome, 0),
+        })),
+      );
+      const observed = design(groups);
+      expect(grouped.rho, label).toBeCloseTo(observed.rho, 12);
+      expect(grouped.designEffect, label).toBeCloseTo(observed.designEffect, 12);
+      expect(grouped.effectiveN, label).toBeCloseTo(observed.effectiveN, 12);
+      expect(grouped.rhoSource, label).toBe(observed.rhoSource);
+      expect(grouped.largestCluster, label).toBe(observed.largestCluster);
+    }
+  });
+});
+
+describe('clusterDesignFromGroups: refusals', () => {
+  it('refuses a group that holds more successes than observations', () => {
+    // successes > size is not a rounding question: it is a numerator above its own denominator, and
+    // repaired silently it would widen the interval for a reason no reader could name.
+    expect(() => clusterDesignFromGroups([{ size: 2, successes: 3 }])).toThrow(ClusterDesignError);
+    expect(() => clusterDesignFromGroups([{ size: 2, successes: 3 }])).toThrow(/successes/u);
+  });
+
+  it('refuses a negative or non-integer size or success count', () => {
+    expect(() => clusterDesignFromGroups([{ size: 0, successes: 0 }])).toThrow(ClusterDesignError);
+    expect(() => clusterDesignFromGroups([{ size: -1, successes: 0 }])).toThrow(ClusterDesignError);
+    expect(() => clusterDesignFromGroups([{ size: 1.5, successes: 0 }])).toThrow(
+      ClusterDesignError,
+    );
+    expect(() => clusterDesignFromGroups([{ size: 2, successes: -1 }])).toThrow(ClusterDesignError);
+  });
+
+  it('refuses an empty group list rather than reporting a zero design', () => {
+    expect(() => clusterDesignFromGroups([])).toThrow(/no observations|empty/u);
   });
 });

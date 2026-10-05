@@ -154,6 +154,35 @@
  * on disk from a complete one, and its manifest has nowhere to carry the predicate that thinned
  * it. `--page --filter ...` is the filtered read a dump cannot be.
  *
+ * **`--cluster <column>` corrects every proportion this command prints, and states the effective n
+ * it used (`asc-0hys`).** Every significance claim here assumes the observations are independent
+ * draws; they are not. One session contributes many entries, so a map computed over 763 entries
+ * that arrived in 40 sessions is quoting an n no statistical claim may use -- and the error runs in
+ * the direction that makes a finding look stronger. The correction is the one-way ANOVA intraclass
+ * correlation over a caller-supplied partition (`@ascend/analysis`'s `design-effect.ts`), rendered
+ * as `effective n=<n_eff> over <k> clusters, deff <d>` on the rows it actually moved, and it is
+ * applied per row over THAT ROW'S OWN denominator -- `count`, `declared`, `measured` or the total,
+ * whichever that row divides by. The mapping from the store's cells to those per-population designs
+ * is `explore-cluster.ts`, which is where the part that can be wrong without crashing lives.
+ *
+ * **THE CLUSTER COLUMN IS THE CALLER'S, AND SO IS THE PARTITION.** `packages/analysis` is pure and
+ * harness-neutral -- the string `session_id` appears nowhere in it -- because which partition is
+ * right is a question about the DATA. Measured on this store, a calendar-day key clusters
+ * `tool_denial` far harder than a session key does, so the command never picks one. A column the
+ * type does not declare is refused by name; an entry that carries no value for it is in NO cluster
+ * and so is refused too, rather than counted into a partition it is not in. `--cluster` composes
+ * with `--filter` and `--struck` (the correction is computed over the same narrowed population the
+ * rows are), and is refused with the modes that print entries rather than proportions -- `--dump`,
+ * `--page`, `--sample` and two-key `--group-by` -- because a flag honoured by no output is the
+ * silently-ignored class this command refuses everywhere else.
+ *
+ * **`asc stats`' CHI-SQUARE AND PERMUTATION P-VALUES ARE NOT CORRECTED, AND ITS HELP SAYS SO.**
+ * Correcting a p needs a Rao-Scott correction -- the test statistic and its degrees of freedom move,
+ * not just N -- which is genuinely different mathematics from a design effect on a sample size.
+ * `asc-0hys` was scoped narrowly to the proportions this command prints, and the honest way to hold
+ * that boundary is to name it on both surfaces rather than to leave a reader to assume one flag
+ * reaches the other.
+ *
  * **`--select a,b,c` flattens a page's rows to named, declared columns (`asc-56k`), and implies
  * `--page`.** Reading a page for properties you already know you want should not cost the
  * `properties` object's nesting -- `--select stage,outcome --csv` needs a real two-column CSV
@@ -206,6 +235,8 @@ import { Args, Flags } from '@oclif/core';
 import { CURSOR_ORDER, DEFAULT_PAGE_SIZE } from '@ascend/core';
 import { wilson, type Proportion } from '@ascend/analysis';
 import {
+  clusterCells,
+  ClusterCellsError,
   entryIds,
   findEntry,
   findType,
@@ -215,6 +246,7 @@ import {
   profileType,
   signatures,
   typeFilterScope,
+  PROPERTY_STATES,
   UngroupablePropertyError,
   UnknownGroupKeyError,
   type GroupResult,
@@ -243,6 +275,7 @@ import {
   selectRows,
 } from '../explore-select.js';
 import { buildGroupOutput, headerRowCount, parseGroupBy, rowKey } from '../explore-group.js';
+import { ClusterDesignsError, designsFromCells, type ClusterDesigns } from '../explore-cluster.js';
 import {
   entryRow,
   render,
@@ -255,7 +288,7 @@ import { fitToBudget, BudgetFloorError, type BudgetRequest } from '../budget.js'
 import { dumpFileRow, MANIFEST_NAME, planDump, type DumpChunk } from '../explore-dump.js';
 
 /** The state names, in the order they are rendered and counted. */
-const STATES = ['measured', 'not_applicable', 'not_measured', 'not_declared'] as const;
+const STATES = PROPERTY_STATES;
 
 /**
  * The mode the caller typed, as a member of the vocabulary.
@@ -461,8 +494,17 @@ function bareShare(count: number, n: number): string {
  * entries have stopped counting is part of what the type IS, the same standing as `count` --
  * unlike the per-label breakdown below, which is additional detail and trims like any other row.
  */
-function invalidatedRow(invalidated: InvalidatedSummary, count: number): Row {
-  const proportion: Proportion | null = wilson(invalidated.count, count);
+function invalidatedRow(
+  invalidated: InvalidatedSummary,
+  count: number,
+  designs?: ClusterDesigns,
+): Row {
+  const proportion: Proportion | null = wilson(
+    invalidated.count,
+    count,
+    0.95,
+    designs?.invalidated(count),
+  );
   return {
     field: 'invalidated',
     value: renderProportion(proportion),
@@ -491,9 +533,18 @@ function invalidatedRow(invalidated: InvalidatedSummary, count: number): Row {
  * row's cell to cross-reference, so the count has to be stated here rather than left to be read off
  * the aggregate row it sits beside.
  */
-function invalidatedLabelRows(invalidated: InvalidatedSummary, count: number): readonly Row[] {
+function invalidatedLabelRows(
+  invalidated: InvalidatedSummary,
+  count: number,
+  designs?: ClusterDesigns,
+): readonly Row[] {
   return invalidated.labels.map((entry) => {
-    const proportion: Proportion | null = wilson(entry.count, count);
+    const proportion: Proportion | null = wilson(
+      entry.count,
+      count,
+      0.95,
+      designs?.label(entry.label, count),
+    );
     return {
       field: `invalidated.${entry.label}`,
       value: renderProportion(proportion),
@@ -579,7 +630,11 @@ type Denominator = 'declared_entries' | 'entries' | 'measured';
  * copies of one fact next to the row that already states it once. Left absent rather than
  * duplicated, per the rule the rest of this command's rows already follow (`min`/`max`/`top` above).
  */
-function propertyStateRows(property: PropertyProfile, count: number): readonly Row[] {
+function propertyStateRows(
+  property: PropertyProfile,
+  count: number,
+  designs?: ClusterDesigns,
+): readonly Row[] {
   const declared = declaredCount(property);
 
   return STATES.map((state) => {
@@ -587,7 +642,17 @@ function propertyStateRows(property: PropertyProfile, count: number): readonly R
     const successes = property.states[state];
     // `wilson` insists successes <= n; that invariant is exactly what `stateDenominator` restores
     // for `not_declared` (see its own comment) and what already held for the other three states.
-    const proportion: Proportion | null = wilson(successes, n);
+    //
+    // The design is looked up BY `n`, the very denominator the interval is computed over, and
+    // `designsFromCells` assembles `declared` for the three states that are shares of it and the
+    // type total for `not_declared` -- so a design over the wrong one of those is refused by
+    // `wilson` rather than printed.
+    const proportion: Proportion | null = wilson(
+      successes,
+      n,
+      0.95,
+      designs?.state(property.name, state, n),
+    );
     const denominator: Denominator = state === 'not_declared' ? 'entries' : 'declared_entries';
 
     return {
@@ -620,12 +685,20 @@ function propertyStateRows(property: PropertyProfile, count: number): readonly R
  * Follows `propertyStateRows`' own discipline: `type`, `distinct` and `values` describe the
  * property as a whole and are not repeated here.
  */
-function propertyTopRows(property: PropertyProfile): readonly Row[] {
+function propertyTopRows(property: PropertyProfile, designs?: ClusterDesigns): readonly Row[] {
   if (property.summary !== 'top') return [];
   const measured = property.states.measured;
 
   return property.top.map((entry) => {
-    const proportion: Proportion | null = wilson(entry.count, measured);
+    // The design is over `measured` -- the denominator this row already divides by -- and not over
+    // `declared` or the type total, so a `--cluster` run cannot quietly correct a top value over a
+    // population that includes the entries which never got one.
+    const proportion: Proportion | null = wilson(
+      entry.count,
+      measured,
+      0.95,
+      designs?.value(property.name, entry.value, measured),
+    );
 
     return {
       field: `property.${property.name}.top.${entry.value}`,
@@ -745,6 +818,15 @@ export default class Explore extends BaseCommand {
         'Only enum, boolean, string or ref properties qualify. Not combinable with --page, ' +
         '--cursor, --sample, --dump or --select.',
     }),
+    cluster: Flags.string({
+      description:
+        'Correct every proportion this command prints for clustering by this declared property, and ' +
+        'state the effective n it used. A session contributes many entries and they are not ' +
+        'independent draws, so the uncorrected n overstates the evidence behind every interval on ' +
+        'the map. Refuses a name this type does not declare, and refuses an entry that carries no ' +
+        'value for it -- such an entry is in no cluster. Combinable with --filter and --struck, not ' +
+        'with the modes that print entries rather than proportions (--page, --sample, --dump).',
+    }),
   };
 
   /**
@@ -859,6 +941,7 @@ export default class Explore extends BaseCommand {
     const struck = this.flagValue(flags.struck);
     const groupByRaw = this.optionalFlag(flags['group-by']);
     const groupKeys = groupByRaw === undefined ? undefined : parseGroupBy(groupByRaw);
+    const clusterProperty = this.optionalFlag(flags.cluster);
 
     if (groupKeys !== undefined && groupKeys.length > 2) {
       throw usageError(
@@ -993,6 +1076,29 @@ export default class Explore extends BaseCommand {
       );
     }
 
+    // `--cluster` corrects the PROPORTIONS a mode prints, so a mode that prints entries has nothing
+    // for it to correct -- and a flag honoured by no output is the silently-ignored class this
+    // command refuses everywhere else (`--seed`, `--by`, `--dry-run`). `--group-by` with ONE key
+    // prints a proportion per cell and is allowed; with two it reports counts only (its own
+    // `denominator` header row says so), so it is not.
+    if (clusterProperty !== undefined) {
+      const inert = dumping
+        ? '--dump'
+        : paging
+          ? '--page (or --cursor/--limit/--select, which imply it)'
+          : sample !== undefined
+            ? '--sample'
+            : groupKeys !== undefined && groupKeys.length === 2
+              ? '--group-by with two keys'
+              : undefined;
+      if (inert !== undefined) {
+        throw usageError(
+          `--cluster corrects the proportions this command prints, and ${inert} prints none. ` +
+            'Drop --cluster, or read the map it corrects.',
+        );
+      }
+    }
+
     await this.withProject(({ store }) => {
       // A name nobody registered is a mistyped name or the wrong project, and the fix differs
       // from "you have recorded nothing" -- which is a real profile of zeros, and a real page of
@@ -1014,6 +1120,41 @@ export default class Explore extends BaseCommand {
       // added, so every one of those three call sites converts the identical way.
       const filterUsageError = (error: PredicateError): Error =>
         usageError(`--filter ${JSON.stringify(filter)} is not usable: ${error.message}`);
+
+      /**
+       * The clustering designs, or `undefined` when `--cluster` was not asked for.
+       *
+       * Lazy, and called only by the two modes that print proportions, for the same reason the
+       * refusals above exist: reading the cells in a mode that cannot use them would make
+       * `--cluster` cost SQL for nothing, and would turn a mistyped column name into an error from
+       * a mode that was never going to look at it.
+       *
+       * The cells come from the store through its public API and are READ WITH THE SAME SCOPE the
+       * profile is (`--filter`/`--struck`), because a correction computed over the unfiltered
+       * population would be the wrong N for the rows a filter narrowed.
+       */
+      const designsFor = (): ClusterDesigns | undefined => {
+        if (clusterProperty === undefined) return undefined;
+        try {
+          const cells = clusterCells(store.db, args.type, clusterProperty, {
+            ...(filter === undefined ? {} : { filter }),
+            struck,
+          });
+          // `undefined` only for a type nobody registered, which `findType`/`profileType` has
+          // already refused by the time either caller reaches here.
+          return cells === undefined ? undefined : designsFromCells(cells, clusterProperty);
+        } catch (error) {
+          // `ClusterCellsError` is the world saying no -- a column this type does not declare --
+          // and `ClusterDesignsError` is the correction saying no. Both already carry a complete,
+          // caller-facing message naming what is wrong and the fix, the same way `groupEntries`'
+          // two errors are surfaced (`asc-56k`), so neither is re-derived here.
+          if (error instanceof ClusterCellsError || error instanceof ClusterDesignsError) {
+            throw refusal(error.message);
+          }
+          if (error instanceof PredicateError) throw filterUsageError(error);
+          throw error;
+        }
+      };
 
       // Dump mode. The entries go to disk and the INDEX comes back on stdout, so a caller -- or a
       // scheduler handing work to parallel subagents -- can pick files without having read a byte
@@ -1191,6 +1332,7 @@ export default class Explore extends BaseCommand {
           result,
           groupKeys,
           filter !== undefined || struck,
+          designsFor(),
         );
 
         this.emitBuilt(budgetFlags, {
@@ -1429,6 +1571,10 @@ export default class Explore extends BaseCommand {
       })();
       if (profile === undefined) throw noSuchType();
 
+      // Read once, here, AFTER the type is known to exist -- so `--cluster bad-column` on a type
+      // nobody registered reports the type, which is the error a caller can act on first.
+      const designs = designsFor();
+
       const rows: Row[] = [
         { field: 'type', value: profile.type },
         { field: 'count', value: profile.count },
@@ -1437,7 +1583,7 @@ export default class Explore extends BaseCommand {
         // `asc-k6p.1`: how much of this type has stopped counting, at the same standing as `count`
         // itself -- see `invalidatedRow`'s own comment for why this belongs in the undroppable
         // header rather than beside the trimmable per-label rows below.
-        invalidatedRow(profile.invalidated, profile.count),
+        invalidatedRow(profile.invalidated, profile.count, designs),
       ];
 
       // The floor: these five rows are what the map IS, and a budget that cannot afford them is a
@@ -1469,11 +1615,11 @@ export default class Explore extends BaseCommand {
         // comment). Placed beside the version rows -- both describe the type's own structure, not a
         // single property's -- so the two trim together under a tight budget, ahead of the property
         // rows that follow.
-        ...invalidatedLabelRows(profile.invalidated, profile.count),
+        ...invalidatedLabelRows(profile.invalidated, profile.count, designs),
         ...profile.properties.flatMap((property) => [
           propertyRow(property, profile.count),
-          ...propertyStateRows(property, profile.count),
-          ...propertyTopRows(property),
+          ...propertyStateRows(property, profile.count, designs),
+          ...propertyTopRows(property, designs),
         ]),
       );
 
