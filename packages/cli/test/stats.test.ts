@@ -689,6 +689,162 @@ describe('asc stats --assoc, with the tautology and block controls', () => {
 });
 
 /**
+ * Every mode-specific flag, with the modes it can reach and one value of the wrong type.
+ *
+ * The value is deliberately MALFORMED for the mode that owns it: `--threshold abc` is refused by
+ * `--cluster` with "must be a number between 0 and 1", so a run that answers with the mode refusal
+ * instead proves the gate fired before the value was ever parsed. That ordering is the whole
+ * finding -- the flag was not merely ignored, it was never read.
+ */
+const UNREACHABLE: readonly (readonly [string, readonly string[], readonly string[]])[] = [
+  ['--threshold', ['abc'], ['assoc', 'correlate', 'rules', 'changepoints', 'distinctive']],
+  [
+    '--linkage',
+    ['single'],
+    ['assoc', 'correlate', 'rules', 'changepoints', 'distinctive', 'duplicates'],
+  ],
+  ['--by', ['kind'], ['assoc', 'correlate', 'rules', 'cluster', 'duplicates']],
+  [
+    '--at',
+    ['nosuchclock'],
+    ['assoc', 'correlate', 'rules', 'distinctive', 'cluster', 'duplicates'],
+  ],
+  ['--period', ['week'], ['assoc', 'correlate', 'rules', 'distinctive', 'cluster', 'duplicates']],
+  ['--method', ['cusum'], ['assoc', 'correlate', 'rules', 'distinctive', 'cluster', 'duplicates']],
+  [
+    '--min-support',
+    ['abc'],
+    ['assoc', 'correlate', 'changepoints', 'distinctive', 'cluster', 'duplicates'],
+  ],
+  ['--limit', ['1'], ['correlate']],
+];
+
+describe('asc stats refuses a flag the running mode cannot reach', () => {
+  /** The 40-entry fixture the block-control tests use: `day`, `weekday` and an alternating `kind`. */
+  function timed(dir: string): void {
+    const plan: readonly (readonly [string, string, number])[] = [
+      ['D1', 'Thu', 16],
+      ['D2', 'Thu', 14],
+      ['D3', 'Tue', 6],
+      ['D4', 'Wed', 4],
+    ];
+    const entries: Record<string, unknown>[] = [];
+    for (const [day, weekday, count] of plan) {
+      for (let i = 0; i < count; i += 1) {
+        entries.push({ day, weekday, kind: entries.length % 2 === 0 ? 'a' : 'b' });
+      }
+    }
+    record(dir, 'timed', entries);
+  }
+
+  it('refuses the eight flags that had no gate, and names the modes that do run them', () => {
+    const dir = project();
+    timed(dir);
+    // `--correlate` is a mode flag AND takes two values, so it cannot be spelled the way the single
+    // mode flags are -- naming it bare would leave it with no pair and the command would refuse for
+    // the wrong reason, which is exactly the kind of green test this table exists to avoid.
+    const modeArgs = (mode: string): readonly string[] =>
+      mode === 'correlate' ? ['--correlate', 'day', '--correlate', 'kind'] : [`--${mode}`];
+    for (const [flag, value, wrongModes] of UNREACHABLE) {
+      for (const mode of wrongModes) {
+        const run = asc(['stats', 'timed', ...modeArgs(mode), flag, ...value], dir);
+        expect(run.status, `--${mode} ${flag} ${value.join(' ')}`).toBe(2);
+        const said = flatten(run.stderr);
+        expect(said).toContain(`\`${flag}\``);
+        // The refusal names the mode it WAS given, so a caller who typed two flags learns which one
+        // is the problem rather than being told a flag is unsupported in general.
+        expect(said).toContain(`\`--${mode}\` was given`);
+      }
+    }
+  });
+
+  it('refuses the value before it parses it, which is the difference the gate makes', () => {
+    const dir = project();
+    timed(dir);
+    // `--threshold abc` is refused by its own mode, with its own message, one line down. Reaching
+    // that message here would mean the value was parsed -- and on the ungated path it was not even
+    // read, which is why `--assoc --threshold abc` exited 0 with a full table.
+    const wrongMode = asc(['stats', 'timed', '--assoc', '--threshold', 'abc'], dir);
+    expect(wrongMode.status).toBe(2);
+    expect(flatten(wrongMode.stderr)).not.toContain('must be a number between 0 and 1');
+    expect(flatten(wrongMode.stderr)).toContain('only `--cluster` and `--duplicates` run');
+
+    const rightMode = asc(['stats', 'timed', '--cluster', '--threshold', 'abc'], dir);
+    expect(rightMode.status).toBe(2);
+    expect(flatten(rightMode.stderr)).toContain('must be a number between 0 and 1');
+  });
+
+  it('does not refuse a flag in the mode that runs it', () => {
+    const dir = project();
+    timed(dir);
+    // The load-bearing half. A table that gates every flag everywhere would be a green test suite
+    // and an unusable command, so each flag is run in a mode that reaches it and must NOT produce
+    // the mode refusal -- whatever else it does.
+    const reached: readonly (readonly string[])[] = [
+      ['--assoc', '--limit', '1'],
+      ['--rules', '--min-support', '1'],
+      ['--changepoints', '--at', 'recorded_at'],
+      ['--changepoints', '--period', 'week'],
+      ['--changepoints', '--method', 'cusum'],
+      ['--distinctive', '--by', 'kind'],
+      ['--cluster', '--threshold', '0.9'],
+      ['--cluster', '--linkage', 'single'],
+      ['--duplicates', '--threshold', '0.9'],
+      ['--assoc', '--temporal', 'weekday', '--blocks', 'day'],
+      ['--correlate', 'day', '--correlate', 'kind', '--permutations', '50'],
+      ['--correlate', 'day', '--correlate', 'kind'],
+    ];
+    for (const args of reached) {
+      const run = asc(['stats', 'timed', ...args], dir);
+      const said = flatten(run.stderr);
+      // The sentinel is the gate's own closing clause and not "was given", which another refusal
+      // ("--correlate names ONE pair and was given 1 value(s)") also prints -- a sentinel that
+      // matches the wrong message is a test that passes for the wrong reason.
+      expect(said, `asc stats timed ${args.join(' ')}`).not.toContain('never reached');
+    }
+  });
+
+  it('reads an integer the way every other command reads it', () => {
+    const dir = project();
+    timed(dir);
+    // `Number` reads every one of these as an integer -- 16, 1000, 5, 1, 1000 -- and `asc stats`
+    // used to accept all five while `asc search --limit 0x10` exited 2. The sibling is the
+    // specification, so the last assertion runs it.
+    const lax = ['0x10', '1e3', '5.0', '+1', '1_000'];
+    for (const value of lax) {
+      // `--min-support` is gated to `--rules` and `--permutations` to `--assoc`/`--correlate`, so
+      // each flag is driven in a mode that actually reaches its parser -- otherwise the mode gate
+      // one level up would answer first and the assertion would pass without testing the parser.
+      for (const [mode, flag] of [
+        ['--assoc', '--limit'],
+        ['--rules', '--limit'],
+        ['--assoc', '--permutations'],
+        ['--rules', '--min-support'],
+      ] as readonly (readonly [string, string])[]) {
+        const args = ['stats', 'timed', mode, flag, value];
+        const run = asc(args, dir);
+        expect(run.status, args.join(' ')).toBe(2);
+        expect(flatten(run.stderr)).toContain(`must be a positive integer, and '${value}' is not`);
+      }
+      const sibling = asc(['search', 'day', '--limit', value], dir);
+      expect(sibling.status, `search --limit ${value}`).toBe(2);
+      expect(flatten(sibling.stderr), `search --limit ${value}`).toContain('Parsing --limit');
+    }
+  });
+
+  it('still accepts the integers it always did', () => {
+    const dir = project();
+    timed(dir);
+    // The other half of a tightened parser: `007` is a run of digits and stays legal, so the change
+    // cannot be mistaken for "reject anything unusual".
+    for (const ok of ['1', '20', '007']) {
+      const run = asc(['stats', 'timed', '--assoc', '--limit', ok, '--json'], dir);
+      expect(run.status, `--limit ${ok}`).toBe(0);
+    }
+  });
+});
+
+/**
  * The entry's own envelope, named on the surface a reader actually runs.
  *
  * `tool_denial` carries `branch` on all 774 entries of the live store and `--assoc` could not name

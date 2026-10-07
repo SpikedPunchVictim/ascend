@@ -161,6 +161,63 @@ const MODES = [
 type Mode = (typeof MODES)[number];
 
 /**
+ * Every flag that reaches only SOME modes: the modes it can reach, and what it configures.
+ *
+ * One table, because the alternative was one `if` per flag -- and that is what the gate was, which
+ * is why it covered three flags out of eleven. Each mode-specific flag needed someone to remember to
+ * add a block, and eight never got one. The consequence was not a missing refusal but a missing
+ * PARSE: `asc stats decision --assoc --threshold abc` exited 0 and printed a full table, while
+ * `--cluster --threshold abc` exited 2 with "must be a number between 0 and 1". A caller who
+ * switched mode and kept a flag read the output as though the flag had been applied, which this
+ * file already names as the class it refuses: "a flag quietly dropped is a caller who believes
+ * something that is not true."
+ *
+ * `what` completes "configures", and each list is in `MODES` order so the message reads as a
+ * sentence rather than as a set.
+ */
+const FLAG_MODES: readonly {
+  readonly flag:
+    | 'temporal'
+    | 'blocks'
+    | 'permutations'
+    | 'limit'
+    | 'min-support'
+    | 'by'
+    | 'at'
+    | 'period'
+    | 'method'
+    | 'threshold'
+    | 'linkage';
+  readonly modes: readonly Mode[];
+  readonly what: string;
+}[] = [
+  { flag: 'temporal', modes: ['assoc'], what: "the block control's temporal column" },
+  { flag: 'blocks', modes: ['assoc'], what: "the block control's block column" },
+  { flag: 'permutations', modes: ['assoc', 'correlate'], what: 'the shuffled-label control' },
+  {
+    flag: 'limit',
+    modes: ['assoc', 'rules', 'changepoints', 'distinctive', 'cluster', 'duplicates'],
+    what: 'the page size',
+  },
+  { flag: 'min-support', modes: ['rules'], what: 'the itemset floor' },
+  { flag: 'by', modes: ['changepoints', 'distinctive'], what: 'the column to group or split by' },
+  { flag: 'at', modes: ['changepoints'], what: 'the clock the changepoint scan reads' },
+  { flag: 'period', modes: ['changepoints'], what: 'the period the scan folds into' },
+  { flag: 'method', modes: ['changepoints'], what: 'the changepoint test' },
+  { flag: 'threshold', modes: ['cluster', 'duplicates'], what: 'the similarity cut' },
+  { flag: 'linkage', modes: ['cluster'], what: 'how clusters are joined' },
+];
+
+/** `--a`, `--b` and `--c` -- the list form the refusal messages read in. */
+function listedModes(modes: readonly Mode[]): string {
+  const names = modes.map((mode) => `\`--${mode}\``);
+  const first = names[0] as string;
+  if (names.length === 1) return first;
+  const last = names[names.length - 1] as string;
+  return `${names.slice(0, -1).join(', ')} and ${last}`;
+}
+
+/**
  * How many times the block control permutes the temporal labels among the blocks.
  *
  * Hard-coded rather than exposed as a flag, and 500 rather than the 5,000 the measurement used:
@@ -430,7 +487,11 @@ export default class Stats extends BaseCommand {
     'min-support': Flags.string({
       description: `Minimum itemset support for --rules. Default MIN_N (${String(MIN_N)}).`,
     }),
-    limit: Flags.string({ description: 'Rows to print. Default 20.' }),
+    limit: Flags.string({
+      description:
+        'Rows to print, for the six modes that print a table. Default 20. `--correlate` reports ONE ' +
+        'named pair, so it refuses this flag rather than accepting a cap it would not apply.',
+    }),
   };
 
   public async run(): Promise<void> {
@@ -462,33 +523,26 @@ export default class Stats extends BaseCommand {
     }
 
     const mode = chosen[0] as Mode;
+
+    // Every mode-specific flag, refused rather than ignored, for the reason two modes are: a caller
+    // handed a table that quietly dropped their flag would read it as a flag that ran and found
+    // nothing. This runs BEFORE any flag value is parsed, deliberately -- so the message a caller
+    // gets is about the mode they typed, not about a value the running mode was never going to read.
+    for (const { flag, modes, what } of FLAG_MODES) {
+      if (modes.includes(mode)) continue;
+      const value = flags[flag];
+      // `--temporal` is a `multiple` flag and arrives as an empty array when absent; every other
+      // flag in the table is a `string` and arrives as `undefined`. Both mean "not given".
+      if (Array.isArray(value) ? value.length === 0 : value === undefined) continue;
+      const listed = listedModes(modes);
+      throw usageError(
+        `\`--${flag}\` configures ${what}, which only ${listed} ` +
+          `${modes.length === 1 ? 'runs' : 'run'}, and \`--${mode}\` was given. Run it with ` +
+          `${listed}, or drop the flag rather than reading a table it never reached.`,
+      );
+    }
+
     const limit = this.positiveInteger(flags.limit, 'limit') ?? 20;
-
-    // `--temporal`/`--blocks` configure the block control, which only `--assoc` runs. Refused
-    // rather than ignored, for the same reason two modes are: a caller handed a table that quietly
-    // dropped their control would read it as a control that ran and found nothing.
-    if (mode !== 'assoc' && ((flags.temporal ?? []).length > 0 || flags.blocks !== undefined)) {
-      throw usageError(
-        `--temporal and --blocks configure the block control, which only \`--assoc\` runs, and ` +
-          `--${mode} was given. They were checked against a block structure in --assoc's own ` +
-          `report; nowhere else has one.`,
-      );
-    }
-
-    // `--permutations` is the other control, and it reaches one mode further than the block control
-    // does: `--correlate` names a single pair and can shuffle it in place, where `--rules`,
-    // `--cluster` and the rest produce tables the control has nothing to attach to. Refused rather
-    // than ignored -- a requested control that silently did not run is the same false negative one
-    // level up.
-    if (mode !== 'assoc' && mode !== 'correlate' && flags.permutations !== undefined) {
-      throw usageError(
-        `--permutations configures the shuffled-label control, which only \`--assoc\` and ` +
-          `\`--correlate\` run -- they are the two modes that measure a pair, and \`--${mode}\` was ` +
-          `given. Run one of those, or drop the flag rather than reading a table that never ` +
-          `shuffled anything.`,
-      );
-    }
-
     const permutations = this.positiveInteger(flags.permutations, 'permutations');
 
     await this.withProject(({ store }) => {
@@ -545,16 +599,40 @@ export default class Stats extends BaseCommand {
     });
   }
 
-  /** A positive integer flag, or a usage error naming what arrived instead. */
+  /**
+   * A positive integer flag, or a usage error naming what arrived instead.
+   *
+   * **THE SYNTAX IS THE PARSER'S, NOT `Number`'S.** `--limit` is one flag name across this CLI and
+   * oclif's `Flags.integer` is what every sibling declares (`explore.ts:756`, `search.ts:87`,
+   * `types/show.ts:87`, `record.ts:456`, `handlers/check.ts:69`), so its accepted language is what
+   * `--limit` means. Measured against the built binary, `Flags.integer` takes a signed run of digits
+   * and refuses everything else: `explore --limit -5` parses, while `0x10`, `1e3`, `5.0`, `+1`,
+   * `1_000` and either kind of surrounding space are all `Parsing --limit` errors.
+   *
+   * `Number(raw)` is not that language, and the difference was observable: `asc stats --limit 0x10`
+   * paginated at 16 while `asc search --limit 0x10` exited 2 with "Expected an integer but received:
+   * 0x10". Two commands, one flag name, two answers -- and the stats half silently reinterpreted the
+   * value, so what a reader believed they asked for is not what ran. The same parser backs
+   * `--permutations` and `--min-support`, which is why one change covers three flags.
+   *
+   * The `>= 1` rule below is this command's own addition rather than the parser's -- oclif accepts a
+   * negative here -- so it keeps its own message.
+   */
   private positiveInteger(raw: string | undefined, name: string): number | undefined {
     if (raw === undefined) return undefined;
-    const value = Number(raw);
-    if (!Number.isInteger(value) || value < 1)
+    if (!/^-?\d+$/.test(raw) || Number(raw) < 1)
       throw usageError(`--${name} must be a positive integer, and '${raw}' is not.`);
-    return value;
+    return Number(raw);
   }
 
-  /** A similarity or distance flag in [0,1], or a usage error. */
+  /**
+   * A similarity or distance flag in [0,1], or a usage error.
+   *
+   * `Number(raw)` is left here deliberately, and #13 does not reach it: there is no sibling flag to
+   * be the specification (`Flags.float` is declared nowhere in this CLI), and the [0,1] range is what
+   * bounds the accepted language -- the one value `Number` reads that a decimal grammar would not,
+   * `0x1`, lands on exactly 1 and is a spelling of a legal threshold rather than a different number.
+   */
   private unitNumber(raw: string | undefined, name: string): number | undefined {
     if (raw === undefined) return undefined;
     const value = Number(raw);
