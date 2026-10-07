@@ -144,6 +144,28 @@ export function canonicalName(raw: string): string {
  * rather than keeping a second copy of it. `views.test.ts` derives the same set back out of
  * a real view's declared columns, so a column added to the projection without being added
  * here fails a test instead of silently reopening the hole.
+ *
+ * TWO OF THESE ARE RESERVED-BUT-DEAD, and that is measured rather than assumed. `repo` and
+ * `git_sha` are the only names in this list that no writer fills anywhere. Counted 2026-10-07
+ * over the live store's 7,133 entries across all 13 registered types, read off the exported
+ * JSONL under `.ascend/entries`: `repo` and `git_sha` are null on every one of them, while
+ * every other name here carries a value -- `cwd` and `source` on all 7,133, `branch` on 6,860,
+ * `evidence_text` on 165, and even the sparsest (`run_id` 43, `workflow` 60, `actor` 108)
+ * filled by at least one writer. Nothing derives the two and nothing asks for them: `asc
+ * record` declines to spawn `git` for envelope fields (`packages/cli/src/commands/record.ts`),
+ * and the claude-code adapter's `Locality` is `{ cwd, branch }` only
+ * (`packages/adapter-claude-code/src/derive.ts`).
+ *
+ * THEY ARE KEPT ANYWAY, AND BOTH ALTERNATIVES ARE WORSE. Dropping the two names returns them
+ * to the spec namespace, which reopens exactly the collision this list exists to close: a type
+ * could then declare `repo` meaning something else, and the generated view would carry one
+ * name for two values with no precedence rule to resolve it (`asc-mqgy`). Filling them instead
+ * means spawning `git` on the path `asc-9y1` exists to measure and writing the CLI's own
+ * environment into durable entries -- and for `git_sha` that is worse than merely costly: an
+ * all-but-unique value per entry makes every pair containing it definitional, which
+ * `packages/cli/src/stats-text.ts` declines for that reason alone. So the columns stay
+ * reserved and unfilled, and what keeps a dead column out of a ranking is the caller's
+ * variance gate -- a fact about the data rather than a hardcoded belief about it.
  */
 export const ENVELOPE_PROPERTY_NAMES = [
   'id',

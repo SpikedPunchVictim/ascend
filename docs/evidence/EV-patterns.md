@@ -630,3 +630,43 @@ reader can reach.
 **Filed as** `asc-h3sv` (P3). **Recorded as** `dogfood/0066`. The same pass found a second instance of
 the same class in the same flag — the shuffled control's p depends on the caller's **row order**, which
 no surface named — recorded as `dogfood/0067` (`asc-t0x8`).
+
+## Amendment — 2026-10-07: the column this record calls `repo` is the git branch (asc-mqgy)
+
+Every table above that names a `repo` dimension is measuring `git_branch`. The spike defines its `repo`
+column as `COALESCE(git_branch, '(none)')` (`spike/spike-controls.mjs:51`), so the name in the record
+and the column in the data were never the same field. Counted 2026-10-07 over the live store's 7,133
+entries across all 13 registered types:
+
+```
+repo       nonnull    0   types 0
+git_sha    nonnull    0   types 0
+branch     nonnull 6860   types 6
+cwd        nonnull 7133   types 13
+```
+
+`repo` and `git_sha` are the envelope's only two reserved names that no writer fills anywhere — `asc
+record` declines to derive them, and the claude-code adapter's `Locality` is `{ cwd, branch }`
+(`packages/adapter-claude-code/src/derive.ts`). So the headline row of the findings table, and
+Correction 1's `project × repo` at 0.828, are both measurements of **`project × branch`**.
+
+**What this does not change.** The finding stands, and it is stronger than when written. `asc-h7nq`
+put `branch` on the command surface and measured that same pair through the store's own column:
+`project × branch` sits at determinism **0.876**, above `DEFINITIONAL_AT`, and `asc stats tool_denial
+--assoc` suppresses it as definitional without being asked. The 0.828 above comes from the frozen
+2026-09-11 snapshot that every table in this record is measured on, while 0.876 is the live store,
+which has grown since; the two are not expected to agree, and the gap is corpus drift rather than a
+contradiction. What this Amendment fixes is the **name**, not the number — the tautology the record
+identified is real, and it is read off `branch`.
+
+**What is corrected going forward.** `repo` stays a nameable column on `asc stats --assoc`
+(`LOCALITY_COLUMNS`, `packages/cli/src/stats-text.ts`) and stays `null` on every entry, because keeping
+the name reserved is what stops a type declaring its own `repo` meaning something else. `asc-mqgy`
+chose that over filling it (a `git` subprocess per record, and the CLI's own environment written into
+durable entries) and over dropping it (reopening the collision `ENVELOPE_PROPERTY_NAMES` exists to
+close); `packages/core/src/spec.ts` now states both the measurement and that choice where the
+reservation is defined. The variance gate, not a hardcoded prune, is what keeps the empty column out
+of a ranking.
+
+**Recorded as** `dogfood/0064`, whose "How it happened" section already carries the spike's SQL. This
+Amendment is what puts that fact into the record the numbers are read from.

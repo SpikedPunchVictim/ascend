@@ -4584,6 +4584,64 @@ commit, because a citation pointing at a record that does not cover it is worse 
   the existing Amendment). Using the frozen snapshot is deliberate — it isolates the controls' effect
   from corpus growth — but the re-issued numbers describe that snapshot, and the record must say so.
 
+## Stage E24: the envelope's two dead names, and the label the record gave them — `asc-mqgy`
+
+**Status**: Complete in the working tree; gate green. `asc-mqgy` set out three resolutions and chose
+none; this takes the third — keep both names reserved and document them — plus the correction the
+measurement forced.
+
+**The bead's framing was a one-type census, and the whole store says something stronger.** `asc-mqgy`
+reported the two dead columns from `tool_denial` alone (774 entries). Counting every type instead —
+**7,133 entries across all 13 registered types**, 2026-10-07 — `repo` and `git_sha` are the envelope's
+**only two** reserved names that no writer fills anywhere: `cwd` and `source` are on all 7,133,
+`branch` on 6,860, `evidence_text` on 165, and even the sparsest (`run_id` 43, `workflow` 60, `actor`
+108) are filled by at least one writer each. That is what makes the pair a category rather than an
+accident, and it is now the argument in `packages/core/src/spec.ts`.
+
+**Both rejected alternatives are recorded with their evidence**, per the reserve discipline:
+
+- *Fill them* — a `git` subprocess per record on the path `asc-9y1` exists to measure, and the CLI's
+  own environment written into durable entries. For `git_sha` that is worse than merely costly: an
+  all-but-unique value per entry makes every pair containing it definitional, which `stats-text.ts`
+  already declines for that reason alone.
+- *Drop the names* — returns them to the spec namespace and reopens the collision
+  `ENVELOPE_PROPERTY_NAMES` exists to close: a type could then declare `repo` meaning something else,
+  with no precedence rule to resolve it.
+
+**A second defect was in the prose, not the schema.** `entry-document.ts` grouped `repo`, `git_sha`
+and `branch` as three fields *"not read yet: they mean spawning `git`"*, and its per-key messages told
+a caller each was *"not read yet (E5)"*. **`branch` is read** — the claude-code adapter fills it from
+each transcript's own `gitBranch`, with no subprocess anywhere, on 6,860 entries. One live column was
+documented as a future one, and a caller reading that sentence could not tell it from the two with no
+writer at all. The three are now described as two states rather than one.
+
+**The record's label was wrong, and that is the half worth having.** `spike/spike-controls.mjs:51`
+defines the spike's `repo` column as `COALESCE(git_branch, '(none)')` — it is the **git branch**. So
+`EV-patterns`' headline `project × repo` (V = 0.761) and Correction 1's 0.828 are measurements of
+`project × branch`. A dated Amendment names the pair correctly. The finding is untouched: `asc-h7nq`
+measured the same shape through the store's own `branch` column at determinism **0.876**, suppressed
+as definitional by `asc stats tool_denial --assoc` without being asked. 0.828 is the frozen
+2026-09-11 snapshot every table in that record comes from, and 0.876 is the live store, so the two are
+not expected to agree — corpus drift, not contradiction. What the Amendment fixes is the name.
+
+**No new dogfood record, on purpose.** The finding is `dogfood/0064`'s; its "How it happened" section
+already carries the spike's SQL. The convention is one record per finding, so this strengthens that
+record's subject in the EV Amendment and cites it rather than filing a duplicate.
+
+**No test, and that is stated rather than hidden.** The change is prose in three files, and the facts
+it asserts are about the live store rather than about code — a fixture cannot assert them, and
+encoding them as a constant would be a mechanism with no measured need. Checked before claiming that:
+no test pins any string changed here (`grep -rn 'is not read yet' packages/` now matches only source).
+
+**One near-miss worth keeping**: the first draft of the `spec.ts` comment wrote the glob
+`.ascend/entries/*/0001.jsonl`, whose `*/` **closed the JSDoc comment early**, leaving `0001` to parse
+as an octal literal. `prettier --check` caught it as a syntax error; the fix is a rewording, and the
+lesson is that a path inside a doc comment is not inert.
+
+**Gate**: `format:check`, `typecheck`, `lint` green; `align check` green, baselined debt 21 → 21.
+
+---
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.

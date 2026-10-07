@@ -34,10 +34,15 @@
  *     timestamp could backdate an entry, and the ledger's whole chronological value rests on
  *     `recorded_at` being what ascend observed rather than what a caller claimed.
  *   - `cwd` -- mechanically derivable, so it is read from the process rather than asked for
- *     (`asc-kwr`'s principle: never make a caller self-report what can be read off disk). `repo`,
- *     `git_sha` and `branch` are the same argument and are not read yet: they mean spawning `git`
- *     on the hot path `asc-9y1` exists to measure, and E5's adapter is where derived envelope
- *     fields are specified.
+ *     (`asc-kwr`'s principle: never make a caller self-report what can be read off disk). The
+ *     other three envelope fields are refused on the same argument, but they are not in the same
+ *     state, and this comment previously said they were. `branch` is READ: the claude-code adapter
+ *     fills it from each transcript's own `gitBranch` (`Locality`, `derive.ts`), with no subprocess
+ *     anywhere, and it is populated on 6,860 of the live store's 7,133 entries. `repo` and
+ *     `git_sha` are read by nothing at all -- deriving them means spawning `git` on the hot path
+ *     `asc-9y1` exists to measure, and no writer does it (`asc-mqgy`; both null on all 7,133
+ *     entries, measured 2026-10-07). Grouping the three hid that difference: a caller reading
+ *     "not read yet" could not tell the field that is live from the two that have no writer.
  *   - `type` -- the command's operand names the type for the whole call, so a per-entry type could
  *     only agree with it or contradict it. Refusing is what keeps every validation error's
  *     suggested fix a thing that actually works: the document is validated against the type the
@@ -101,9 +106,15 @@ const FORBIDDEN_KEYS: Readonly<Record<string, string>> = {
     "'recorded_at' is read from ascend's clock when the entry is written. A document that could " +
     'set it could backdate an entry, and the ledger sorts chronologically by that column alone.',
   cwd: "'cwd' is read from the process rather than asked for. Omit it.",
-  repo: "'repo' is derived from the working directory and is not read yet (E5). Omit it.",
-  git_sha: "'git_sha' is derived from the working directory and is not read yet (E5). Omit it.",
-  branch: "'branch' is derived from the working directory and is not read yet (E5). Omit it.",
+  repo:
+    "'repo' is derived rather than declared, and no writer derives it yet -- a value here would be " +
+    'the only one in the store. Omit it.',
+  git_sha:
+    "'git_sha' is derived rather than declared, and no writer derives it yet -- a value here would be " +
+    'the only one in the store. Omit it.',
+  branch:
+    "'branch' is derived rather than declared: `asc ingest claude-code` fills it from the " +
+    'transcript. Omit it.',
   type:
     'the type is the command operand: `asc record <type> …`. One call records one type, so a ' +
     'per-entry type could only repeat it or contradict it.',
