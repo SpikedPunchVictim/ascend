@@ -651,8 +651,31 @@ export function functionalDependence(table: Crosstab): FunctionalDependence {
  * the observed statistic sits inside that distribution, the "pattern" is an artefact of the
  * marginal counts rather than evidence of association.
  *
- * The RNG is seeded from `random.ts`, so a control is reproducible from its parameters -- the same
- * contract every other number in this package is held to.
+ * WHAT IT CANNOT SEE: A MARGINAL ARTEFACT AND A DEFINITIONAL PAIR, ONLY THE FIRST. The question this
+ * answers is "could these marginals ALONE manufacture this chi-square?". It is not "is this one
+ * fact recorded twice?" -- that is `functionalDependence`, and no shuffle can reach it. A
+ * definitional pair IS strongly associated, so this control reports it correctly and reads as the
+ * strongest possible signal while being, as evidence, the wrong instrument. MEASURED on the live
+ * store (`asc-jpka`, `spike/jpka-permutation-cost.mjs`): `project x branch` carries determinism
+ * 0.876 and is SUPPRESSED as DEFINITIONAL by `asc stats tool_denial --assoc`, and the same columns
+ * return p = 0.0002 -- this control's floor at 5,000 iterations -- with a null whose maximum is
+ * 1391 against an observed 5828. The association is real; it is the INFERENCE that is out of reach.
+ * `rankAssociations` applies the definitional test before the family correction, so the two are not
+ * competing verdicts to be reconciled: read them as a pair and never one instead of the other.
+ *
+ * THERE ARE THREE CONTROLS AND THEY ANSWER THREE DIFFERENT QUESTIONS -- this one: are the marginals
+ * enough? `blockPermutationNull`: is the block structure enough? `functionalDependence`: is this
+ * one fact twice? A pair can come out clean on any one of them, and a reader who ran a single
+ * control has a verdict about a single failure mode.
+ *
+ * REPRODUCIBLE FROM ITS PARAMETERS AND ITS INPUT ORDER, and only from both. The RNG is seeded from
+ * `random.ts`, but Fisher-Yates below walks the array it is GIVEN, so the same multiset in a
+ * different order draws different permutations and reports a different p. Measured on the live
+ * `project x tool_name` columns at 400 iterations and the shipped seed: 0.209476 read from the files
+ * in append order, 0.184539 in the order the command reads them (`ORDER BY recorded_at, id`).
+ * Neither is wrong -- any fixed order gives a valid Monte Carlo estimate -- but a published p that
+ * omits its row order cannot be re-derived, which is a different failure from being wrong and is
+ * harder to notice.
  */
 export function permutationNull(
   a: readonly string[],
@@ -727,17 +750,29 @@ function nullFrom(stats: number[], iterations: number): PermutationNull {
  * time that is false, and shuffling removes everything rather than just the pairing.
  *
  * MEASURED, on the checked-in corpus (`tool-denial`, N=409, 35 days, 2026-09-03 alone contributing
- * 143 of them). Permuting weekday labels among days collapses EVERY weekday pair, and the observed
- * statistic sits BELOW the null median in each case:
+ * 143 of them). Permuting weekday labels among days collapses the weekday pairs, and in three of the
+ * four the observed statistic sits BELOW the null median:
  *
- *     project x weekday        observed 310.58   null median 355.55   p 0.8594
- *     repo x weekday           observed 329.28   null median 399.01   p 0.9078
- *     denial_kind x weekday    observed 181.71   null median 190.86   p 0.6053
- *     tool_name x weekday      observed  85.34   null median  75.19   p 0.2685
+ *     project x weekday        observed 327.60   null median 398.41   p 0.9432
+ *     repo x weekday           observed 348.07   null median 439.89   p 0.9594
+ *     denial_kind x weekday    observed 185.50   null median 195.39   p 0.6225
+ *     tool_name x weekday      observed  95.88   null median  85.68   p 0.2667
+ *
+ * THE TWELVE NUMBERS IN THIS TABLE ARE CORRECTED (2026-10-05, asc-h7nq). This comment published a
+ * provisional table -- 310.58 / 355.55 / 0.8594, 329.28 / 399.01 / 0.9078, 181.71 / 190.86 / 0.6053,
+ * 85.34 / 75.19 / 0.2685 -- that `IMPLEMENTATION_PLAN.md:4377` records as WRONG and superseded,
+ * because none of those four observed statistics could be reproduced from `spike/corpus.db` by any
+ * `weekday` derivation or column choice tried. Every value above is what
+ * `node spike/spike-controls.mjs` prints today, and the four observed statistics agree exactly with
+ * the published table in `docs/evidence/EV-patterns.md`. **The correction reached the plan and not
+ * this comment**, so until now the module's own documented evidence disagreed with its own
+ * regenerable measurement -- which is `dogfood/0065`.
  *
  * `EV-patterns.md` reported "Thursday 41.1%" as a finding and named this control as the way to test
- * it. All four pairings collapse, so the day structure -- not the weekday -- is what the corpus is
- * shaped by.
+ * it. The weekday pairs do not survive it -- `tool_name x weekday` is the exception at p 0.2667,
+ * above any conventional level, and it is the one pairing whose observed value sits ABOVE the null
+ * median. So the day structure -- not the weekday -- is what the first three pairings are shaped by,
+ * and the fourth is explained by neither.
  *
  * THIS NULL IS DELIBERATELY NOT MARGINAL-PRESERVING, AND THAT IS THE POINT. It holds `other` and the
  * block structure EXACTLY as observed and destroys only the block-to-temporal pairing. The question

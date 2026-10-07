@@ -361,3 +361,272 @@ the day structure, restated.
   as a bead rather than absorbed, because it is a genuinely different mechanism — run-length
   detection over session state, not a resampling scheme.
 
+---
+
+## Amendment — 2026-10-05: both controls re-run on the live store (asc-h7nq)
+
+**What this is.** The Amendment above ends with *"Neither control has been re-run on the grown
+corpus."* This is that re-run. It is also the evidence that the gap `dogfood/0064` found is closed:
+both controls were unrunnable against the store, `asc-h7nq` made them runnable, and **every number
+below comes from the shipped command** rather than from a spike's own `SELECT`. Where the Amendment
+above reports the frozen snapshot, this one reports the live store, and the two are **different
+corpora of different sizes** — so this is not a before/after of one corpus. What makes the comparison
+worth making is that the two share a number that growth did not move: **2026-09-03 held 143 rows in
+the snapshot and holds 143 rows now**, out of 409 then and 774 now.
+
+### The corpus, live
+
+```
+N 774
+distinct days 52
+span 2026-08-13 2026-10-05
+weekday counts {'Thu': 249, 'Wed': 134, 'Mon': 100, 'Fri': 90, 'Tue': 69, 'Sun': 68, 'Sat': 64}
+thursday 249 32.171
+top days [('2026-09-03', 143), ('2026-09-16', 63), ('2026-09-17', 52), ('2026-08-28', 30), ('2026-09-28', 29)]
+repo     nonnull 0    levels 0
+git_sha  nonnull 0    levels 0
+branch   nonnull 774  levels 12
+cwd      nonnull 774  levels 45
+```
+
+The Thursday share fell from **41.1 % to 32.171 %** and the day count rose from 35 to 52 — the corpus
+nearly doubled — while the outlier day's **143 rows are unchanged**. A single day that was 35.0 % of
+the snapshot is now 18.5 % of the store, and it is still the largest by a factor of 2.3 over the next
+(63). That is the strongest form the confound could take: it is not an artifact of a small corpus
+that growth dilutes, because it did not dilute.
+
+### The tautology check, live
+
+`asc stats tool_denial --assoc`, exact output:
+
+```
+Warning: 9 pair(s) of 5 properties over 774 entries. q-values are corrected
+across a family of 9, which is every pair in THIS run -- asking about ten
+properties and asking twice about five are different questions with different
+q-values. 2 of those columns are read from the entry ENVELOPE rather than a
+declared property (cwd, branch): they vary in this corpus, and no spec can
+declare a name the envelope already owns.
+Warning: 1 pair(s) SUPPRESSED as DEFINITIONAL, at or above a determinism of 0.5
+in either direction -- one property restating the other, so the pair is the same
+fact twice rather than two findings: project x branch at 0.876 (n=774).
+Determinism is reported for every pair below, so a near-miss can be argued with.
+```
+
+`project × branch` is the pair `project × repo` named above, and **it is the same measurement**:
+`spike/spike-controls.mjs` derives its `repo` column as `COALESCE(git_branch, '(none)')`
+(`spike/spike-controls.mjs:51`), so the snapshot's *repo* was the store's *branch* all along.
+Same tautology, two corpora, **0.828 → 0.876**.
+
+The live determinism ranking, from the same run, reproduces the shape the snapshot measured — one
+pair far above a gap, everything else below it:
+
+| pair | determinism | verdict |
+|---|---|---|
+| `project × branch` | **0.876** | **SUPPRESSED, definitional** |
+| *— the threshold sits below here —* | | |
+| `project × cwd` | 0.499 | **near-miss**, 0.0005 under `DEFINITIONAL_AT` |
+| `denial_kind × project` | 0.465 | |
+| `cwd × branch` | 0.372 | |
+| `denial_kind × branch` | 0.356 | |
+| `denial_kind × tool_name` | 0.253 | |
+| `project × tool_name` | 0.236 | |
+| `denial_kind × cwd` | 0.164 | |
+| `tool_name × branch` | 0.140 | |
+| `tool_name × cwd` | 0.127 | |
+
+**`project × cwd` at 0.4995 is the number to argue with.** It is 0.0005 below the constant, so the
+threshold decides it and the record cannot: a corpus with one more working directory, or a `cwd` that
+drifts toward `project`, flips it to SUPPRESSED with nothing else changed. This is the near-miss the
+suppression line's own promise — *"Determinism is reported for every pair below, so a near-miss can
+be argued with"* — exists for, and it is the first such pair the shipped surface has produced.
+
+### The temporal control, live
+
+`asc stats tool_denial --assoc --temporal occurred_at:weekday --blocks occurred_at:day`. The weekday
+is **now derived from the declared `occurred_at` timestamp** — the thing `dogfood/0064` said could not
+be named — and the blocks are the 52 distinct days of the same clock. 500 iterations, the CLI's
+`BLOCK_ITERATIONS`, seeded with the module's default.
+
+```
+Warning: the block control ran on every pair containing occurred_at:weekday:
+those labels were permuted among the 52 distinct blocks of 'occurred_at:day'
+over 500 iterations. A HIGH p_blocked means the observed association is inside
+what the block structure alone manufactures.
+```
+
+| pair | observed χ² | null median | p95 | p_blocked |
+|---|---|---|---|---|
+| `project × occurred_at:weekday` | 551.61 | **802.13** | 951.17 | **1.000000** |
+| `branch × occurred_at:weekday` | 422.93 | **608.98** | 746.10 | **0.994012** |
+| `cwd × occurred_at:weekday` | 530.65 | **657.22** | 790.67 | **0.982036** |
+| `denial_kind × occurred_at:weekday` | 257.25 | **416.32** | 544.88 | **0.976048** |
+| `tool_name × occurred_at:weekday` | 159.22 | 135.76 | 183.40 | 0.183633 |
+
+Against the snapshot's table above: `project` 0.9432 → **1.000000**, `repo`/`branch` 0.9594 →
+**0.994012**, `denial_kind` 0.6225 → **0.976048**, `tool_name` 0.2667 → **0.183633**. **Four of the five sit below the null median**, against three of four before, and the one pair whose
+observed value sits above the median is the same pair in both corpora — `tool_name × weekday` — which
+remains the only weekday pairing the block structure does not explain either way.
+
+The null medians are not printed by the command; they come from `node spike/h7nq-null-median.mjs`,
+which imports `blockPermutationNull` from the built package and passes only the columns, so the seed
+and iteration count are the shipped ones. **Its observed χ² and p_blocked reproduce the command's
+table exactly** (551.61 / 1.000000, 422.93 / 0.994012, 530.65 / 0.982036, 257.25 / 0.976048,
+159.22 / 0.183633), which is the check that the two runs are the same run.
+
+### Correction 3 — "All four weekday pairings collapse" overstates its own table
+
+The Amendment above says, in bold, *"**All four** weekday pairings collapse."* Its own table lists
+`tool_name × weekday` at **p = 0.2667**, which is above 0.05 by any conventional level, so the
+sentence claims more than the measurement supports. The paragraph's **next** sentence gets it right
+— *"the observed statistic sits BELOW the null median in three of the four cases"* — and the live
+re-run agrees with the table rather than the bold line: `tool_name × occurred_at:weekday` is
+**0.183633**, still not significant, and still the only one of the five whose observed value is
+**above** the null median.
+
+The correction does not change the finding. Three weekday pairings collapse decisively in both
+corpora, and `tool_name × weekday` was **never a finding** — it is an ARTIFACT row in the
+2026-09-14 Amendment's own reconciliation. What the overstatement costs is precision about *why* the
+actionable pair survives: `denial_kind × tool_name` survives the block control because **it has no
+temporal column at all**, not because its weekday behaviour was tested and cleared.
+
+The same overstatement, with a stronger claim attached, sat in `packages/analysis/src/association.ts`
+— *"collapses EVERY weekday pair, and the observed statistic sits BELOW the null median in each
+case"*, when `tool_name` is neither. That comment **also published twelve values**
+(310.58 / 355.55 / 0.8594 and three more rows) that `spike/spike-controls.mjs` does not produce and
+that `IMPLEMENTATION_PLAN.md:4377` already records as WRONG. Both are corrected in place and recorded
+as `dogfood/0065`.
+
+### The re-issued finding list, re-checked against the live store — and one thing it cannot classify
+
+The three survivors the Amendment above names are **still the three survivors**, at larger n and with
+the same ordering:
+
+| pair | snapshot V | live V | live determinism | status |
+|---|---|---|---|---|
+| `denial_kind × project` | 0.465 | 0.536 | 0.465 | SURVIVES both controls |
+| `denial_kind × branch` *(snapshot: `× repo`)* | 0.445 | 0.479 | 0.356 | SURVIVES both controls |
+| `denial_kind × tool_name` | 0.343 | 0.227 | 0.253 | SURVIVES both controls |
+
+The GO stands, on the same pair it stood on before: `denial_kind × tool_name`, which neither control
+touches and which the 2026-09-14 Amendment names as the actionable one.
+
+**What the live run adds is a column the snapshot's list never had, and it cannot say what to do with
+it.** The snapshot's five dimensions were `denial_kind`, `tool_name`, `project`, `weekday`, `repo`;
+the live store's are `denial_kind`, `tool_name`, `project`, `cwd`, `branch`, and `cwd` is new. **Six**
+live pairs carry `p_adjusted` at or near zero and no temporal column, so **neither control applies to
+any of them**. Three are the survivors named above; the other three are new to this corpus:
+
+| pair | p_adjusted | determinism | the controls say |
+|---|---|---|---|
+| `project × cwd` | 0 | 0.499 | nothing — 0.0005 under the definitional threshold |
+| `cwd × branch` | 0 | 0.372 | nothing — no temporal column |
+| `denial_kind × cwd` | 2.96e-8 | 0.164 | nothing — no temporal column |
+
+**The live invocation cannot classify these, and the reason is that the marginals control is not part
+of it.** The 2026-09-14 reconciliation sorted SURVIVES from ARTIFACT OF MARGINALS with a
+**shuffled** null (`permutationNull`); the shipped `--assoc` runs the definitional and block controls
+and no shuffled one, because a `--permutations` flag is `asc-jpka`'s subject and was deliberately not
+invented in `asc-h7nq` (`stats.ts:167`). Every live pair is additionally flagged
+**`asymptotic_valid false`**, so the chi-square p-values above are approximations the run itself says
+did not apply. The honest reading is therefore narrower than *"no new finding appears"*: **the three
+named survivors are reproduced, and three live pairs are candidates the shipped surface neither
+supports nor contradicts.** `denial_kind × cwd` is the one to look at first — `denial_kind` and
+`cwd` are the two columns that survive everywhere else in this record.
+
+### What this does not establish, stated plainly
+
+- **The iteration count differs and the p-values are not directly comparable.** The snapshot's table
+  used **5,000** iterations; the shipped command hard-codes **500**, because it runs while the user
+  waits. At 500 the standard error of a p near 0.05 is about 0.01, which is enough to decide a
+  collapse and not enough to quote a p to four decimals against a 5,000-iteration run. The two live
+  values nearest any threshold — `tool_name` at 0.183633 and `project` at exactly 1.000000 — are the
+  only ones where that matters, and neither is close to a decision.
+- **The two corpora are not the same corpus.** This is not a re-run of the snapshot's measurement; it
+  is a different 774 rows. Every difference between the two tables is confounded with corpus growth,
+  and the one number *not* confounded with it — the 143-row day, identical in both — is the reason to
+  believe the confound is real rather than a reason to believe any particular p moved.
+- **The threshold is still corpus-specific**, and the live store now supplies the case that stresses
+  it: `project × cwd` at 0.4995, which the constant decides by 0.0005. This record cannot say which
+  way is right, only that a rule resting on a 0.0005 margin will fire differently on a corpus one
+  directory different.
+- **`repo` is still unformable, and for a reason the Amendment above mis-states.** The pair
+  `project × repo` is not formable because **nothing writes `repo`** (`asc-mqgy`), not because no type
+  declares it — the store's 774 entries carry `repo` null and `branch` populated on all of them. The
+  live analogue of the snapshot's pair is `project × branch`, and the tautology the Amendment names
+  is confirmed by it at 0.876.
+- **The block null's variance may still be inflated by the single 143-row day**, and the live run
+  strengthens the case for saying so rather than settling it: four of five observed values now sit
+  below the null median, below a null whose blocks include a 143-row day out of 52.
+- **The live run carries two controls where this record used three, so it cannot re-check the finding
+  list on its own.** `permutationNull` — the marginals control that produced every SURVIVES/ARTIFACT
+  verdict above — is not reachable from the command surface; that is `asc-jpka`, and it is why the
+  section above reports candidates rather than verdicts. Every live pair is also flagged
+  `asymptotic_valid false`.
+- **The third control is still not built.** The pseudoreplication / effective-sample-size check the
+  2026-09-14 Amendment names remains unmeasured, and is `asc-qt6r`.
+
+---
+
+## Amendment — 2026-10-06: the shuffled control's iteration count is 400, and the floor is 1/401 (asc-h3sv)
+
+**What was wrong.** This record's **Method** (line 22) says the shuffled-label control ran
+*"5,000 iterations, seeded"*, and its **Confidence** section (lines 156–157) draws a floor from that:
+*"The 5,000-iteration control floors at p=0.0025 … at 5,000 iterations the smallest achievable p is
+1/5001."* Both are wrong. The file this record names as its own method, `spike/spike-patterns.mjs`,
+runs the shuffled control at **400**:
+
+```
+$ grep -n "iterations" spike/spike-patterns.mjs
+86:      const nul = permutationNull(a, b, { iterations: 400, seed: 12345 });
+```
+
+That is the only `iterations:` literal in the file, and it has never been anything else:
+
+```
+$ git log -p --follow -- spike/spike-patterns.mjs | grep -n "iterations: [0-9]*"
+145:+      const nul = permutationNull(a, b, { iterations: 400, seed: 12345 });
+```
+
+The line arrives in `2904153` ("E1 + E2: repo foundation and pure core") and is never revised. So
+this is not a spike that drifted away from a record that was once right; the record was wrong when
+it was written.
+
+**Where the 5,000 came from, and why it looked right.** `spike/spike-controls.mjs:27` really does
+define `const ITERATIONS = 5000;` — for the **block** control, which is a different null over a
+different column and is what the 2026-10-05 Amendment's Correction 2 is about; that occurrence (line
+293) is **correct and is not amended here**. The same file re-uses 400 for its own shuffled re-check
+at `:256`. The record lifted one control's count and stated it as another's, and the two floors are
+indistinguishable at the precision it quoted them: `1/401 = 0.0024937655860349127`, which is `0.0025`
+to four decimal places — the exact figure the record prints. The sentence states `0.0025` **and**
+`1/5001` in adjacent clauses, and those two numbers contradict each other.
+
+**What the number actually is.** The floor of a permutation test whose p-value is `(ge + 1) /
+(iterations + 1)` is `1/(N+1)`, so at 400 it is **1/401 = 0.0024937655860349127**. Every shuffled
+p-value in this record's tables was therefore drawn against a null with 400 shuffles, and the smallest
+value any of them could take is `0.0025`, not `0.0002`.
+
+**What this does not change.** The **finding** stands, and the correction **strengthens** it. The
+Confidence bullet's claim is that 14 "survivors" are not 14 independent discoveries, because nothing
+here corrects for multiple comparisons. That is a statement about multiplicity, not about `N`, and a
+floor **twelve times higher** than the record claimed leaves *less* room above it — so the warning the
+bullet gives is more warranted after this correction, not less. The verdicts themselves are gated on
+`pShuffled < 0.05`, and moving the floor from 0.0002 to 0.0025 moves no decision any table records.
+
+**What is corrected going forward.** The command now prints the floor as arithmetic from the count
+actually used rather than as a constant, so the two cannot be separated again:
+
+```
+Warning: the shuffled-label control ran on every pair at 400 iterations, so the
+smallest empirical p it can report is 0.002494 = 1/(400+1).
+```
+
+`asc-jpka` shipped `--permutations N` on `asc stats --assoc` and `--correlate`, which makes the
+shuffled control reachable from the command surface for the first time — this record's Confidence
+bullet says the live run *"carries two controls where this record used three"*, and that is no longer
+the case. `asc-jpka`'s own acceptance repeated the wrong count (*"EV-patterns measured a
+5,000-iteration floor of p=0.0025"*); that sentence is left as written and this Amendment is what a
+reader can reach.
+
+**Filed as** `asc-h3sv` (P3). **Recorded as** `dogfood/0066`. The same pass found a second instance of
+the same class in the same flag — the shuffled control's p depends on the caller's **row order**, which
+no surface named — recorded as `dogfood/0067` (`asc-t0x8`).

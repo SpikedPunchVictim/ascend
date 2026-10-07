@@ -7,7 +7,7 @@
 | **Surfaced by** | `asc stats tool_denial --assoc --temporal weekday --blocks day` — run to write up `asc-fwpe`'s own dogfood record, not to test the flags |
 | **Entry type(s)** | `tool_denial` (derived, 772 entries), and all 14 registered types |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | corrected 2026-10-05: the finding stands — both controls were unrunnable on the store — and the **cause** this record names does not. See *The correction* below |
 
 ## What was found
 
@@ -140,6 +140,67 @@ green, and the user-facing capability does not work on the user's data.
 
 - Bead: `asc-h7nq`
 - Related beads: `asc-fwpe` (the controls, closed by this work), `asc-jpka` (the same shape one bead
-  over — capability met in the library, unmet on the surface), `asc-qt6r` (the third control)
-- Evidence record: `docs/evidence/EV-patterns.md`, Amendment 2026-10-05
+  over — capability met in the library, unmet on the surface), `asc-qt6r` (the third control),
+  `asc-mqgy` (the two envelope columns nothing fills)
+- Evidence record: `docs/evidence/EV-patterns.md`, Amendments 2026-10-05 (`asc-fwpe`) and 2026-10-05
+  (`asc-h7nq`)
 - Regenerable measurement: `node spike/spike-controls.mjs` (frozen `spike/corpus.db`, 2026-09-11)
+
+## Correction — 2026-10-05, in place, `asc-h7nq`
+
+**The finding stands and half the cause does not.** Both controls really were unrunnable against the
+store, and both refusals are quoted above verbatim. What this record gets wrong is *why the tautology
+half was unrunnable* — and the *why* is the part that generalizes, so the correction is written out
+rather than folded into the prose above. **The temporal half it got right**: nothing declares a
+weekday, the only temporal property is a `timestamp`, and the remedy this record itself lists as
+option 1 (derive a bucket from a declared `timestamp`, per the `--changepoints` `dayOf`/`weekOf`
+precedent) is what `asc-h7nq` built. Its own framing — *"the fix is a choice, not an obvious patch"* —
+was accurate, and the choice it ranked first was taken.
+
+**What was wrong.** The record says the fields the tautology check needed are **absent**: *"no
+registered type declares a repository or branch property at all"*, and the Consequences section
+concludes *"the snapshot's schema differs from the store's"*. The first sentence is true of the
+**declared properties**; the conclusion is not true of the **entry**. `RecordedEntry`
+(`packages/store/src/recorder.ts:92-118`) carries an envelope of `cwd`, `repo`, `gitSha`, `branch`,
+`recordedAt`, `runId`, `workflow`, `actor`, `source` and more, and `ENVELOPE_PROPERTY_NAMES`
+(`packages/core/src/spec.ts:148-165`) reserves those names against declaration, so a spec *cannot*
+expose them. Measured over the live store's 774 `tool_denial` entries:
+
+```
+repo     nonnull 0    levels 0
+git_sha  nonnull 0    levels 0
+branch   nonnull 774  levels 12
+cwd      nonnull 774  levels 45
+```
+
+So `branch` — which `asc ingest claude-code` fills from each transcript's `gitBranch` — was present on
+every single entry of the type, and unnameable, because `runAssoc` built its columns from
+`categoricalProperties(spec)` alone (`stats.ts:422`, `stats.ts:455`). The pair `EV-patterns` builds
+its headline tautology on, `project × repo`, is unformable for a **different** reason than the record
+gives: `repo` is a dead column, declared in the envelope and filled by no writer (`asc-mqgy`), while
+`branch` is the live analogue and sits at determinism **0.876**, above `DEFINITIONAL_AT`.
+
+**How it happened.** The record's own *"How it surfaced"* names the mechanism and then states it one
+level too narrowly. The spike's `SELECT` did invent `weekday` and `repo` (`strftime('%w', recorded_at)`,
+`COALESCE(git_branch, '(none)')`) — but it also **dropped** `branch` and `cwd`, which the schema does
+carry, so the projection differed from the schema in both directions while the record named only one.
+The evidence that looked conclusive was `asc types show` filtered for `/date|day|week|month|branch|repo/`,
+which reads **declared properties** and is structurally unable to see the envelope. The check that
+would have caught it is one line: `asc stats tool_denial --assoc` now prints *"2 of those columns are
+read from the entry ENVELOPE rather than a declared property (cwd, branch)"*; before `asc-h7nq` there
+was no way to ask the question, because nothing on the command surface read an envelope field.
+
+**What this does not change.** Severity P2, and the "reports success wrongly" classification: a
+capability shipped, the suite went green, the record was re-issued with real numbers, and the
+user-facing flag did not work on the user's data. The CLI tests' blindness is also unchanged and still
+the honest part — the fixture declares `day` and `weekday`, proving the flags work while making the
+real schema invisible by construction.
+
+**What it changes about the pattern.** The class was stated as *"a capability validated against a
+projection of the data is not validated against the data"*, and the tell as *"the validation and the
+product read the same numbers while reading different shapes"*. Both hold. The generalization this
+record got wrong is the direction: **a projection can also drop a column the schema carries**, not only
+invent one it does not — and when it drops one, the column is still there to be named; what went
+missing was any way to **ask** for it. Here the only artifact that could answer "which fields does an
+entry have" was `recorder.ts`, while `asc types show` answered a different question that reads like
+the same one.

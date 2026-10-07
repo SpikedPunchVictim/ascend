@@ -94,6 +94,16 @@
  * ordinary shuffled control is STRUCTURALLY blind to, since the marginal concentration it would
  * destroy is real and it is the pairing that is spurious. Both flags are declared by the caller
  * rather than sniffed, because a weekday and a project name are both just strings.
+ *
+ * **BOTH FLAGS ACCEPT `<clock>:<bucket>` AS WELL AS A NAME, AND THAT FORM EXISTS BECAUSE THE
+ * DECLARATION ALONE WAS UNRUNNABLE** (`asc-h7nq`). A declaration needs a property whose values came
+ * from a timestamp, and the type the controls were built for -- `tool_denial` -- declares no such
+ * property: its clock is `occurred_at`, and `recorded_at` is one instant for all 774 entries because
+ * `asc ingest claude-code` derived them in a single run. So the store could not form the pair the
+ * control was designed to test. A derivation from a clock the type actually records is the missing
+ * half, and it changes nothing about who decides: the caller names the clock and the bucket, the CLI
+ * materialises the strings, and the layer receives a fully built column declared `temporal`
+ * (`association.ts:183-222`).
  */
 
 import { Args, Flags } from '@oclif/core';
@@ -107,10 +117,13 @@ import {
   crosstab,
   DEFINITIONAL_AT,
   distinctiveTerms,
+  functionalDependence,
   MIN_N,
   mutualInformation,
+  permutationNull,
   rankAssociations,
   rankChangepoints,
+  type AssociationOptions,
   type Linkage,
   type NamedSeries,
   type SeriesPoint,
@@ -122,6 +135,8 @@ import type { OutputFormat } from '../output.js';
 import {
   categoricalItems,
   categoricalProperties,
+  isLocalityColumn,
+  LOCALITY_COLUMNS,
   RECORDED_AT,
   textCorpus,
   timeColumn,
@@ -151,13 +166,36 @@ type Mode = (typeof MODES)[number];
  * threshold. At 500 the standard error of a p near 0.05 is about 0.01, which is enough to decide
  * whether a pairing is inside the block structure's own noise -- and a reader who wants the
  * measured 5,000-iteration numbers can run `spike/spike-controls.mjs`, which is where those were
- * produced. A `--permutations` flag is `asc-jpka`'s subject and is deliberately not invented here.
+ * produced.
+ *
+ * IT IS THE ONLY CONTROL WITH A FIXED COUNT, and that is the difference `--permutations` makes
+ * (`asc-jpka`): the block control runs whenever `--blocks` is given, so its count is the tool's to
+ * choose and its cost is a cost it imposes; the shuffled control exists only because the caller
+ * asked for it, so its count is the caller's and it defaults to OFF. Two controls, two questions,
+ * two reasons for their counts -- sharing one constant between them would have made that
+ * unreadable.
  */
 const BLOCK_ITERATIONS = 500;
 
 /** A day, as `YYYY-MM-DD`, from an ISO timestamp. */
 function dayOf(timestamp: string): string {
   return timestamp.slice(0, 10);
+}
+
+/**
+ * The smallest empirical p a control of `iterations` shuffles can report, as text.
+ *
+ * ARITHMETIC RATHER THAN A CONSTANT, because the floor moves with the count and the reader compares
+ * it against the p printed beside it. `nullFrom`'s `+1` correction makes the minimum `1/(n+1)`, and
+ * the reason it is not 0 is the reason the floor is worth stating at all: the observed arrangement
+ * is one of the arrangements it is being compared against.
+ *
+ * The published evidence record states "a 5,000-iteration floor of p=0.0025", and 0.0025 is 1/401 --
+ * the count `spike/spike-patterns.mjs` actually ran was 400. That is `dogfood/0066`, and it is the
+ * whole argument for computing this rather than quoting it.
+ */
+function floorOf(iterations: number): string {
+  return (1 / (iterations + 1)).toFixed(6);
 }
 
 /** The Monday of a timestamp's week, as `YYYY-MM-DD`. */
@@ -168,6 +206,34 @@ function weekOf(timestamp: string): string {
   date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
   return date.toISOString().slice(0, 10);
 }
+
+/** The day of the week a timestamp falls on, as `Mon`..`Sun`. */
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+/**
+ * A timestamp's weekday, three letters, `Mon`..`Sun`.
+ *
+ * **THREE LETTERS AND AN ENGLISH NAME, because `docs/evidence/EV-patterns.md` already reported these
+ * numbers and the labels have to be the same labels.** That document's block-control table was
+ * produced by `spike/spike-controls.mjs`, whose `strftime('%w')` yields `0` for Sunday; the labels
+ * here are that same 0-is-Sunday indexing spelled out, so `Thu` in the record and `Thu` from the CLI
+ * are the same bucket and the two can be compared. A second spelling would make the re-run in the
+ * Amendment incomparable with the original, which is the one thing a control re-run must not be.
+ */
+function weekdayOf(timestamp: string): string {
+  return WEEKDAYS[new Date(`${timestamp.slice(0, 10)}T00:00:00.000Z`).getUTCDay()] as string;
+}
+
+/** The buckets `--temporal`/`--blocks` can derive from a clock. */
+const BUCKETS = ['day', 'week', 'weekday'] as const;
+
+type Bucket = (typeof BUCKETS)[number];
+
+const BUCKET_OF: Readonly<Record<Bucket, (timestamp: string) => string>> = {
+  day: dayOf,
+  week: weekOf,
+  weekday: weekdayOf,
+};
 
 /**
  * Counts per period, as a DENSE series: a period with no entries is a measured 0, not a gap.
@@ -207,7 +273,9 @@ export default class Stats extends BaseCommand {
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> tool_denial --assoc',
+    '<%= config.bin %> <%= command.id %> tool_denial --assoc --permutations 400',
     '<%= config.bin %> <%= command.id %> tool_denial --assoc --temporal weekday --blocks day',
+    '<%= config.bin %> <%= command.id %> tool_denial --assoc --temporal occurred_at:weekday --blocks occurred_at:day',
     '<%= config.bin %> <%= command.id %> tool_denial --correlate tool_name --correlate denial_kind',
     '<%= config.bin %> <%= command.id %> tool_denial --rules',
     '<%= config.bin %> <%= command.id %> tool_denial --changepoints --period week',
@@ -242,16 +310,32 @@ export default class Stats extends BaseCommand {
     temporal: Flags.string({
       multiple: true,
       description:
-        'A property whose values came from a TIMESTAMP -- a weekday, a date, a month. Needs ' +
-        '--blocks. Only the caller knows a value was derived from time (a weekday and a project ' +
-        'name are both just strings), so this is declared rather than guessed, and it is what makes ' +
-        'a pair eligible for the block control.',
+        'A column whose values came from a TIMESTAMP -- a weekday, a date, a month. Name a property ' +
+        'that already holds one, or derive it with `<clock>:<bucket>` (`at:weekday`, ' +
+        '`occurred_at:day`; buckets are day, week, weekday). Needs --blocks. Only the caller knows ' +
+        'a value was derived from time (a weekday and a project name are both just strings), so ' +
+        'this is declared rather than guessed, and it is what makes a pair eligible for the block ' +
+        'control.',
     }),
     blocks: Flags.string({
       description:
-        "Test every temporal pairing against this property's block structure -- the day each entry " +
-        'belongs to. Answers a DIFFERENT question from the q-values: "is this pairing real over ' +
-        'time, or is it the block structure?". Needs --temporal.',
+        "Test every temporal pairing against this column's block structure -- the day each entry " +
+        'belongs to. Takes the same two forms as --temporal. Answers a DIFFERENT question from the ' +
+        'q-values: "is this pairing real over time, or is it the block structure?". Needs ' +
+        '--temporal.',
+    }),
+    permutations: Flags.string({
+      description:
+        'Permutation iterations for the shuffled-label control: shuffle ONE column freely, so both ' +
+        'marginals stay fixed and only the pairing between them is destroyed, then report the ' +
+        'empirical p for every pair. Answers a THIRD question -- "could these marginals alone ' +
+        'manufacture this chi-square?" -- and it does NOT catch a definitional pair, because a ' +
+        "tautology's statistic is genuinely extreme rather than marginal-driven: read it beside " +
+        '`determinism`, never instead of it. THE SECOND COLUMN OF EACH PAIR IS THE ONE SHUFFLED -- ' +
+        '`b` in the table, and the second `--correlate` -- so naming the same two columns the other ' +
+        'way round is a different null and a different p. Off by default, because it costs roughly a ' +
+        'second per pair per thousand iterations (measured, `spike/jpka-permutation-cost.mjs`). The ' +
+        'published verdicts in docs/evidence/EV-patterns.md used 400.',
     }),
     changepoints: Flags.boolean({
       description: 'Scan the entry rate over time for a break. With --by, one series per value.',
@@ -347,6 +431,22 @@ export default class Stats extends BaseCommand {
       );
     }
 
+    // `--permutations` is the other control, and it reaches one mode further than the block control
+    // does: `--correlate` names a single pair and can shuffle it in place, where `--rules`,
+    // `--cluster` and the rest produce tables the control has nothing to attach to. Refused rather
+    // than ignored -- a requested control that silently did not run is the same false negative one
+    // level up.
+    if (mode !== 'assoc' && mode !== 'correlate' && flags.permutations !== undefined) {
+      throw usageError(
+        `--permutations configures the shuffled-label control, which only \`--assoc\` and ` +
+          `\`--correlate\` run -- they are the two modes that measure a pair, and \`--${mode}\` was ` +
+          `given. Run one of those, or drop the flag rather than reading a table that never ` +
+          `shuffled anything.`,
+      );
+    }
+
+    const permutations = this.positiveInteger(flags.permutations, 'permutations');
+
     await this.withProject(({ store }) => {
       const version = findType(store.db, args.type);
       if (version === undefined) {
@@ -369,10 +469,18 @@ export default class Stats extends BaseCommand {
 
       switch (mode) {
         case 'assoc':
-          this.runAssoc(format, version.spec, entries, limit, flags.temporal ?? [], flags.blocks);
+          this.runAssoc(
+            format,
+            version.spec,
+            entries,
+            limit,
+            flags.temporal ?? [],
+            flags.blocks,
+            permutations,
+          );
           return;
         case 'correlate':
-          this.runCorrelate(format, version.spec, entries, flags.correlate ?? []);
+          this.runCorrelate(format, version.spec, entries, flags.correlate ?? [], permutations);
           return;
         case 'rules':
           this.runRules(format, version.spec, entries, flags['min-support'], limit);
@@ -412,36 +520,174 @@ export default class Stats extends BaseCommand {
   }
 
   /**
-   * The type's categorical properties, or a refusal naming why there are not enough of them.
+   * Every name a categorical flag can group by, in the order the instruments receive them: the
+   * declared categorical properties, then the envelope locality columns that ACTUALLY VARY here.
+   *
+   * **THE VARIANCE GATE IS WHY THIS TAKES `entries`.** `RecordedEntry` carries `cwd`, `repo` and
+   * `branch` on every row whether or not anything wrote them, and measured 2026-10-05 on the live
+   * store that is the entire difference between the three: `branch` is populated on all 774
+   * `tool_denial` entries, `cwd` on all 774, and `repo` on NONE. A family built from the envelope
+   * unconditionally would hand every instrument two constant columns, and `chiSquare` already
+   * documents what that measures (`association.ts:442-449`): no uncertainty about a variable that
+   * does not vary. Two distinct levels is that same judgement, made once, where the data is rather
+   * than as a list of names hardcoded to today's corpus -- so `cwd` and `branch` join on the real
+   * store while `repo` stays out until something fills it.
+   *
+   * The gate decides what is added BY DEFAULT. A name passed on the command line is a request and is
+   * honoured whether or not it varies; see `categoricalName`.
+   *
+   * These names cannot collide with a declared property, which is structural rather than lucky:
+   * `ENVELOPE_PROPERTY_NAMES` (`packages/core/src/spec.ts:148-165`) reserves every one of them, so
+   * a spec cannot declare `branch` in the first place. Without that, this function would need a
+   * precedence rule and `rankAssociations`' duplicate-name refusal would be reachable.
+   */
+  private groupableNames(spec: TypeSpec, entries: readonly RecordedEntry[]): readonly string[] {
+    const varying = LOCALITY_COLUMNS.filter(
+      (name) => new Set(valueColumn(entries, name).filter((value) => value !== null)).size >= 2,
+    );
+    return [...categoricalProperties(spec), ...varying];
+  }
+
+  /**
+   * The names a categorical flag can group by, or a refusal naming why there are not enough.
    *
    * Numbers, timestamps, durations, refs and JSON are not comparable this way and their exclusion
    * is not a convenience: a crosstab of a timestamp against anything has one row per entry and a
-   * Cramer's V of 1, which is a definition restated as a finding.
+   * Cramer's V of 1, which is a definition restated as a finding. The count in the message is of
+   * DECLARED properties while the test is against `groupableNames`, because the reader who needs
+   * telling is the one whose spec has too few properties -- and the envelope clause says whether any
+   * locality column was available to make up the difference.
    */
-  private categoricalOrRefuse(spec: TypeSpec, needed: number): readonly string[] {
-    const names = categoricalProperties(spec);
+  private categoricalOrRefuse(
+    spec: TypeSpec,
+    entries: readonly RecordedEntry[],
+    needed: number,
+  ): readonly string[] {
+    const declared = categoricalProperties(spec);
+    const names = this.groupableNames(spec, entries);
     if (names.length < needed) {
       throw refusal(
-        `'${spec.name}' declares ${String(names.length)} categorical ` +
-          `propert${names.length === 1 ? 'y' : 'ies'} (${names.join(', ') || 'none'}), and this ` +
-          `needs ${String(needed)}. Only \`string\` and \`enum\` properties are compared: a ` +
-          `crosstab of a timestamp against anything has one row per entry and reports a ` +
-          `definition as a finding.`,
+        `'${spec.name}' declares ${String(declared.length)} categorical ` +
+          `propert${declared.length === 1 ? 'y' : 'ies'} (${declared.join(', ') || 'none'}), and ` +
+          `this needs ${String(needed)}. Only \`string\` and \`enum\` properties are compared, plus ` +
+          `the entry envelope's locality columns (${LOCALITY_COLUMNS.join(', ')}) where they vary -- ` +
+          `and none of them varies in this corpus. A crosstab of a timestamp against anything has ` +
+          `one row per entry and reports a definition as a finding.`,
       );
     }
     return names;
   }
 
-  /** One named property, checked to be categorical, or a refusal listing what is. */
+  /**
+   * One named column, checked against the vocabulary a flag can group by, or a refusal listing it.
+   *
+   * **NO VARIANCE GATE HERE, and that asymmetry with `groupableNames` is the decision.** The gate
+   * decides what the family adds BY ITSELF; a name on the command line is a request. A crosstab of a
+   * constant column is degenerate -- `chiSquare` returns `p: 1, asymptoticValid: false` rather than
+   * throwing (`association.ts:442-469`) -- and that is a RESULT, worth printing. Refusing it would be
+   * this command deciding the question was not worth asking, after the reader had asked it, and the
+   * reader would have no way to see that the column is constant rather than absent.
+   *
+   * The vocabulary is therefore the declared properties plus EVERY locality column, whether or not
+   * the corpus varies by it. A refusal that omitted an acceptable name would send a reader looking
+   * for a different spelling of a column they had already named correctly.
+   */
   private categoricalName(spec: TypeSpec, name: string, flag: string): string {
-    const known = categoricalProperties(spec);
-    if (!known.includes(name)) {
+    if (categoricalProperties(spec).includes(name) || isLocalityColumn(name)) return name;
+    const vocabulary = [...categoricalProperties(spec), ...LOCALITY_COLUMNS];
+    throw refusal(
+      `'${name}' is not a \`string\` or \`enum\` property of '${spec.name}', nor a locality column of ` +
+        `the entry envelope, so ${flag} cannot group by it. Groupable: ` +
+        `${vocabulary.join(', ') || '(none)'}. (\`--temporal\`/\`--blocks\` additionally accept a ` +
+        `\`<clock>:<bucket>\` derivation such as \`at:weekday\`; no other flag groups by a derived ` +
+        `column yet, so this is where the boundary is rather than a spelling you are missing.)`,
+    );
+  }
+
+  /** A clock a `--temporal`/`--blocks` derivation can be read from: a `timestamp` property, or the entry's own. */
+  private clockName(spec: TypeSpec, clock: string, flag: string): string {
+    if (clock === RECORDED_AT || timestampProperties(spec).includes(clock)) return clock;
+    throw refusal(
+      `'${clock}' is not a clock '${spec.name}' records, so ${flag} cannot derive a column from ` +
+        `it. Clocks: ${[RECORDED_AT, ...timestampProperties(spec)].join(', ')}.`,
+    );
+  }
+
+  /**
+   * Resolve one `--temporal`/`--blocks` value into a named column of values.
+   *
+   * **ONE FLAG, TWO FORMS, AND THE SECOND EXISTS BECAUSE THE FIRST WAS UNUSABLE.** A value is either
+   * a NAME -- a declared categorical property or a locality column, which is all this flag used to
+   * accept -- or a `<clock>:<bucket>` spec that derives the column from a clock the type actually
+   * records. The name form is why the controls shipped unrunnable: `--temporal weekday` needs a
+   * property whose values came from a timestamp, the derived `tool_denial` type has none, and the
+   * store's real clock is `occurred_at`. So a control that could be measured and could not be run
+   * gets the derivation it was missing rather than a paragraph explaining the absence.
+   *
+   * The derived column is named EXACTLY the spec the caller typed (`occurred_at:weekday`), so the
+   * suppression and block disclosures quote something the reader recognises. A colon cannot appear in
+   * a property name, so a derived name cannot collide with a declared one -- and it is the reason the
+   * two forms can share one flag without a precedence rule.
+   *
+   * The derivation itself lives here rather than in `packages/analysis` deliberately: `Date` is a
+   * restricted global in that package (`eslint.config.js`), and the layer's contract is that the
+   * temporal decision is DECLARED BY THE CALLER and never sniffed (`association.ts:183-222`). The
+   * layer still receives a fully materialised column and a `temporal: true` declaration; nothing
+   * about who computed the strings changes what the layer does with them.
+   */
+  private temporalColumn(
+    spec: TypeSpec,
+    entries: readonly RecordedEntry[],
+    raw: string,
+    flag: string,
+  ): { readonly name: string; readonly values: readonly (string | null)[] } {
+    const colon = raw.indexOf(':');
+    const clocks = [RECORDED_AT, ...timestampProperties(spec)];
+
+    if (colon === -1) {
+      // A CLOCK IS NOT A COLUMN, and this is the refusal the acceptance could not reach before: the
+      // caller asked a real question ("group by the time") and the answer they need is the spelling
+      // of the derivation, not the news that a timestamp is not a string.
+      if (clocks.includes(raw)) {
+        throw refusal(
+          `'${raw}' is a clock, not a column: a crosstab of the timestamp itself has one row per ` +
+            `entry and reports a definition as a finding. Name the bucket to derive, e.g. ` +
+            `\`${flag} ${raw}:weekday\`. Buckets: ${BUCKETS.join(', ')}.`,
+        );
+      }
+      if (isLocalityColumn(raw) || categoricalProperties(spec).includes(raw)) {
+        return { name: raw, values: valueColumn(entries, raw) };
+      }
+      // BOTH vocabularies, because "you named the wrong property" and "this corpus cannot answer
+      // that" are different problems with different fixes, and a message naming only the first
+      // leaves a reader who meant a derivation no way to see that one exists.
+      const example = timestampProperties(spec)[0] ?? RECORDED_AT;
       throw refusal(
-        `'${name}' is not a \`string\` or \`enum\` property of '${spec.name}', so ${flag} cannot ` +
-          `group by it. Groupable properties: ${known.join(', ') || '(none)'}.`,
+        `'${raw}' is not a column of '${spec.name}', and not a derivation from one of its clocks. ` +
+          `Columns: ${[...categoricalProperties(spec), ...LOCALITY_COLUMNS].join(', ') || '(none)'}. ` +
+          `Derivations: any clock in ${clocks.join(', ')} followed by a colon and one of ` +
+          `${BUCKETS.join(', ')} -- e.g. \`${flag} ${example}:weekday\`.`,
       );
     }
-    return name;
+
+    const clock = raw.slice(0, colon);
+    const bucket = raw.slice(colon + 1);
+    if (!(BUCKETS as readonly string[]).includes(bucket)) {
+      throw refusal(
+        `'${bucket}' is not a bucket ${flag} can derive from '${clock}'. Buckets: ` +
+          `${BUCKETS.join(', ')} -- each is a function of a clock, so ` +
+          `\`${flag} ${clock}:day\` is the day each entry falls in.`,
+      );
+    }
+    const times = timeColumn(entries, this.clockName(spec, clock, flag));
+    const derive = BUCKET_OF[bucket as Bucket];
+    // A null timestamp stays null rather than becoming a bucket of its own: `--blocks` refuses on it
+    // below (a row with no day cannot be given another day's label) and `--assoc` counts it as an
+    // exclusion, both of which are the honest readings of "this entry has no clock".
+    return {
+      name: raw,
+      values: times.map((time) => (time === null ? null : derive(time))),
+    };
   }
 
   private runAssoc(
@@ -451,8 +697,9 @@ export default class Stats extends BaseCommand {
     limit: number,
     temporalNames: readonly string[],
     rawBlocks: string | undefined,
+    permutations: number | undefined,
   ): void {
-    const names = this.categoricalOrRefuse(spec, 2);
+    const names = this.categoricalOrRefuse(spec, entries, 2);
 
     // Refused rather than defaulted, in both directions, because each flag alone is a request the
     // tool cannot answer and silently ignoring one would look like a control that ran and found
@@ -473,19 +720,37 @@ export default class Stats extends BaseCommand {
       );
     }
 
-    const temporal = new Set(
-      temporalNames.map((name) => this.categoricalName(spec, name, '--temporal')),
+    // A `--temporal` value is either an existing column or a derivation that ADDS one, so the set of
+    // columns to rank is only known once every value has been resolved -- which is why this comes
+    // before the ranking rather than being folded into it.
+    const temporalColumns = temporalNames.map((raw) =>
+      this.temporalColumn(spec, entries, raw, '--temporal'),
     );
-    const blockName =
-      rawBlocks === undefined ? undefined : this.categoricalName(spec, rawBlocks, '--blocks');
+
+    // Declared columns first, in canonical order, then whatever the caller's derivations added: the
+    // ranking's pair names follow this order, and a column that exists only because it was asked for
+    // should not be able to displace a declared one.
+    const valuesByName = new Map<string, readonly (string | null)[]>(
+      names.map((name) => [name, valueColumn(entries, name)] as const),
+    );
+    for (const column of temporalColumns) {
+      if (!valuesByName.has(column.name)) valuesByName.set(column.name, column.values);
+    }
+    const columns = [...valuesByName.keys()];
+    // The DECLARATION, not the column's shape: it is what makes a pair eligible for the block
+    // control, and a derived column is not less declared for having been computed here.
+    const temporal = new Set(temporalColumns.map((column) => column.name));
 
     let blocks: string[] | undefined;
-    if (blockName !== undefined) {
-      const column = valueColumn(entries, blockName);
-      const missing = column.filter((value) => value === null).length;
+    let blockName: string | undefined;
+    if (rawBlocks !== undefined) {
+      const column = this.temporalColumn(spec, entries, rawBlocks, '--blocks');
+      blockName = column.name;
+      const missing = column.values.filter((value) => value === null).length;
       // Checked here as well as in the analysis layer, because the layer can only report that some
       // ITEM has no block while the CLI knows which PROPERTY and how many entries -- and the fix
-      // belongs to the caller.
+      // belongs to the caller. A derived block quotes the DERIVED name, so the reader sees the spec
+      // they have to change rather than the clock behind it.
       if (missing > 0) {
         throw refusal(
           `${String(missing)} of ${String(entries.length)} entries have no '${blockName}', so the ` +
@@ -494,26 +759,44 @@ export default class Stats extends BaseCommand {
             `corpus being tested.`,
         );
       }
-      blocks = column.map((value) => value as string);
+      blocks = column.values.map((value) => value as string);
     }
 
+    // The two controls are asked for independently and neither implies the other: `permutations`
+    // reaches the shuffled null over every pair, `blocks` reaches the block null over the declared
+    // temporal ones. Both are absent (not zero) when not asked for, so "no control ran" stays
+    // distinguishable from "a control ran and found nothing".
+    const options: AssociationOptions = {
+      ...(blocks === undefined ? {} : { blocks, blockPermutations: BLOCK_ITERATIONS }),
+      ...(permutations === undefined ? {} : { permutations }),
+    };
     const report = rankAssociations(
-      names.map((name) => ({
+      columns.map((name) => ({
         name,
-        values: valueColumn(entries, name),
+        values: valuesByName.get(name) as readonly (string | null)[],
         // `exactOptionalPropertyTypes`: an undeclared column omits the key rather than carrying
         // `false`, so "not declared temporal" and "declared not-temporal" cannot be told apart --
         // which is right, because the module only ever asks whether it was declared.
         ...(temporal.has(name) ? { temporal: true } : {}),
       })),
-      blocks === undefined ? {} : { blocks, blockPermutations: BLOCK_ITERATIONS },
+      options,
     );
 
+    // WHAT WENT INTO THE FAMILY, not only how big it is. The locality columns are added by the
+    // command rather than named by the caller, so a reader who never typed `cwd` has no other way to
+    // learn that a pair in this ranking was formed by it -- and the family size alone cannot say so,
+    // because the same size is reachable with a different membership.
+    const envelopeColumns = columns.filter((name) => isLocalityColumn(name));
     this.warn(
-      `${String(report.pairs.length)} pair(s) of ${String(names.length)} properties over ` +
+      `${String(report.pairs.length)} pair(s) of ${String(columns.length)} properties over ` +
         `${String(report.items)} entries. q-values are corrected across a family of ` +
         `${String(report.family)}, which is every pair in THIS run -- asking about ten properties ` +
-        `and asking twice about five are different questions with different q-values.`,
+        `and asking twice about five are different questions with different q-values.` +
+        (envelopeColumns.length === 0
+          ? ''
+          : ` ${String(envelopeColumns.length)} of those columns are read from the entry ENVELOPE ` +
+            `rather than a declared property (${envelopeColumns.join(', ')}): they vary in this ` +
+            `corpus, and no spec can declare a name the envelope already owns.`),
     );
 
     // The disclosure, not a note. A suppressed pair is usually the STRONGEST thing in the request --
@@ -545,6 +828,20 @@ export default class Stats extends BaseCommand {
       );
     }
 
+    if (permutations !== undefined) {
+      this.warn(
+        `the shuffled-label control ran on every pair at ${String(permutations)} iterations, so ` +
+          `the smallest empirical p it can report is ${floorOf(permutations)} = 1/(` +
+          `${String(permutations)}+1). A pair reading exactly that is AT THE FLOOR rather than at ` +
+          `a measured value -- the permutation was never extreme enough to be counted. It is ` +
+          `PER PAIR and carries no family correction; p_adjusted is the column corrected across ` +
+          `the family of ${String(report.family)}. It answers a different question from both the ` +
+          `q-values and the block control -- "could these marginals alone manufacture this ` +
+          `chi-square?" -- and it does NOT catch a definitional pair, so read it beside ` +
+          `\`determinism\`.`,
+      );
+    }
+
     this.emit(format, {
       columns: [
         'a',
@@ -560,6 +857,7 @@ export default class Stats extends BaseCommand {
         'uncertainty',
         'determinism',
         'p_blocked',
+        'p_permuted',
         'asymptotic_valid',
         'small_group',
       ],
@@ -581,6 +879,10 @@ export default class Stats extends BaseCommand {
         // Omitted, never zeroed, where the control did not run -- `TASKS.md` #7, and the difference
         // is the whole point: a p_blocked of 0 would say the block structure explains nothing.
         ...(pair.pBlocked === undefined ? {} : { p_blocked: pair.pBlocked }),
+        // The same discipline for the other control. Both live in one row because they are answers
+        // to three different questions about the same pair, and a reader comparing them is the
+        // reader this table is for.
+        ...(pair.pPermuted === undefined ? {} : { p_permuted: pair.pPermuted }),
         // Carried because `p` is only trustworthy where this is true, and a reader who sorts on
         // `p_adjusted` without it is ranking approximations that did not apply.
         asymptotic_valid: pair.asymptoticValid,
@@ -594,6 +896,7 @@ export default class Stats extends BaseCommand {
     spec: TypeSpec,
     entries: readonly RecordedEntry[],
     pair: readonly string[],
+    permutations: number | undefined,
   ): void {
     if (pair.length !== 2) {
       throw usageError(
@@ -636,6 +939,33 @@ export default class Stats extends BaseCommand {
     const table = crosstab(x, y);
     const test = chiSquare(table);
     const information = mutualInformation(table);
+    // `--correlate` never reaches `rankAssociations`, so it never reaches the suppression either:
+    // without this it would report a defining pair as a strong association and say nothing about it.
+    // `asc-fwpe` met that shape in the library and here it is one level down -- the capability met
+    // and the surface that has to disclose it unmet. The coefficient is printed for every pair and
+    // the verdict only for the ones above the threshold, which is the same discipline --assoc keeps:
+    // 0.49 and 0.05 are both "not definitional", and only the number can tell them apart.
+    const dependence = functionalDependence(table);
+
+    // The OTHER control, reached directly because this mode never enters `rankAssociations`. Same
+    // arithmetic from the same function rather than a second implementation of it, so the two modes
+    // cannot come to disagree about what a shuffle means for the same pair.
+    //
+    // `y` AND NOT `x`, WHICH IS ALSO WHAT `--assoc` SHUFFLES FOR THIS PAIR, and the coincidence is
+    // the point rather than an accident: the shuffle is asymmetric -- shuffling `project` is a
+    // different null from shuffling `tool_name` -- so `--correlate A B` and `--correlate B A` are
+    // two different controls. `--assoc` shuffles `b`, the second column of the pair as it prints;
+    // this shuffles the second column as it was NAMED. Measured on the live pair, 400 iterations:
+    // `project`-then-`tool_name` gives 0.184539, matching the `--assoc` table, and
+    // `tool_name`-then-`project` gives 0.189526. A reader comparing the two surfaces has to line
+    // the pair up in the same order, so the line below names which column moved.
+    let shuffled = '';
+    if (permutations !== undefined && table.n > 0) {
+      const pValue = permutationNull(x, y, { iterations: permutations }).pValue(test.chi2);
+      shuffled =
+        `, shuffled p ${pValue.toFixed(6)} over ${String(permutations)} iterations by permuting ` +
+        `'${b}' alone (floor ${floorOf(permutations)})`;
+    }
 
     this.warn(
       `${a} x ${b}: n=${String(test.n)} of ${String(entries.length)} entries ` +
@@ -643,8 +973,19 @@ export default class Stats extends BaseCommand {
         `chi2=${String(test.chi2)} at df=${String(test.df)}, p=${String(test.p)}, ` +
         `Cramer's V=${String(test.cramersVCorrected)} (Bergsma-corrected), mutual information ` +
         `${String(information.bits)} bits, symmetric uncertainty ` +
-        `${String(information.uncertainty)}.`,
+        `${String(information.uncertainty)}, determinism ${dependence.determinism.toFixed(3)}` +
+        `${shuffled}.`,
     );
+    if (dependence.definitional) {
+      this.warn(
+        `${a} x ${b} is DEFINITIONAL at a determinism of ${dependence.determinism.toFixed(3)}, at ` +
+          `or above ${String(DEFINITIONAL_AT)}: one column restates the other, so the effect size ` +
+          `above is close to the arithmetic of one fact told twice rather than an association ` +
+          `between two. \`--assoc\` suppresses a pair like this from its ranking; --correlate was ` +
+          `asked about these two columns BY NAME and answers the question asked rather than ` +
+          `dropping it.`,
+      );
+    }
     if (!test.asymptoticValid) {
       this.warn(
         `the chi-square approximation does NOT hold here: the smallest expected count is ` +
@@ -681,7 +1022,7 @@ export default class Stats extends BaseCommand {
     rawSupport: string | undefined,
     limit: number,
   ): void {
-    const names = this.categoricalOrRefuse(spec, 2);
+    const names = this.categoricalOrRefuse(spec, entries, 2);
     const minSupport = this.positiveInteger(rawSupport, 'min-support');
     const report = associationRules(
       entries.map((entry) => categoricalItems(entry, names)),
@@ -809,12 +1150,16 @@ export default class Stats extends BaseCommand {
       series.push({ name: `entry rate by ${axis}`, points: rateSeries(labels, step) });
     } else {
       const by = this.categoricalName(spec, flags.by, '--changepoints');
+      // Read through `valueColumn` rather than off `entry.properties`, because `--by` accepts an
+      // envelope locality column: reading the properties map directly would accept `cwd` and then
+      // find no group for it, which is an empty answer to a question the tool just agreed to answer.
+      const byValues = valueColumn(entries, by);
       const groups = new Map<string, string[]>();
       for (let index = 0; index < entries.length; index += 1) {
         const time = times[index] ?? null;
         if (time === null) continue;
-        const value = (entries[index] as RecordedEntry).properties[by];
-        if (typeof value !== 'string' || value.length === 0) continue;
+        const value = byValues[index] ?? null;
+        if (value === null) continue;
         const bucketed = groups.get(value);
         if (bucketed === undefined) groups.set(value, [bucket(time)]);
         else bucketed.push(bucket(time));
@@ -917,12 +1262,17 @@ export default class Stats extends BaseCommand {
     this.requireText(coverage, spec, '--distinctive');
 
     const tokensById = new Map(documents.map((document) => [document.id, document.tokens]));
+    // Through `valueColumn`, for `--changepoints --by`'s reason: `--by` accepts an envelope locality
+    // column, and a direct read of `entry.properties` would answer "no groups" to a name it had just
+    // accepted.
+    const byValues = valueColumn(entries, by);
     const groups = new Map<string, (readonly string[])[]>();
-    for (const entry of entries) {
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index] as RecordedEntry;
       const tokens = tokensById.get(entry.id);
       if (tokens === undefined) continue;
-      const value = entry.properties[by];
-      if (typeof value !== 'string' || value.length === 0) continue;
+      const value = byValues[index] ?? null;
+      if (value === null) continue;
       const bucket = groups.get(value);
       if (bucket === undefined) groups.set(value, [tokens]);
       else bucket.push(tokens);

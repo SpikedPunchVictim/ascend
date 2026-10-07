@@ -132,30 +132,72 @@ export function textCorpus(
  * The property NAME is carried into the item because `rules.ts` mines a flat set: without it,
  * `project=ascend` and `runner=ascend` would be one item, and a rule joining them would be a rule
  * about a coincidence of spelling.
+ *
+ * A `LOCALITY_COLUMNS` name reads the entry's envelope, as it does in `valueColumn` -- one lookup
+ * rule for the whole module rather than one per consumer, because a name the command accepts and the
+ * miner then cannot read is a rule that silently never forms.
  */
 export function categoricalItems(entry: RecordedEntry, names: readonly string[]): string[] {
   const items: string[] = [];
   for (const name of names) {
-    const value = entry.properties[name];
-    if (typeof value === 'string' && value.length > 0) items.push(`${name}=${value}`);
+    const source: unknown = isLocalityColumn(name)
+      ? entry[name as keyof RecordedEntry]
+      : entry.properties[name];
+    if (typeof source === 'string' && source.length > 0) items.push(`${name}=${source}`);
   }
   return items;
 }
 
 /**
- * A property's column of values, with an entry that did not measure it carried as `null`.
+ * The envelope columns that say WHERE an entry happened, readable by name like a categorical
+ * property.
+ *
+ * `Locality { cwd, branch }` (`packages/adapter-claude-code/src/derive.ts:361`) is the store's own
+ * name for the two fields the adapter fills from a transcript, and this list is those two plus
+ * `repo`. `repo` is KEPT rather than dropped even though nothing writes it: it is the column
+ * `docs/evidence/EV-patterns.md` builds its headline tautology on, and MEASURED 2026-10-05 it is
+ * `null` on every one of this store's 774 `tool_denial` entries while `branch` is populated on all
+ * 774 -- so a list pruned to what this corpus happens to vary by could never report the day a writer
+ * starts filling it. What keeps a dead column out of a ranking is the caller's variance gate, which
+ * is a fact about the data rather than a hardcoded belief about it.
+ *
+ * `git_sha` is deliberately absent. It is an identifier rather than a locality -- `Locality` has no
+ * sha -- and on a store that carries commits it is all but unique per entry, so every pair
+ * containing it would be suppressed as definitional and the ranking would carry that noise for
+ * nothing.
+ *
+ * These names cannot collide with a declared property, and that is structural rather than
+ * conventional: `ENVELOPE_PROPERTY_NAMES` (`packages/core/src/spec.ts:148-165`) reserves every one
+ * of them against declaration, so a spec defining `branch` is refused at define time instead of
+ * being resolved by a precedence rule here.
+ */
+export const LOCALITY_COLUMNS = ['cwd', 'branch', 'repo'] as const;
+
+/** Whether a name is one of `LOCALITY_COLUMNS`, read off the entry's envelope rather than its properties. */
+export function isLocalityColumn(name: string): boolean {
+  return (LOCALITY_COLUMNS as readonly string[]).includes(name);
+}
+
+/**
+ * A column of values, with an entry that did not carry one recorded as `null`.
  *
  * `null` rather than a skipped row, because `crosstab` needs both columns the same length and
  * aligned by entry -- and because "nobody looked" is a level worth seeing in a crosstab. Dropping
  * those rows would silently restrict every pair to the entries that measured BOTH properties, which
  * is a different population per pair and makes the ranking incomparable across pairs.
+ *
+ * A `LOCALITY_COLUMNS` name reads the entry's envelope; every other name reads a property. The two
+ * are one function rather than two because a caller naming a column does not care which side of that
+ * line it came from, and a second lookup path is how the two would eventually disagree about what
+ * "missing" means.
  */
 export function valueColumn(
   entries: readonly RecordedEntry[],
   name: string,
 ): readonly (string | null)[] {
+  const envelope = isLocalityColumn(name);
   return entries.map((entry) => {
-    const value = entry.properties[name];
+    const value = envelope ? entry[name as keyof RecordedEntry] : entry.properties[name];
     return typeof value === 'string' && value.length > 0 ? value : null;
   });
 }

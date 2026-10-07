@@ -3191,6 +3191,43 @@ line previously said "left open", which the tracker contradicted, and that is co
 `dogfood/0055`. Re-closed with a reason that names the gaps; the gaps are filed (`asc-fwpe`,
 `asc-0hys`, `asc-jpka`).
 
+### Stage 4 / E7 gap 3 — `asc-jpka` shipped (2026-10-06): `--permutations N`
+
+**Status**: Complete in the working tree; gate green. The third of E7's three unbuilt EV-constraints —
+the shuffled-label control on the command surface — is closed.
+
+`asc stats --assoc` and `--correlate` now accept `--permutations N`, off by default, refused by name
+for the other five modes. The report states the iteration count and the floor as **arithmetic from
+`N`** (`1/(N+1)`), which is not cosmetic: the acceptance's own parenthetical — *"EV-patterns measured a
+5,000-iteration floor of p=0.0025"* — is **wrong**, and this is the second correction to reach this
+plan. `spike/spike-patterns.mjs:86`, the file `EV-patterns` names as its method, runs
+**400** iterations, and `git log -p` shows that literal never changed; the 5,000 belongs to
+`spike/spike-controls.mjs:27`'s **block** control. `1/401 = 0.0024937655860349127` prints as `0.0025`,
+which is why the wrong count read as consistent. Filed `asc-h3sv`, `dogfood/0066`, and a dated
+Amendment to `docs/evidence/EV-patterns.md` — **and, unlike the correction `dogfood/0065` is about,
+this one went into the artifacts and not only here.**
+
+**The module now carries the limitation**, with the live measurement: `permutationNull`'s doc comment
+names the three controls' three questions and records `project × branch` — determinism 0.876,
+suppressed as DEFINITIONAL, **p = 0.0002** at this control's floor. A test pins it.
+
+**A second defect was found by checking this plan against the live store, and it is the reason to
+distrust a verification section.** This plan's own hand-checkable claim (`project × tool_name` ≈
+0.2095) **failed**: the command returns **0.184539**. `permutationNull` is **order-sensitive** —
+Fisher-Yates walks the array it is *given* — so a p belongs to *(seed, row order)*, and the command
+reads `ORDER BY recorded_at, id` (`packages/store/src/pages.ts:117`) while a file scan reads append
+order. Same columns, same seed, same 400 iterations: **0.184539** vs **0.209476**; `denial_kind ×
+tool_name` **0.017456** vs **0.029925**; observed χ² identical in both, which is what isolates the
+order. The module's doc comment had claimed the opposite in as many words — *"reproducible from its
+parameters"* — and that false assurance is what kept it invisible. Filed `asc-t0x8`,
+`dogfood/0067`. Four surfaces now carry it (doc comment, flag description, `--correlate` warn line,
+two tests) and `spike/jpka-permutation-cost.mjs` reads through `openIndex` and prints both orders.
+
+**Gate**: `format:check`, `typecheck`, `lint` green; 134 files / **3107 collected / 3105 passed / 2
+skipped**, baseline 3049/3047, **58 above**; `align check` green, baselined debt 21 → 21. One flake on
+the first full run — `annotations.test.ts` concurrent-annotate at `loadavg 36.67 27.37 16.14`, passing
+in isolation; the `asc-pcaw` / `dogfood/0063` class, not this change.
+
 ---
 
 ## Stage 5: `asc doctor` + cross-project query — epic E9

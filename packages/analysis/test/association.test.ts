@@ -6,6 +6,7 @@ import {
   chiSquare,
   chiSquarePValue,
   crosstab,
+  functionalDependence,
   mulberry32,
   mutualInformation,
   permutationNull,
@@ -337,6 +338,18 @@ describe('permutationNull', () => {
     wideB.push(`c${String((i % 3 === 0 ? i : i + 1) % 3)}`);
   }
 
+  /**
+   * Two hundred items over skewed categories -- the live corpus' shape, which is what the
+   * order-sensitivity below needs to show up at all. A balanced fixture does not: reversing it
+   * moves the p95 by one ulp, because a symmetric multiset has little room to draw differently.
+   */
+  const skewedA: string[] = [];
+  const skewedB: string[] = [];
+  for (let i = 0; i < 200; i += 1) {
+    skewedA.push(i < 120 ? 'a0' : i < 170 ? 'a1' : `a${String(2 + (i % 4))}`);
+    skewedB.push(i < 130 ? 'b0' : i < 180 ? 'b1' : `b${String(2 + (i % 2))}`);
+  }
+
   it('puts a real association outside the null it manufactures', () => {
     const observed = chiSquare(crosstab(a, b)).chi2;
     const control = permutationNull(a, b, { iterations: 300, seed: 'control' });
@@ -367,6 +380,55 @@ describe('permutationNull', () => {
     // against 11.85). A median assertion would have passed for the wrong reason on a third seed and
     // failed for the wrong reason here; the tail is where two draws actually have room to differ.
     expect(other.max).not.toBe(first.max);
+  });
+
+  it('is order-sensitive, so a published p is reproducible only with its row order', () => {
+    // THE SECOND HALF OF THE REPRODUCIBILITY CONTRACT, and the half a re-derivation trips over.
+    // Nothing here is wrong -- any fixed order gives a valid Monte Carlo estimate -- but the
+    // estimate belongs to the pair (seed, order), and Fisher-Yates walks the array it is GIVEN. A
+    // reader who rebuilds the two columns from the same source in their own order does not get our
+    // number back, and concludes we invented it.
+    //
+    // Measured live at this effect's real size (`asc-jpka`): the `project x tool_name` columns give
+    // 0.209476 read from the entry files in append order, and 0.184539 in the order the command
+    // reads them -- `ORDER BY recorded_at, id` -- at one seed and one iteration count.
+    const backwards = [...skewedA.keys()].reverse();
+    const forward = permutationNull(skewedA, skewedB, { iterations: 200, seed: 'order' });
+    const reversed = permutationNull(
+      backwards.map((i) => skewedA[i] as string),
+      backwards.map((i) => skewedB[i] as string),
+      { iterations: 200, seed: 'order' },
+    );
+
+    expect(reversed.max).not.toBe(forward.max);
+  });
+
+  it('reports the strongest p it can for a pair the definitional test throws out', () => {
+    // THE LIMITATION THE DOC COMMENT CARRIES, pinned as a behaviour rather than as prose. A
+    // definitional pair is STRONGLY ASSOCIATED -- that is exactly what makes it definitional -- so
+    // this control reports it correctly, and reads as the strongest possible signal while being the
+    // wrong instrument. The two are not competing verdicts to reconcile; they answer different
+    // questions and `rankAssociations` applies the definitional test first.
+    //
+    // Live, at the same shape: `project x branch` carries determinism 0.876, is suppressed as
+    // DEFINITIONAL by `asc stats tool_denial --assoc`, and returns p = 0.0002 from this control.
+    const left: string[] = [];
+    const right: string[] = [];
+    for (let i = 0; i < 120; i += 1) {
+      const level = `L${String(i % 6)}`;
+      left.push(level);
+      right.push(level);
+    }
+
+    const dependence = functionalDependence(crosstab(left, right));
+    const observed = chiSquare(crosstab(left, right)).chi2;
+    const control = permutationNull(left, right, { iterations: 400, seed: 'definitional' });
+
+    expect(dependence.definitional).toBe(true);
+    // The floor and not merely "significant": 1/(N+1) is the smallest number this control is
+    // capable of returning, so a reader who took this column alone would have no signal at all that
+    // anything was wrong with the pair.
+    expect(control.pValue(observed)).toBeCloseTo(1 / 401, 12);
   });
 
   it('never reports p = 0, because the observed arrangement is one of the arrangements', () => {

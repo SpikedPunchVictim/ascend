@@ -400,9 +400,11 @@ describe('asc stats --assoc', () => {
 /**
  * The two controls on the surface the acceptance criterion's sentence sits in.
  *
- * `asc-jpka` is the same defect one bead over -- a capability met in the analysis layer and unmet on
- * the command that a reader actually runs -- so `asc-fwpe` reaches the CLI deliberately rather than
- * shipping the library alone. These tests drive the real binary.
+ * `asc-jpka` was the same defect one bead over -- a capability met in the analysis layer and unmet
+ * on the command that a reader actually runs -- so `asc-fwpe` reached the CLI deliberately rather
+ * than shipping the library alone. That bead has now landed: `--permutations N` reaches
+ * `permutationNull` from both `--assoc` and `--correlate`, which is why the shuffled control has a
+ * describe block of its own below. These tests drive the real binary.
  *
  * THE FIXTURE IS THE CORPUS'S SHAPE, NOT A CONVENIENCE. Four days of unequal size (16, 14, 6, 4)
  * with `weekday` a strict function of `day` is the smallest thing that has both defects at once:
@@ -510,8 +512,15 @@ describe('asc stats --assoc, with the tautology and block controls', () => {
       dir,
     );
     expect(run.status).toBe(1);
-    expect(flatten(run.stderr)).toContain("'session' is not a `string` or `enum` property");
-    expect(flatten(run.stderr)).toContain('day, kind, weekday');
+    // BOTH VOCABULARIES, because `--blocks` now takes a derivation as well as a name: the columns
+    // `timed` has, and every `<clock>:<bucket>` its clock can produce. The example is spelled with
+    // the flag the caller actually passed, so the fix is one substitution away.
+    const said = flatten(run.stderr);
+    expect(said).toContain("'session' is not a column of 'timed'");
+    expect(said).toContain('day, kind, weekday, cwd, branch, repo');
+    expect(said).toContain('recorded_at');
+    expect(said).toContain('day, week, weekday');
+    expect(said).toContain('--blocks recorded_at:weekday');
   });
 
   it('refuses an entry with no block rather than dropping it or inventing one', () => {
@@ -555,6 +564,349 @@ describe('asc stats --assoc, with the tautology and block controls', () => {
     expect(said).toContain('came from a TIMESTAMP');
     expect(said).toContain('the day each entry belongs to');
     expect(said).toContain('--temporal weekday --blocks day');
+  });
+
+  it('runs the shuffled control when asked, and states the floor it can reach', () => {
+    const dir = project();
+    timed(dir);
+    const run = asc(['stats', 'timed', '--assoc', '--permutations', '200', '--json'], dir);
+    const list = rows(run);
+
+    // `kind` alternates by global index and every day holds an even number of entries, so every day
+    // AND every weekday splits 50/50 -- the observed chi-square is exactly 0 for both surviving
+    // pairs. Every shuffle of one column against the other therefore ties it, `pValue` counts all
+    // 200 permutations as at-least-as-extreme, and the +1 correction puts the answer at
+    // (200+1)/(200+1) = 1 exactly. Neither number comes from running the command.
+    expect(list).toHaveLength(2);
+    for (const row of list) expect(row['p_permuted']).toBe(1);
+
+    const said = flatten(run.stderr);
+    expect(said).toContain('200 iterations');
+    // THE FLOOR IS ARITHMETIC AND NOT A CONSTANT: 1/(200+1). A floor that does not move with its own
+    // iteration count is the defect `dogfood/0066` records -- the evidence record states "a
+    // 5,000-iteration floor of p=0.0025", and 0.0025 is 1/401, because the spike that produced every
+    // shuffled p in that table ran 400 iterations. Printing the constant would propagate the error
+    // to the surface this bead exists to fix.
+    expect(said).toContain('0.004975');
+  });
+
+  it('omits p_permuted entirely when the control was not asked for', () => {
+    const dir = project();
+    timed(dir);
+    const list = rows(asc(['stats', 'timed', '--assoc', '--json'], dir));
+
+    // Omitted, never zeroed -- the rule `p_blocked` keeps one column over, and the reason is the
+    // same: a p of 0 would say the marginals alone explain nothing, which is the opposite of what
+    // "the control did not run" means. The control costs roughly a second per pair per thousand
+    // iterations, measured (`spike/jpka-permutation-cost.mjs`), so it is off until asked for.
+    for (const row of list) expect('p_permuted' in row).toBe(false);
+  });
+
+  it('moves no other number, because the empirical p sits beside the asymptotic one', () => {
+    const dir = project();
+    timed(dir);
+    const plain = rows(asc(['stats', 'timed', '--assoc', '--json'], dir));
+    const controlled = rows(
+      asc(['stats', 'timed', '--assoc', '--permutations', '200', '--json'], dir),
+    );
+    const withoutPermuted = (list: readonly Row[]): readonly Row[] =>
+      list.map((row) =>
+        Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'p_permuted')),
+      );
+
+    // `benjaminiHochberg` is fed the ASYMPTOTIC p, so the family size, the q-values, the determinism
+    // and the row order are all untouched by this flag -- which is exactly what makes it safe to add
+    // to a shipped surface. `asc-h7nq` changed what `--assoc` ranks; `asc-jpka` must not.
+    expect(withoutPermuted(controlled)).toEqual(plain);
+  });
+
+  it('answers the same way twice, so the number is one a reader can check', () => {
+    const dir = project();
+    timed(dir);
+    const args = ['stats', 'timed', '--assoc', '--permutations', '200', '--json'];
+    // The module seeds its generator from `DEFAULT_SEED`, freshly per pair, so the empirical p is a
+    // function of the columns and the count alone -- which is also why `spike/jpka-permutation-cost.mjs`
+    // reproduces what the command prints from the same two arguments.
+    expect(rows(asc(args, dir))).toEqual(rows(asc(args, dir)));
+  });
+
+  it('refuses an iteration count it cannot draw', () => {
+    const dir = project();
+    timed(dir);
+    // The same refusal `--limit` and `--min-support` already give, because it is the same parser.
+    for (const bad of ['0', 'abc', '1.5']) {
+      const run = asc(['stats', 'timed', '--assoc', '--permutations', bad], dir);
+      expect(run.status).toBe(2);
+      expect(flatten(run.stderr)).toContain('--permutations must be a positive integer');
+    }
+  });
+
+  it('refuses the flag with a mode that has no shuffled control', () => {
+    const dir = project();
+    timed(dir);
+    // Honoured by no output is the silently-ignored class this command refuses everywhere else:
+    // `--rules` would have printed a rule list with no sign that a control had been requested.
+    // `--correlate` is NOT in this set -- it runs the same control on its one named pair.
+    const run = asc(['stats', 'timed', '--rules', '--permutations', '200'], dir);
+    expect(run.status).toBe(2);
+    const said = flatten(run.stderr);
+    expect(said).toContain('only `--assoc` and `--correlate` run');
+  });
+});
+
+/**
+ * The entry's own envelope, named on the surface a reader actually runs.
+ *
+ * `tool_denial` carries `branch` on all 774 entries of the live store and `--assoc` could not name
+ * it, because the family was built from `categoricalProperties(spec)` alone and an envelope field is
+ * not a declared property (`dogfood/0064`). The fix is not a schema field: `RecordedEntry` already
+ * has the column, so the surface is what has to reach it.
+ *
+ * **THE FIXTURE VARIES `cwd` RATHER THAN `branch`, AND THAT IS THE ONLY LOCALITY THE BINARY CAN
+ * WRITE.** `asc record` reads `cwd` from the process, project-relative (`record.ts:641-647`), so the
+ * directory a batch is recorded FROM is the value that lands in the envelope -- `repo`, `git_sha`
+ * and `branch` are deliberately not derived there at all (`record.ts:52-54`), and only
+ * `asc ingest claude-code` fills those from a transcript. So the spawn directory is the lever, and
+ * it exercises the same envelope branch of `valueColumn` that `branch` does on the real corpus.
+ */
+describe('asc stats --assoc over the entry envelope', () => {
+  it('measures a locality column that varies, and suppresses the pair it defines', () => {
+    const dir = project();
+    // Two working directories, with a `topic` that is a function of which one -- so `cwd x topic`
+    // is one fact stated twice, by construction rather than by inspection.
+    mkdirSync(join(dir, 'one'), { recursive: true });
+    mkdirSync(join(dir, 'two'), { recursive: true });
+    record(join(dir, 'one'), 'finding', [
+      { topic: 'alpha', stage: 'early', label: 'x' },
+      { topic: 'alpha', stage: 'early', label: 'x' },
+    ]);
+    record(join(dir, 'two'), 'finding', [
+      { topic: 'beta', stage: 'late', label: 'y' },
+      { topic: 'beta', stage: 'late', label: 'y' },
+    ]);
+
+    const run = asc(['stats', 'finding', '--assoc', '--json'], dir);
+    const list = rows(run);
+    const said = flatten(run.stderr);
+
+    // FOUR columns, by hand: the three declared categoricals (`label`, `stage`, `topic`, in
+    // canonical order) plus `cwd`, which differs between `one` and `two`. `repo` and `branch` are
+    // null on every entry -- `asc record` derives neither -- so the variance gate leaves them out,
+    // and the family is 6 pairs over 4 columns rather than 15 over 6.
+    expect(said).toContain('of 4 properties over 4 entries');
+    expect(said).toContain('read from the entry ENVELOPE');
+    expect(said).toContain('(cwd)');
+
+    // `topic` and `cwd` are total on each other, so the coefficient is exactly 1 in both directions
+    // and the pair is the same fact twice. Gone from the table, named on stderr -- in the family's
+    // order, which is the declared properties first and the envelope columns after them, so the pair
+    // reads `topic x cwd` rather than the other way round.
+    expect(list.map((row) => `${String(row['a'])}/${String(row['b'])}`)).not.toContain('topic/cwd');
+    expect(said).toContain('topic x cwd at 1.000 (n=4)');
+  });
+
+  it('leaves a locality column out of the family when it cannot vary', () => {
+    const dir = project();
+    // Recorded from the project root, so every entry's `cwd` is `'.'` -- one level, no contrast.
+    record(dir, 'finding', [
+      { topic: 'alpha', stage: 'early', label: 'x' },
+      { topic: 'beta', stage: 'late', label: 'y' },
+    ]);
+    const run = asc(['stats', 'finding', '--assoc', '--json'], dir);
+    rows(run);
+
+    // THREE, not six, and for the reason `chiSquare` already documents: there is no uncertainty
+    // about a variable that does not vary, so a column with one level is not a column of a
+    // ranking. The same gate is what keeps `repo` and `branch` out where nothing fills them.
+    const said = flatten(run.stderr);
+    expect(said).toContain('of 3 properties over 2 entries');
+    expect(said).not.toContain('read from the entry ENVELOPE');
+  });
+
+  it('honours a locality column named explicitly, even one that cannot vary', () => {
+    // The variance gate decides what the family carries BY DEFAULT. Naming one is a request, and a
+    // request this command can answer: a crosstab of a constant column is degenerate, which is a
+    // result rather than an error. Refusing it would be the tool deciding the question was not
+    // worth asking, after the reader had asked it.
+    const dir = project();
+    record(dir, 'finding', [
+      { topic: 'alpha', stage: 'early', label: 'x' },
+      { topic: 'beta', stage: 'late', label: 'y' },
+    ]);
+    const run = asc(
+      ['stats', 'finding', '--correlate', 'topic', '--correlate', 'cwd', '--json'],
+      dir,
+    );
+    const list = rows(run);
+    // Both entries carry the same single level, `'.'`, and both rows are still printed with it.
+    expect(new Set(list.map((row) => row['b_value']))).toEqual(new Set(['.']));
+    expect(list.map((row) => row['a_value'])).toEqual(['alpha', 'beta']);
+  });
+});
+
+describe('asc stats --temporal, deriving a column from a declared clock', () => {
+  /**
+   * Four consecutive days of EVEN size on `finding`'s own `at` clock, `topic` alternating globally.
+   *
+   * Even sizes are what make the block control's answer derivable on paper: `topic` alternates over
+   * the whole corpus, so every day splits its topics evenly, and therefore so does every weekday --
+   * whatever set of days a permutation hands it. Every observed and every permuted chi-square is
+   * exactly 0, so the p-value is exactly 1. 2026-01-05 is a Monday.
+   */
+  function weekdays(dir: string): void {
+    const plan: readonly (readonly [string, number])[] = [
+      ['2026-01-05', 6],
+      ['2026-01-06', 4],
+      ['2026-01-07', 4],
+      ['2026-01-08', 2],
+    ];
+    const entries: Record<string, unknown>[] = [];
+    for (const [day, count] of plan) {
+      for (let i = 0; i < count; i += 1) {
+        entries.push({
+          at: `${day}T12:00:00.000Z`,
+          topic: entries.length % 2 === 0 ? 'alpha' : 'beta',
+          stage: 'early',
+          label: 'x',
+        });
+      }
+    }
+    record(dir, 'finding', entries);
+  }
+
+  it('derives the bucket, ranks it, and runs the block control on it', () => {
+    const dir = project();
+    weekdays(dir);
+    const run = asc(
+      ['stats', 'finding', '--assoc', '--temporal', 'at:weekday', '--blocks', 'at:day', '--json'],
+      dir,
+    );
+    const list = rows(run);
+
+    // FOUR columns by hand: the three declared categoricals plus the DERIVED `at:weekday`, under
+    // exactly the name the caller typed -- so the warnings below quote a column the reader can
+    // recognise instead of a name the command invented.
+    expect(flatten(run.stderr)).toContain('of 4 properties over 16 entries');
+
+    const temporalRow = list.find(
+      (row) => String(row['a']) === 'topic' && String(row['b']) === 'at:weekday',
+    );
+    expect(temporalRow).toBeDefined();
+    // Every day and every weekday splits its topics exactly evenly, so the observed chi-square is 0
+    // and so is every permuted one: the weekday explains nothing the day structure did not already.
+    expect(temporalRow?.['p_blocked']).toBe(1);
+
+    // The disclosure names the BLOCK column by its derived name and counts the real blocks -- two
+    // numbers a reader can check against the calendar rather than against the command's own output.
+    const said = flatten(run.stderr);
+    expect(said).toContain("'at:day'");
+    expect(said).toContain('4 distinct blocks');
+  });
+
+  it('labels the weekday the way the evidence record does', () => {
+    const dir = project();
+    // `label` holds the weekday NAME as a string, so the derived column can be checked against a
+    // DECLARED one rather than against itself -- and the check is real: were `weekdayOf` to spell
+    // Monday `Monday`, or read `getUTCDay` with Sunday at 1 instead of 0, the two columns would
+    // disagree, the coefficient would be 0, and the pair would NOT be suppressed. The suppression is
+    // therefore the assertion, and the coefficient in the message is what makes a failure legible.
+    const plan: readonly (readonly [string, string])[] = [
+      ['2026-01-05', 'Mon'],
+      ['2026-01-06', 'Tue'],
+      ['2026-01-07', 'Wed'],
+      ['2026-01-08', 'Thu'],
+    ];
+    const entries: Record<string, unknown>[] = [];
+    for (const [day, weekday] of plan) {
+      entries.push(
+        { at: `${day}T12:00:00.000Z`, topic: 'alpha', stage: 'early', label: weekday },
+        { at: `${day}T13:00:00.000Z`, topic: 'beta', stage: 'late', label: weekday },
+      );
+    }
+    record(dir, 'finding', entries);
+
+    const run = asc(
+      ['stats', 'finding', '--assoc', '--temporal', 'at:weekday', '--blocks', 'at:day'],
+      dir,
+    );
+    expect(run.status).toBe(0);
+    // The labels here are the three-letter ones `EV-patterns`' own table uses, so the CLI and the
+    // record name the same bucket -- which is what makes the Amendment's re-run comparable.
+    expect(flatten(run.stderr)).toContain('label x at:weekday at 1.000 (n=8)');
+  });
+
+  it('refuses a bare clock, naming the bucket to derive from it', () => {
+    const dir = project();
+    weekdays(dir);
+    // The acceptance's exact complaint: a timestamp property is not a column, and the caller who
+    // names one has asked a question whose answer is one row per entry. The refusal says which
+    // question WAS answerable rather than only that this one is not.
+    const run = asc(['stats', 'finding', '--assoc', '--temporal', 'at', '--blocks', 'at:day'], dir);
+    expect(run.status).toBe(1);
+    const said = flatten(run.stderr);
+    expect(said).toContain("'at' is a clock, not a column");
+    expect(said).toContain('at:weekday');
+  });
+
+  it('refuses a bucket it cannot derive, naming the vocabulary', () => {
+    const dir = project();
+    weekdays(dir);
+    const run = asc(
+      ['stats', 'finding', '--assoc', '--temporal', 'at:fortnight', '--blocks', 'at:day'],
+      dir,
+    );
+    expect(run.status).toBe(1);
+    const said = flatten(run.stderr);
+    expect(said).toContain("'fortnight' is not a bucket");
+    expect(said).toContain('day, week, weekday');
+  });
+
+  it('refuses a clock the type does not record, naming the ones it does', () => {
+    const dir = project();
+    weekdays(dir);
+    const run = asc(
+      ['stats', 'finding', '--assoc', '--temporal', 'nope:day', '--blocks', 'at:day'],
+      dir,
+    );
+    expect(run.status).toBe(1);
+    const said = flatten(run.stderr);
+    expect(said).toContain("'nope' is not a clock");
+    expect(said).toContain('recorded_at, at');
+  });
+
+  it('refuses an unknown name, naming both the columns and the derivations', () => {
+    const dir = project();
+    weekdays(dir);
+    // The distinction the acceptance asks for, in one message: this is not "the corpus has no
+    // weekday", it is "you named something that is neither a column nor a derivation". Both
+    // vocabularies are listed, so the reader can see the derivation they probably meant.
+    const run = asc(
+      ['stats', 'finding', '--assoc', '--temporal', 'nope', '--blocks', 'at:day'],
+      dir,
+    );
+    expect(run.status).toBe(1);
+    const said = flatten(run.stderr);
+    expect(said).toContain("'nope' is not a column of 'finding'");
+    expect(said).toContain('label, stage, topic, cwd, branch, repo');
+    expect(said).toContain('at:weekday');
+  });
+
+  it('dates nothing it cannot date, and refuses a block it cannot place', () => {
+    const dir = project();
+    // One entry with no `at` at all. Dropping it would change the corpus being tested and inventing a
+    // day would put it in a block it was never in, so the control refuses -- and the refusal names
+    // the DERIVED block column, which is the thing the caller has to fix.
+    record(dir, 'finding', [
+      { at: '2026-01-05T12:00:00.000Z', topic: 'alpha', stage: 'early', label: 'x' },
+      { at: '2026-01-06T12:00:00.000Z', topic: 'beta', stage: 'early', label: 'x' },
+      { topic: 'alpha', stage: 'early', label: 'x' },
+    ]);
+    const run = asc(
+      ['stats', 'finding', '--assoc', '--temporal', 'at:weekday', '--blocks', 'at:day'],
+      dir,
+    );
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain("1 of 3 entries have no 'at:day'");
   });
 });
 
@@ -617,6 +969,78 @@ describe('asc stats --correlate', () => {
     const run = asc(['stats', 'finding', '--correlate', 'topic'], dir);
     expect(run.status).toBe(2);
     expect(flatten(run.stderr)).toContain('--correlate names ONE pair and was given 1 value(s)');
+  });
+
+  it('reports the determinism coefficient, and says when a pair is one fact twice', () => {
+    const dir = project();
+    twoCells(dir);
+    // `twoCells` puts alpha only with early and beta only with late, so each column fixes the other
+    // completely and the coefficient is exactly 1 in both directions. `--assoc` suppresses this pair;
+    // `--correlate` was asked about these two by name, so it answers and DISCLOSES instead of
+    // dropping the answer.
+    const defined = asc(['stats', 'finding', '--correlate', 'topic', '--correlate', 'stage'], dir);
+    expect(defined.status).toBe(0);
+    const said = flatten(defined.stderr);
+    expect(said).toContain('determinism 1.000');
+    expect(said).toContain('is DEFINITIONAL');
+    expect(said).toContain('topic x stage');
+  });
+
+  it('leaves an independent pair alone, with its coefficient still printed', () => {
+    const dir = project();
+    // A 2x2 with one entry in each cell: `topic` is a, b, a, b and `label` is x, x, y, y, so the two
+    // are exactly independent and the mutual information is exactly 0 bits by hand.
+    record(dir, 'finding', [
+      { topic: 'alpha', stage: 'early', label: 'x' },
+      { topic: 'beta', stage: 'early', label: 'x' },
+      { topic: 'alpha', stage: 'early', label: 'y' },
+      { topic: 'beta', stage: 'early', label: 'y' },
+    ]);
+    const run = asc(['stats', 'finding', '--correlate', 'topic', '--correlate', 'label'], dir);
+    expect(run.status).toBe(0);
+    const said = flatten(run.stderr);
+    // The COEFFICIENT is printed either way; only the verdict is conditional. A pair at 0.49 and one
+    // at 0.05 are both "not definitional", so the number is what a reader argues with.
+    expect(said).toContain('determinism 0.000');
+    expect(said).not.toContain('DEFINITIONAL');
+  });
+
+  it('runs the shuffled control on its one pair, and shows what the control cannot see', () => {
+    const dir = project();
+    twoCells(dir);
+
+    // Two cells of ten, so the two columns fix each other exactly -- `determinism 1.000`, the pair
+    // `--assoc` suppresses. Asked about BY NAME, `--correlate` answers and this is the answer the
+    // bead's acceptance is about: the shuffled control returns a p at the floor, i.e. the STRONGEST
+    // verdict it can give, for a pair that is not a finding at all. On paper the observed
+    // chi-square is exactly n = 20, and reaching it under the null means drawing all ten `alpha`
+    // rows as `early`, which happens with probability 2/C(20,10) = 1.08e-5 per shuffle.
+    const run = asc(
+      ['stats', 'finding', '--correlate', 'topic', '--correlate', 'stage', '--permutations', '200'],
+      dir,
+    );
+    expect(run.status).toBe(0);
+    const said = flatten(run.stderr);
+
+    expect(said).toContain('is DEFINITIONAL');
+    const empirical = Number(/shuffled p ([\d.]+)/.exec(said)?.[1]);
+    expect(Number.isFinite(empirical)).toBe(true);
+    // THE LIMITATION, on the surface rather than in a comment: the control catches marginal-driven
+    // artifacts and cannot catch a tautology, because a tautology's chi-square is genuinely extreme
+    // and shuffling destroys exactly the pairing that makes it so. `--assoc` needs the definitional
+    // check for this pair; the shuffled p alone would report it as the strongest thing in the table.
+    expect(empirical).toBeLessThan(0.05);
+    // The floor, as arithmetic: 1/(200+1).
+    expect(said).toContain('0.004975');
+
+    // ...and with no flag there is no such number at all. `--correlate` has ONE pair and still
+    // reports determinism, because that is a property of the columns; the empirical p is a property
+    // of a control that has to be asked for.
+    const plain = flatten(
+      asc(['stats', 'finding', '--correlate', 'topic', '--correlate', 'stage'], dir).stderr,
+    );
+    expect(plain).not.toContain('shuffled p');
+    expect(plain).toContain('determinism 1.000');
   });
 });
 

@@ -205,9 +205,11 @@ function blockedRows(cells: readonly (readonly [string, string, string, number])
  * that. This is why the corpus's 35 days over 7 weekdays has a null at all.
  *
  * The day profiles are chosen so the observed arrangement is one of the LOW outcomes, which is what
- * the corpus actually looks like: `project x weekday` observes 310.58 against a null median of
- * 355.55. Mirroring that shape rather than contriving a high observed value is the difference between
- * testing the control and testing an arithmetic.
+ * the corpus actually looks like: `project x weekday` observes 327.60 against a null median of
+ * 398.41. Mirroring that shape rather than contriving a high observed value is the difference between
+ * testing the control and testing an arithmetic. (Corrected 2026-10-05, asc-h7nq: this line read
+ * `310.58` / `355.55`, from the provisional table `IMPLEMENTATION_PLAN.md:4377` records as WRONG.
+ * These are the values `node spike/spike-controls.mjs` prints. See `dogfood/0065`.)
  */
 const CONFOUND = blockedRows([
   ['D1', 'Tue', 'P', 4],
@@ -260,7 +262,7 @@ describe('blockPermutationNull', () => {
     // The 12 arrangements that the shuffle draws from land at 0 (x2), 2.4 (x4), 3.0 (x4) and 4.0
     // (x2) -- so more than five sixths of the mass is ABOVE the observed value, and the observed
     // arrangement is among the null's least extreme. This is the corpus's shape exactly
-    // (`project x weekday`: 310.58 observed, 355.55 null median), and it is the finding the control
+    // (`project x weekday`: 327.60 observed, 398.41 null median), and it is the finding the control
     // exists to produce: the weekday is not what the corpus is shaped by, the day structure is.
     expect(control.median).toBeGreaterThan(observed);
     expect(control.pValue(observed)).toBe(1);
