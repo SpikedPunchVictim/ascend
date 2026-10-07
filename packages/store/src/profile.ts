@@ -20,8 +20,26 @@
  *   - `range`       -- `integer`, `number`, `duration`, `timestamp`. Every value is likely distinct,
  *                      so a top-K would be a list of singletons. `MIN`/`MAX` is the summary. (For
  *                      `timestamp` this is exact rather than approximate: the values are ISO 8601
- *                      strings, whose lexicographic order is their chronological order -- the same
- *                      property `schema.ts` relies on when it stores them as text.)
+ *                      strings in a fixed UTC form, whose lexicographic order is their
+ *                      chronological order -- the same property `schema.ts` relies on when it
+ *                      stores them as text.)
+ *
+ *                      **That claim was false as written, and what is true is narrower.** It said
+ *                      "ISO 8601 strings", and `schema.ts` accepted offsets, so a schema declaring
+ *                      `2026-09-11T10:00:00+02:00` beside `2026-09-11T09:00:00Z` had this function
+ *                      report a range whose ends were the wrong way round. It now refuses offsets --
+ *                      the rule `recorder.ts:200` already applied to its own column -- so the claim
+ *                      holds for the zone half.
+ *
+ *                      **It does NOT hold for precision, and that residue is deliberate.** A
+ *                      property is typed by a person, so it is not required to carry milliseconds
+ *                      the way `recorded_at` is; two values of one property in the same second
+ *                      differing in precision still compare out of order here. Measured 2026-10-07:
+ *                      `measured_on` (evidence_record) holds 18 distinct values, of which **16 are
+ *                      bare `Z`**, against `occurred_at` on the derived types, which is 4166 distinct
+ *                      and conforming in every one. So requiring the fixed form here would have made
+ *                      stored rows unreadable rather than merely strict. See
+ *                      `store/utc-timestamp.ts` for the full argument and the measurement.
  *   - `cardinality` -- `text`, `json`. The value space is unbounded, so neither summary means
  *                      anything: the "top" values of a prose column are near-duplicate prose, and
  *                      its range is two arbitrary strings. Only the distinct count is reported.

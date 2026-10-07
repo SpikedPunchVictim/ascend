@@ -108,6 +108,43 @@ describe('registering a scheme', () => {
     });
   });
 
+  it('requires milliseconds in createdAt, for the reason recordedAt does', () => {
+    // This module's guard said in its own comment that the rule comes from `recorder.ts`, and it
+    // refused offsets for the same reason -- a text comparison -- while permitting the precision
+    // that breaks one. `requireUtc` is reached from three writers (`registerSchemeUnchecked`,
+    // `recordAnnotations`, `recordInvalidation`), so all three are checked here: the rule is one
+    // rule, and a test that covered only the first would not have noticed two exemptions.
+    // Measured 2026-10-07: all 3905 `created_at` values in the store's annotation files already
+    // carry `.mmmZ`, and every pass's timestamp arrives through `base.ts:273`'s `toISOString()`, so
+    // requiring the fixed form refuses nothing that exists.
+    withStore((store) => {
+      const ids = seed(store, 1);
+      registerScheme(store.db, 'review', spec(['bug']), { createdAt: AT });
+
+      expect(() =>
+        registerScheme(store.db, 'other', spec(['bug']), { createdAt: '2026-09-17T10:00:00Z' }),
+      ).toThrow(/ISO-8601 UTC/);
+      expect(() =>
+        recordAnnotations(
+          store.db,
+          {
+            scheme: 'review',
+            annotations: [{ id: 'a1', entryId: ids[0] as string, label: 'bug' }],
+          },
+          { createdAt: '2026-09-17T10:00:00Z' },
+        ),
+      ).toThrow(/ISO-8601 UTC/);
+      expect(() =>
+        recordInvalidation(store.db, {
+          entryId: ids[0] as string,
+          label: INVALIDATION_LABELS[0],
+          reason: 'the timestamp is what this test is about, not the claim',
+          createdAt: '2026-09-17T10:00:00Z',
+        }),
+      ).toThrow(/ISO-8601 UTC/);
+    });
+  });
+
   it('mints a new version when a rule changes, and keeps the old one', () => {
     // The API guarantee this module exists for. A rule edit that reused a version number would
     // silently re-describe every classification already reported under it.

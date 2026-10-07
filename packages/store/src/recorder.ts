@@ -39,6 +39,7 @@ import {
 } from '@ascend/core';
 import type { SqlDatabase } from './sql-port.js';
 import { SCHEMA_VERSION } from './schema.js';
+import { requireUtcTimestamp } from './utc-timestamp.js';
 
 /** Where an entry came from. Mirrors the `source` CHECK constraint. */
 export const ENTRY_SOURCES = ['self', 'derived:claude-code'] as const;
@@ -204,17 +205,20 @@ const OPTIONAL_TEXT_FIELDS = [
  * but sorts BEFORE it. Allowing offsets would mean the ledger's chronological order
  * silently depends on which zone each recorder happened to be in. One canonical form,
  * chosen at the boundary, and the store does not rewrite the value it was handed.
+ *
+ * **That argument also covers precision, and this rule did not.** A bare
+ * `10:00:00Z` sorts AFTER `10:00:00.500Z` in the same second while being an earlier
+ * instant, so the offset half was enforced and the fractional half was not -- the same
+ * defect, half guarded. The fixed-width form is now required. The rule itself, and the
+ * measurement showing that requiring it refuses nothing that exists, live in
+ * `utc-timestamp.ts`; this file keeps only what is local to `recorded_at`.
  */
-const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
-
-function requireUtcTimestamp(field: string, value: string): void {
-  if (!UTC_TIMESTAMP.test(value) || Number.isNaN(Date.parse(value))) {
-    throw new TypeError(
-      `${field} must be an ISO-8601 UTC timestamp ending in 'Z' (e.g. 2026-09-11T10:00:00.000Z), ` +
-        `got ${JSON.stringify(value)}. Offsets and local times are refused because recorded_at is ` +
-        `compared as text, so a mixed-zone ledger would not sort chronologically.`,
-    );
-  }
+function requireRecordedAt(value: string): void {
+  requireUtcTimestamp(
+    'recordedAt',
+    value,
+    'recorded_at is compared as text, so a mixed-form ledger would not sort chronologically',
+  );
 }
 
 function requireNonEmpty(field: string, value: string): void {
@@ -252,7 +256,7 @@ export function recordEntry(
   context: RecordContext,
 ): RecordResult {
   requireNonEmpty('id', context.id);
-  requireUtcTimestamp('recordedAt', context.recordedAt);
+  requireRecordedAt(context.recordedAt);
   requireNonEmpty('ascendVersion', context.ascendVersion);
 
   for (const field of OPTIONAL_TEXT_FIELDS) {

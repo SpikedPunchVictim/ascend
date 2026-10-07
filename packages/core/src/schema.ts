@@ -53,9 +53,23 @@ export function propertySchema(spec: PropertySpec): z.ZodTypeAny {
     }
 
     case 'timestamp':
-      // ISO 8601, stored as a string so the JSON stays readable and sortable. Offsets
-      // are allowed so a recorder is not forced to normalize before writing.
-      return z.string().datetime({ offset: true, message: 'expected an ISO 8601 timestamp' });
+      // ISO 8601, stored as a string so the JSON stays readable and sortable. UTC only.
+      //
+      // This read `{ offset: true }` and said "offsets are allowed so a recorder is not forced to
+      // normalize before writing" -- while `profile.ts` promised, and `store/recorder.ts:200`
+      // already refused offsets on its own column precisely because the promise would otherwise be
+      // false. `recorded_at` is compared as text and so is a property's value, so the same rule
+      // belongs in both places: `2026-09-11T10:00:00+02:00` is a LATER instant than
+      // `2026-09-11T09:00:00Z` and sorts BEFORE it, which made a range read off MIN/MAX come back
+      // chronologically inverted for any schema that used the freedom it was offered.
+      //
+      // Precision is deliberately NOT required here, and the two guarded siblings do require it.
+      // They guard columns this store writes; this guards a value a person types, and the store
+      // already holds hand-written properties without milliseconds (16 on `measured_on`, measured
+      // 2026-10-07). `findEntry` re-validates every row against its spec on read, so demanding the
+      // fixed form would make rows that are already stored unreadable. The residual is stated in
+      // `profile.ts` rather than papered over. See `store/utc-timestamp.ts` for the full argument.
+      return z.string().datetime({ message: 'expected an ISO 8601 timestamp' });
 
     case 'duration':
       // A magnitude in `unit` (ms by default). Negative elapsed time is meaningless;

@@ -99,8 +99,26 @@ describe('propertySchema specifics', () => {
     }
   });
 
-  it('accepts a timestamp with an offset', () => {
-    expect(accepts({ name: 't', type: 'timestamp' }, '2026-09-11T10:00:00+02:00')).toBe(true);
+  it('refuses a timestamp with an offset', () => {
+    // The rule `store/recorder.ts:200-217` already applies to `recorded_at`, applied to the one
+    // column that was exempt from it. It refuses offsets there because the column is compared as
+    // text: `2026-09-11T10:00:00+02:00` is a LATER instant than `2026-09-11T09:00:00Z` and sorts
+    // BEFORE it. A `timestamp` property is compared the same way -- `profile.ts` reads MIN/MAX
+    // straight off the text -- so the freedom this validator gave a schema was freedom to have its
+    // reported range come back chronologically inverted.
+    expect(accepts({ name: 't', type: 'timestamp' }, '2026-09-11T10:00:00+02:00')).toBe(false);
+    expect(accepts({ name: 't', type: 'timestamp' }, '2026-09-11T10:00:00-05:00')).toBe(false);
+  });
+
+  it('still accepts every UTC shape the store already holds', () => {
+    // The tightening must not invalidate existing rows. Measured 2026-10-07: this project's own
+    // store holds 18 distinct `measured_on` values (a hand-written property), of which 16 are bare
+    // `Z`, against 4166 distinct `occurred_at` on the adapter-written types, conforming in every
+    // one. `findEntry` re-validates every row against its spec on read -- so requiring milliseconds
+    // HERE would make live rows unreadable, which is why `recorded_at` demands the fixed form and a
+    // property does not.
+    expect(accepts({ name: 't', type: 'timestamp' }, '2026-09-11T10:00:00Z')).toBe(true);
+    expect(accepts({ name: 't', type: 'timestamp' }, '2026-09-11T10:00:00.500Z')).toBe(true);
   });
 });
 

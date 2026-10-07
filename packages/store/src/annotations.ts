@@ -70,6 +70,7 @@ import type { AnnotationLine } from './jsonl.js';
 import { toFtsMatch } from './search.js';
 import { standsSql } from './sql.js';
 import { wrapPredicate } from './statements.js';
+import { requireUtcTimestamp } from './utc-timestamp.js';
 
 // `RESERVED_SCHEME`, `INVALIDATION_LABELS` and `InvalidationLabel` live in `reserved.js` and are
 // re-exported here, so every existing importer of this module keeps working unchanged. They moved
@@ -650,17 +651,20 @@ export function annotationPassGroups(
   return [...groups.values()];
 }
 
-/** ISO-8601 UTC, enforced for the reason `recorder.ts` gives: these columns are compared as text. */
-const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
-
+/**
+ * ISO-8601 UTC, enforced for the reason `recorder.ts` gives: these columns are compared as text.
+ *
+ * The rule moved to `utc-timestamp.ts` and this function is now a call, not a copy. It was a copy
+ * for as long as the two guards agreed -- and they agreed on offsets while both permitting the
+ * fractional-seconds form that breaks a text comparison just as thoroughly, so a fix applied to one
+ * would have left the other live. Only `why` is local, because only the consequence is.
+ */
 function requireUtc(value: string, field: string): void {
-  if (!UTC_TIMESTAMP.test(value) || Number.isNaN(Date.parse(value))) {
-    throw new TypeError(
-      `${field} must be an ISO-8601 UTC timestamp ending in 'Z' (e.g. 2026-09-17T10:00:00.000Z), ` +
-        `got ${JSON.stringify(value)}. Offsets and local times are refused because the pass identity ` +
-        `is a text comparison, so a mixed-zone ledger would not group into passes reliably.`,
-    );
-  }
+  requireUtcTimestamp(
+    field,
+    value,
+    'the pass identity is a text comparison, so a mixed-form ledger would not group into passes reliably',
+  );
 }
 
 /**

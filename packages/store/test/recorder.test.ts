@@ -477,19 +477,32 @@ describe('the envelope refuses what the schema would only fail on', () => {
     });
   });
 
-  it('accepts a UTC timestamp with and without milliseconds', () => {
+  it('requires milliseconds in recordedAt, because the column is ordered as text', () => {
+    // The guard above refused offsets and said nothing about precision, but the reason it gives for
+    // refusing offsets -- "every time-ordered query compares it lexically" -- covers precision too.
+    // Within one second a bare `10:00:00Z` sorts AFTER `10:00:00.500Z` ('.' is 0x2E, 'Z' is 0x5A)
+    // while being an EARLIER instant, so a ledger holding both has a non-chronological page walk
+    // and an inverted envelope min/max. Measured 2026-10-07: 7248 of 7248 rows in this project's
+    // record files already carry `.mmmZ`, and `base.ts:273` produces them from `toISOString()`, so
+    // requiring the fixed form refuses nothing that exists and nothing a caller can reach.
     withStore((store) => {
+      for (const recordedAt of [
+        '2026-09-11T10:00:00Z',
+        '2026-09-11T10:00:00.5Z',
+        '2026-09-11T10:00:00.1234Z',
+      ]) {
+        expect(
+          () => recordEntry(store.db, { type: 'review_completed' }, context({ recordedAt })),
+          `${recordedAt} should be refused`,
+        ).toThrow(/ISO-8601 UTC/);
+      }
+      // The one form the store writes, and the one it still accepts.
       recordEntry(
         store.db,
         { type: 'review_completed' },
-        context({ id: 'a', recordedAt: '2026-09-11T10:00:00Z' }),
+        context({ id: 'a', recordedAt: '2026-09-11T10:00:00.500Z' }),
       );
-      recordEntry(
-        store.db,
-        { type: 'review_completed' },
-        context({ id: 'b', recordedAt: '2026-09-11T10:00:00.500Z' }),
-      );
-      expect(countEntries(store)).toBe(2);
+      expect(countEntries(store)).toBe(1);
     });
   });
 });
