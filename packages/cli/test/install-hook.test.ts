@@ -860,6 +860,42 @@ describe('asc install-hook: refusing rather than destroying', () => {
     expect(lstatSync(settingsPath(dir)).isSymbolicLink()).toBe(true);
   });
 
+  it('follows a symlinked hook script instead of replacing the link with a file', () => {
+    // The same defect as the settings case above, one file over -- and the defect a count cannot
+    // catch: `symlink.ts`'s comment justified itself with "the two callers are the two commands that
+    // write outside the store, so there is no third case waiting to be missed", while THIS command
+    // writes two files outside the store and only resolved one of them. A `.claude/ascend-hook.sh`
+    // kept in a shared dotfiles repo was read THROUGH the link and then renamed ONTO it.
+    const dir = project();
+    const shared = join(scratch(), 'shared-hook.sh');
+    writeFileSync(shared, '#!/bin/sh\nexit 0\n', 'utf8');
+    mkdirSync(join(dir, '.claude'), { recursive: true });
+    symlinkSync(shared, scriptPath(dir));
+
+    const run = asc(['install-hook', '--yes'], dir);
+    expect(run.status).toBe(0);
+
+    expect(lstatSync(scriptPath(dir)).isSymbolicLink()).toBe(true);
+    // Not merely "something was written": the SHARED TARGET has to be the file that received the
+    // generated script, or the link survived for some other reason.
+    expect(readFileSync(shared, 'utf8')).toContain('ingest claude-code');
+  });
+
+  it('refuses a hook script that is a symlink to nothing', () => {
+    // Resolving through `writablePath` means the dangling-link refusal reaches this destination too,
+    // which it did not before: the script's absence was read through the broken link and the file
+    // was then created over it, replacing the link. Both destinations are the same case now, which
+    // is what `writeAtomically`'s docblock claimed while only being true of one.
+    const dir = project();
+    mkdirSync(join(dir, '.claude'), { recursive: true });
+    symlinkSync(join(dir, 'nowhere.sh'), scriptPath(dir));
+
+    const run = asc(['install-hook', '--yes'], dir);
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain('symlink');
+    expect(lstatSync(scriptPath(dir)).isSymbolicLink()).toBe(true);
+  });
+
   it('leaves no temp file behind', () => {
     // The write is temp-plus-rename, for both `settings.json` and the script. A surviving
     // `.ascend-tmp` would mean a rename never happened -- and, worse, would sit next to a file

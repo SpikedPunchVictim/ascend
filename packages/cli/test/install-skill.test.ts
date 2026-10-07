@@ -4,8 +4,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  lstatSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -153,6 +155,63 @@ describe('asc install-skill: writing', () => {
       (name) => name.includes('ascend-tmp'),
     );
     expect(leftovers).toEqual([]);
+  });
+});
+
+describe('asc install-skill: a destination that is a symlink', () => {
+  // Both destinations are tested, not just the first. `install-hook`'s hole was exactly the second
+  // file in a pair whose first one was guarded, and a test that only covered the skill would leave
+  // the command markdown free to regress into the same shape.
+  it('follows a symlinked skill instead of replacing the link with a file', () => {
+    const dir = project();
+    const shared = join(scratch(), 'shared-skill.md');
+    writeFileSync(shared, '# shared\n', 'utf8');
+    mkdirSync(join(dir, '.claude', 'skills', 'ascend-analysis'), { recursive: true });
+    symlinkSync(shared, skillDest(dir));
+
+    // `--force` because the shared file's bytes differ from the source, and without it the command
+    // refuses rather than clobbering -- a refusal that exits before any write, which would make this
+    // test pass while exercising nothing.
+    const run = asc(['install-skill', '--yes', '--force'], dir);
+    expect(run.status).toBe(0);
+
+    expect(lstatSync(skillDest(dir)).isSymbolicLink()).toBe(true);
+    // The shared target has to be the file that received the bytes -- a surviving link with a stale
+    // target would satisfy the assertion above while failing the thing it is there to protect.
+    expect(readFileSync(shared)).toEqual(readFileSync(SKILL_SOURCE));
+  });
+
+  it('follows a symlinked command markdown instead of replacing the link with a file', () => {
+    const dir = project();
+    const shared = join(scratch(), 'shared-command.md');
+    writeFileSync(shared, '# shared\n', 'utf8');
+    mkdirSync(join(dir, '.claude', 'commands'), { recursive: true });
+    symlinkSync(shared, commandDest(dir));
+
+    // `--force`, for the reason the skill test above gives: a differing destination refuses before
+    // writing unless told otherwise, and a test that never reaches the write proves nothing.
+    const run = asc(['install-skill', '--yes', '--force'], dir);
+    expect(run.status).toBe(0);
+
+    expect(lstatSync(commandDest(dir)).isSymbolicLink()).toBe(true);
+    expect(readFileSync(shared)).toEqual(readFileSync(COMMAND_SOURCE));
+  });
+
+  it('refuses a destination that is a symlink to nothing', () => {
+    // `existsSync` follows a link, so a dangling one answers "no file here" and the install branch
+    // would create a regular file over it -- the same loss reached through the branch that looks
+    // like it is creating something new.
+    const dir = project();
+    mkdirSync(join(dir, '.claude', 'skills', 'ascend-analysis'), { recursive: true });
+    symlinkSync(join(dir, 'nowhere.md'), skillDest(dir));
+
+    const run = asc(['install-skill', '--yes'], dir);
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain('symlink');
+    expect(lstatSync(skillDest(dir)).isSymbolicLink()).toBe(true);
+    // The sibling destination in the same run is untouched: the refusal is the whole command, so it
+    // must not have written the file it had already planned.
+    expect(existsSync(commandDest(dir))).toBe(false);
   });
 });
 

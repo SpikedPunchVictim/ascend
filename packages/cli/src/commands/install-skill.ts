@@ -45,6 +45,12 @@
  * half-written one -- and `mkdirSync(..., { recursive: true })` first, since a fresh project
  * has neither `.claude/skills/` nor `.claude/commands/` yet.
  *
+ * **Both destinations go through `symlink.ts`'s `writablePath` first.** A destination kept in a
+ * shared dotfiles repo is followed rather than replaced; the rename above is atomic, but a rename
+ * onto a LINK destroys the link and is how this command and `install-hook` both lost one
+ * (asc-ute8). Resolution happens in `planFile`, once, so the existence check, the byte comparison
+ * and the write cannot disagree about which file they mean.
+ *
  * **A missing source is a refusal, not a crash.** `planFile` (below) is exported specifically
  * so this can be measured directly: given a spec whose `source` does not exist, it throws the
  * same `refusal` every other guard in this file throws, naming the path and stating that the
@@ -63,6 +69,7 @@ import { STORE_DIR } from '@ascend/store';
 import { BaseCommand } from '../base.js';
 import { refusal, usageError } from '../errors.js';
 import { findProjectRoot } from '../project.js';
+import { writablePath } from '../symlink.js';
 
 /**
  * Where the skill and the command markdown ship inside this package.
@@ -111,7 +118,11 @@ type FileOutcome =
 /** The decision for one file: what is there, what ascend would write, and whether it will. */
 export interface FilePlan {
   readonly spec: FileSpec;
-  /** The absolute destination path: `root` joined with `spec.destRel`. */
+  /**
+   * The absolute path this plan reads from and writes to: `root` joined with `spec.destRel`, then
+   * resolved through `writablePath`. It is the LINK'S TARGET when that path is a symlink, so a
+   * report naming this path is naming the file whose bytes change.
+   */
   readonly destination: string;
   /** The bytes ascend would write -- read once here so `run` and `--dry-run` see the same file. */
   readonly sourceBytes: Buffer;
@@ -155,7 +166,15 @@ export function planFile(spec: FileSpec, root: string, force: boolean, dryRun: b
     );
   }
 
-  const destination = join(root, spec.destRel);
+  // Resolved ONCE, and the same path is then read and written. Every step below -- `existsSync`,
+  // `readFileSync`, and the rename in `writeAtomically` -- has to mean the same file, or the read
+  // says "different bytes" about the link and the write replaces the link itself.
+  //
+  // This was the second half of asc-ute8: `install-hook` was fixed first, and this command writes
+  // two more destinations outside the store, so the fix was one command short of the class. The
+  // resolution rule lives in `symlink.ts` for exactly this reason -- a caller that forgets it is a
+  // caller that did not call this file.
+  const destination = writablePath(join(root, spec.destRel));
   if (!existsSync(destination)) {
     return {
       spec,

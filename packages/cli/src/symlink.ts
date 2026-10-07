@@ -1,15 +1,23 @@
 /**
  * Following a symlink to the file it really names, for commands that edit a file outside the store.
  *
- * Two commands need this and they need it for the same reason: `asc init` appends to `.gitignore`
- * and `asc install-hook` appends to `.claude/settings.json`, and both write with a temp-file-then-
- * rename. **Renaming onto a link's own path replaces the LINK with a regular file**, so a repository
- * that deliberately shares one settings or ignore file with others silently stops sharing it, with
- * no message and no way back -- the target path is not recoverable from the file afterwards.
+ * Three commands need this and they need it for the same reason: `asc init` appends to `.gitignore`,
+ * `asc install-hook` writes `.claude/settings.json` AND `.claude/ascend-hook.sh`, and
+ * `asc install-skill` writes the skill and its slash command into `.claude/`. Every one of them
+ * writes with a temp-file-then-rename. **Renaming onto a link's own path replaces the LINK with a
+ * regular file**, so a repository that deliberately shares one settings or ignore file with others
+ * silently stops sharing it, with no message and no way back -- the target path is not recoverable
+ * from the file afterwards.
  *
- * Extracted rather than written twice. The rule has one owner per the project's own convention
- * (`base.ts:ascendVersion` records the same move for the same reason), and the two callers are the
- * two commands that write outside the store, so there is no third case waiting to be missed.
+ * **This comment used to say the opposite, and the correction is the point.** It read: *"the two
+ * callers are the two commands that write outside the store, so there is no third case waiting to be
+ * missed."* That was an accurate count of the callers that existed when it was written and was
+ * already false in the same command file: `asc install-hook` writes TWO files outside the store, and
+ * only `settings.json` was resolved, so the script beside it kept the exact defect this module was
+ * extracted to prevent (asc-ute8). A rule whose licence is "there is no third case" expires the
+ * moment someone adds one, silently, because a missing call looks like a call that was not needed.
+ * So the resolution decision now lives here as `writablePath`, and the count is not part of the
+ * argument.
  *
  * Measured (`/tmp/probe-b7.mjs`, asc-bcv.11) on the `.gitignore` case: the link went
  * `isSymbolicLink` true -> false, its content survived, and a second repository linked at the same
@@ -19,6 +27,7 @@
  */
 
 import { lstatSync, realpathSync } from 'node:fs';
+import { refusal } from './errors.js';
 
 /**
  * Where a symlink actually lives, if the path is a symlink at all.
@@ -49,6 +58,37 @@ export function symlinkTarget(path: string): string | null | undefined {
   } catch {
     return null;
   }
+}
+
+/**
+ * The path a write must actually land on, or a refusal if there is none.
+ *
+ * The decision `symlinkTarget` exists to inform, made once for every writer so the answer cannot
+ * differ between them: a link is followed, no link means the requested path is the real one, and a
+ * link to nothing is refused. **Resolve ONCE and hand the result to BOTH the read and the write** --
+ * resolving only the write leaves the two disagreeing about which file they mean, and resolving only
+ * the read is the bug that was actually shipped (install-hook read through the link and then renamed
+ * onto it).
+ *
+ * A dangling link is refused rather than repaired because `existsSync` follows links and would
+ * report "no file here", sending the caller down a create branch that replaces the link. Refusing
+ * costs a manual step and the message names it; replacing costs the target path, which no longer
+ * appears anywhere in the file afterwards.
+ *
+ * `asc init` deliberately does NOT call this and handles the same `null` itself, as a skipped row
+ * naming what the user must add by hand: init's whole output is a report of what it did and did not
+ * do, where a refusal would abandon the rows for its other targets (init.ts:465-479).
+ */
+export function writablePath(requested: string): string {
+  const link = symlinkTarget(requested);
+  if (link === null) {
+    throw refusal(
+      `${requested} is a symlink to a file that does not exist, so writing through it is not ` +
+        `possible and replacing it would break whatever points at it. Point it at a file, or ` +
+        `remove it, and run this again.`,
+    );
+  }
+  return link ?? requested;
 }
 
 /**

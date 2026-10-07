@@ -105,7 +105,7 @@ import { BaseCommand } from '../base.js';
 import { RECORD_COMMAND, RECORD_COMMAND_INPUT } from '../brief-text.js';
 import { refusal, usageError } from '../errors.js';
 import { findProjectRoot } from '../project.js';
-import { shellQuote, symlinkTarget } from '../symlink.js';
+import { shellQuote, writablePath } from '../symlink.js';
 import { loadProjectHandlers, type SayHandler } from '../typed-handlers.js';
 
 /** The hook event recall rides on. The only event whose stdout is injected on a session boundary. */
@@ -724,7 +724,7 @@ export default class InstallHook extends BaseCommand {
 
     const binary = this.ownBinary();
     const requested = join(root, SETTINGS_PATH);
-    const target = this.writablePath(requested);
+    const target = writablePath(requested);
     const merged = withHook(this.readSettings(target), SETTINGS_COMMAND, requested);
 
     // One managed entry per lifecycle stage this project's say: handlers use (asc-tuur.4), applied
@@ -743,7 +743,17 @@ export default class InstallHook extends BaseCommand {
       ({ outcome }) => outcome === 'installed' || outcome === 'upgraded' || outcome === 'removed',
     );
 
-    const scriptPath = join(root, ...SCRIPT_RELATIVE_PATH.split('/'));
+    // Resolved ONCE, and the SAME path is then read and written -- the rule `symlink.ts` states.
+    // This was the hole: only `settings.json` was resolved, so a `.claude/ascend-hook.sh` kept in a
+    // shared dotfiles repo was read THROUGH the link and then renamed ONTO it, destroying the link,
+    // leaving the shared target stale, and silently uninstalling the hook from every other checkout
+    // that pointed at it.
+    //
+    // The two paths are kept apart on purpose, mirroring `requested`/`target` above: the messages
+    // name the file the user asked about, and following the link is this command's business rather
+    // than something to make them translate.
+    const scriptRequested = join(root, ...SCRIPT_RELATIVE_PATH.split('/'));
+    const scriptPath = writablePath(scriptRequested);
     const scriptContent = hookScript(ownBinaryRelativePath(root, binary));
     const scriptCurrent = isScriptCurrent(scriptPath, scriptContent);
 
@@ -780,7 +790,7 @@ export default class InstallHook extends BaseCommand {
       await this.consent(
         yes,
         requested,
-        scriptPath,
+        scriptRequested,
         merged.command,
         !merged.alreadyInstalled,
         upgraded,
@@ -879,27 +889,6 @@ export default class InstallHook extends BaseCommand {
       );
     }
     return resolved;
-  }
-
-  /**
-   * The path a write must actually land on.
-   *
-   * A `settings.json` that is a symlink is followed rather than replaced, and a link to nothing is
-   * refused -- both for the reason `symlink.ts` states. A dangling link is the case that needs the
-   * refusal: `existsSync` follows links, so it reports "no file here" and the create branch would
-   * replace the link with a regular file, silently breaking whatever else pointed at it. Refusing
-   * costs the user one manual step, and the message names it.
-   */
-  private writablePath(requested: string): string {
-    const link = symlinkTarget(requested);
-    if (link === null) {
-      throw refusal(
-        `${requested} is a symlink to a file that does not exist, so writing through it is not ` +
-          `possible and replacing it would break whatever points at it. Point it at a file, or ` +
-          `remove it, and run this again.`,
-      );
-    }
-    return link ?? requested;
   }
 
   /**
@@ -1031,9 +1020,16 @@ export default class InstallHook extends BaseCommand {
    * The stakes are higher here than for `.gitignore`: a crash mid-write leaves a truncated
    * `settings.json`, and Claude Code reading invalid JSON at startup loses every hook the user had,
    * including ones ascend never touched. Rename is atomic within a filesystem, so a reader sees
-   * either the old file or the new one. The same call also writes `.claude/ascend-hook.sh`: the
-   * guarantee is identical either way, and a script left half-written by a crash would be exactly as
-   * bad as a truncated settings file, just quieter about it.
+   * either the old file or the new one. The same call also writes `.claude/ascend-hook.sh`: a script
+   * left half-written by a crash would be exactly as bad as a truncated settings file, just quieter
+   * about it.
+   *
+   * **Atomicity is all this guarantees, and the docblock here used to imply more.** It said the
+   * guarantee was "identical either way" for the two files, which was read as covering symlinks too
+   * -- and did not, because only `settings.json` arrived already resolved. A rename onto a link
+   * replaces the LINK, which is destructive rather than atomic. Both callers now pass a path
+   * resolved by `symlink.ts`'s `writablePath`, so the two files really are the same case; the
+   * resolution is the caller's job and this function still cannot check it.
    *
    * The parent directory is created first, because `.claude/` need not exist -- and only on the
    * write path, so a dry run creates nothing at all.
