@@ -92,7 +92,10 @@ describe('asc store verify', () => {
     expect(after).toContain('"ra0"');
 
     const result = verify(dir);
-    expect(result.stderr).toContain('no lost record ids');
+    // Flattened: the Note is wrapped to the terminal width, and the per-baseline id counts added
+    // for bug-hunt #2 pushed this phrase across a line break. Asserting on the wrap position would
+    // make the test fail for a reason that has nothing to do with what it is checking.
+    expect(result.stderr.replace(/\s+/gu, ' ')).toContain('no lost record ids');
     expect(result.status).toBe(0);
     // Zero problem rows. The table header is still rendered on success, which is the same shape
     // `asc doctor` emits for a clean store -- so the assertion is "no problem rows", not "no bytes".
@@ -126,6 +129,43 @@ describe('asc store verify', () => {
     expect(lost.map((row) => row.where)).toContain('rb0');
     expect(staged.stderr).toContain('rb0');
     expect(staged.stderr).toContain('MERGE_HEAD');
+  });
+
+  it('refuses a --against ref that resolves but holds no records (bug-hunt #2)', () => {
+    const dir = repo();
+    // A commit made before the store existed: the ref resolves perfectly and yields an EMPTY
+    // baseline id set. `guardRecords` iterates the baseline's ids, so an empty one produces no
+    // losses, `ok` is true, and the command exits 0 having compared nothing -- a false green, which
+    // is the failure the docblock above `readBaselines` names and only half-implemented.
+    writeFileSync(join(dir, 'README.md'), 'no store yet\n');
+    git(['add', '-A'], dir);
+    git(['commit', '-q', '-m', 'before the store existed'], dir);
+    const empty = git(['rev-parse', 'HEAD'], dir).trim();
+
+    commitRecords(dir, ['r0'], 'the store begins');
+
+    const result = verify(dir, ['--against', empty]);
+    expect(result.status).not.toBe(0);
+    // The diagnostic is wrapped to the terminal width, so it is compared with runs of whitespace
+    // flattened rather than as raw bytes -- otherwise the assertion turns on where the wrap landed.
+    const said = result.stderr.replace(/\s+/gu, ' ');
+    expect(said).toContain('resolves, but holds no record files');
+    expect(said).not.toContain('no lost record ids');
+  });
+
+  it('keeps comparing against a --against ref that does hold records, and names the counts', () => {
+    // The guard must not cost the case it exists to serve, and the Note must say what it compared.
+    const dir = repo();
+    commitRecords(dir, ['r0'], 'base');
+    commitRecords(dir, ['r0', 'r1'], 'add r1');
+
+    const result = verify(dir, ['--against', 'HEAD~1']);
+    expect(result.status).toBe(0);
+    const said = result.stderr.replace(/\s+/gu, ' ');
+    expect(said).toContain('no lost record ids');
+    // The per-baseline id count, added with the refusal above: `${baselines.length} baseline(s)`
+    // could not tell a baseline holding the whole store from one holding nothing.
+    expect(said).toContain('HEAD~1: 1 id(s)');
   });
 
   it('refuses conflict markers left in a staged record file', () => {

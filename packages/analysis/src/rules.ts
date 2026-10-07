@@ -279,8 +279,14 @@ export function associationRules(
   if (minSupport < 1) throw new RuleError('associationRules: minSupport must be at least 1');
   if (maxItemsetSize < 2)
     throw new RuleError('associationRules: maxItemsetSize must be at least 2 for a rule to exist');
-  if (minConfidence < 0 || minConfidence > 1)
-    throw new RuleError('associationRules: minConfidence must be a probability');
+  // `Number.isFinite` first: a bare range test admits NaN, because `NaN < 0` and `NaN > 1` are both
+  // false. A NaN `minConfidence` then compares false against every rule's confidence, so the result
+  // comes back as zero rules over a corpus that has them -- a silent empty answer rather than a
+  // refusal. Same guard and same "(got ...)" clause as `cluster.ts`.
+  if (!Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1)
+    throw new RuleError(
+      `associationRules: minConfidence must be a probability (got ${String(minConfidence)})`,
+    );
 
   const total = transactions.length;
 

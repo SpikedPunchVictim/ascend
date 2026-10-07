@@ -380,6 +380,14 @@ describe('permutationNull', () => {
     // against 11.85). A median assertion would have passed for the wrong reason on a third seed and
     // failed for the wrong reason here; the tail is where two draws actually have room to differ.
     expect(other.max).not.toBe(first.max);
+    // The median is NOT asserted as a literal here, and that is deliberate rather than an
+    // oversight (bug-hunt F1). Two conventions both lived in this package under the name `median`:
+    // `nullFrom` took `stats[floor(0.5 * n)]` -- the UPPER of the two middle values on an even count
+    // -- while `cluster.ts` averages them. They have since been aligned on the average, which
+    // `changepoint.ts` states outright is the convention it uses. But on THIS fixture the two
+    // conventions give the same number (1.0499999999999998), because the middle two order
+    // statistics are equal, so a literal recorded here would pin the fixture and not the rule. A
+    // real pin needs the null statistics themselves, which `nullFrom` does not expose.
   });
 
   it('is order-sensitive, so a published p is reproducible only with its row order', () => {

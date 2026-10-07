@@ -14,6 +14,7 @@ import {
   pageEntries,
   PredicateError,
   recordEntry,
+  recordInvalidation,
   registerType,
   type PageResult,
   type RecordContext,
@@ -431,6 +432,43 @@ describe('paging: a filter joins the scope (asc-56k)', () => {
       // Two different questions, two different fingerprints -- a cursor from one must not
       // silently resume the other.
       expect(filtered.scope).not.toBe(unfiltered.scope);
+    });
+  });
+
+  /**
+   * `--struck` narrows the population exactly as a filter does, and `unfiltered` must see it
+   * (bug-hunt #6).
+   *
+   * The field exists to separate "the narrowing excluded everything" from "there is nothing here".
+   * Gating it on `options.filter === undefined` alone reported `unfiltered` equal to its own
+   * numerator on a struck page -- the precise ambiguity the field was added to remove. `crosstab.ts`
+   * and `profile.ts` both treat `--struck` as a narrowing, so this was the one of the three that
+   * disagreed with its siblings.
+   */
+  it('reports the whole population on a struck page, not the struck count', () => {
+    withStore((store) => {
+      seedFiltered(store, 10);
+      recordInvalidation(store.db, {
+        entryId: 'f-000',
+        label: 'wrong_subject',
+        reason: 'recorded about the wrong session entirely',
+        createdAt: '2026-09-11T10:00:00.000Z',
+      });
+
+      const struck = pageEntries(store.db, { type: SPEC.name, limit: 20, struck: true });
+
+      // The page is the struck rows; the population it was drawn from is still the type's whole
+      // 10. Before the fix these two numbers were the same, which made the field useless on the
+      // one page shape where a caller most needs to tell the two apart.
+      expect(struck.total).toBeLessThan(10);
+      expect(struck.unfiltered).toBe(10);
+      expect(struck.unfiltered).not.toBe(struck.total);
+
+      // And with nothing struck, `--struck` still narrows to nothing while reporting the 10 it
+      // drew from -- the same reading, one page over.
+      const other = pageEntries(store.db, { type: SPEC.name, limit: 20 });
+      expect(other.total).toBe(10);
+      expect(other.unfiltered).toBe(other.total);
     });
   });
 

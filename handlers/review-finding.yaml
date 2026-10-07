@@ -24,14 +24,28 @@
 # `category` to `class` happens in the deriver (packages/adapter-claude-code/src/derive.ts), the one
 # layer that can also count a value outside the nine.
 #
-# `reviewer_model` IS NOT CARRIED, and the reason is a real asymmetry rather than an omission. The
-# STORE entry has it -- the deriver reads `message.model` off the record that carried the call -- but
-# the `review.finding` EVENT does not (packages/core/src/event.ts:141-151), so no handler can emit
-# what the log never held. Stratifying findings by reviewer model is therefore unavailable on the
-# replay side, which is the side a dry run reads. Filed as its own bead rather than patched here:
-# adding the field means a `EVENT_DERIVE_VERSION` bump, and with 0 calls there is no data to verify
-# the emission against -- including the one branch that would have to be decided blind, whether a
-# `<synthetic>` record can carry a model at all.
+# `reviewer_model` IS CARRIED, AND THIS HEADER USED TO SAY THE OPPOSITE (corrected 2026-10-07).
+# The paragraph that stood here claimed the `review.finding` EVENT does not hold the field
+# (citing packages/core/src/event.ts:141-151), so "no handler can emit what the log never held", and
+# that stratifying by reviewer model was therefore unavailable on the replay side. Both halves were
+# wrong, and stale in a way worth naming: the field is declared ON the kind it cited
+# (packages/core/src/event.ts:167, asc-gtnu.11) and the normalizer emits it on every trigger
+# (packages/adapter-claude-code/src/normalize.ts:409, `EVENT_DERIVE_VERSION = 11`, changelog at
+# normalize.ts:62). The cited range pointed at the doc comment ABOVE the kind rather than the kind
+# itself, which is why reading the citation confirmed a claim the file beside it contradicted. The
+# header was written 2026-09-26; the field landed 2026-09-28. The bead the paragraph deferred to
+# ("adding the field means a version bump") had already shipped.
+#
+# THE REAL ASYMMETRY RUNS THE OTHER WAY, which is why this is a correction rather than a swap. The
+# EVENT always carries `reviewer_model`, because normalize.ts sets it unconditionally; the STORE
+# ENTRY omits it when the record's model is undefined
+# (packages/adapter-claude-code/src/derive.ts:1489). So the store is the side with the gap, not the
+# log -- the opposite of what the old paragraph asserted, and the reason the log can be stratified
+# by a field the entries sometimes cannot.
+#
+# The two handlers also disagreed about whether the field is part of a finding at all:
+# handlers/review-finding-table.yaml:142 emits `reviewer_model: '${before.model}'`, so it reached a
+# row in one handler and not in the other. Both carry it now.
 #
 # EVERY REFERENCE RENDERS TO TEXT, so `line` arrives as "42" rather than 42. That is the DSL's rule
 # (packages/core/src/handler.ts:566 renders each reference through `String(raw)`), not a choice made
@@ -58,4 +72,5 @@ emit:
   failure_scenario: '${failure_scenario}'
   verdict: '${verdict}'
   level: '${level}'
+  reviewer_model: '${reviewer_model}'
 judged: [catchable_by]

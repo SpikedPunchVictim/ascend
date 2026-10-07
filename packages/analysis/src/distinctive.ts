@@ -221,8 +221,15 @@ export function distinctiveTerms(
   // frequency instead of uniformly. Scale-free, so it does not need retuning per corpus. A larger
   // prior shrinks every log-odds toward zero and shrinks the rarest terms most, which is the knob a
   // caller reaches for when the tail is noisy.
+  // `Number.isFinite` first: `NaN <= 0` is false, so a NaN prior passes a bare positivity test and
+  // then poisons every log-odds with it -- `p`, `pAdjusted` and the z all come back NaN, which reads
+  // as "no term is distinctive" rather than as "the prior was not a number". Same guard and same
+  // "(got ...)" clause as `cluster.ts`.
   const priorTotal = options.prior ?? vocabulary.length;
-  if (priorTotal <= 0) throw new DistinctiveError(`distinctiveTerms: prior must be positive`);
+  if (!Number.isFinite(priorTotal) || priorTotal <= 0)
+    throw new DistinctiveError(
+      `distinctiveTerms: prior must be positive (got ${String(priorTotal)})`,
+    );
 
   type Scored = Omit<DistinctiveTerm, 'pAdjusted'> & { readonly groupIndex: number };
   const scored: Scored[] = [];

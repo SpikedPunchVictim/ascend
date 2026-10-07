@@ -353,6 +353,25 @@ describe('clusterCells: refusals', () => {
     });
   });
 
+  /**
+   * The mirror of the refusal above, and the half that was missing: a spelling that canonicalizes to
+   * a declared property IS that property.
+   *
+   * A property is STORED canonically -- `registry.ts` folds `toolName` to `tool_name` on the way in
+   * -- so a caller who spells it the way the type was authored is naming the same property, and
+   * refusing them refuses them for the store's own choice of spelling. `crosstab.ts` (`--group-by`)
+   * and `profile.ts` both canonicalize the same name and always accepted it; `clusterCells` did not,
+   * which made one string an error in `--cluster` and a key in `--group-by` on the same type.
+   */
+  it('accepts a property under a spelling that canonicalizes to a declared one (bug-hunt #8)', () => {
+    fixture((store) => {
+      const canonical = clusterCells(store.db, 'tool_denial', 'tool_name');
+      const authored = clusterCells(store.db, 'tool_denial', 'toolName');
+      expect(authored).toBeDefined();
+      expect(authored).toEqual(canonical);
+    });
+  });
+
   it('refuses an envelope column as a cluster key, because it is not a declared property', () => {
     // `run_id` is on every generated view and is a perfectly reasonable thing to cluster by, but it
     // is not a property of the TYPE. The refusal is the honest answer until someone asks for it by

@@ -59,6 +59,32 @@ describe('scanRecordFile', () => {
     ]);
   });
 
+  /**
+   * The diagnosis names the field that is actually wrong (bug-hunt #14).
+   *
+   * `{"kind":"entry","id":7}` has a perfectly well-known `kind`; what it lacks is a usable `id`.
+   * Reporting it as `unknown "kind"` sent the reader to the wrong field, in the one string this
+   * module exists to produce -- the docblock says a caller fixes a tree from it.
+   */
+  it('says the id is wrong when the kind is known, rather than blaming the kind', () => {
+    const scan = scanRecordFile(
+      [
+        '{"kind":"entry","id":7}',
+        '{"kind":"annotation"}',
+        '{"kind":"entry","id":"ok"}',
+        '{"kind":"type","name":"note"}',
+      ].join('\n'),
+      'f',
+    );
+    expect(scan.bad.map((entry) => entry.problem)).toEqual([
+      'not a record line ("entry" with no string "id")',
+      'not a record line ("annotation" with no string "id")',
+    ]);
+    // The two legitimate lines are not flagged at all: an entry with a string id, and a type line,
+    // which carries no id by design.
+    expect(scan.ids).toEqual(['ok']);
+  });
+
   it('does not mistake record content for a marker', () => {
     const line = `{"kind":"entry","id":"a","note":"======= a row of equals inside a value"}`;
     const scan = scanRecordFile(line, 'f');

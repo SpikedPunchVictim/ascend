@@ -547,6 +547,12 @@ describe('asc handlers check: handlers/review-finding.yaml', () => {
       failure_scenario: 'seq equal to the trigger still matches',
       verdict: 'CONFIRMED',
       level: 'standard',
+      // Carried since the header's claim that the log cannot hold it was corrected (bug-hunt #12).
+      // The event declares `reviewer_model` on the kind (packages/core/src/event.ts:167) and the
+      // normalizer sets it unconditionally (packages/adapter-claude-code/src/normalize.ts:409), so
+      // it reaches every row; the store ENTRY is the side that omits it when a record has no model
+      // (packages/adapter-claude-code/src/derive.ts:1489).
+      reviewer_model: 'claude-sonnet-5',
     });
     // Absent, not zero and not empty: a finding is not always line-anchored, and an empty string
     // is what an omitted reference would look like if the field were defaulted.
@@ -555,6 +561,7 @@ describe('asc handlers check: handlers/review-finding.yaml', () => {
       file: 'a.ts',
       summary: 'something else',
       level: 'standard',
+      reviewer_model: 'claude-sonnet-5',
     });
   });
 

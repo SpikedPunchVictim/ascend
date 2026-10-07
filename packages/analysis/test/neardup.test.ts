@@ -307,6 +307,12 @@ describe('collapseNearDuplicates', () => {
     const one: DuplicateCandidate[] = [{ id: 'a', tokens: ['x'] }];
     expect(() => collapseNearDuplicates(one, { threshold: 1.5 })).toThrow(NearDuplicateError);
     expect(() => collapseNearDuplicates(one, { threshold: -0.1 })).toThrow(NearDuplicateError);
+    // `NaN` is the input a bare range test admits, because `NaN < 0` and `NaN > 1` are BOTH false
+    // (bug-hunt #10). Without `Number.isFinite` it fell through to comparisons that are all false
+    // against it, so every document came back as its own singleton with `threshold: NaN` in the
+    // report -- a silent wrong answer rather than a refusal. The message names the value, matching
+    // the guard `cluster.ts` states.
+    expect(() => collapseNearDuplicates(one, { threshold: Number.NaN })).toThrow(/got NaN/);
     // 32 does not divide 100, so a band would straddle a row boundary.
     expect(() => collapseNearDuplicates(one, { permutations: 100, bands: 32 })).toThrow(
       NearDuplicateError,

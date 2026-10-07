@@ -246,5 +246,9 @@ describe('associationRules', () => {
     expect(() => associationRules(CORPUS, { minSupport: 0 })).toThrow(RuleError);
     expect(() => associationRules(CORPUS, { maxItemsetSize: 1 })).toThrow(/at least 2/);
     expect(() => associationRules(CORPUS, { minConfidence: 1.5 })).toThrow(/probability/);
+    // A NaN confidence passes a bare range test (`NaN < 0` and `NaN > 1` are both false -- bug-hunt
+    // #10) and then compares false against every rule's confidence, so the call returns zero rules
+    // over a corpus that has them: a silent empty answer instead of a refusal.
+    expect(() => associationRules(CORPUS, { minConfidence: Number.NaN })).toThrow(/got NaN/);
   });
 });

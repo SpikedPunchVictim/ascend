@@ -140,10 +140,21 @@ export function scanRecordFile(text: string, where: string): RecordFileScan {
     } else if (!('kind' in parsed)) {
       bad.push({ line: coordinate, problem: 'not a record line (no "kind")' });
     } else {
-      // A type/scheme line, which is a legitimate record line carrying no id.
+      // Two ways to be a parsed object that is not a record line, and they are told apart because
+      // the `problem` string is what a caller fixes a tree from. Either the kind IS id-bearing and
+      // the `id` was unusable (`idOf` refused it above -- absent, or not a string), or the kind is
+      // one this store does not know. Naming `kind` for the first case sends the reader to the
+      // wrong field: the kind is perfectly well known and the id is what is missing.
       const kind = (parsed as { kind?: unknown }).kind;
-      const known = kind === 'type' || kind === 'scheme';
-      if (!known) bad.push({ line: coordinate, problem: 'not a record line (unknown "kind")' });
+      if (typeof kind === 'string' && ID_BEARING_KINDS.has(kind)) {
+        bad.push({
+          line: coordinate,
+          problem: `not a record line ("${kind}" with no string "id")`,
+        });
+      } else if (kind !== 'type' && kind !== 'scheme') {
+        // A type/scheme line is a legitimate record line carrying no id, so it falls through both.
+        bad.push({ line: coordinate, problem: 'not a record line (unknown "kind")' });
+      }
     }
   }
 

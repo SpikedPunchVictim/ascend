@@ -254,19 +254,26 @@ export function pageEntries(db: SqlDatabase, options: PageOptions): PageResult {
     n: number;
   };
 
-  // The population the filter drew `total` from, so a caller can tell "the filter excluded
+  // The population the narrowing drew `total` from, so a caller can tell "the filter excluded
   // everything" apart from "there is nothing here" -- see `PageResult.unfiltered`. Skipped when
-  // there is no filter (`total` already answers this), and never re-run through `filterClause` or
-  // `profileType`: this is one plain `COUNT(*)`, not the filtered query again and not a whole map
-  // built to answer a single number (`profileType` measured 7.4 ms against `findType`'s 26 us).
-  const unfiltered =
-    options.filter === undefined
-      ? counted.n
-      : (
-          db.prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?').get(type) as {
-            n: number;
-          }
-        ).n;
+  // nothing narrowed the scope (`total` already answers this), and never re-run through
+  // `filterClause` or `profileType`: this is one plain `COUNT(*)`, not the filtered query again and
+  // not a whole map built to answer a single number (`profileType` measured 7.4 ms against
+  // `findType`'s 26 us).
+  //
+  // The condition is `narrowed`, not `options.filter === undefined`, and the two are not the same
+  // question (asc: bug-hunt #6). `counted.n` above is counted WITH `filterClause`, and
+  // `filterClause` is built whenever `--struck` alone is present -- so gating on the filter alone
+  // reported `unfiltered` equal to its own numerator on a struck page, which is exactly the
+  // ambiguity `PageResult.unfiltered` exists to remove. `crosstab.ts` and `profile.ts` both
+  // already treat `--struck` as a narrowing; this is the third of the three.
+  const unfiltered = !narrowed
+    ? counted.n
+    : (
+        db.prepare('SELECT COUNT(*) AS n FROM entries WHERE type_name = ?').get(type) as {
+          n: number;
+        }
+      ).n;
 
   return { rows, total: counted.n, unfiltered, hasMore, nextCursor, scope };
 }

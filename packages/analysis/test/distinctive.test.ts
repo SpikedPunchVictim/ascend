@@ -190,6 +190,10 @@ describe('distinctiveTerms', () => {
     expect(() => distinctiveTerms(mirrored, { minCount: 0 })).toThrow(/minCount/);
     expect(() => distinctiveTerms(mirrored, { perGroup: 0 })).toThrow(/perGroup/);
     expect(() => distinctiveTerms(mirrored, { prior: 0 })).toThrow(/prior/);
+    // `NaN <= 0` is false, so a NaN prior passed the bare positivity test and then poisoned every
+    // log-odds with it: `p`, `pAdjusted` and `z` all came back NaN, which reads as "no term is
+    // distinctive" rather than as "the prior was not a number" (bug-hunt #10).
+    expect(() => distinctiveTerms(mirrored, { prior: Number.NaN })).toThrow(/got NaN/);
   });
 
   it('is why the ranking is the z-score and not the log-odds ratio', () => {

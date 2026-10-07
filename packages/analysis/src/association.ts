@@ -722,9 +722,33 @@ function nullFrom(stats: number[], iterations: number): PermutationNull {
   const at = (q: number): number =>
     stats[Math.min(stats.length - 1, Math.floor(q * stats.length))] as number;
 
+  // THE MEDIAN IS WRITTEN OUT RATHER THAN TAKEN FROM `at(0.5)`, and the reason is that the two are
+  // not the same statistic on an even count (bug-hunt F1). `at(0.5)` is `stats[floor(0.5 * n)]`,
+  // which on an even count is the UPPER of the two middle values; the usual convention -- and the
+  // one `cluster.ts:663-669` and `changepoint.ts:152` both implement, the latter saying so in its
+  // own comment -- is their AVERAGE. Both modules return this under the name `median`, both are
+  // shuffled nulls built the same way, and they are read side by side in the same report, where
+  // two different numbers under one name is indistinguishable from a bug in either. Measured on a
+  // four-value sample the two conventions differ in the fourth decimal: 0.11705625295804874
+  // against 0.11704712354972514.
+  //
+  // `at` keeps its own convention for `p95` below, where the quantile is the point and there is no
+  // sibling reporting the same name.
+  //
+  // This aligns the convention; it does not yet remove the duplication. Three copies of this
+  // two-line rule now exist (`cluster.ts`, `changepoint.ts`, here), which is the shape this
+  // function's own docblock says it exists to prevent for the p-value. Extracting one `medianOf`
+  // into a shared module is a separate change with its own blast radius; filed rather than folded
+  // in here.
+  const middle = Math.floor(stats.length / 2);
+  const median =
+    stats.length % 2 === 1
+      ? (stats[middle] as number)
+      : ((stats[middle - 1] as number) + (stats[middle] as number)) / 2;
+
   return {
     iterations,
-    median: at(0.5),
+    median,
     p95: at(0.95),
     max: stats[stats.length - 1] as number,
     pValue(observed: number): number {

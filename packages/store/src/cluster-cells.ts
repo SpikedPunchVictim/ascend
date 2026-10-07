@@ -109,7 +109,15 @@ export function clusterCells(
   if (versions.length === 0) return undefined;
 
   const declared = propertiesOf(versions);
-  if (!declared.has(clusterProperty)) {
+  // Canonicalized before the lookup, exactly as the type name above and the filter's property
+  // names are (`crosstab.ts`, `profile.ts`). A property is STORED canonically
+  // (`registry.ts` folds `reviewKind` to `review_kind` on the way in), so a caller who spells it
+  // the way the type was authored must not be refused for a spelling the store itself chose --
+  // and the same spelling already works on `--group-by`, which made this the one read path that
+  // disagreed with its siblings. The message names the caller's own spelling, since that is the
+  // string they typed.
+  const property = canonicalName(clusterProperty);
+  if (!declared.has(property)) {
     throw new ClusterCellsError(
       `'${clusterProperty}' is not a property of '${type}'. Declared properties: ` +
         `${[...declared.keys()].join(', ') || '(none)'}.`,
@@ -122,7 +130,7 @@ export function clusterCells(
     : ` AND e.id IN (${typeFilterScope(db, type, options.filter ?? null, {
         struck: options.struck === true,
       })})`;
-  const clusterExpr = valueExpr(clusterProperty);
+  const clusterExpr = valueExpr(property);
 
   const properties: PropertyClusterCell[] = [];
   for (const [name, seen] of declared) {

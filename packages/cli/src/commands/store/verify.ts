@@ -134,11 +134,15 @@ export default class StoreVerify extends BaseCommand {
 
       // Nothing to report on stdout; the note says WHAT was checked, because a guard that examined
       // zero files and a guard that examined thousands and found nothing must not read the same.
+      // The per-baseline id counts are part of that and were added for the same reason (bug-hunt #2):
+      // `${baselines.length} baseline(s)` cannot tell a baseline that held the whole store from one
+      // that held nothing, and the second is a comparison that passed without comparing.
       this.emitStderr(
         'Note',
         `${String(report.files)} record file(s), ${String(report.ids)} record id(s), ` +
-          `${String(baselines.length)} baseline(s) — no conflict markers, no unreadable lines, ` +
-          `no lost record ids.`,
+          `${String(baselines.length)} baseline(s) (${baselines
+            .map((baseline) => `${baseline.label}: ${String(baseline.ids.size)} id(s)`)
+            .join(', ')}) — no conflict markers, no unreadable lines, no lost record ids.`,
       );
     });
   }
@@ -149,6 +153,15 @@ export default class StoreVerify extends BaseCommand {
    * A `--against` ref that does not resolve is a refusal, because the caller named it and a silently
    * empty baseline would make the check pass for the wrong reason. A default `HEAD` that does not
    * resolve is NOT -- an initial commit has no parent, and there is genuinely nothing to compare.
+   *
+   * THE SAME REASONING COVERS A REF THAT RESOLVES BUT HOLDS NOTHING (bug-hunt #2). `mustResolve` only
+   * caught the ref that does not name a commit; a ref that names a commit from before the store
+   * existed resolves perfectly and yields an EMPTY id set, and `guardRecords` iterates the baseline's
+   * ids -- so an empty one produces no losses, `ok` is true, and the command exits 0 having checked
+   * nothing at all. That is a false green rather than a missing check, which is the worse of the two,
+   * and it is the exact failure the docblock above names. So a ref the CALLER named must be
+   * non-empty; a DERIVED one (`HEAD`, a parent, `MERGE_HEAD`) may legitimately be empty, because the
+   * first commit in a repository has no store in it and refusing that would break the ordinary case.
    */
   private readBaselines(
     repositoryRoot: string,
@@ -157,10 +170,17 @@ export default class StoreVerify extends BaseCommand {
     against: readonly string[],
   ): readonly Baseline[] {
     const refs = this.baselineRefs(repositoryRoot, staged, against);
+    const named = against.length > 0;
     return refs.map(({ ref, label }) => {
       const ids = new Set<string>();
       for (const text of recordFilesAt(repositoryRoot, ref, pathspec).values()) {
         for (const id of scanRecordFile(text, ref).ids) ids.add(id);
+      }
+      if (named && ids.size === 0) {
+        throw refusal(
+          `--against ${label} resolves, but holds no record files at ${pathspec}, so comparing ` +
+            `against it would pass without checking anything. Name a ref that contains the store.`,
+        );
       }
       return { label, ids };
     });

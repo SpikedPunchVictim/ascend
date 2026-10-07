@@ -268,8 +268,16 @@ export function collapseNearDuplicates(
   const permutations = options.permutations ?? 128;
   const bands = options.bands ?? 32;
 
-  if (threshold < 0 || threshold > 1)
-    throw new NearDuplicateError('collapseNearDuplicates: threshold must be a similarity in [0,1]');
+  // `Number.isFinite` first, and it is not redundant with the bounds: `NaN < 0` and `NaN > 1` are
+  // both false, so a bare range test admits NaN and lets it through to comparisons that are then
+  // all false -- every document returns as its own singleton and the report echoes `threshold: NaN`
+  // while looking like an ordinary run over dissimilar data. `cluster.ts` states the same guard and
+  // is the sibling this was measured against; the "(got NaN)" clause is its spelling, kept so the
+  // refusal names the value rather than only the range.
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)
+    throw new NearDuplicateError(
+      `collapseNearDuplicates: threshold must be a similarity in [0,1] (got ${String(threshold)})`,
+    );
   if (!Number.isInteger(bands) || bands < 1 || permutations % bands !== 0)
     throw new NearDuplicateError(
       `collapseNearDuplicates: bands (${String(bands)}) must be a positive divisor of permutations (${String(permutations)})`,
