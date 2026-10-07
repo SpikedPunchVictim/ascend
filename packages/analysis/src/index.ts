@@ -101,6 +101,13 @@ export {
 } from './design-effect.js';
 
 export {
+  PSEUDOREPLICATION_AT,
+  RunStructureError,
+  runStructure,
+  type RunStructure,
+} from './run-structure.js';
+
+export {
   AgreementError,
   cohenKappa,
   type Agreement,

@@ -121,8 +121,10 @@ import {
   MIN_N,
   mutualInformation,
   permutationNull,
+  PSEUDOREPLICATION_AT,
   rankAssociations,
   rankChangepoints,
+  runStructure,
   type AssociationOptions,
   type Linkage,
   type NamedSeries,
@@ -180,6 +182,48 @@ const BLOCK_ITERATIONS = 500;
 /** A day, as `YYYY-MM-DD`, from an ISO timestamp. */
 function dayOf(timestamp: string): string {
   return timestamp.slice(0, 10);
+}
+
+/**
+ * The property that partitions a derived corpus into sessions, for the pseudoreplication check
+ * (asc-qt6r).
+ *
+ * A NAME THE LAYER BELOW IS NOT ALLOWED TO KNOW. `packages/analysis` is pure and harness-neutral --
+ * `runStructure` takes an opaque partition label and nothing else -- so the convention lives here,
+ * in the layer that already knows it is reading entries derived from Claude Code transcripts. It is
+ * the same property `--blocks` is documented to accept as "the day (or session) each entry belongs
+ * to", and it is `required` on every type the adapter derives (`PROVENANCE`,
+ * `packages/adapter-claude-code/src/derived-types.ts`).
+ */
+const SESSION_PROPERTY = 'session_id';
+
+/**
+ * The property carrying when the EVENT happened, which is not when ascend ingested the entry.
+ *
+ * `recorded_at` is the ingest clock, and during a backfill of two years of transcripts it is
+ * unrelated to the event's own time (`derived-types.ts:76-82`) -- so ordering runs by it would
+ * invent adjacency between entries that were never adjacent. Measured on the live store 2026-10-07:
+ * `skill` in `skill_activation` reads a runs/marginals ratio of 0.722 ordered by this column and
+ * 0.980 ordered by the stored row, and `agent` reads 0.649 against 0.991. The stored order
+ * manufactures structure that the event order does not have.
+ */
+const EVENT_TIME_PROPERTY = 'occurred_at';
+
+/**
+ * Row indices in the order the EVENTS happened, ties broken by the stored order.
+ *
+ * ISO timestamps sort lexicographically, and a corpus with no `EVENT_TIME_PROPERTY` at all keeps the
+ * order it arrived in -- every key is then equal and the sort is a no-op rather than a shuffle.
+ */
+function eventOrder(entries: readonly RecordedEntry[]): readonly number[] {
+  const times = valueColumn(entries, EVENT_TIME_PROPERTY);
+  return entries
+    .map((_, index) => index)
+    .sort((left, right) => {
+      const a = times[left] ?? '';
+      const b = times[right] ?? '';
+      return a === b ? left - right : a < b ? -1 : 1;
+    });
 }
 
 /**
@@ -690,6 +734,87 @@ export default class Stats extends BaseCommand {
     };
   }
 
+  /**
+   * The pseudoreplication check `docs/evidence/EV-patterns.md` names as E7's third control
+   * (asc-qt6r), reported on the command surface rather than left in the library.
+   *
+   * WHY IT IS NOT ONE OF THE OTHER TWO CONTROLS. The shuffled control holds each column's marginal
+   * distribution fixed and destroys only the pairing; dwell weighting IS the marginal -- the long
+   * run is what made one value's count large -- so that control re-draws a null carrying the same
+   * defect and cannot object to it. Detection therefore has to be a property of the ORDER, and
+   * `runStructure` measures two: how many independent runs the rows collapse into, and whether the
+   * run structure is more than the marginals already predict.
+   *
+   * IT RUNS UNASKED, which is the whole point of the acceptance's word "silently": a control that
+   * only ran when asked for would leave the unasked run -- the common one -- reporting a row count
+   * as a sample size with nothing said. It costs one pass over the columns and prints nothing when
+   * there is nothing to report.
+   *
+   * WHAT IT DOES NOT DO: collapse the column and re-rank. That is a change to what was measured
+   * rather than a note about it, and the two honest remedies -- collapse to one row per run, or
+   * compute at the run count with a clustered method -- are the caller's to choose.
+   */
+  private warnOnStateLikeColumns(
+    entries: readonly RecordedEntry[],
+    columns: readonly string[],
+  ): void {
+    const sessions = valueColumn(entries, SESSION_PROPERTY);
+    if (sessions.every((value) => value === null)) {
+      // NOT a warning and not a silent pass. A corpus with no `SESSION_PROPERTY` was not derived from
+      // a session, so nothing in it is an echo of one and the check genuinely does not apply -- which
+      // is a different fact from the check running and finding nothing, and the difference is the
+      // reason this says so rather than staying quiet.
+      this.warn(
+        `the pseudoreplication check does not apply to this corpus: no entry carries a ` +
+          `'${SESSION_PROPERTY}', so nothing here was derived from a session and no row is an echo ` +
+          `of one.`,
+      );
+      return;
+    }
+
+    const order = eventOrder(entries);
+    const stateLike: { readonly text: string; readonly rowsPerRun: number }[] = [];
+    for (const name of columns) {
+      const values = valueColumn(entries, name);
+      // Re-ordered to the event's own time and re-partitioned by session in ONE step, so the values
+      // and the partitions cannot drift apart: both are read through the same index list.
+      const structure = runStructure(
+        order.map((index) => values[index] ?? null),
+        order.map((index) => sessions[index] ?? null),
+      );
+      if (!structure.stateLike) continue;
+      stateLike.push({
+        text:
+          `${name} (${String(structure.rows)} rows carry ${String(structure.runs)} runs, ` +
+          `${structure.rowsPerRun.toFixed(1)} rows per run, longest run ${String(structure.longestRun)})`,
+        rowsPerRun: structure.rowsPerRun,
+      });
+    }
+    if (stateLike.length === 0) return;
+
+    // WORST FIRST, because on a corpus derived per-session nearly every column is clustered -- one
+    // session has one project, one cwd, one branch -- so the column ORDER carries no information and
+    // the magnitudes are the whole of what distinguishes a mild case from a column that is barely
+    // more than a session label. Measured on the live store 2026-10-07: `project` in `tool_denial` is
+    // 19.0 rows per run and `skill` in `skill_activation` is 2.4, and a reader scrolling past the
+    // second should still have seen the first.
+    stateLike.sort((left, right) => right.rowsPerRun - left.rowsPerRun);
+
+    this.warn(
+      `${String(stateLike.length)} of ${String(columns.length)} column(s) are STATE-LIKE: their ` +
+        `values repeat in consecutive runs WITHIN a session, so an average of ` +
+        `${String(PSEUDOREPLICATION_AT)} or more rows carries one observation's worth of ` +
+        `information and their rows are echoes of a session state rather than independent events: ` +
+        `${stateLike.map((column) => column.text).join(', ')}. Any p-value below computed over ` +
+        `such a column is computed at a row count that is not a sample size, and the shuffled ` +
+        `control will not flag it -- that control holds the marginals fixed, and the dwell ` +
+        `weighting is what made the marginals what they are. Either collapse the column to one row ` +
+        `per run, or compute the claim at its run count with a clustered method: ` +
+        `\`--blocks <session property>\` reaches the block control, and the effective sample size ` +
+        `is \`clusterDesign\` in packages/analysis/src/design-effect.ts.`,
+    );
+  }
+
   private runAssoc(
     format: OutputFormat,
     spec: TypeSpec,
@@ -798,6 +923,11 @@ export default class Stats extends BaseCommand {
             `rather than a declared property (${envelopeColumns.join(', ')}): they vary in this ` +
             `corpus, and no spec can declare a name the envelope already owns.`),
     );
+
+    // Before the disclosures below, because it undermines what they are disclosures ABOUT: a pair
+    // can be suppressed as definitional and still have every surviving p-value in this table
+    // computed at a row count that is not a sample size.
+    this.warnOnStateLikeColumns(entries, columns);
 
     // The disclosure, not a note. A suppressed pair is usually the STRONGEST thing in the request --
     // it is the same fact twice, so it scores highest -- and a ranking that dropped it in silence

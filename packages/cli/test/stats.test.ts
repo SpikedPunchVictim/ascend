@@ -72,7 +72,7 @@ beforeAll(() => {
   seedDir = mkdtempSync(join(tmpdir(), 'asc-stats-seed-'));
   dirs.push(seedDir);
   expect(asc(['init'], seedDir).status).toBe(0);
-  for (const spec of [SPEC, BARE, TIMED] as readonly Spec[]) {
+  for (const spec of [SPEC, BARE, TIMED, SESSIONS, INDEPENDENT] as readonly Spec[]) {
     const file = join(seedDir, `${spec.name}.json`);
     writeFileSync(file, JSON.stringify(spec));
     expect(asc(['types', 'define', file], seedDir).status).toBe(0);
@@ -169,6 +169,40 @@ interface Spec {
   readonly name: string;
   readonly properties: readonly Record<string, unknown>[];
 }
+
+/**
+ * The two corpora the pseudoreplication check needs (asc-qt6r), which no existing fixture is.
+ *
+ * `session_id` and `occurred_at` are declared `string` rather than the `ref` a derived type
+ * declares, because what the check reads is the VALUE: it partitions by whatever `session_id` holds
+ * and orders by `occurred_at`, and it cannot see how either column was declared.
+ *
+ * `sessions` is the corpus that collapses -- `state` holds one value across all six entries of each
+ * session, so twelve rows carry two observations -- and `kind` alternates, so it is the same corpus
+ * carrying a column that does NOT collapse. One fixture, both verdicts, which is the only way to
+ * show the check is reading the column rather than the corpus.
+ *
+ * `independent` is one entry per session, so no two rows are ever adjacent inside a partition.
+ */
+const SESSIONS = {
+  name: 'sessions',
+  properties: [
+    { name: 'session_id', type: 'string' },
+    { name: 'occurred_at', type: 'string' },
+    { name: 'state', type: 'string' },
+    { name: 'kind', type: 'string' },
+  ],
+};
+
+const INDEPENDENT = {
+  name: 'independent',
+  properties: [
+    { name: 'session_id', type: 'string' },
+    { name: 'occurred_at', type: 'string' },
+    { name: 'label', type: 'string' },
+    { name: 'kind', type: 'string' },
+  ],
+};
 
 /**
  * An initialised project with both specs registered and nothing recorded: a copy of the seed above.
@@ -1363,5 +1397,92 @@ describe('asc stats --rules', () => {
     const run = asc(['stats', 'finding', '--rules', '--min-support', '2.5'], dir);
     expect(run.status).toBe(2);
     expect(flatten(run.stderr)).toContain("--min-support must be a positive integer, and '2.5'");
+  });
+});
+
+/**
+ * The pseudoreplication check E7's third control requires (asc-qt6r), on the command surface.
+ *
+ * The check runs UNASKED, so every case here is about what plain `--assoc` says without a flag. The
+ * three arms are the three states the corpus can be in: rows that repeat inside a session, rows that
+ * do not, and a corpus with no sessions at all -- which is not the same as a clean one.
+ */
+describe('asc stats --assoc, and the pseudoreplication check', () => {
+  /** Two sessions of six. `state` holds one value the whole way through each; `kind` alternates. */
+  function sessions(dir: string): void {
+    const entries: Record<string, unknown>[] = [];
+    for (const [session, state] of [
+      ['s1', 'x'],
+      ['s2', 'y'],
+    ] as const) {
+      for (let i = 0; i < 6; i += 1) {
+        entries.push({
+          session_id: session,
+          occurred_at: `2026-09-0${String(1 + i)}T00:00:00Z`,
+          state,
+          kind: i % 2 === 0 ? 'a' : 'b',
+        });
+      }
+    }
+    record(dir, 'sessions', entries);
+  }
+
+  it('warns, unasked, that a column repeating within a session is not a sample size', () => {
+    const dir = project();
+    sessions(dir);
+    // No flag: this is the run a caller types by default, and the one the acceptance means by
+    // "cannot SILENTLY produce dwell-weighted statistics".
+    const said = flatten(asc(['stats', 'sessions', '--assoc', '--json'], dir).stderr);
+
+    expect(said).toContain('STATE-LIKE');
+    // Every number the verdict rests on, so a reader can disagree with it rather than take it.
+    expect(said).toContain('state (12 rows carry 2 runs, 6.0 rows per run, longest run 6)');
+  });
+
+  it('leaves a column that never repeats out of the warning', () => {
+    const dir = project();
+    sessions(dir);
+    const said = flatten(asc(['stats', 'sessions', '--assoc', '--json'], dir).stderr);
+
+    // `kind` alternates within every session, so all 12 rows are their own observation and it is
+    // exactly the case the check must not cry wolf on.
+    expect(said).not.toContain('kind (');
+  });
+
+  it('says nothing about state-likeness when no column collapses at all', () => {
+    const dir = project();
+    const entries: Record<string, unknown>[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      // One entry per session, so no two rows can be adjacent inside a partition.
+      entries.push({
+        session_id: `s${String(i)}`,
+        occurred_at: `2026-09-0${String(1 + i)}T00:00:00Z`,
+        label: `l${String(i % 2)}`,
+        kind: i % 2 === 0 ? 'a' : 'b',
+      });
+    }
+    record(dir, 'independent', entries);
+    const said = flatten(asc(['stats', 'independent', '--assoc', '--json'], dir).stderr);
+
+    expect(said).not.toContain('STATE-LIKE');
+  });
+
+  it('says the check does not apply, rather than passing in silence, when there are no sessions', () => {
+    const dir = project();
+    // `bare` declares no `session_id` at all -- the hand-recorded case, where nothing was derived
+    // from a session and there is nothing for the check to say.
+    record(dir, 'bare', [
+      { topic: 'alpha', stage: 'early' },
+      { topic: 'beta', stage: 'late' },
+      { topic: 'alpha', stage: 'late' },
+      { topic: 'beta', stage: 'early' },
+    ]);
+    const said = flatten(asc(['stats', 'bare', '--assoc', '--json'], dir).stderr);
+
+    // "The check did not apply" and "the check ran and found nothing" are different facts, and a
+    // reader who saw neither would have to assume the second.
+    expect(said).toContain('does not apply');
+    expect(said).toContain('session_id');
+    expect(said).not.toContain('STATE-LIKE');
   });
 });

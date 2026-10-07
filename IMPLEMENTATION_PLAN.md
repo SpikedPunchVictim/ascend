@@ -4584,7 +4584,7 @@ commit, because a citation pointing at a record that does not cover it is worse 
   the existing Amendment). Using the frozen snapshot is deliberate — it isolates the controls' effect
   from corpus growth — but the re-issued numbers describe that snapshot, and the record must say so.
 
-## Stage E24: the envelope's two dead names, and the label the record gave them — `asc-mqgy`
+## Stage E25: the envelope's two dead names, and the label the record gave them — `asc-mqgy`
 
 **Status**: Complete in the working tree; gate green. `asc-mqgy` set out three resolutions and chose
 none; this takes the third — keep both names reserved and document them — plus the correction the
@@ -4641,6 +4641,67 @@ lesson is that a path inside a doc comment is not inert.
 **Gate**: `format:check`, `typecheck`, `lint` green; `align check` green, baselined debt 21 → 21.
 
 ---
+
+## Stage E26: the pseudoreplication check E7's third control requires — `asc-qt6r`
+
+**Status**: Complete, 2026-10-07.
+
+**Goal**: detect a column whose values repeat in long consecutive runs within a session, and tell the
+caller on the command surface — not only in the library — that its rows are not a sample size.
+
+**Measured before designing** (`docs/evidence/EV-run-structure.md`, regenerable via
+`node spike/qt6r-run-structure.mjs`). Three pre-registered questions, and the second answer changed
+the design:
+
+- The live store has the structure: `tool_denial`'s `project` is **777 rows over 41 sessions in 41
+  runs**; the corpus's `skill_name` is **4,668 rows in 45 runs**.
+- **The obvious statistic is not sufficient.** `runs / E[R]` — runs against what a random arrangement
+  of the same multiset predicts — is threshold-free and correct, and it is **1.000 for `project`**,
+  because one project per session makes every partition degenerate. The marginals fully explain the
+  run structure of the most clustered column in the store. `rows / runs` is what sees it: **19.0**.
+  Both are reported; `rows / runs` is the flag.
+- **The order decides the verdict.** `skill` reads ratio 0.722 ordered by `occurred_at` and **0.980**
+  by `recorded_at`, which is the ingest clock and is scrambled by a backfill. The stored order
+  manufactures structure where the event order is clustered and hides it where it is not.
+
+**What shipped:**
+
+- `packages/analysis/src/run-structure.ts` — `runStructure(values, partitions)`, `RunStructure`,
+  `RunStructureError`, `PSEUDOREPLICATION_AT = 2`. Pure and harness-neutral: the partition is an
+  opaque label and the order is the caller's, so `session_id` and `occurred_at` appear nowhere in the
+  package. The constant is derived — the smallest average run at which a majority of rows repeat —
+  and checked against the measured population, where nothing sits between 1.0 and 2.4.
+- `packages/cli/src/commands/stats.ts` — the check runs on every `--assoc` **unasked**, which is what
+  the acceptance's "silently" requires; a flag would leave the common run reporting a row count as a
+  sample size with nothing said. It orders by `occurred_at`, partitions by `session_id`, lists
+  columns worst-first, names the two remedies, and says plainly when it **does not apply** (a corpus
+  with no `session_id`) rather than passing in silence. `SESSION_PROPERTY` and
+  `EVENT_TIME_PROPERTY` live in the CLI, the layer that already knows it reads Claude Code
+  derivations.
+
+**One output the questions did not predict**: the check flags **5 of 5** columns on both
+`tool_denial` and `skill_activation`. That is the truth rather than a misfire — a session has one
+project, one `cwd`, one `branch` — and it is why the warning ranks by severity instead of listing in
+column order.
+
+**Tests**: 13 in `packages/analysis/test/run-structure.test.ts`, every expectation hand-computed from
+the two formulas and written out beside the assertion. Hand-computing them caught **two errors in the
+test file itself** before any implementation existed — the partition-boundary case and both null
+cases under-counted runs. 4 in `packages/cli/test/stats.test.ts`, covering the three states a corpus
+can be in: rows that repeat, rows that do not, and no sessions at all. Two fixtures added (`SESSIONS`,
+`INDEPENDENT`).
+
+**Not built, and stated rather than hidden**: the check names two remedies and implements neither.
+It does not collapse a column and re-rank, because that changes what was measured rather than
+noting it — `asc-jpka`'s rule that a control is additive, applied one bead over.
+
+**Anchored differently than the acceptance assumed.** The acceptance fixes the anchor as *"87 runs
+from 6,395 lines"*; the corpus yields 4,668 rows and 45 runs under three different denominators, and
+the live store is a fourth. The structure is present under all of them, so the acceptance stands,
+but the numbers are not commensurable — filed as `dogfood/0068` with its own bead.
+
+**Gate**: `format:check`, `typecheck`, `lint`, `pnpm test` (15 files, 336 tests) and `align check`
+green, baselined debt 21 → 21.
 
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
