@@ -19,6 +19,21 @@ import { createHandlerProducer } from './typed-handlers.js';
 
 export interface CaptureSweep {
   readonly files: number;
+  /**
+   * Paths the sweep could not read, so the plan below is over a corpus that was not read in full.
+   *
+   * `files` counts DISCOVERED transcripts (`reader.ts:517`), not read ones, so it stays non-zero
+   * over a corpus where every file failed to open -- which is why a caller gating on `files` alone
+   * reports "nothing to capture" rather than "nothing could be read". This is the second fact:
+   * `totals.failures` is per-file incomplete reads, and a directory the walk may not enter is
+   * recorded by the reader as an `'unreadable'` skip (`reader.ts:263`). Summed for the reason
+   * `handler-replay.ts:244` sums them: the fact is the same one -- records that exist and did not
+   * reach the plan.
+   *
+   * `'symlink'` is not counted. Not following one is a decision the walk makes, not damage it
+   * suffered, and a healthy corpus can hold one.
+   */
+  readonly unreadable: number;
   readonly plan: CapturePlan;
   readonly table: string | undefined;
   readonly say: string | undefined;
@@ -39,7 +54,16 @@ export async function sweepCapture(spec: TypeSpec, options: SweepOptions): Promi
     best === undefined ? undefined : draftTableHandler(spec, best, sessionsNote(best.sessions));
   const say = best === undefined ? undefined : draftSayHandler(spec, best);
   const verified = table === undefined ? undefined : await verify(spec, table, options);
-  return { files: totals.files, plan, table, say, verified };
+  return {
+    files: totals.files,
+    unreadable:
+      totals.failures.length +
+      totals.skipped.filter((entry) => entry.reason === 'unreadable').length,
+    plan,
+    table,
+    say,
+    verified,
+  };
 }
 
 /** `n session(s)`, flagged when it is under `MIN_N`. */

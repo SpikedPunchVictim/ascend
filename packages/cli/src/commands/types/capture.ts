@@ -78,11 +78,28 @@ export default class TypesCapture extends BaseCommand {
       const transcripts = this.optionalFlag(flags.project) ?? encodeProjectDir(project.root);
       const options = { root, projects: new Set([transcripts]), includeEphemeral: true };
 
-      const { files: scanned, plan, table, say, verified } = await sweepCapture(spec, options);
+      const {
+        files: scanned,
+        unreadable,
+        plan,
+        table,
+        say,
+        verified,
+      } = await sweepCapture(spec, options);
       if (scanned === 0) {
         throw refusal(
           `There are no transcripts under ${join(root, transcripts)}, so there is nothing to ` +
             `plan capture from. Pass --project with the directory name Claude Code used.`,
+        );
+      }
+      // `scanned` is DISCOVERED transcripts, so it is non-zero over a corpus where nothing could
+      // be opened -- and the warning below would then report "nothing reads as X yet" about files
+      // that were never read. Said first, and separately, so that conclusion is never reached
+      // without this beside it. `asc ingest` reports the same failures (`claude-code.ts:908`).
+      if (unreadable > 0) {
+        this.warn(
+          `${String(unreadable)} transcript path(s) could not be read, so this plan is over a ` +
+            `corpus that was not read in full. What it reports is about the files that were read.`,
         );
       }
 

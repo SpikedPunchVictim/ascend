@@ -1,0 +1,91 @@
+{
+  "_": "Kill-check for asc-86a8. Each mutant breaks ONE line this phase added and names the test that must notice. S1 is an intended survivor: the mutant is equivalent, so no test can kill it, and saying so is the point of the `why`.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/capture-sweep.ts",
+      "find": "entry.reason === 'unreadable'",
+      "replace": "entry.reason !== 'unreadable'",
+      "killers": [
+        {
+          "file": "packages/cli/test/types-capture.test.ts",
+          "test": "does not count a symlink as unreadable"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/commands/types/capture.ts",
+      "find": "if (unreadable > 0) {",
+      "replace": "if (unreadable >= 0) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/types-capture.test.ts",
+          "test": "does not count a symlink as unreadable"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/commands/types/capture.ts",
+      "find": "if (unreadable > 0) {",
+      "replace": "if (unreadable > 1) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/types-capture.test.ts",
+          "test": "asc types capture > says a transcript could not be read"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/commands/types/define.ts",
+      "find": "if (sweep.unreadable > 0) {",
+      "replace": "if (sweep.unreadable >= 0) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/types-capture.test.ts",
+          "test": "says the type can be captured from a table sessions already write"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/commands/types/define.ts",
+      "find": "if (sweep.unreadable > 0) {",
+      "replace": "if (sweep.unreadable > 1) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/types-capture.test.ts",
+          "test": "asc types define: the capture line > says a transcript could not be read"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/commands/types/define.ts",
+      "find": "if (sweep.files === 0) return;",
+      "replace": "if (sweep.files !== 0) return;",
+      "killers": [
+        {
+          "file": "packages/cli/test/types-capture.test.ts",
+          "test": "says the type can be captured from a table sessions already write"
+        }
+      ]
+    },
+    {
+      "id": "S1",
+      "file": "packages/cli/src/capture-sweep.ts",
+      "find": "entry.reason === 'unreadable'",
+      "replace": "'unreadable' === entry.reason",
+      "survivor": true,
+      "why": "Swapping the operands of `===` on two strings cannot change the filter, so no test can kill it and none should. It is here so the run proves the intended-survivor path reports `held` rather than a false kill.",
+      "killers": [
+        {
+          "file": "packages/cli/test/types-capture.test.ts",
+          "test": "asc types capture > says a transcript could not be read"
+        }
+      ]
+    }
+  ]
+}

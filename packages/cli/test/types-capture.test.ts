@@ -1,11 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -100,6 +102,19 @@ const value = (stdout: string, signal: string, field: string): unknown =>
     (row) => row.signal === signal && row.field === field,
   )?.value;
 
+/**
+ * Whether `chmod 000` actually denies this process the file.
+ *
+ * Running as root the mode bits are advisory and the fixture would read straight through the
+ * locked file, so the test would pass while exercising nothing -- worse than skipping. Same guard,
+ * same reason, as `reader.test.ts:107`.
+ */
+const canVandalize = process.getuid === undefined || process.getuid() !== 0;
+
+/** The fixture's transcript path, discovered by the walk but unopenable once locked. */
+const transcriptPath = (dir: string): string =>
+  join(dir, '.claude', 'projects', encodeProjectDir(dir), 's-1.jsonl');
+
 describe('asc types define: the capture line', () => {
   it('says the type can be captured from a table sessions already write, with the count', () => {
     const dir = project();
@@ -110,6 +125,31 @@ describe('asc types define: the capture line', () => {
       /ascend can capture incident .* columns service, outage in 1 session\(s\)/,
     );
     expect(text).toMatch(/would write 2 entries and the type would refuse 0/);
+    // The negative of the unreadable warning: everything above is over a corpus the sweep DID
+    // read, so the warning below is conditional on a real failure rather than always-on.
+    expect(text).not.toMatch(/could not be read/);
+  });
+
+  it('says a transcript could not be read, rather than that nothing reads as the type', () => {
+    // `files` counts DISCOVERED transcripts, so the `files === 0` return does not fire over a
+    // corpus nothing could be opened from -- and without this warning the verdict below would be
+    // "nothing in this project's transcripts reads as incident yet" about files never read. `asc
+    // ingest` reports the same failures (`claude-code.ts:908`); two readers of one corpus must not
+    // disagree about whether anything was left out (asc-86a8).
+    if (!canVandalize) return;
+    const dir = project(false);
+    const locked = transcriptPath(dir);
+    chmodSync(locked, 0o000);
+
+    try {
+      const run = asc(['types', 'define', 'incident.json'], dir);
+      const text = run.stderr.replace(/\s+/g, ' ');
+      expect(text).toMatch(/1 transcript path\(s\) could not be read/);
+      // The verdict is still printed, and is now accompanied by the fact that qualifies it.
+      expect(text).toMatch(/nothing in this project's transcripts reads as incident yet/);
+    } finally {
+      chmodSync(locked, 0o600);
+    }
   });
 
   it('says so when nothing reads as the type yet', () => {
@@ -165,5 +205,41 @@ describe('asc types capture', () => {
     expect(rows.find((row) => row.action === 'entry' && row.target === 'incident')?.outcome).toBe(
       '2 new',
     );
+  });
+
+  it('says a transcript could not be read, rather than that nothing reads as the type', () => {
+    // The `scanned === 0` refusal is over DISCOVERED files, so a corpus where the file exists but
+    // cannot be opened passes it and would otherwise conclude "nothing reads as incident yet" --
+    // the absence claim asserted over a corpus that was never read (asc-86a8).
+    if (!canVandalize) return;
+    const dir = project();
+    asc(['types', 'define', 'incident.json', '--no-capture'], dir);
+    const locked = transcriptPath(dir);
+    chmodSync(locked, 0o000);
+
+    try {
+      const run = asc(['types', 'capture', 'incident'], dir);
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stderr.replace(/\s+/g, ' ')).toMatch(/1 transcript path\(s\) could not be read/);
+    } finally {
+      chmodSync(locked, 0o600);
+    }
+  });
+
+  it('does not count a symlink as unreadable, because not following one is the decision made', () => {
+    // `reader.ts:263` skips a symlink deliberately -- following one could leave the root or loop
+    // forever -- so a corpus holding one is not a corpus that could not be read. Counting it would
+    // put a permanent warning on a healthy project, which is the false report the same rule avoids
+    // in `handler-replay.ts:239-243`.
+    const dir = project();
+    asc(['types', 'define', 'incident.json', '--no-capture'], dir);
+    symlinkSync(
+      transcriptPath(dir),
+      join(dir, '.claude', 'projects', encodeProjectDir(dir), 'l.jsonl'),
+    );
+
+    const run = asc(['types', 'capture', 'incident'], dir);
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/could not be read/);
   });
 });

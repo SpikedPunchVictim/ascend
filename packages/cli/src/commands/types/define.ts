@@ -152,6 +152,16 @@ export default class TypesDefine extends BaseCommand {
       return;
     }
     if (sweep.files === 0) return;
+    // Before the verdict below, because that verdict is the wrong one over a corpus that was never
+    // read: `files` counts DISCOVERED transcripts, so it stays non-zero when every file failed to
+    // open. A reader must be able to see that the look read less than the whole corpus rather than
+    // infer it from a smaller number -- `handler-replay.ts:244`'s rule for the same fact.
+    if (sweep.unreadable > 0) {
+      this.warn(
+        `${String(sweep.unreadable)} transcript path(s) could not be read, so this look was over ` +
+          `a corpus it did not read in full.`,
+      );
+    }
     const best = sweep.plan.tables[0];
     if (best === undefined || sweep.verified === undefined) {
       this.warn(

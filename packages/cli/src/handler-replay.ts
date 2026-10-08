@@ -88,7 +88,14 @@ export interface LogHorizon {
    * that produce the same number today (asc-igg8).
    */
   readonly source: 'transcripts' | 'log';
-  /** Transcripts discovered under the project directory, whether or not they held any events. */
+  /**
+   * Files found, on either source: transcripts discovered under the project directory whether or
+   * not they held any events, or -- on `source: 'log'` -- the log files read.
+   *
+   * Not one unit, and deliberately not a second field: a log holds no transcript, so there is no
+   * transcripts-meaning for this number to carry there. The `source` row beside it is what names
+   * the population, and a log's count is never read as a sweep that found this many transcripts.
+   */
   readonly files: number;
   /**
    * Paths the replay could not read, on either source.
@@ -101,8 +108,10 @@ export interface LogHorizon {
    * something out says so.
    *
    * A symlink is not counted: not following one is a decision the walk makes, not damage it
-   * suffered, and a healthy corpus can hold one. `'ephemeral'` and `'unchanged'` are decisions for
-   * the same reason and are reported as their own facts.
+   * suffered, and a healthy corpus can hold one. `'ephemeral'` is a decision for the same reason
+   * and is reported as its own fact (`ephemeral_skipped`). `'unchanged'` cannot arise on this path
+   * at all: the reader records it only against a `knownFiles` cursor (`reader.ts:480`), and a
+   * replay passes none -- so it is named here as a reason this count excludes, not as a row.
    */
   readonly unreadable: number;
   /**
