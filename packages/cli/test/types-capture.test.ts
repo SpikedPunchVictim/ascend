@@ -130,12 +130,16 @@ describe('asc types define: the capture line', () => {
     expect(text).not.toMatch(/could not be read/);
   });
 
-  it('says a transcript could not be read, rather than that nothing reads as the type', () => {
+  it('warns that a transcript could not be read instead of saying nothing reads as the type', () => {
     // `files` counts DISCOVERED transcripts, so the `files === 0` return does not fire over a
     // corpus nothing could be opened from -- and without this warning the verdict below would be
     // "nothing in this project's transcripts reads as incident yet" about files never read. `asc
     // ingest` reports the same failures (`claude-code.ts:908`); two readers of one corpus must not
     // disagree about whether anything was left out (asc-86a8).
+    //
+    // Titled distinctly from the `types capture` arm below on purpose: `-t` matches the test's own
+    // title and NOT the `describe` chain, so two arms sharing a title can be run only together and
+    // a mutation run cannot name one of them as a killer.
     if (!canVandalize) return;
     const dir = project(false);
     const locked = transcriptPath(dir);
@@ -207,7 +211,7 @@ describe('asc types capture', () => {
     );
   });
 
-  it('says a transcript could not be read, rather than that nothing reads as the type', () => {
+  it('warns that a transcript could not be read instead of saying nothing can be captured', () => {
     // The `scanned === 0` refusal is over DISCOVERED files, so a corpus where the file exists but
     // cannot be opened passes it and would otherwise conclude "nothing reads as incident yet" --
     // the absence claim asserted over a corpus that was never read (asc-86a8).

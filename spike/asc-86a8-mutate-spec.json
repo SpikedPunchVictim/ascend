@@ -33,7 +33,7 @@
       "killers": [
         {
           "file": "packages/cli/test/types-capture.test.ts",
-          "test": "asc types capture > says a transcript could not be read"
+          "test": "warns that a transcript could not be read instead of saying nothing can be captured"
         }
       ]
     },
@@ -57,7 +57,7 @@
       "killers": [
         {
           "file": "packages/cli/test/types-capture.test.ts",
-          "test": "asc types define: the capture line > says a transcript could not be read"
+          "test": "warns that a transcript could not be read instead of saying nothing reads as the type"
         }
       ]
     },
@@ -83,7 +83,7 @@
       "killers": [
         {
           "file": "packages/cli/test/types-capture.test.ts",
-          "test": "asc types capture > says a transcript could not be read"
+          "test": "warns that a transcript could not be read instead of saying nothing can be captured"
         }
       ]
     }
