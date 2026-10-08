@@ -54,6 +54,24 @@ function sh(cmd, args, cwd = ROOT) {
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 /**
+ * How many tests actually EXECUTED, read from vitest's own summary line.
+ *
+ * **vitest exits 0 when no test matches `-t`, measured 2026-10-08.** So a pattern naming nothing is
+ * indistinguishable from a test that ran and passed, and without this the spec's own typos would
+ * be reported as SURVIVED mutants -- a finding about a test that never ran, which is the false-green
+ * this harness exists to catch, sitting inside the harness. It closes the build-failure blind spot
+ * for free: a file that will not compile executes no test either, and is named rather than scored.
+ */
+function executed(out) {
+   const summary = out.split('\n').reverse().find((line) => /^\s*Tests\s/.test(line));
+   if (summary === undefined) return 0;
+   return [...summary.matchAll(/(\d+) (?:passed|failed)/g)].reduce(
+      (sum, m) => sum + Number(m[1]),
+      0,
+   );
+}
+
+/**
  * One killer, alone. `vitest.failure-log.ts` is resolved relative to the repo root, so the file
  * path is given FROM the root and the process runs there -- the same trap that makes
  * `pnpm --filter <pkg> exec vitest` fail with ERR_LOAD_URL.
@@ -141,17 +159,18 @@ async function main() {
    try {
       // Baselines first, over every named killer: a killer that already fails is not evidence.
       const unique = [...new Set(spec.mutants.flatMap((m) => m.killers))];
-      const baseline = new Map();
       for (const killer of unique) {
-         const { code } = await runKiller(killer);
-         baseline.set(killer, code === 0);
-         if (code !== 0) {
+         const { code, out } = await runKiller(killer);
+         if (executed(out) === 0) {
+            console.log(`DEAD KILLER  "${killer.test}" matched no test, so it is no one's evidence`);
+            failed += 1;
+         } else if (code !== 0) {
             console.log(`BASELINE  "${killer.test}" fails on the unmutated tree -- kills nothing`);
             failed += 1;
          }
       }
       if (failed) {
-         console.log('\nno verdict: every named killer must pass before a mutant is applied.');
+         console.log('\nno verdict: every named killer must run, and pass, before a mutant is applied.');
          return 1;
       }
 
@@ -169,11 +188,16 @@ async function main() {
 
          const survivors = [];
          const died = [];
+         const dead = [];
          inFlight.set(path, original);
          writeFileSync(path, text.replace(m.find, () => m.replace));
          try {
             for (const killer of m.killers) {
-               const { code } = await runKiller(killer);
+               const { code, out } = await runKiller(killer);
+               if (executed(out) === 0) {
+                  dead.push(killer.test);
+                  continue;
+               }
                (code !== 0 ? died : survivors).push(killer.test);
             }
          } finally {
@@ -182,15 +206,23 @@ async function main() {
          }
 
          const equal = sha(readFileSync(path)) === sha(original);
-         const verdict = m.survivor
-            ? died.length
-               ? 'intended survivor KILLED'
-               : 'intended survivor -- held'
-            : survivors.length
-              ? 'SURVIVED a named killer'
-              : 'killed by every named killer';
-         rows.push([m.id, verdict, died.length ? String(died.length) : '-', survivors.join(', ') || '-']);
-         if (m.survivor ? died.length > 0 : survivors.length > 0) failed += 1;
+         const verdict = dead.length
+            ? 'DEAD KILLER -- matched no test'
+            : m.survivor
+              ? died.length
+                 ? 'intended survivor KILLED'
+                 : 'intended survivor -- held'
+              : survivors.length
+                ? 'SURVIVED a named killer'
+                : 'killed by every named killer';
+         const missed = survivors.length || dead.length;
+         rows.push([
+            m.id,
+            verdict,
+            died.length ? String(died.length) : '-',
+            [...survivors, ...dead].join(', ') || '-',
+         ]);
+         if (m.survivor ? died.length > 0 || dead.length > 0 : missed > 0) failed += 1;
          if (!equal) {
             rows.at(-1)[1] = `RESTORE FAILED; ${verdict}`;
             failed += 1;
