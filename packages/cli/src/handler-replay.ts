@@ -91,13 +91,18 @@ export interface LogHorizon {
   /** Transcripts discovered under the project directory, whether or not they held any events. */
   readonly files: number;
   /**
-   * What the replay could not read, counted in this source's own unit.
+   * Paths the replay could not read, on either source.
    *
-   * Transcripts not read to the end (`source: 'transcripts'`); directories in the log's tree that
-   * could not be listed, so nothing under them was read (`source: 'log'`). One field rather than
-   * two because the fact is the same one -- events that exist and did not reach the count -- and
-   * the `source` row beside it is what names the population. A zero means every input this run
-   * found was read, and a replay that left something out says so.
+   * A path is a transcript file not read to the end, or a directory the walk could not descend
+   * into, on `source: 'transcripts'`; on `source: 'log'` it is a directory in the log's tree that
+   * could not be listed. One field rather than a unit per source because the fact is the same one
+   * -- events that exist and did not reach the count -- and the `source` row beside it is what
+   * names the population. A zero means every path this run found was read, and a replay that left
+   * something out says so.
+   *
+   * A symlink is not counted: not following one is a decision the walk makes, not damage it
+   * suffered, and a healthy corpus can hold one. `'ephemeral'` and `'unchanged'` are decisions for
+   * the same reason and are reported as their own facts.
    */
   readonly unreadable: number;
   /**
@@ -224,7 +229,21 @@ export async function replayHandlers(
         : { root: options.root, projects: new Set(options.projects), includeEphemeral: true },
     );
     files = totals.files;
-    unreadable = totals.failures.length;
+    // Paths, not just files. `totals.failures` is per-FILE incomplete reads; a directory the walk
+    // may not enter is recorded by the reader instead (`reader.ts:253-257`, reason `'unreadable'`)
+    // and was counted here by nothing -- so a replay could report a clean sweep over a corpus it
+    // had not finished reading, while `asc ingest` over that same corpus reported the events
+    // (`claude-code.ts:933`). Two readers of one corpus disagreeing about whether anything was
+    // left out is the whole of this number's job.
+    //
+    // `'symlink'` is deliberately NOT counted. Not following one is a decision the walk makes --
+    // following it could leave the root or loop forever -- so a corpus holding a symlink is not a
+    // corpus that could not be read, and counting it would put a permanent non-zero on a healthy
+    // sweep. `'ephemeral'` and `'unchanged'` are decisions too, and are already reported as their
+    // own facts.
+    unreadable =
+      totals.failures.length +
+      totals.skipped.filter((entry) => entry.reason === 'unreadable').length;
     ephemeral = totals.skipped.filter((entry) => entry.reason === 'ephemeral').length;
     for (const event of normalizer.drain()) offer(event);
   } else {
