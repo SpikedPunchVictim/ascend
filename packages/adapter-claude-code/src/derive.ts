@@ -110,7 +110,9 @@ export interface DeriveCounters {
   /** Entries produced. */
   entries: number;
   /**
-   * Entries whose per-event key was already issued in this SWEEP, so it was suffixed `#2`.
+   * Entries whose per-event key was already issued in this SWEEP **by the same type**, so it was
+   * suffixed `#2`. Per type since `asc-77b7`: the namespace is the type because the id's is, so a
+   * second type minting one raw key is not a collision at all and is no longer counted as one.
    *
    * CENSUS, not a sample. Both arms swept ONE frozen snapshot of the corpus -- 913 files,
    * 527,122 records, 1,816 entries -- so the only variable is this file:
@@ -126,6 +128,16 @@ export interface DeriveCounters {
    *
    * An earlier reading of 6 on the 2026-09-15 corpus is superseded: it was taken while the set
    * was per file, so it counted same-file repeats only.
+   *
+   * **Both figures predate the per-type namespace and are the FLAT-SET reading.** Removing a
+   * namespace dimension can only make fewer pairs collide, so the namespaced count is at most
+   * these numbers and may be lower by however many of the 9 were cross-type -- which was not
+   * measured. An upper bound, then, and not re-measured here: the spurious ids were counted on the
+   * live store instead, 2026-10-07 -- 8 of 24 suffixes, every one a `verification_run` whose bare
+   * key a `tool_denial` also holds, every one at `verification_run` v1 while the rule is at v4
+   * (`derived-types.ts:146`, read 2026-10-07), so a re-ingest re-ids them through the ordinary
+   * version mechanism and no migration is owed. Regenerable with `node
+   * spike/asc-77b7-suffix-namespace.mjs`.
    *
    * Small, and reported rather than absorbed, because the alternative is a rule that silently
    * overwrites -- and a dropped event leaves no trace at all. The count is not broken down by
@@ -943,7 +955,12 @@ export function createDeriver(): Deriver {
     { readonly name: string; readonly command: string | undefined }
   >();
   /**
-   * Keys already issued for THIS SWEEP, so a repeat is suffixed rather than lost.
+   * Keys already issued for THIS SWEEP, per TYPE, so a repeat within a type is suffixed rather than
+   * lost.
+   *
+   * Per type since asc-77b7: the members are namespaced `type\u0000key` because the ids they become
+   * are namespaced by type (`derived-types.ts:122`). See `key` below for what the flat set used to
+   * do to a cross-type pair.
    *
    * **Sweep-wide, not per file, and the difference is the whole of `asc-iq6`.** Every raw key
    * here embeds a `sessionId`, and a session id is NOT per file: a session's subagent
@@ -1013,15 +1030,41 @@ export function createDeriver(): Deriver {
     inheritedSkillRuns: 0,
   };
 
-  const key = (raw: string): string => {
+  /**
+   * A key unique WITHIN ITS TYPE, suffixed when that type has already issued it this sweep.
+   *
+   * **The namespace is the type, because the id's is.** A derived entry's id is
+   * `derived:claude-code:<type>@<n>:<key>` (`derived-types.ts:122`), so the same key under two types
+   * was always two ids. `issued` did not know that: one flat `Set<string>` spanned every type, so a
+   * denied `Bash` check -- which produces both a `tool_denial` and a `verification_run` for one
+   * `toolu_...` -- took `sess:t1` for the first and minted `sess:t1#2` for the second, resolving a
+   * collision the store's own namespacing had already resolved.
+   *
+   * Two things were wrong with that, and only the first is cosmetic. `keyCollisions` over-counted,
+   * and the warning it feeds says *"event key(s) repeated within a transcript"*, which is false of
+   * a cross-type pair. And the meaningless `#2` was written into a STORED id, so it travelled into
+   * every fingerprint comparison on re-ingest. The docblock above reasons entirely about same-type
+   * collisions between sibling subagent transcripts -- which is what this suffix is for -- so the
+   * cross-type case is a gap rather than a deliberate narrowing.
+   *
+   * **Version is deliberately not part of the namespace**, though the id carries it. `type_version`
+   * is a static property of the rule, constant within a sweep (`derived-types.ts`), so it cannot
+   * separate two keys that `type` does not.
+   *
+   * This does NOT make the suffix stable across runs: it is still assigned in sweep order, so a run
+   * that skips a transcript with a cursor mints different suffixes. That is asc-hbxl, a separate
+   * defect, still open -- and fixed here only in the sense that it no longer fires cross-type.
+   */
+  const key = (type: string, raw: string): string => {
+    const namespace = `${type}\u0000`;
     let candidate = raw;
     let suffix = 2;
-    while (issued.has(candidate)) {
+    while (issued.has(`${namespace}${candidate}`)) {
       candidate = `${raw}#${String(suffix)}`;
       suffix += 1;
     }
     if (candidate !== raw) counters.keyCollisions += 1;
-    issued.add(candidate);
+    issued.add(`${namespace}${candidate}`);
     return candidate;
   };
 
@@ -1038,7 +1081,7 @@ export function createDeriver(): Deriver {
   ): void => {
     const entry: DerivedEntry = {
       type,
-      key: key(rawKey),
+      key: key(type, rawKey),
       source: DERIVED_SOURCE,
       occurredAt,
       // OMITTED, never `''`, when the transcript carries neither -- `entries` refuses an empty

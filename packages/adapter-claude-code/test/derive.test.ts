@@ -1295,6 +1295,49 @@ describe('keys and counters', () => {
     expect(deriver.counters.keyCollisions).toBe(1);
   });
 
+  /**
+   * asc-77b7 -- the other half of the test above, and the reason it now says *within a type*.
+   *
+   * `issued` was one flat set spanning every type, but a derived id is
+   * `derived:claude-code:<type>@<n>:<key>`, so the same key under two types was never one id. This
+   * fixture is the ordinary shape rather than a contrived one: a denied `Bash` check produces BOTH
+   * a `tool_denial` and the `verification_run` that failed, from ONE `tool_use` id, and the second
+   * was suffixed. Two things followed. `keyCollisions` over-counted and the warning it feeds says
+   * *"event key(s) repeated within a transcript"*, which is false of a cross-type pair -- and the
+   * meaningless `#2` was written into a STORED id, where it travelled into every fingerprint
+   * comparison on re-ingest.
+   *
+   * The live store carried 8 such ids when this was fixed, all `verification_run` whose bare key a
+   * `tool_denial` also held (`spike/asc-77b7-suffix-namespace.mjs`). No migration was owed: all 8
+   * were at type version 1 against a rule now at 4, so a re-ingest re-ids them anyway. 8 is under
+   * MIN_N and is an anecdote -- enough to decide the migration question, not a rate.
+   */
+  it('does not suffix a key that another TYPE holds, because the ids differ by type', () => {
+    const deriver = createDeriver();
+    const out = [
+      ...deriver.accept(invoke('toolu_1', 'Bash', 'pnpm test'), FILE),
+      // `is_error: false` and not `true`: a first-time FAILED check writes nothing (the deriver
+      // emits on a verdict change or a first verified PASS), so the failing form of this fixture
+      // produces only the denial and the test would pass without exercising the pair.
+      ...deriver.accept(
+        record([{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false }], {
+          toolDenialKind: 'permission-rule',
+        }),
+        FILE,
+      ),
+    ];
+    deriver.drain();
+
+    const byType = new Map(out.map((entry) => [entry.type, entry.key]));
+    expect([...byType.keys()].sort()).toEqual(['tool_denial', 'verification_run']);
+    // The SAME raw key under both types, and NEITHER suffixed -- which is what the store's own
+    // namespacing said all along.
+    expect(byType.get('tool_denial')).toBe('sess-1:toolu_1');
+    expect(byType.get('verification_run')).toBe('sess-1:toolu_1');
+    // The counter agrees with the keys: there was no collision to report.
+    expect(deriver.counters.keyCollisions).toBe(0);
+  });
+
   it('counts every record offered, including ones that yield nothing', () => {
     const deriver = createDeriver();
     deriver.accept(record([]), FILE);
