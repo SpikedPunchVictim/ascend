@@ -90,7 +90,15 @@ export interface LogHorizon {
   readonly source: 'transcripts' | 'log';
   /** Transcripts discovered under the project directory, whether or not they held any events. */
   readonly files: number;
-  /** Transcripts that could not be read to the end. A replay over a partial log says so. */
+  /**
+   * What the replay could not read, counted in this source's own unit.
+   *
+   * Transcripts not read to the end (`source: 'transcripts'`); directories in the log's tree that
+   * could not be listed, so nothing under them was read (`source: 'log'`). One field rather than
+   * two because the fact is the same one -- events that exist and did not reach the count -- and
+   * the `source` row beside it is what names the population. A zero means every input this run
+   * found was read, and a replay that left something out says so.
+   */
   readonly unreadable: number;
   /**
    * Transcripts under a known OS temp root that were NOT read (asc-80m). Only an all-projects
@@ -225,6 +233,10 @@ export async function replayHandlers(
     // event goes through, which is what makes a count from one source checkable against the other.
     const log = readEventLog(options.tree);
     files = log.files;
+    // Not a transcript count, and the only thing it can be here: the log holds no transcript. A
+    // directory the walk could not list means the same thing either way -- events that exist and
+    // were not read -- which is what `unreadable` is for and why it must not stay at zero.
+    unreadable = log.unreadable.length;
     for (const event of log.events) offer(event);
   }
 

@@ -125,14 +125,22 @@ export function load(path: string): NamedHandler {
 export function logRows(projects: readonly string[] | 'all', result: ReplayResult): Row[] {
   const { horizon } = result;
   if (horizon.source === 'log') {
-    // The event log (asc-igg8), and NOT the transcript rows with zeros in them: the project labels,
-    // the unreadable count and the temp-root skips describe a sweep of `~/.claude/projects`, and no
-    // sweep happened. A zero there would read as a sweep that found nothing, which is a different
-    // and much worse statement than "this count came from somewhere else".
+    // The event log (asc-igg8), and NOT the transcript rows with zeros in them: the project labels
+    // and the temp-root skips describe a sweep of `~/.claude/projects`, and no sweep happened. A
+    // zero there would read as a sweep that found nothing, which is a different and much worse
+    // statement than "this count came from somewhere else".
+    //
+    // `unreadable` is the one that moved. It was left out here for that same reason -- while the
+    // log source could not have one, a zero described a transcript sweep and nothing else. The
+    // log's walk records the directories it could not list now (`event-log.ts`'s `listDir`), so the
+    // fact it names is the same one on either source: events that exist and never reached the
+    // count. Leaving the row out would put a real number where no caller can read it, which is the
+    // silence this list exists to avoid.
     const facts: [string, unknown][] = [
       ['source', 'event log'],
       ['derive_version', result.derive_version],
       ['files', horizon.files],
+      ['unreadable', horizon.unreadable],
       ['events', horizon.events],
     ];
     if (horizon.first_ts !== undefined) facts.push(['first_ts', horizon.first_ts]);

@@ -162,44 +162,70 @@ export function openEventLog(tree: string): EventLogWriter {
   };
 }
 
-/** One stream's files, in the order the log wrote them. */
-function streamFiles(tree: string): readonly string[] {
+/**
+ * One directory's entries, or `undefined` when it is not there to be read.
+ *
+ * **ENOENT is the ordinary case; every other code is not.** `asc init` does not create `events/`
+ * -- `openEventLog` does, on the first append (`:156`) -- so a project that never ran an ingest has
+ * no log root at all, and a session directory listed a moment ago can be gone a moment later. Two
+ * reads that race are not damage. A permission error or a path that is a file IS: nothing under it
+ * was read and nothing is going to be, which is the difference between a log that is short and a
+ * log this run could not finish reading. `typed-handlers.ts:106-112` draws the same line for a
+ * missing `handlers/`.
+ *
+ * A non-ENOENT path is PUSHED, never thrown: one directory the user cannot read must not cost them
+ * the rest of the log. That is `reader.ts:253-257`'s rule for the same situation, and this walk is
+ * the same shape of walk.
+ */
+function listDir(dir: string, unreadable: string[]): string[] | undefined {
+  try {
+    return readdirSync(dir).sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unreadable.push(dir);
+    return undefined;
+  }
+}
+
+/** One stream's files, in the order the log wrote them, and the directories that would not list. */
+function streamFiles(tree: string): {
+  readonly files: readonly string[];
+  readonly unreadable: readonly string[];
+} {
   const root = eventLogRoot(tree);
   const files: string[] = [];
-  let sessions: string[];
-  try {
-    sessions = readdirSync(root).sort();
-  } catch {
-    return files;
-  }
+  const unreadable: string[] = [];
+
+  const sessions = listDir(root, unreadable);
+  if (sessions === undefined) return { files, unreadable };
   for (const session of sessions) {
     const sessionDir = join(root, session);
-    let agents: string[];
-    try {
-      agents = readdirSync(sessionDir).sort();
-    } catch {
-      continue;
-    }
+    const agents = listDir(sessionDir, unreadable);
+    if (agents === undefined) continue;
     for (const agent of agents) {
       const agentDir = join(sessionDir, agent);
-      let names: string[];
-      try {
-        names = readdirSync(agentDir)
-          .filter((name) => /^\d{4}\.jsonl$/.test(name))
-          .sort();
-      } catch {
-        continue;
+      const names = listDir(agentDir, unreadable);
+      if (names === undefined) continue;
+      for (const name of names) {
+        if (/^\d{4}\.jsonl$/.test(name)) files.push(join(agentDir, name));
       }
-      for (const name of names) files.push(join(agentDir, name));
     }
   }
-  return files;
+  return { files, unreadable };
 }
 
 export interface EventLogRead {
   readonly events: readonly NormalizedEvent[];
   /** Log files read, so a caller can say how much log a count is over. */
   readonly files: number;
+  /**
+   * Directories in the log's tree that could not be listed, so nothing under them was read.
+   *
+   * **Paths rather than a count, and the paths are the point.** A report saying "unreadable: 1"
+   * leaves the caller with nothing to act on; the path is the only part of it they can do anything
+   * about. `LogHorizon.unreadable` takes the length of this, which is the number a replay report
+   * needs -- so both readings come from one measurement rather than two.
+   */
+  readonly unreadable: readonly string[];
 }
 
 /**
@@ -213,7 +239,7 @@ export interface EventLogRead {
  * append lock-free, which is what keeps it one `write()` per line.
  */
 export function readEventLog(tree: string): EventLogRead {
-  const files = streamFiles(tree);
+  const { files, unreadable } = streamFiles(tree);
   const seen = new Set<string>();
   const events: NormalizedEvent[] = [];
   for (const path of files) {
@@ -247,5 +273,5 @@ export function readEventLog(tree: string): EventLogRead {
       events.push(event);
     }
   }
-  return { events, files: files.length };
+  return { events, files: files.length, unreadable };
 }

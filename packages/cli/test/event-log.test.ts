@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -41,6 +42,15 @@ const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 });
+
+/**
+ * Whether `chmod 000` actually denies this process the directory.
+ *
+ * Running as root, the mode bits are advisory and the fixture would read straight through the
+ * locked directory -- so the test would pass while exercising nothing, which is worse than
+ * skipping. Same guard, same reason, as `reader.test.ts:107`.
+ */
+const canVandalize = process.getuid === undefined || process.getuid() !== 0;
 
 /** A bare tree, for the unit arm's own writes. */
 function tree(): string {
@@ -137,7 +147,57 @@ describe('the event log: writing', () => {
 
 describe('the event log: reading', () => {
   it('reads nothing from a tree with no log', () => {
-    expect(readEventLog(tree())).toEqual({ events: [], files: 0 });
+    // `unreadable: []` and not a failure. `asc init` does not create `events/` -- `openEventLog`
+    // does, on the first append (`event-log.ts:156`) -- so a root that is not there is the ordinary
+    // state of a project that never ran an ingest. `typed-handlers.ts:106-112` draws the same line
+    // for a missing handlers directory, and counting this one as damage would print
+    // `unreadable: 1` on every fresh project: a false report of exactly the class that jumps the
+    // queue.
+    expect(readEventLog(tree())).toEqual({ events: [], files: 0, unreadable: [] });
+  });
+
+  it('reports a directory it could not list, instead of counting it as an empty one', () => {
+    // The defect this replaces: an EACCES on one session directory was indistinguishable from a
+    // session that wrote nothing, so a replay silently reported a smaller handler count and no
+    // part of the report said so. `scanTranscripts` records the same situation and continues the
+    // walk (`reader.ts:253-257`); this is the log's walk holding to that, which is why the
+    // readable stream below is still read.
+    if (!canVandalize) return;
+    const dir = tree();
+    const log = openEventLog(dir);
+    log.accept(event('s-1', 'main', 0));
+    log.accept(event('s-2', 'main', 0));
+    const locked = join(dir, 'events', 's-2');
+    chmodSync(locked, 0o000);
+
+    try {
+      const read = readEventLog(dir);
+      // Paths, not a bare count: a report saying "unreadable: 1" leaves the caller with nothing to
+      // act on, and the path is the only part of this they can do anything about.
+      expect(read.unreadable).toEqual([locked]);
+      expect(read.files).toBe(1);
+      expect(read.events.map((one) => one.seq)).toEqual([0]);
+    } finally {
+      // Restored before the suite tears down, and in a `finally` so a failed assertion above cannot
+      // leave it locked: `rmSync(recursive)` cannot list a directory it may not read, and the
+      // cleanup would fail with ENOTEMPTY and hide the assertion that actually failed.
+      chmodSync(locked, 0o700);
+    }
+  });
+
+  it('reports a stream path that is a file, not a directory, rather than a silent zero', () => {
+    // ENOTDIR, and the case the ENOENT rule must NOT swallow: `events/s-1` exists and is not a
+    // directory, so nothing under it was read and nothing is going to be. A missing root is
+    // ordinary; a root that is the wrong KIND is a broken tree, and the two are told apart by the
+    // error code rather than by the fact that `readdir` threw.
+    const dir = tree();
+    openEventLog(dir).accept(event('s-1', 'main', 0));
+    rmSync(join(dir, 'events', 's-1'), { recursive: true, force: true });
+    writeFileSync(join(dir, 'events', 's-1'), 'not a directory\n');
+
+    const read = readEventLog(dir);
+    expect(read.unreadable).toEqual([join(dir, 'events', 's-1')]);
+    expect(read.files).toBe(0);
   });
 
   it('refuses a line derived at another version, naming both', () => {
@@ -265,6 +325,26 @@ describe('the event log: written by ingest', () => {
     // The same count, off a source that never read a transcript.
     expect(replayed.triggers).toBe(counted.triggers);
     expect(replayed.rows).toBe(counted.rows);
+  });
+
+  it('reports `unreadable` for the log source, which the transcript-only row list left out', () => {
+    // `logRows` omitted this row for the log source and said why: the unreadable count described a
+    // sweep of `~/.claude/projects`, and no sweep happened. That was true exactly while the log
+    // source could not have one -- and false once an unlistable directory is recorded, because
+    // `unreadable: 0` then means every directory this log holds was listed. Leaving the row out is
+    // what would make the new count unreachable by any caller.
+    const dir = project();
+    const handler = join(dir, 'shell.yaml');
+    writeFileSync(handler, HANDLER_YAML);
+
+    const run = asc(['handlers', 'check', handler, '--from-log', '--json'], dir);
+    expect(run.status, run.stderr).toBe(0);
+    const parsed = JSON.parse(run.stdout) as {
+      rows: readonly { field: string; value: unknown }[];
+    };
+    // `0` rather than absent. A project with no log at all is the ENOENT case above: nothing was
+    // meant to be there, so nothing failed.
+    expect(parsed.rows.find((one) => one.field === 'unreadable')?.value).toBe(0);
   });
 
   it('refuses the transcript flags with --from-log rather than ignoring them', () => {
