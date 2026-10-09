@@ -4703,6 +4703,66 @@ but the numbers are not commensurable — filed as `dogfood/0068` with its own b
 **Gate**: `format:check`, `typecheck`, `lint`, `pnpm test` (15 files, 336 tests) and `align check`
 green, baselined debt 21 → 21.
 
+---
+
+## Stage E27: the gate reddens under load, and the remedy the plan approved is refuted — `asc-pcaw`
+
+**Status**: Complete, 2026-10-09 — **no code changed, deliberately.** Records: `docs/evidence/EV-46.md`,
+`dogfood/0071`.
+
+**Goal**: make a load-caused timeout stop blocking an unrelated commit, or record the decision to
+leave it with the measured margin.
+
+**The plan approved for this stage was wrong, and Stage 1 said so before anything was built.** The
+approved remedy was to move the three live-corpus test files into their own `singleFork` vitest
+project, resting on `dogfood/0007`'s measurement of the same pair of corpus files at **114.01 s
+racing and 75.00 s run sequentially**. That premise is what the plan's own gate existed to check: *"If
+serializing does not move the number materially, stop here and go to Stage 5."* It does not move it.
+
+| arrangement | derive | normalize | reader | wall |
+|---|---|---|---|---|
+| the trio alone, default parallelism | 31.6 s | 23.9 s | 28.2 s | **32.31 s** |
+| the trio alone, `--no-file-parallelism` | 31.5 s | 23.6 s | 27.5 s | **84.17 s** |
+| the full suite (137 files, 3179 tests) | — | **23.588 s** | — | **189.61 s** |
+
+Every file's own duration is identical in all three — normalize's top test took **23560 ms alone,
+23560 ms racing, 23560 ms inside the full suite**. The corpus files contend with neither each other
+nor the other 129 files, so serializing them costs **+52 s** of gate time and removes nothing. Stages
+2–4 (the workspace split, the partition test, the mutation spec) were **not built**, and the one
+thing they would have preserved turns out to be the thing that is not there.
+
+**The reproduction was attempted, bounded, and did not reach the red — recorded as such.** Four
+throttling mechanisms against the 180 s bound, all on the same tree: idle 23.9 s green; `taskpolicy
+-b` 67.13 s at 2.8× green; `-b` plus 8 `nice -n 20` spinners 63.55 s at 2.7× under `loadavg 47.38`
+green; `-b -c maintenance` 69.40 s at 2.9× green. They **plateau at ~2.8×**, because `loadavg` counts
+runnable threads regardless of scheduling class and a `nice -n 20` thread is never scheduled ahead of
+a normal-priority test. A 16-spinner arm did produce a load-caused red — `[vitest-worker]: Timeout
+calling "fetch"` with **zero** tests executed — and it is a different failure, not offered as a
+reproduction. The mechanism is stated falsifiably instead: **6.1× needs ≈73 runnable threads at the
+test's own priority on 12 cores**, and the recorded red's `loadavg 95.34` on 12 cores is 7.9×
+oversubscription. The user chose the gentle arm; the ~90-spinner run that would reach it was declined.
+
+**Decision taken: record, do not remedy.** Each of the three pre-registered remedies removes
+something that is not there or substitutes a different red — isolation has no contention to remove,
+a retry re-runs at the same load, and a load-aware guard converts the test's red into
+`test-baseline.mjs`'s ("a test skipped or gone"). Raising the bound was rejected twice already on the
+ground that the sweep is a tripwire, and nothing here reopens it. The residual is external: the gate
+is blocked when the machine is 6× oversubscribed, and no in-repo lever reaches that.
+
+**One honest caveat, stated rather than claimed as a trap.** `test-baseline.mjs` is a floor and it
+lags — 132 files / 3049 tests / 3047 passed, written 2026-10-05, against today's 137 / 3179 / 3177.
+That 130-test cushion means a load-aware skip would pass the floor unnoticed this week and only be
+caught after the next `pnpm test:baseline`.
+
+**Also found, recorded not fixed**: `dogfood/0071` / `asc-5swk` — the failure log `asc-9ac` built to
+name a rare red now holds **2078 lines across 278 red runs, 248 of them (89.2%) `run_tests ≤ 200`
+single-file runs from `pnpm mutate`**, so the one red it exists to name sits among deliberate ones
+with nothing in the schema to separate them. Its `loadavg` field is the more consequential half: it
+cannot distinguish a busy machine from a quiet one carrying low-priority work.
+
+**Gate**: no code changed, so no build or test gate was run for this stage. `align check` is
+unaffected — nothing was imported, moved, or restructured.
+
 ## Cross-cutting rules (non-negotiable, from `TASKS.md`)
 
 1. Every commit compiles and passes tests. No `--no-verify`. No disabled tests.
