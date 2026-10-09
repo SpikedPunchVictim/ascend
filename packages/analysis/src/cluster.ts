@@ -52,6 +52,7 @@
  * `purity-enforcement.test.ts`).
  */
 
+import { medianOf } from './median.js';
 import { MIN_N } from './proportion.js';
 import { DEFAULT_SEED, mulberry32, seedOf } from './random.js';
 
@@ -658,15 +659,11 @@ export function permutationNull(
   }
 
   const sorted = [...silhouetteValues].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
 
   return {
     silhouettes: sorted,
     min: sorted[0] as number,
-    median:
-      sorted.length % 2 === 1
-        ? (sorted[middle] as number)
-        : ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2,
+    median: medianOf(sorted),
     max: sorted[sorted.length - 1] as number,
     // The +1s are Davison and Hinkley's correction, the same one `association.ts` uses: the
     // observed value is itself one arrangement of the data, so a p of exactly 0 is not available

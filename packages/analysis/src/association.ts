@@ -93,6 +93,7 @@
  * notion of a seed.
  */
 
+import { medianOf } from './median.js';
 import { MIN_N } from './proportion.js';
 import { DEFAULT_SEED, mulberry32, seedOf } from './random.js';
 
@@ -722,29 +723,24 @@ function nullFrom(stats: number[], iterations: number): PermutationNull {
   const at = (q: number): number =>
     stats[Math.min(stats.length - 1, Math.floor(q * stats.length))] as number;
 
-  // THE MEDIAN IS WRITTEN OUT RATHER THAN TAKEN FROM `at(0.5)`, and the reason is that the two are
-  // not the same statistic on an even count (bug-hunt F1). `at(0.5)` is `stats[floor(0.5 * n)]`,
-  // which on an even count is the UPPER of the two middle values; the usual convention -- and the
-  // one `cluster.ts:663-669` and `changepoint.ts:152` both implement, the latter saying so in its
-  // own comment -- is their AVERAGE. Both modules return this under the name `median`, both are
-  // shuffled nulls built the same way, and they are read side by side in the same report, where
-  // two different numbers under one name is indistinguishable from a bug in either. Measured on a
-  // four-value sample the two conventions differ in the fourth decimal: 0.11705625295804874
-  // against 0.11704712354972514.
+  // THE MEDIAN COMES FROM `median.ts` RATHER THAN FROM `at(0.5)`, and the two are not the same
+  // statistic on an even count (bug-hunt F1). `at(0.5)` is `stats[floor(0.5 * n)]`, which on an even
+  // count is the UPPER of the two middle values; `medianOf` AVERAGES them, which is the convention
+  // `cluster.ts` and `changepoint.ts` both implement. Both modules return this under the name
+  // `median`, both are shuffled nulls built the same way, and they are read side by side in the
+  // same report, where two different numbers under one name is indistinguishable from a bug in
+  // either. Measured on a four-value sample the two conventions differ in the fourth decimal:
+  // 0.11705625295804874 against 0.11704712354972514.
   //
   // `at` keeps its own convention for `p95` below, where the quantile is the point and there is no
   // sibling reporting the same name.
   //
-  // This aligns the convention; it does not yet remove the duplication. Three copies of this
-  // two-line rule now exist (`cluster.ts`, `changepoint.ts`, here), which is the shape this
-  // function's own docblock says it exists to prevent for the p-value. Extracting one `medianOf`
-  // into a shared module is a separate change with its own blast radius; filed rather than folded
-  // in here.
-  const middle = Math.floor(stats.length / 2);
-  const median =
-    stats.length % 2 === 1
-      ? (stats[middle] as number)
-      : ((stats[middle - 1] as number) + (stats[middle] as number)) / 2;
+  // The rule now lives in one place, so the alignment cannot drift back: the three copies that
+  // existed when F1 was fixed are one exported function with the discriminating case -- an even
+  // count whose two middle order statistics DIFFER -- pinned in `test/median.test.ts`. Nothing
+  // pinned it before, because `nullFrom` is module-private, the null statistics are unreachable
+  // from a test, and on the reachable fixture the two middles are equal.
+  const median = medianOf(stats);
 
   return {
     iterations,

@@ -57,6 +57,7 @@
  */
 
 import { benjaminiHochberg } from './association.js';
+import { medianOf } from './median.js';
 import { MIN_N } from './proportion.js';
 import { DEFAULT_SEED, mulberry32, seedOf } from './random.js';
 
@@ -146,15 +147,6 @@ export interface ChangepointReport {
   readonly series: readonly RankedChangepoint[];
   /** Series tested -- the denominator the FDR correction used. */
   readonly family: number;
-}
-
-/** Median of a slice, by the usual convention for an even count. */
-function medianOf(values: readonly number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) return sorted[middle] as number;
-  return ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2;
 }
 
 /** Mean and median of a slice. */

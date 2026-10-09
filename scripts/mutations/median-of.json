@@ -1,0 +1,81 @@
+{
+  "_": "Kill-check for `packages/analysis/src/median.ts`, written when the median rule was extracted there from three copies in two conventions (asc-naqc). The rule is the one bug-hunt F1 found: `association.ts`'s `nullFrom` took the median as its own `at(0.5)` quantile -- the UPPER of the two middle values on an even count -- while `cluster.ts` and `changepoint.ts` averaged them, and the two were returned under one name in a report that reads them side by side. M1 is that defect restored, and it is the mutant this spec exists for. The killers were found empirically rather than guessed -- each mutant was applied, the analysis test files were run with vitest's JSON reporter, and the failing `fullName`s were read off -- because a killer that only *should* fail is the same false green as an assertion never shown to fail. THE RESULT WORTH RECORDING: M1 is killed by `median.test.ts` and by NOTHING ELSE. Four call-site fixtures drive the even-count path (`controls.test.ts` at 500, 4000 and 200 iterations, and the association null), and none of them fails under the F1 revert, because on every reachable fixture the two middle order statistics are EQUAL and the two conventions coincide there. That is exactly why the fix for F1 shipped with no test and why the extraction is the thing that made the rule testable -- a shared helper with a discriminating case, rather than a literal pinned to a fixture that cannot tell the conventions apart. This spec is therefore also the record that `scripts/mutations/` covers a rule the call-site tests structurally cannot. There is NO intended survivor: all five mutants are observable.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/analysis/src/median.ts",
+      "find": "  return ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2;",
+      "replace": "  return sorted[middle] as number;",
+      "killers": [
+        {
+          "file": "packages/analysis/test/median.test.ts",
+          "test": "averages the two middle values on an even count -- the case the two conventions disagree on"
+        },
+        {
+          "file": "packages/analysis/test/median.test.ts",
+          "test": "does not take the upper middle on an even count, which is the convention it was extracted to end"
+        },
+        {
+          "file": "packages/analysis/test/median.test.ts",
+          "test": "sorts what it is given, so a call site cannot be wrong by forgetting to"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/analysis/src/median.ts",
+      "find": "  const sorted = [...values].sort((x, y) => x - y);",
+      "replace": "  const sorted = (values as number[]).sort((x, y) => x - y);",
+      "killers": [
+        {
+          "file": "packages/analysis/test/median.test.ts",
+          "test": "leaves the caller array untouched"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/analysis/src/median.ts",
+      "find": "  const middle = Math.floor(sorted.length / 2);",
+      "replace": "  const middle = Math.ceil(sorted.length / 2);",
+      "killers": [
+        {
+          "file": "packages/analysis/test/median.test.ts",
+          "test": "takes the middle value on an odd count"
+        },
+        {
+          "file": "packages/analysis/test/median.test.ts",
+          "test": "handles a single value, where both conventions agree"
+        },
+        {
+          "file": "packages/analysis/test/median.test.ts",
+          "test": "orders negative values as numbers, not as strings"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/analysis/src/median.ts",
+      "find": "  if (values.length === 0) return 0;\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/analysis/test/median.test.ts",
+          "test": "answers zero on an empty array, the branch no call site reaches"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/analysis/src/median.ts",
+      "find": "[...values].sort((x, y) => x - y)",
+      "replace": "[...values].sort()",
+      "killers": [
+        {
+          "file": "packages/analysis/test/median.test.ts",
+          "test": "orders negative values as numbers, not as strings"
+        }
+      ]
+    }
+  ]
+}

@@ -67,6 +67,8 @@
 
 export { DEFAULT_SEED, mulberry32, seedOf } from './random.js';
 
+export { medianOf } from './median.js';
+
 export {
   allocate,
   diverseSample,
