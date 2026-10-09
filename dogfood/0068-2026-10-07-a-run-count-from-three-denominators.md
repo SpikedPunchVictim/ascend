@@ -7,7 +7,7 @@
 | **Surfaced by** | `node spike/qt6r-run-structure.mjs`, while trying to reproduce the anchor `asc-qt6r`'s acceptance names |
 | **Entry type(s)** | `skill_activation` (derived) |
 | **Severity** | P3 |
-| **Status** | open |
+| **Status** | corrected 2026-10-09: the measurement stands — 4,668 rows, 22 sessions, 45 runs, 14 distinct values, longest run 2,037 — and the **claim** drawn from it does not. See *The correction* below |
 
 ## What was found
 
@@ -88,3 +88,68 @@ What caught it was **pointing a new instrument at the data a record's numbers cl
 and reading the disagreement as a result rather than as a bug in the new instrument. That is the
 mechanism worth repeating, and it is why the spike printed the whole run structure rather than only
 the pass/fail the bead asked for.
+
+---
+
+## The correction — 2026-10-09 (`asc-zvot`)
+
+**The measurement stands. The claim drawn from it does not.** Every number this record printed about
+the frozen corpus reproduces exactly: `events` with `skill_name IS NOT NULL` still gives **4,668
+rows, 22 sessions, 45 runs, 14 distinct values, a longest run of 2,037**. What does not survive is the
+sentence *"those numbers do not describe one corpus, and no single instrument produced them"* — the
+charge that `EV-patterns.md`'s anchor fused counts from three pipeline stages, and that its 87 is the
+adapter's number quoted back.
+
+This was found by doing the work the record asked for. `asc-zvot` was opened to correct that anchor,
+and reading the anchor closely enough to correct it is what refuted the case for correcting it.
+
+**1. The anchor's 87 is its own arithmetic.** The sentence reads *"it appears on 6,395 lines … with
+6,308 consecutive repeats. The independent count is 87 value-runs."* And 6,395 − 6,308 = **87**. The
+line count and the repeat count sit in one sentence because they are one pass over one tree; the run
+count is their difference. This record's thesis was that the 87 was *"the **adapter's** count of
+emitted activations, not a run count over 6,395 rows"* — but a run count over 6,395 rows is exactly
+what 6,395 − 6,308 is.
+
+**2. The dates run the other way.** `git log -S` on both files:
+
+```
+$ git log --format='%ad %h %s' --date=short -S'6,395' -- docs/evidence/EV-patterns.md
+2026-09-14 486cf14 Correct EV-patterns' skill-activation profile: 4,668 echoes, not a corpus
+
+$ git log --format='%ad %h %s' --date=short -S'6,395' -- packages/adapter-claude-code/src/derive.ts
+2026-09-16 1f83004 Record where a derived entry happened, not just which proj...
+2026-09-15 75d482f Derive five entry types from transcripts, and measure the ...
+```
+
+The doc's 6,395 entered on **2026-09-14**; the adapter's *"yields 87 activations"* entered a day
+later, on **2026-09-15**. The doc cannot have quoted the adapter, and if the two are one instrument
+quoted twice then the quotation ran backwards in time. What the dates show is two measurements a day
+apart that **agree** — corroboration, which is the opposite of what this record charged.
+
+**3. The comparison ran across two snapshots, and half of it was in the wrong unit.** This record set
+the frozen corpus of 2026-09-11 against the anchor's numbers, and the anchor says where its numbers
+came from in the same paragraph: *"Measured 2026-09-14 on the same tree (842 files, 425,234 lines,
+1,202 MB; EV-corpus used 809 files, so it has grown)."* The drift is disclosed at the point of use.
+And the frozen corpus cannot be compared on files at all — `select count(distinct source) from events`
+returns **1**, because `source` names the ingest and not the transcript. So *"22 sessions"* in the
+block above was never the same quantity as the anchor's *"71 files"*, and printing them beside each
+other as two readings of one thing is this record's error, not the anchor's.
+
+**What the anchor got right, and better than this record did.** Its whole point is that a
+session-state field echoed on every assistant message is not a corpus of events, and it says so with
+a *difference* — 6,308 repeats out of 6,395 lines — which is the pseudoreplication signal `asc-qt6r`
+exists to build on. It measured that a day before the adapter existed. The anchor is the better
+instrument of the two.
+
+**What survives.** A quantity *defined by a pipeline stage* does change value at every stage; that is
+true and this record is where it is written down. But the two artifacts do not demonstrate it by
+disagreeing — they agree on every number they share and differ only on the two that come from
+different dates and different units. The number that travelled without its parameter was this
+record's own *"every one of the five quantities differs"*, which is `dogfood/0066`'s class landing on
+the record that named it.
+
+**The recognition rule is kept, and is now known to be unsound in one direction.** *"If a record's
+sentence contains two counts, check that one pipeline stage produced both"* is still the right reflex.
+What it does not say is the converse, and the converse is what went wrong here: two counts that
+**differ** are not thereby from two stages. They may be two snapshots, two units, or a snapshot and a
+unit. As written the rule can manufacture a finding out of agreement, which is what it did.
