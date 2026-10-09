@@ -34,13 +34,29 @@ export const RESERVED_SCHEME = 'invalidation';
 
 /**
  * The invalidation vocabulary. Closed, and deliberately short: the rule for admitting a label was
- * "no category without a real instance already in the corpus", and only these three had one when
- * asc-88m was written. `superseded` covers a later entry measuring the same thing better,
- * `wrong_subject` covers an entry that should never have been recorded about this subject at all,
- * and `wrong_value` covers a right subject whose PRIMARY MEASUREMENT is unusable. A fourth
- * label some future finding actually needs is a cheap, well-supported addition -- schemes are
- * versioned for exactly this -- so nothing here is pre-guessed against a case that has not
- * happened yet.
+ * "no category without a real instance already in the corpus", and four labels have one.
+ * `superseded` covers a later entry measuring the same thing better, `wrong_subject` covers an entry
+ * that should never have been recorded about this subject at all, `wrong_value` covers a right
+ * subject whose PRIMARY MEASUREMENT is unusable, and `duplicate` covers a second row for an event the
+ * corpus already holds.
+ *
+ * **`duplicate` was admitted on 15 measured instances (`asc-hbxl`, 2026-10-09).** A derived entry's
+ * id was a function of the sweep's READ SET as well as the event: a repeated per-event key got a `#2`
+ * suffix assigned in traversal order, so a transcript appearing between two runs could write one
+ * event a second time under a suffixed id (`docs/evidence/EV-45.md`, `asc-hbxl`). Those rows are the
+ * 15 byte-identical duplicates. `duplicate` is none of the other three: the subject is right
+ * (`wrong_subject` is out), the measurement is fine (`wrong_value` is out), and a duplicate is
+ * IDENTICAL to its base, whose base is EARLIER -- whereas `superseded` names a LATER entry that
+ * measures the same thing better. So `duplicate` deliberately takes no `--superseded-by`.
+ *
+ * **Adding it was NOT the "cheap addition" this docblock used to predict, and the correction is
+ * recorded rather than quietly dropped.** The reserved scheme's shape is pinned by the compile-time
+ * `INVALIDATION_SCHEME_SPEC` and compared by hash in `restoreInvalidationScheme`, so widening this
+ * vocabulary changes the hash of the shape the store's OWN tracked `.ascend/schemes/0001.jsonl` line
+ * carries -- and replaying that line against the new hash would be refused, breaking `asc index
+ * build` on this repo's own tree. The door now also admits a frozen set of historical reserved
+ * shapes (`INVALIDATION_SCHEME_HISTORY` in `annotations.ts`), which is the real cost of a fourth
+ * label.
  *
  * **`wrong_value` is narrower than "some field is wrong", and the narrowing is deliberate
  * (`asc-y7p`).** Every label here strikes the WHOLE ENTRY -- an annotation names an `entry_id` and
@@ -64,7 +80,12 @@ export const RESERVED_SCHEME = 'invalidation';
  * category. `asc-y7p` holds the case, and a second instance of a different shape is what should
  * reopen it.
  */
-export const INVALIDATION_LABELS = ['wrong_subject', 'wrong_value', 'superseded'] as const;
+export const INVALIDATION_LABELS = [
+  'wrong_subject',
+  'wrong_value',
+  'superseded',
+  'duplicate',
+] as const;
 
 /** One label from the closed invalidation vocabulary. See `INVALIDATION_LABELS`. */
 export type InvalidationLabel = (typeof INVALIDATION_LABELS)[number];

@@ -318,6 +318,28 @@ describe('asc invalidate: writing', () => {
     expect(flatten(run.stderr)).toContain('wrong_subject');
     expect(flatten(run.stderr)).toContain('wrong_value');
     expect(flatten(run.stderr)).toContain('superseded');
+    // The fourth label, admitted on 15 measured instances (`asc-hbxl`), is in the named set.
+    expect(flatten(run.stderr)).toContain('duplicate');
+  });
+
+  it("accepts 'duplicate', and refuses --superseded-by on it (asc-hbxl)", () => {
+    const dir = seeded();
+
+    const run = asc(
+      ['invalidate', 'e1', '--label', 'duplicate', '--reason', 'same event as e2'],
+      dir,
+    );
+    expect(run.status).toBe(0);
+    expect(invalidationRows(dir)).toHaveLength(1);
+
+    // `duplicate` takes no replacement: its base is EARLIER and identical, where `superseded` names
+    // a LATER entry measuring the same thing better.
+    const withFlag = asc(
+      ['invalidate', 'e2', '--label', 'duplicate', '--reason', 'x', '--superseded-by', 'e1'],
+      dir,
+    );
+    expect(withFlag.status).toBe(1);
+    expect(flatten(withFlag.stderr)).toContain("its label is 'duplicate', not 'superseded'");
   });
 
   it('refuses a run with no entry id', () => {

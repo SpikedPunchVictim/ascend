@@ -216,6 +216,26 @@ describe('registering a scheme', () => {
     });
   });
 
+  /**
+   * A store can still be restored from its own PAST (`asc-hbxl`).
+   *
+   * Widening the vocabulary to four labels changed the hash of the CURRENT reserved shape, and this
+   * repo's own tracked `.ascend/schemes/0001.jsonl` still holds the three-label line written before
+   * that. Without the frozen `INVALIDATION_SCHEME_HISTORY`, replaying it would be refused and
+   * `asc index build` would fail on the very tree that wrote it -- so this is the regression guard
+   * for the scheme door, not a convenience.
+   */
+  it('restores a reserved line written before the vocabulary widened (asc-hbxl)', () => {
+    withStore((store) => {
+      const restored = restoreInvalidationScheme(
+        store.db,
+        spec(['wrong_subject', 'wrong_value', 'superseded']),
+        { createdAt: AT },
+      );
+      expect(restored.version).toBe(1);
+    });
+  });
+
   it('refuses to restore any other shape under the reserved name', () => {
     withStore((store) => {
       expect(() =>
@@ -923,7 +943,10 @@ describe('invalidation', () => {
       expect(() =>
         recordInvalidation(store.db, {
           entryId: ids[0] as string,
-          label: 'duplicate' as InvalidationLabel,
+          // Deliberately a string that is NOT and never was a label. This case used `'duplicate'`
+          // until `asc-hbxl` admitted it, which is exactly the wrong example now: the test would
+          // pass by throwing for the wrong reason, or fail once the label was accepted.
+          label: 'not_a_label' as InvalidationLabel,
           reason: 'not part of the vocabulary',
           createdAt: AT,
         }),

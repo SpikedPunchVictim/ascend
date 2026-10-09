@@ -82,7 +82,12 @@ interface Sweep {
   readonly byType: Readonly<Record<string, number>>;
   readonly invalid: readonly string[];
   readonly warned: readonly string[];
-  readonly duplicateKeys: readonly string[];
+  /**
+   * One item per raw-key group this sweep emitted more than once, carrying how many FILES held it.
+   * A duplicate that spans one file would be a genuine deriver defect; the measured corpus has none
+   * (`asc-hbxl`), so this is what the uniqueness test asserts instead of "no duplicate ever".
+   */
+  readonly duplicateGroups: readonly { readonly files: number }[];
   readonly missingProvenance: readonly string[];
   /** Entries with no envelope `cwd` / `branch`, named by type. */
   readonly withoutCwd: readonly string[];
@@ -92,7 +97,7 @@ interface Sweep {
   readonly distinctBranches: number;
   /** How many distinct encoded project labels those collapse into -- `project`, not `cwd`. */
   readonly distinctProjects: number;
-  readonly keyCollisions: number;
+  readonly repeatedKeys: number;
   readonly unkeyable: number;
   readonly unverdictable: number;
   readonly countersEntries: number;
@@ -106,22 +111,29 @@ async function sweep(): Promise<Sweep> {
   const byType: Record<string, number> = {};
   const invalid: string[] = [];
   const warned: string[] = [];
-  const duplicateKeys: string[] = [];
   const missingProvenance: string[] = [];
   const withoutCwd: string[] = [];
   const withoutBranch: string[] = [];
   const cwds = new Set<string>();
   const branches = new Set<string>();
   const projects = new Set<string>();
-  const seen = new Set<string>();
+  // identity -> the FILES it was emitted from, and how many times. A repeat that stayed inside one
+  // file would be a deriver defect; a repeat across files is the corpus carrying one event twice
+  // (`asc-hbxl`). Tracking the file set is what lets a test tell the two apart.
+  const identities = new Map<string, { readonly files: Set<string>; n: number }>();
 
-  const collect = (entry: DerivedEntry): void => {
+  const collect = (entry: DerivedEntry, filePath: string): void => {
     entries.push(entry);
     byType[entry.type] = (byType[entry.type] ?? 0) + 1;
 
     const identity = `${entry.type}|${entry.key}`;
-    if (seen.has(identity)) duplicateKeys.push(identity);
-    seen.add(identity);
+    const group = identities.get(identity);
+    if (group === undefined) {
+      identities.set(identity, { files: new Set([filePath]), n: 1 });
+    } else {
+      group.files.add(filePath);
+      group.n += 1;
+    }
 
     for (const name of ['session_id', 'project']) {
       if (!Object.hasOwn(entry.properties, name)) missingProvenance.push(`${entry.type}.${name}`);
@@ -148,10 +160,13 @@ async function sweep(): Promise<Sweep> {
     }
   };
 
+  let lastFile = '';
   const totals = await streamCorpus((record, file) => {
-    for (const entry of deriver.accept(record, file)) collect(entry);
+    lastFile = file.path;
+    for (const entry of deriver.accept(record, file)) collect(entry, file.path);
   }, {});
-  for (const entry of deriver.drain()) collect(entry);
+  // `drain` flushes what the FINAL file left pending, so its entries came from `lastFile` too.
+  for (const entry of deriver.drain()) collect(entry, lastFile);
 
   return {
     totals: { files: totals.files, parsed: totals.parsed, malformed: totals.malformed },
@@ -160,14 +175,16 @@ async function sweep(): Promise<Sweep> {
     byType,
     invalid,
     warned,
-    duplicateKeys,
+    duplicateGroups: [...identities.values()]
+      .filter((group) => group.n > 1)
+      .map((group) => ({ files: group.files.size })),
     missingProvenance,
     withoutCwd,
     withoutBranch,
     distinctCwds: cwds.size,
     distinctBranches: branches.size,
     distinctProjects: projects.size,
-    keyCollisions: deriver.counters.keyCollisions,
+    repeatedKeys: deriver.counters.repeatedKeys,
     unkeyable: deriver.counters.unkeyable,
     unverdictable: deriver.counters.unverdictable,
     countersEntries: deriver.counters.entries,
@@ -207,10 +224,17 @@ describe.skipIf(!available)('the deriver against the real corpus', () => {
     }
   }, 120_000);
 
-  it('gives every entry a unique key, and drops nothing for want of an identity', async () => {
+  it('repeats a key only across FILES, and drops nothing for want of an identity', async () => {
     const result = await once();
 
-    expect(result.duplicateKeys.slice(0, 10)).toEqual([]);
+    // A key is a pure function of the event now (`asc-hbxl`), so the SAME key legitimately appears
+    // more than once when one event is carried by two transcript files -- that is how the store
+    // recognises the second copy. What must NEVER happen is a repeat inside a single file: one
+    // transcript does not carry its own record uuid twice, so that would be a deriver defect, and
+    // this asserts the measured 0 directly rather than asserting the weaker "no duplicate ever".
+    const withinOneFile = result.duplicateGroups.filter((group) => group.files === 1);
+    expect(withinOneFile).toEqual([]);
+
     // Both are the counter-example to a silent drop: an event recognised but not
     // emitted is invisible without these, and a sweep would report success while
     // the corpus was missing rows.
@@ -339,20 +363,17 @@ describe.skipIf(!available)('the deriver against the real corpus', () => {
 
     expect(shared.length).toBeGreaterThan(MIN_ENTRIES);
 
-    // A tolerance, and the reason for it is specific rather than defensive. The
-    // expectation is that NO key from the first sweep is missing from the second --
-    // the corpus only grows. Two things can legitimately move a key between two
-    // sweeps of a live directory:
+    // No tolerance any more, and the removal is the point (`asc-hbxl`). A key is a pure function of
+    // the event, so two sweeps of a growing directory must agree on EVERY key the first one minted:
+    // the corpus only grows, and a new transcript adds keys rather than moving any.
     //
-    //   - a transcript written between them adds keys (harmless, not counted here)
-    //   - `#2` disambiguation is sensitive to a file's CONTENTS: if a still-growing
-    //     file gains a colliding record, its suffix assignment shifts. Measured: 6
-    //     collisions in the whole corpus, so this can touch a handful of keys.
-    //
-    // 1% of ~1,488 is 15 -- far above the handful that mechanism can move, and far
-    // below the number an unstable identity scheme would lose.
+    // Until `asc-hbxl` this allowed up to 1%, because `#2` disambiguation was sensitive to a file's
+    // CONTENTS -- a still-growing file gaining a colliding record could shift a suffix and move an
+    // id. That mechanism is retired: a repeat is counted, not suffixed, and the key no longer depends
+    // on what else the sweep read. So the tolerance is dropped to `0`, which is the assertion the
+    // defect could not survive.
     const missing = a.size - shared.length;
-    expect(missing).toBeLessThanOrEqual(Math.ceil(a.size * 0.01));
+    expect(missing).toBe(0);
   }, 180_000);
 });
 

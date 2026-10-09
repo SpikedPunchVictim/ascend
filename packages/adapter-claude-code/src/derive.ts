@@ -26,6 +26,10 @@
  * makes re-ingesting idempotent -- the same transcript produces the same keys, so the second
  * run recognises every entry as one it already wrote.
  *
+ * That key is a property of the EVENT, not of the sweep that read it: it does not move when a
+ * transcript file appears, is renamed, or is skipped by a cursor, so an event's id is identical on
+ * any machine, in any order, whichever file carries it (`asc-hbxl`).
+ *
  * WHAT IS NOT DERIVED, deliberately: entries whose identity cannot be established are NOT
  * emitted and ARE counted (`counters.unkeyable`). A silently dropped record is the failure
  * this module is most able to cause -- the sweep reports success and the corpus is missing
@@ -54,8 +58,14 @@ export interface DerivedEntry {
   /**
    * Stable per-event identity: the same transcript always yields the same key.
    *
-   * Unique across the corpus by construction, and disambiguated rather than overwritten if a
-   * transcript ever repeats one (see `key`). This is what an ingest keys idempotency on.
+   * A property of the EVENT, not of the sweep that read it -- so it is identical on any machine, in
+   * any order, whichever file carries the event. It is deliberately NOT unique across the corpus:
+   * one event written into two transcript files derives the SAME key twice, and that repetition is
+   * how the store recognises the second file's copy as one it already holds rather than minting a
+   * second id for it. Before `asc-hbxl` a repeat was suffixed `#2` in sweep order, which made the id
+   * a property of the READ SET; that suffix is retired.
+   *
+   * This is what an ingest keys idempotency on.
    */
   readonly key: string;
   /**
@@ -110,42 +120,30 @@ export interface DeriveCounters {
   /** Entries produced. */
   entries: number;
   /**
-   * Entries whose per-event key was already issued in this SWEEP **by the same type**, so it was
-   * suffixed `#2`. Per type since `asc-77b7`: the namespace is the type because the id's is, so a
-   * second type minting one raw key is not a collision at all and is no longer counted as one.
+   * Entries whose per-event key was already emitted in this SWEEP by the SAME type -- i.e. the same
+   * event was carried by more than one transcript file. Per type, because the id's namespace is: a
+   * `tool_denial` and a `verification_run` sharing one raw `toolu_...` are two distinct ids
+   * (`asc-77b7`) and are NOT a repeat.
    *
-   * CENSUS, not a sample. Both arms swept ONE frozen snapshot of the corpus -- 913 files,
-   * 527,122 records, 1,816 entries -- so the only variable is this file:
+   * **The `#2` suffix this once fed is retired (`asc-hbxl`).** A repeated key is no longer
+   * disambiguated: the deriver emits the raw key unchanged, and the store's primary key plus content
+   * comparison recognises the second occurrence -- as already present when its content is identical,
+   * refused and reported when it differs. So this is no longer "keys we had to make unique"; it is
+   * "events more than one file carried".
    *
-   *   before `asc-iq6`   8 collisions   1,815 distinct keys   1 DUPLICATE key
-   *   after  `asc-iq6`   9 collisions   1,816 distinct keys   0 duplicate keys
+   * Kept rather than dropped, because the ingest's own `present` tally cannot tell this apart from a
+   * re-run recognising its own earlier write -- both report the same id as already held. This is the
+   * only place that can say a single sweep read one event twice.
    *
-   * The whole difference is one line of 1,816: the second occurrence of
-   * `verification_run|<session>:toolu_...` gained a `#2`, and every other key is byte-identical
-   * across the two sweeps. That is what "a key that does not collide is unchanged" means as a
-   * measurement rather than an argument. The 9th collision is the class the per-file set was
-   * blind to by construction -- a repeat across two files of one session.
+   * Measured on the live corpus (`docs/evidence/EV-45.md`, 2026-10-09): a full re-derivation found 4
+   * raw-key groups repeated, 4 of 4 spanning more than one file and 0 within one file, and all 4
+   * groups derived byte-identical content. Stated as a count, not a rate -- 4 groups is far under
+   * the analysis layer's `MIN_N`.
    *
-   * An earlier reading of 6 on the 2026-09-15 corpus is superseded: it was taken while the set
-   * was per file, so it counted same-file repeats only.
-   *
-   * **Both figures predate the per-type namespace and are the FLAT-SET reading.** Removing a
-   * namespace dimension can only make fewer pairs collide, so the namespaced count is at most
-   * these numbers and may be lower by however many of the 9 were cross-type -- which was not
-   * measured. An upper bound, then, and not re-measured here: the spurious ids were counted on the
-   * live store instead, 2026-10-07 -- 8 of 24 suffixes, every one a `verification_run` whose bare
-   * key a `tool_denial` also holds, every one at `verification_run` v1 while the rule is at v4
-   * (`derived-types.ts:146`, read 2026-10-07), so a re-ingest re-ids them through the ordinary
-   * version mechanism and no migration is owed. Regenerable with `node
-   * spike/asc-77b7-suffix-namespace.mjs`.
-   *
-   * Small, and reported rather than absorbed, because the alternative is a rule that silently
-   * overwrites -- and a dropped event leaves no trace at all. The count is not broken down by
-   * type, and no cause is claimed for it: a transcript that replays records (a compacted
-   * session continuing) would produce exactly this, but it was not investigated, and a
-   * plausible mechanism is not a measurement.
+   * It is neither a loss nor a collision: no entry is dropped and no id changes. It measures how
+   * often the corpus hands one event to two files.
    */
-  keyCollisions: number;
+  repeatedKeys: number;
   /**
    * Events recognised but NOT emitted, because they had no stable identity: a denial or
    * compaction with no `session_id`, a skill activation with no record uuid, or a verification
@@ -955,37 +953,35 @@ export function createDeriver(): Deriver {
     { readonly name: string; readonly command: string | undefined }
   >();
   /**
-   * Keys already issued for THIS SWEEP, per TYPE, so a repeat within a type is suffixed rather than
-   * lost.
+   * Raw keys already emitted for THIS SWEEP, per type, as `type\u0000key` -- so a repeat of one
+   * event across two files is counted rather than lost.
    *
-   * Per type since asc-77b7: the members are namespaced `type\u0000key` because the ids they become
-   * are namespaced by type (`derived-types.ts:122`). See `key` below for what the flat set used to
-   * do to a cross-type pair.
+   * The namespace is the type because the id's is (`derived-types.ts`): the same raw key under two
+   * types is two ids, so a cross-type pair is not a repeat and must not be counted as one
+   * (`asc-77b7`). See `noteKey` below, which is the only writer.
    *
-   * **Sweep-wide, not per file, and the difference is the whole of `asc-iq6`.** Every raw key
-   * here embeds a `sessionId`, and a session id is NOT per file: a session's subagent
-   * transcripts carry the PARENT's session id -- the same fact the verdict chain below relies
-   * on when it refuses to chain across one. Tool-use ids are unique within ONE agent's
-   * conversation, so two sibling subagent transcripts can independently mint the same
-   * `toolu_...`, and with a per-file set each file disambiguated against itself, found no
-   * repeat, and emitted the SAME unsuffixed key. The collision existed only in the union --
-   * which is exactly the scope the key claims.
+   * **Sweep-wide, not per file, and that scope is the measurement itself.** Every raw key here
+   * embeds a `sessionId`, and a session id is NOT per file: a session's subagent transcripts carry
+   * the PARENT's session id -- the same fact the verdict chain below relies on when it refuses to
+   * chain across one. Tool-use ids are unique within ONE agent's conversation, so two sibling
+   * subagent transcripts can independently mint the same `toolu_...`, and with a per-file set each
+   * file would compare against itself, find no repeat, and report nothing. The repeat exists only
+   * in the union -- which is exactly the scope being measured.
    *
-   * Measured when it was found, on the live corpus: one duplicate,
-   * `verification_run|<session>:toolu_...`, from two subagent transcripts of one session
-   * holding 218 and 141 records. Both reported the same `sessionId`. 861 of the 913
-   * transcripts in that corpus are subagent transcripts, so this is the majority surface
-   * rather than a corner of it.
+   * Measured when it was found, on the live corpus: one such repeat,
+   * `verification_run|<session>:toolu_...`, from two subagent transcripts of one session holding
+   * 218 and 141 records. 861 of the 913 transcripts in that corpus are subagent transcripts, so
+   * this is the majority surface rather than a corner of it.
    *
-   * A set that spans the sweep costs one string per DERIVED entry, not per record read. Measured
-   * on a frozen snapshot of that corpus: 1,816 entries from 527,122 records across 913 files.
-   * Three orders of magnitude below the input it is already reading, and not a reason to
-   * reintroduce a correctness gap.
+   * A set that spans the sweep costs one string per DERIVED entry, not per record read. Measured on
+   * a frozen snapshot of that corpus: 1,816 entries from 527,122 records across 913 files. Three
+   * orders of magnitude below the input it is already reading.
    *
-   * `const` is load-bearing rather than tidiness: the defect was one assignment, in `begin()`,
-   * and `const` is what makes reintroducing it a compile error instead of a review question.
+   * `const` is load-bearing rather than tidiness: the defect that produced the retired `#2` suffix
+   * was one assignment, in `begin()`, and `const` is what makes reintroducing it a compile error
+   * instead of a review question.
    */
-  const issued = new Set<string>();
+  const emitted = new Set<string>();
   let run: SkillRun | undefined;
   /**
    * skill name -> `Skill` calls in THIS file not yet matched to the attributed run they start.
@@ -1019,7 +1015,7 @@ export function createDeriver(): Deriver {
   const counters: DeriveCounters = {
     records: 0,
     entries: 0,
-    keyCollisions: 0,
+    repeatedKeys: 0,
     unkeyable: 0,
     unverdictable: 0,
     masked: 0,
@@ -1031,41 +1027,21 @@ export function createDeriver(): Deriver {
   };
 
   /**
-   * A key unique WITHIN ITS TYPE, suffixed when that type has already issued it this sweep.
+   * Note that this type has emitted this raw key in this sweep, and count it if it already had.
    *
-   * **The namespace is the type, because the id's is.** A derived entry's id is
-   * `derived:claude-code:<type>@<n>:<key>` (`derived-types.ts:122`), so the same key under two types
-   * was always two ids. `issued` did not know that: one flat `Set<string>` spanned every type, so a
-   * denied `Bash` check -- which produces both a `tool_denial` and a `verification_run` for one
-   * `toolu_...` -- took `sess:t1` for the first and minted `sess:t1#2` for the second, resolving a
-   * collision the store's own namespacing had already resolved.
+   * The key itself is emitted UNCHANGED -- an entry's key is a property of the event, and the
+   * sweep's read set must not enter it (`asc-hbxl`). What the set is still for is the one fact the
+   * store cannot recover by itself: that a single sweep handed this event to more than one file.
+   * See `DeriveCounters.repeatedKeys`.
    *
-   * Two things were wrong with that, and only the first is cosmetic. `keyCollisions` over-counted,
-   * and the warning it feeds says *"event key(s) repeated within a transcript"*, which is false of
-   * a cross-type pair. And the meaningless `#2` was written into a STORED id, so it travelled into
-   * every fingerprint comparison on re-ingest. The docblock above reasons entirely about same-type
-   * collisions between sibling subagent transcripts -- which is what this suffix is for -- so the
-   * cross-type case is a gap rather than a deliberate narrowing.
-   *
-   * **Version is deliberately not part of the namespace**, though the id carries it. `type_version`
-   * is a static property of the rule, constant within a sweep (`derived-types.ts`), so it cannot
-   * separate two keys that `type` does not.
-   *
-   * This does NOT make the suffix stable across runs: it is still assigned in sweep order, so a run
-   * that skips a transcript with a cursor mints different suffixes. That is asc-hbxl, a separate
-   * defect, still open -- and fixed here only in the sense that it no longer fires cross-type.
+   * Version is deliberately not part of the namespace, though the id carries it: `type_version` is
+   * a static property of the rule, constant within a sweep, so it cannot separate two keys that
+   * `type` does not.
    */
-  const key = (type: string, raw: string): string => {
-    const namespace = `${type}\u0000`;
-    let candidate = raw;
-    let suffix = 2;
-    while (issued.has(`${namespace}${candidate}`)) {
-      candidate = `${raw}#${String(suffix)}`;
-      suffix += 1;
-    }
-    if (candidate !== raw) counters.keyCollisions += 1;
-    issued.add(`${namespace}${candidate}`);
-    return candidate;
+  const noteKey = (type: string, raw: string): void => {
+    const space = `${type}\u0000${raw}`;
+    if (emitted.has(space)) counters.repeatedKeys += 1;
+    emitted.add(space);
   };
 
   const emit = (
@@ -1079,9 +1055,10 @@ export function createDeriver(): Deriver {
     properties: Record<string, unknown>,
     evidenceText?: string,
   ): void => {
+    noteKey(type, rawKey);
     const entry: DerivedEntry = {
       type,
-      key: key(type, rawKey),
+      key: rawKey,
       source: DERIVED_SOURCE,
       occurredAt,
       // OMITTED, never `''`, when the transcript carries neither -- `entries` refuses an empty
@@ -1169,9 +1146,10 @@ export function createDeriver(): Deriver {
   /**
    * Reset the state that belongs to ONE file, when the sweep moves to the next one.
    *
-   * `issued` is deliberately NOT reset here -- see its own doc. It is the one piece of state
-   * whose scope is the sweep rather than the file, because the keys it guards embed a session
-   * id that several files share.
+   * `emitted` is deliberately NOT reset here -- see its own doc. It is the one piece of state whose
+   * scope is the sweep rather than the file, because the keys it holds embed a session id that
+   * several files share -- and resetting it per file would hide exactly the cross-file repeat it
+   * exists to count.
    */
   const begin = (): void => {
     invocations = new Map();

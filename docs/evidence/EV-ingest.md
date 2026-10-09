@@ -75,6 +75,21 @@ rows, and the command reports the count rather than absorbing it. A transcript t
 two ingests is not a controlled comparison, and this was not measured per-file; what is measured is
 the collision count, not the re-ingest delta.
 
+**SUPERSEDED 2026-10-09 (`asc-hbxl`).** The limitation above is now false in both halves, and the
+paragraph is left as written because it was true when measured. The `#2` disambiguation suffix has
+been **retired**: an entry's key is the raw per-event key, unchanged, so it is a pure function of the
+event and no longer moves when the read set moves — the failure this paragraph describes was
+confirmed on the real corpus and is what the change fixes (`docs/evidence/EV-45.md`, measured the
+same day: 4 raw-key groups repeated, 4 of 4 spanning more than one file, 0 within one file, all 4
+byte-identical). A cross-file repeat now yields the SAME id twice, which the store's PRIMARY KEY plus
+content comparison resolves to `already present` (identical) or a loud `collided` (different) — not a
+suffixed second row. The count this paragraph cites (6 collisions) was the *suffix* census and is
+gone with the mechanism; the sweep still counts repeats, as `repeatedKeys`, for the one fact the
+store cannot recover: that one sweep read one event from two files. Verified end-to-end the same day:
+a full re-derivation of the real corpus reported `4 event key(s) were emitted more than once in this
+sweep`, stored 3,068 entries with **0** ids containing `#`, and a second full pass was `already
+present` on every type.
+
 **What this overturned.** The instinct that idempotency needs a store-level mechanism — an upsert,
 an `ON CONFLICT`, a dedupe table. It does not, because `id` was already the caller's to supply and
 the PRIMARY KEY already refuses a repeat. The store needed no change at all, and the fix that

@@ -834,26 +834,28 @@ describe('asc ingest claude-code', () => {
   });
 
   /**
-   * The same case `asc-90h` found, now fixed at its cause rather than reported at its symptom.
+   * Two files reuse one `(session_id, uuid)` for two DIFFERENT events, and the store refuses the
+   * second rather than minting a second id for it.
    *
-   * `asc-90h` saw two transcript files reuse a `(session_id, uuid)` pair for two DIFFERENT
-   * events, and made the loss VISIBLE at the store: the second event could not be written, so it
-   * became a counted `collided` rather than a silent "already present". That was the right fix
-   * for what was known then, and this test asserted it.
+   * The history is two inversions deep, and each is kept because it is the reason the next exists.
+   * `asc-90h` saw the case and made the loss VISIBLE at the store: the second event could not be
+   * written, so it became a counted `collided` rather than a silent "already present". `asc-iq6`
+   * then found WHY the deriver could not prevent it -- the set that suffixed a repeated key `#2` was
+   * per FILE, while the key embeds a session id that all of a session's files share -- and widened
+   * it to the sweep, so the second event was suffixed and KEPT (`2 new`).
    *
-   * `asc-iq6` found why the deriver could not prevent it: the set that suffixes a repeated key
-   * `#2` was scoped to one FILE, while the key it guards embeds a session id that all of a
-   * session's subagent transcripts share. Each file checked itself, found no repeat, and emitted
-   * the same key. With the set widened to the sweep, the second event is suffixed and KEPT, so
-   * the expectation here inverts: what used to be one entry and one loud loss is now two
-   * entries. Preserving the event is strictly better than reporting it as lost, which is why
-   * this is an inversion and not a regression.
+   * `asc-hbxl` retires the suffix and inverts `asc-iq6` back toward `asc-90h`'s OUTCOME. An id is a
+   * pure function of the event now, so the store's primary key plus content comparison is the only
+   * dedupe for a cross-file repeat: two files carrying the SAME event collapse to one entry, and two
+   * files carrying DIFFERENT content under one identity are refused loudly. That reversal is
+   * measured, not preferred: on the live corpus every cross-file repeat carried byte-identical
+   * content except one that differed only in `cwd` (`docs/evidence/EV-45.md`), so keeping both was
+   * preserving a duplicate rather than an event.
    *
-   * The store-level guard is not dead, and the test below covers it: it still fires when an id
-   * already in the store is re-proposed with DIFFERENT content, which a transcript edited in
-   * place between two ingests still produces.
+   * The store-level guard is the ONLY line of defence now, which is why this tests it directly
+   * rather than a deriver suffix.
    */
-  it('keeps both events when two files reuse one identity, rather than reporting one as lost', () => {
+  it('refuses the second of two files that reuse one identity for DIFFERENT content', () => {
     const dir = project();
     const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
     mkdirSync(corpus, { recursive: true });
@@ -866,9 +868,8 @@ describe('asc ingest claude-code', () => {
       userFeedback: feedback,
     });
 
-    // Two DIFFERENT physical files, deliberately not two records in one file: the mechanism is
-    // the deriver's file boundary, and two records in one file would have been disambiguated
-    // even before `asc-iq6`. Only a real boundary exercises the scope that was wrong.
+    // Two DIFFERENT physical files, deliberately not two records in one file: the mechanism is the
+    // deriver's file boundary, and two records in one file were disambiguated even before `asc-iq6`.
     writeFileSync(
       join(corpus, 'sess-collide-a.jsonl'),
       `${JSON.stringify(feedbackRecord('use approach A', '2026-01-02T03:05:00.000Z'))}\n`,
@@ -882,30 +883,119 @@ describe('asc ingest claude-code', () => {
 
     expect(run.status).toBe(0);
 
-    // BOTH events landed. Read back rather than trusted, and sorted so the assertion does not
-    // silently encode the sweep's file order -- which file is read first is not what is being
-    // claimed here.
+    // Exactly ONE entry, read back rather than trusted, and NO suffixed id: the identity is the
+    // event's now, and a copy carrying different content is not an event the store may hold. Which
+    // of the two files won the sweep is not asserted -- that is read order, not the claim.
     const db = new DatabaseSync(join(dir, '.ascend', 'index.db'));
-    let rows: { id: string; t: string }[];
+    let ids: string[];
     try {
-      rows = db
-        .prepare('SELECT id, evidence_text AS t FROM entries WHERE type_name = ?')
-        .all('user_correction') as { id: string; t: string }[];
+      ids = (
+        db.prepare('SELECT id FROM entries WHERE type_name = ?').all('user_correction') as {
+          id: string;
+        }[]
+      ).map((row) => row.id);
     } finally {
       db.close();
     }
-    expect(rows.map((row) => row.t).sort()).toEqual(
-      ['use approach A', 'actually use approach B'].sort(),
-    );
+    expect(ids).toHaveLength(1);
+    expect(ids.filter((id) => id.endsWith('#2')).length).toBe(0);
 
-    // Two distinct ids, exactly one of them suffixed. The suffix is the mechanism: without it
-    // the two events would share an id, which is the state `asc-iq6` removed.
-    const ids = rows.map((row) => row.id);
-    expect(new Set(ids).size).toBe(2);
-    expect(ids.filter((id) => id.endsWith('#2')).length).toBe(1);
+    expect(outcomes(run.stdout)['user_correction']).toBe('1 new, 1 collided');
+    expect(run.stderr).toContain('collided with a DIFFERENT entry');
+  });
 
-    expect(outcomes(run.stdout)['user_correction']).toBe('2 new');
+  /**
+   * The corpus's OWN shape, 15 of 16 measured duplicates: two files carrying one event with
+   * IDENTICAL content. Nothing is lost and nothing is refused -- the second is recognised as already
+   * present -- but the sweep says out loud that it read one event from two files, which is the fact
+   * the old warning described as *"repeated within a transcript"* (`asc-12xf`).
+   */
+  it('recognises two files carrying the SAME event as one entry, and says the repeat out loud', () => {
+    const dir = project();
+    const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
+    mkdirSync(corpus, { recursive: true });
+
+    // Byte-for-byte the same record in both files.
+    const record = {
+      sessionId: 'sess-dup',
+      uuid: 'shared-uuid-3',
+      timestamp: '2026-01-02T03:07:00.000Z',
+      ...RECORD_AT,
+      userFeedback: 'the same words in both files',
+    };
+    const line = `${JSON.stringify(record)}\n`;
+    writeFileSync(join(corpus, 'sess-dup-a.jsonl'), line);
+    writeFileSync(join(corpus, 'sess-dup-b.jsonl'), line);
+
+    const run = asc(['ingest', 'claude-code'], dir);
+
+    expect(run.status).toBe(0);
+    const result = stored(dir);
+    expect(result.byType['user_correction']).toBe(1);
+    expect(result.ids.filter((id) => id.endsWith('#2')).length).toBe(0);
+
+    expect(outcomes(run.stdout)['user_correction']).toBe('1 new, 1 already present');
     expect(run.stderr).not.toContain('collided with a DIFFERENT entry');
+    // The truthful warning: the repeat is ACROSS files, and there is no suffix. `asc-12xf` made the
+    // old sentence a bug in its own right -- it named a mechanism that never existed for this case.
+    const unwrapped = run.stderr.replace(/\s+/g, ' ');
+    expect(unwrapped).toContain('emitted more than once in this sweep');
+    expect(unwrapped).not.toContain('within a transcript');
+    expect(unwrapped).not.toContain('suffix');
+  });
+
+  /**
+   * `--dry-run` must predict the real run's counts, including for a same-id repeat -- the case the
+   * preview's old `findEntry(id) === undefined` check got wrong. Without a memory of ids it had
+   * already previewed, it read BOTH copies as `written` while the real run writes one and marks the
+   * other `present`, so the preview over-counted by exactly the cross-file repeats.
+   */
+  it('has --dry-run report the same outcomes the real run writes for a repeated identity', () => {
+    // The corpus's real shape -- two files, one identity, BYTE-IDENTICAL content -- is the one the
+    // warning test above covers for the real run; here it is the preview that must agree, and it is
+    // the weaker half of the pair: an always-`present` fingerprint would read the same. So both
+    // shapes are driven, in two projects, because only the DIFFERENT-content shape tells the
+    // `seen` map's content comparison apart from a preview that merely remembers ids.
+    for (const [label, content, expected] of [
+      [
+        'identical',
+        ['the same words in both files', 'the same words in both files'],
+        '1 new, 1 already present',
+      ],
+      ['differing', ['use approach A', 'actually use approach B'], '1 new, 1 collided'],
+    ] as const) {
+      const dir = project();
+      const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
+      mkdirSync(corpus, { recursive: true });
+
+      const feedbackRecord = (feedback: string): Record<string, unknown> => ({
+        sessionId: `sess-${label}`,
+        uuid: `shared-uuid-${label}`,
+        timestamp: '2026-01-02T03:08:00.000Z',
+        ...RECORD_AT,
+        userFeedback: feedback,
+      });
+      writeFileSync(
+        join(corpus, `sess-${label}-a.jsonl`),
+        `${JSON.stringify(feedbackRecord(content[0]))}\n`,
+      );
+      writeFileSync(
+        join(corpus, `sess-${label}-b.jsonl`),
+        `${JSON.stringify(feedbackRecord(content[1]))}\n`,
+      );
+
+      const preview = asc(['ingest', 'claude-code', '--dry-run'], dir);
+      expect(preview.status, label).toBe(0);
+      // The preview prints the counts the real run will -- and wrote nothing, so the run that
+      // follows is unaffected.
+      expect(outcomes(preview.stdout)['user_correction'], label).toBe(expected);
+      expect(stored(dir).byType['user_correction'] ?? 0, label).toBe(0);
+
+      const real = asc(['ingest', 'claude-code'], dir);
+      expect(real.status, label).toBe(0);
+      expect(outcomes(real.stdout)['user_correction'], label).toBe(expected);
+      expect(stored(dir).byType['user_correction'], label).toBe(1);
+    }
   });
 
   /**

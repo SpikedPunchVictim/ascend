@@ -48,15 +48,15 @@
  *     guards against is worth naming: a preview that wrote the cursor would make the NEXT real run
  *     skip exactly the files whose entries were only ever proposed, and the recovery would be
  *     `--full`.
- *   - **The `#2` disambiguation suffix is order-sensitive.** The deriver appends `#2` when a
- *     sweep repeats a per-event key. If a still-growing corpus gains a colliding record between
- *     two ingests, that entry's suffix shifts and the run writes one more entry rather than
- *     recognising it. `asc-iq6` widened that set from per-file to per-sweep, which fixed a real
- *     loss but also made the suffix depend on file traversal order rather than position within
- *     one file. Measured 2026-09-20 on the live corpus: 1 observed collision among 1,812 derived
- *     entries (`asc ingest claude-code --dry-run --json`), so this is a handful of rows. It is a
- *     real limit of keying on a derived identity, not a bug to be fixed here -- which is why the
- *     count is reported rather than absorbed.
+ *   - **An event's id does not depend on which files a run read.** It is
+ *     `derived:claude-code:<type>:<key>`, and `<key>` is now a pure function of the event, so the
+ *     same event derives the same id whichever file carries it and in whatever order the sweep
+ *     reaches it. Before `asc-hbxl` a repeated key got a `#2` suffix assigned in sweep order, so a
+ *     transcript appearing between two runs could shift an id and write one more entry than the
+ *     corpus holds events. Retiring the suffix leaves the store's primary key plus content
+ *     comparison as the only dedupe for a cross-file repeat: identical content is recognised as
+ *     already present, differing content is refused and reported. A sweep that hands one event to
+ *     two files is counted (`repeatedKeys`) and reported.
  *
  * **ONE TRANSACTION, AND ALL-OR-NOTHING.** The entries are one fused write
  * (`writeProducedLines`, E12.4b3), which is one `BEGIN IMMEDIATE` across produce, append and
@@ -140,7 +140,7 @@ import {
   type Store,
 } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
-import { entryDifference, type EntryDifference } from '../../entry-difference.js';
+import { entryDifference, type Comparable, type EntryDifference } from '../../entry-difference.js';
 import { refusal } from '../../errors.js';
 import { openEventLog, type EventLogWriter } from '../../event-log.js';
 import { storePaths } from '../../project.js';
@@ -166,10 +166,12 @@ const OUTCOME = 'outcome';
  * share one PRIMARY KEY -- and it means an operator reading `entries` can tell a machine's
  * reading from a model's self-report without a join.
  *
- * `key` is the deriver's own per-event identity, unique across the corpus by construction. Using
- * it rather than hashing the entry's properties is what makes the id stable when a rule changes:
- * `occurred_at` or `runner` can be rewritten by a later rule and the entry is still the same
- * event, so the re-run recognises it instead of writing a second copy.
+ * `key` is the deriver's own per-event identity, a pure function of the event -- deliberately NOT
+ * unique across the corpus, because one event carried by two transcript files derives the same key
+ * twice and that is how the store recognises the second copy. Using it rather than hashing the
+ * entry's properties is what makes the id stable when a rule changes: `occurred_at` or `runner` can
+ * be rewritten by a later rule and the entry is still the same event, so the re-run recognises it
+ * instead of writing a second copy.
  */
 /** A typed handler's entry key: `<handler>@<hash12>:<session>:...` (`typed-handlers.ts`). */
 const HANDLER_KEY = /^([A-Za-z0-9_.-]+)@[0-9a-f]{12}:/;
@@ -321,11 +323,12 @@ function disclosingOf(entries: readonly DerivedEntry[]): readonly Disclosing[] {
  * entry says beyond its id.
  *
  * `asc-90h` needed this for a cross-file reuse of a `(session_id, uuid)` or
- * `(session_id, tool_use_id)` pair WITHIN one sweep, which `asc-iq6` has since fixed at the
- * deriver -- the suffix set is sweep-wide now, so that case never reaches here. What still does
- * is a transcript edited in place between two ingests: same id, new content, in a later run
- * whose suffix set starts empty. The comparison is therefore load-bearing for a narrower case
- * than it was written for, and still load-bearing.
+ * `(session_id, tool_use_id)` pair WITHIN one sweep. Retiring the `#2` suffix (`asc-hbxl`) makes
+ * that case reach here ROUTINELY rather than never: a sweep that reads one event out of two files
+ * proposes the same id twice, so the comparison is now load-bearing for both that within-sweep
+ * cross-file repeat AND a transcript edited in place between two runs (same id, new content, in a
+ * later sweep). A repeat whose content is identical is ordinary idempotency; one whose content
+ * differs is the collision this reports.
  */
 function fingerprint(entry: {
   readonly properties: Readonly<Record<string, unknown>>;
@@ -738,7 +741,12 @@ export default class IngestClaudeCode extends BaseCommand {
     const rejections: string[] = [];
     const collisions: string[] = [];
     let redactedCollisions = 0;
-    const collide = (entry: DerivedEntry, existing: RecordedEntry): void => {
+    /**
+     * `existing` is whatever is already held under the id: a row read back from the store, or --
+     * in a preview, where nothing is written -- an earlier entry from this same sweep. Both
+     * satisfy `Comparable`, which is all `entryDifference` needs.
+     */
+    const collide = (entry: DerivedEntry, existing: Comparable): void => {
       tally(entry.type, 'collided');
       const difference = entryDifference(existing, entry);
       if (difference.redacted.length > 0) redactedCollisions += 1;
@@ -785,17 +793,37 @@ export default class IngestClaudeCode extends BaseCommand {
     }
 
     if (dryRun) {
+      // A preview must report the counts the real run will, which means remembering the ids it has
+      // ALREADY previewed in this sweep. Two files carrying one event derive one id twice; the real
+      // run writes the first and classifies the second as `present` (same content) or `collided`
+      // (different). Without this map both read as `written`, so the preview would over-count by
+      // exactly the cross-file repeats -- the one number it exists to predict (`asc-hbxl`).
+      const seen = new Map<string, DerivedEntry>();
       for (const entry of valid) {
+        const id = idFor(entry);
         // Same content check as the real run's `DuplicateEntryError` branch (`asc-90h`), so a
-        // preview cannot describe a collision as an ordinary "already present" the real run
-        // would not agree with.
-        const existing: RecordedEntry | undefined = findEntry(store.db, idFor(entry));
-        if (existing === undefined) {
+        // preview cannot describe a collision as an ordinary "already present" the real run would
+        // not agree with.
+        const existing: RecordedEntry | undefined = findEntry(store.db, id);
+        if (existing !== undefined) {
+          if (fingerprint(existing) === fingerprint(entry)) {
+            tally(entry.type, 'present');
+          } else {
+            collide(entry, existing);
+          }
+          continue;
+        }
+        const earlier = seen.get(id);
+        if (earlier === undefined) {
           tally(entry.type, 'written');
-        } else if (fingerprint(existing) === fingerprint(entry)) {
+          seen.set(id, entry);
+        } else if (fingerprint(earlier) === fingerprint(entry)) {
           tally(entry.type, 'present');
         } else {
-          collide(entry, existing);
+          // No stored row to name -- the first copy is itself only a proposal here -- so the
+          // collision is measured against the earlier entry in this sweep, which is the row the
+          // real run would have written and read back.
+          collide(entry, earlier);
         }
       }
       // Before the cursor write below, which is the whole of what keeps a preview from reaching
@@ -1034,11 +1062,16 @@ export default class IngestClaudeCode extends BaseCommand {
           `shortfall.`,
       );
     }
-    if (counters.keyCollisions > 0) {
+    // `asc-hbxl`. One sweep read one event out of more than one transcript file -- the honest fact
+    // the old sentence described as "repeated within a transcript", which was wrong for every case
+    // the corpus offers (the repeat is ALWAYS across files: a transcript does not repeat its own
+    // record uuid) and which named a `#2` suffix that no longer exists.
+    if (counters.repeatedKeys > 0) {
       this.warn(
-        `${String(counters.keyCollisions)} event key(s) repeated within a transcript and were ` +
-          `disambiguated with a "#2" suffix. If a transcript is still growing, one of these may ` +
-          `be written again as a new entry on a later run.`,
+        `${String(counters.repeatedKeys)} event key(s) were emitted more than once in this sweep ` +
+          `because more than one transcript file carried them. The store wrote one and recognised ` +
+          `the rest as already held; a copy carrying DIFFERENT content is reported below as a ` +
+          `collision.`,
       );
     }
 

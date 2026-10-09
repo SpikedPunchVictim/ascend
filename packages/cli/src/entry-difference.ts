@@ -14,7 +14,12 @@ either. Redaction is rarely the whole difference: on the same store every redact
 an absolute `cwd` that the deriver has written project-relative since asc-tlc.
  */
 
-interface Comparable {
+/**
+ * The parts of an entry this compares: everything that is NOT its id. Both a `RecordedEntry` (read
+ * back from the store) and a `DerivedEntry` (proposed by this sweep) satisfy it, which is what lets
+ * a preview compare two proposals without a stored row to hand.
+ */
+export interface Comparable {
   readonly properties: Readonly<Record<string, unknown>>;
   readonly cwd?: string | null;
   readonly branch?: string | null;

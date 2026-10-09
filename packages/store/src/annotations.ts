@@ -94,6 +94,26 @@ const INVALIDATION_SCHEME_SPEC: SchemeSpec = {
   rules: [],
 };
 
+/**
+ * The shapes the reserved scheme has carried before, which a replay must still admit.
+ *
+ * `restoreInvalidationScheme` exists so a store can be restored from its own export, and this repo's
+ * own tracked record tree (`.ascend/schemes/0001.jsonl`) holds a reserved line written when the
+ * vocabulary had three labels. Widening the vocabulary (`asc-hbxl`) changes the hash of the current
+ * shape, so without this list the store could not replay its OWN history -- `asc index build` would
+ * fail on this repo's tree.
+ *
+ * Frozen, and checked by membership rather than by version: each entry is the exact label set the
+ * reserved scheme carried at some point, and a spec matching any of them restores. A shape matching
+ * none is refused, which is what keeps a stream from carrying its own labels or rules under the
+ * reserved name. The list is append-only by construction -- an old line's shape does not change when
+ * a new label lands -- so an entry is only ever ADDED here, never edited.
+ */
+const INVALIDATION_SCHEME_HISTORY: readonly (readonly string[])[] = [
+  // v1: three labels, no rules, before `duplicate` was admitted (`asc-hbxl`).
+  ['wrong_subject', 'wrong_value', 'superseded'],
+];
+
 /** How a rule selects entries. `sql` is a predicate over `entries`; `fts` is a text query. */
 export type SchemeRuleKind = 'sql' | 'fts';
 
@@ -450,21 +470,27 @@ export function registerScheme(
  *
  * `asc import` replays a store's own export, and a store with a single invalidation exports a
  * scheme line named `'invalidation'`. Sent through `registerScheme`, that line was refused, so the
- * store could not be restored from its own backup (dogfood/0027). This admits the name only with
- * the shape `recordInvalidation` registers, so it gives nothing to a stream that tries to carry
- * its own rules or labels under the reserved name.
+ * store could not be restored from its own backup (dogfood/0027). This admits the name only with a
+ * shape `recordInvalidation` registers -- the current one OR any frozen earlier one
+ * (`INVALIDATION_SCHEME_HISTORY`), so the store can still replay its own past -- so it gives nothing
+ * to a stream that tries to carry its own rules or labels under the reserved name.
  */
 export function restoreInvalidationScheme(
   db: SqlDatabase,
   spec: SchemeSpec,
   context: SchemeContext,
 ): RegisteredScheme {
-  if (schemeHash(spec) !== schemeHash(INVALIDATION_SCHEME_SPEC)) {
+  const known =
+    schemeHash(spec) === schemeHash(INVALIDATION_SCHEME_SPEC) ||
+    INVALIDATION_SCHEME_HISTORY.some(
+      (labels) => schemeHash(spec) === schemeHash({ labels, rules: [] }),
+    );
+  if (!known) {
     throw new SchemeError(
       `a '${RESERVED_SCHEME}' scheme line carries a shape the store did not write: the reserved ` +
         `scheme is always the labels ${INVALIDATION_LABELS.map((label) => `'${label}'`).join(', ')} ` +
-        `with no rules. Restoring any other shape would put a user's rules under the name the ` +
-        `store owns.`,
+        `with no rules, or an earlier reserved vocabulary. Restoring any other shape would put a ` +
+        `user's rules under the name the store owns.`,
     );
   }
   return registerSchemeUnchecked(db, RESERVED_SCHEME, spec, context);

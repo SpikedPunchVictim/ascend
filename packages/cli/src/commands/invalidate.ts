@@ -145,6 +145,7 @@ export default class Invalidate extends BaseCommand {
     // printed an invocation that exits non-zero -- found by running it, not by reading it.
     '<%= config.bin %> <%= command.id %> e12 --label superseded --reason "unit mismatch, fixed in e19" --superseded-by e19',
     '<%= config.bin %> <%= command.id %> e12 e13 e14 --label wrong_subject --reason "measured the wrong endpoint"',
+    '<%= config.bin %> <%= command.id %> e12 --label duplicate --reason "the same event as e7, written twice by the retired suffix"',
     '<%= config.bin %> <%= command.id %> e12 --label wrong_value --reason "..." --dry-run',
     '<%= config.bin %> <%= command.id %> --list',
     '<%= config.bin %> <%= command.id %> --list e12',

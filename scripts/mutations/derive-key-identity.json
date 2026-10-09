@@ -1,0 +1,81 @@
+{
+  "_": "Kill-check for `asc-hbxl`: an entry's id is a property of the EVENT, not of the sweep that read it. Before this change a repeated raw key was suffixed `#2` in SWEEP order, so an id moved when the read set moved, and one event could be stored twice under two ids. The mutants below break ONE rule of the replacement and name the single test that must notice. Killers were found EMPIRICALLY rather than guessed -- each mutant was applied, the owning test file was run with vitest's JSON reporter, and the failing test names were read off its assertionResults -- because a killer that only *should* fail is the same false green as an assertion never shown to fail. That pass found a real gap and it is recorded here: the preview/real parity test originally drove only the byte-identical duplicate, so an always-true preview fingerprint read the same as the correct comparison and M3 SURVIVED. The test now drives the DIFFERING copy too, which is the only shape that tells a content comparison apart from remembering ids. There is NO intended survivor: all six mutants are observable, so declaring one equivalent would mean inventing one to exercise the `held` path.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "      key: rawKey,\n",
+      "replace": "      key: `${rawKey}#2`,\n",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "gives the SAME key twice when one file repeats an event, and counts the repeat"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "    noteKey(type, rawKey);\n",
+      "replace": "    if (emitted.has(`${type}\\u0000${rawKey}`)) return;\n    noteKey(type, rawKey);\n",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "gives two files of one session the same key, and counts the cross-file repeat"
+        },
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "counts each repeat past the first, emitting every event"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/commands/ingest/claude-code.ts",
+      "find": "        } else if (fingerprint(earlier) === fingerprint(entry)) {\n",
+      "replace": "        } else if (fingerprint(earlier) === fingerprint(earlier)) {\n",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest.test.ts",
+          "test": "has --dry-run report the same outcomes the real run writes for a repeated identity"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/commands/ingest/claude-code.ts",
+      "find": "            if (fingerprint(existing) === fingerprint(entry)) {\n",
+      "replace": "            if (fingerprint(existing) === fingerprint(existing)) {\n",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest.test.ts",
+          "test": "refuses the second of two files that reuse one identity for DIFFERENT content"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "    if (emitted.has(space)) counters.repeatedKeys += 1;\n",
+      "replace": "    if (false) counters.repeatedKeys += 1;\n",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "counts each repeat past the first, emitting every event"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/commands/ingest/claude-code.ts",
+      "find": "${String(counters.repeatedKeys)} event key(s) were emitted more than once in this sweep `",
+      "replace": "${String(counters.repeatedKeys)} event key(s) repeated within a transcript and were disambiguated with a #2 suffix (retired) `",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest.test.ts",
+          "test": "recognises two files carrying the SAME event as one entry, and says the repeat out loud"
+        }
+      ]
+    }
+  ]
+}

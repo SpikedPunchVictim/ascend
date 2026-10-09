@@ -1242,19 +1242,22 @@ describe('keys and counters', () => {
     expect(first.length).toBeGreaterThan(0);
   });
 
-  it('disambiguates a repeated key with #2 rather than dropping the event', () => {
+  it('gives the SAME key twice when one file repeats an event, and counts the repeat', () => {
     const deriver = createDeriver();
     const out = [
       ...deriver.accept(record([], { uuid: 'same', userFeedback: 'one' }), FILE),
       ...deriver.accept(record([], { uuid: 'same', userFeedback: 'two' }), FILE),
     ];
     deriver.drain();
-    expect(out.map((entry) => entry.key)).toEqual(['sess-1:same', 'sess-1:same#2']);
-    expect(deriver.counters.keyCollisions).toBe(1);
+    // The key is a property of the EVENT, so a repeat does not change it -- there is no `#2`. The
+    // store is what recognises the second copy as already held (`asc-hbxl`), and the deriver's only
+    // job is to emit both and count that the sweep handed one event to this file twice.
+    expect(out.map((entry) => entry.key)).toEqual(['sess-1:same', 'sess-1:same']);
+    expect(deriver.counters.repeatedKeys).toBe(1);
     expect(deriver.counters.entries).toBe(2);
   });
 
-  it('keeps disambiguating past the first collision', () => {
+  it('counts each repeat past the first, emitting every event', () => {
     const deriver = createDeriver();
     const out = [
       deriver.accept(record([], { uuid: 'same', userFeedback: 'a' }), FILE),
@@ -1262,57 +1265,52 @@ describe('keys and counters', () => {
       deriver.accept(record([], { uuid: 'same', userFeedback: 'c' }), FILE),
     ].flatMap((entries) => [...entries]);
     deriver.drain();
-    expect(out.map((entry) => entry.key)).toEqual([
-      'sess-1:same',
-      'sess-1:same#2',
-      'sess-1:same#3',
-    ]);
-    expect(deriver.counters.keyCollisions).toBe(2);
+    // Three copies of one event: three identical keys, three entries -- nothing dropped -- and the
+    // count of repeats is n-1.
+    expect(out.map((entry) => entry.key)).toEqual(['sess-1:same', 'sess-1:same', 'sess-1:same']);
+    expect(deriver.counters.repeatedKeys).toBe(2);
+    expect(deriver.counters.entries).toBe(3);
   });
 
   /**
-   * The inverse of what this test asserted until `asc-iq6`, and the inversion is the point.
+   * Two files of ONE session derive the SAME key for the same event, and that is the sweep-wide fact
+   * the counter exists for -- not a collision to be broken.
    *
-   * It used to read "resets the issued-key set per file, so two files do not collide" and
-   * expected two identical keys. That expectation was the defect written down: note that both
-   * records carry `sessionId: 'sess-1'` while the FILES differ, which is not a contrived
-   * fixture -- a session's subagent transcripts all carry the PARENT's session id, so this is
-   * the ordinary shape of the corpus rather than an edge of it. The key embeds that shared
-   * session id, so two files of one session CAN mint the same key, and a per-file set could not
-   * see it: each file disambiguated against itself, found no repeat, and emitted the same
-   * unsuffixed key.
+   * Both records carry `sessionId: 'sess-1'` while the FILES differ, which is not a contrived
+   * fixture: a session's subagent transcripts all carry the PARENT's session id, so this is the
+   * ordinary shape of the corpus. `asc-iq6` widened this set from per-file to per-sweep because a
+   * per-file set compared each file against itself, found no repeat, and could not see it.
+   *
+   * Before `asc-hbxl` the repeat was broken with a `#2` assigned in sweep order -- so the id
+   * depended on the READ SET. Now the key is emitted unchanged and the repeat is COUNTED: it is the
+   * signal that one event was carried by two files, and the store, not the deriver, recognises the
+   * second copy.
    *
    * Measured on the live corpus before the fix: one real duplicate,
    * `verification_run|<session>:toolu_...`, from two subagent transcripts of a single session.
    * 861 of that corpus's 913 transcripts are subagent transcripts.
    */
-  it('carries the issued-key set across files, because a session id is not per file', () => {
+  it('gives two files of one session the same key, and counts the cross-file repeat', () => {
     const deriver = createDeriver();
     const a = deriver.accept(record([], { uuid: 'same', userFeedback: 'a' }), FILE);
     const b = deriver.accept(record([], { uuid: 'same', userFeedback: 'b' }), fileAt('bbb'));
     deriver.drain();
-    expect([...a, ...b].map((entry) => entry.key)).toEqual(['sess-1:same', 'sess-1:same#2']);
-    expect(deriver.counters.keyCollisions).toBe(1);
+    expect([...a, ...b].map((entry) => entry.key)).toEqual(['sess-1:same', 'sess-1:same']);
+    expect(deriver.counters.repeatedKeys).toBe(1);
   });
 
   /**
-   * asc-77b7 -- the other half of the test above, and the reason it now says *within a type*.
+   * asc-77b7 -- a raw key shared by two TYPES is not a repeat, and must not be counted as one.
    *
-   * `issued` was one flat set spanning every type, but a derived id is
-   * `derived:claude-code:<type>@<n>:<key>`, so the same key under two types was never one id. This
-   * fixture is the ordinary shape rather than a contrived one: a denied `Bash` check produces BOTH
-   * a `tool_denial` and the `verification_run` that failed, from ONE `tool_use` id, and the second
-   * was suffixed. Two things followed. `keyCollisions` over-counted and the warning it feeds says
-   * *"event key(s) repeated within a transcript"*, which is false of a cross-type pair -- and the
-   * meaningless `#2` was written into a STORED id, where it travelled into every fingerprint
-   * comparison on re-ingest.
-   *
-   * The live store carried 8 such ids when this was fixed, all `verification_run` whose bare key a
-   * `tool_denial` also held (`spike/asc-77b7-suffix-namespace.mjs`). No migration was owed: all 8
-   * were at type version 1 against a rule now at 4, so a re-ingest re-ids them anyway. 8 is under
-   * MIN_N and is an anecdote -- enough to decide the migration question, not a rate.
+   * A derived id is `derived:claude-code:<type>@<n>:<key>`, so the same key under two types was
+   * never one id. This fixture is the ordinary shape rather than a contrived one: a denied `Bash`
+   * check produces BOTH a `tool_denial` and the `verification_run` that failed, from ONE `tool_use`
+   * id. When the set was flat, the second was suffixed `#2` -- a meaningless suffix written into a
+   * STORED id, where it travelled into every fingerprint comparison on re-ingest. Namespacing by
+   * type fixed that, and the repeat counter keeps the same rule: the namespace is the type, so a
+   * cross-type pair is not a repeat.
    */
-  it('does not suffix a key that another TYPE holds, because the ids differ by type', () => {
+  it('does not count a key another TYPE holds, because the ids differ by type', () => {
     const deriver = createDeriver();
     const out = [
       ...deriver.accept(invoke('toolu_1', 'Bash', 'pnpm test'), FILE),
@@ -1334,8 +1332,8 @@ describe('keys and counters', () => {
     // namespacing said all along.
     expect(byType.get('tool_denial')).toBe('sess-1:toolu_1');
     expect(byType.get('verification_run')).toBe('sess-1:toolu_1');
-    // The counter agrees with the keys: there was no collision to report.
-    expect(deriver.counters.keyCollisions).toBe(0);
+    // The counter agrees with the keys: there was no repeat to report.
+    expect(deriver.counters.repeatedKeys).toBe(0);
   });
 
   it('counts every record offered, including ones that yield nothing', () => {

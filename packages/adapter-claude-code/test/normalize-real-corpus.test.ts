@@ -152,9 +152,10 @@ describe.skipIf(!available)('the normalizer against the real corpus', () => {
 
   it('reads every check verdict the deriver reads, and the same one', async () => {
     const result = await once();
-    // The deriver's keys may carry a `#2` collision suffix; the event id never does.
+    // The key IS the event id now -- the `#2` collision suffix was retired (`asc-hbxl`), so no
+    // strip is needed and this compares like for like.
     const mismatched = result.derived.filter((entry) => {
-      const check = result.checks.get(entry.key.replace(/#\d+$/, ''));
+      const check = result.checks.get(entry.key);
       return (
         check === undefined ||
         check['verdict'] !== entry.verdict ||
