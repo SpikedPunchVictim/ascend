@@ -166,7 +166,90 @@ function scenario(grow) {
    return { collided, skippedWasBare, unstable, refused };
 }
 
+/**
+ * Q5 -- is the read order that decides all of the above CONTROLLABLE at all?
+ *
+ * The scenarios above show the defect fires for exactly one of the two "which file grows" cases,
+ * and that which one is set by sweep order. The bead's remaining claim -- unstable ids -- needs
+ * that order to FLIP BETWEEN two runs. So before calling it a risk, ask whether an order can be
+ * chosen or changed at all. Creation order is the only lever a caller has, so it is the lever
+ * tested: two fixtures identical except for which file was written first.
+ *
+ * If the bare-key holder follows creation order, a flip is reachable and the instability is a real
+ * (if narrow) route. If it does not, the order is the filesystem's and no caller controls it --
+ * which makes the claim unfalsifiable by fixture rather than false, and worth recording as such
+ * instead of as a defect.
+ */
+function orderProbe() {
+   /**
+    * Which file held the bare key, given which file was WRITTEN first and what it was NAMED.
+    *
+    * Content is bound to the logical file (A always says 'use approach A'), so the winner's text
+    * identifies which file won no matter how it was named -- which is what lets the naming probe
+    * below mean anything.
+    */
+   const holder = (createFirst, nameA = 'a') => {
+      const dir = mkdtempSync(join(tmpdir(), 'asc-hbxl-'));
+      dirs.push(dir);
+      mkdirSync(join(dir, '.git'));
+      const corpus = join(dir, '.claude', 'projects', PROJECT_DIR);
+      mkdirSync(corpus, { recursive: true });
+      const init = asc(['init'], dir);
+      if (init.status !== 0) throw new Error(`asc init failed: ${init.stderr}`);
+      const nameB = nameA === 'a' ? 'b' : 'a';
+      const files = {
+         a: [`sess-collide-${nameA}.jsonl`, 'use approach A', '2026-01-02T03:05:00.000Z'],
+         b: [`sess-collide-${nameB}.jsonl`, 'actually use approach B', '2026-01-02T03:05:05.000Z'],
+      };
+      for (const which of createFirst === 'a' ? ['a', 'b'] : ['b', 'a']) {
+         writeFileSync(
+            join(corpus, files[which][0]),
+            `${JSON.stringify(record(files[which][1], files[which][2]))}\n`,
+         );
+      }
+      const run = asc(['ingest', 'claude-code'], dir);
+      if (run.status !== 0) throw new Error(`ingest failed: ${run.stderr}`);
+      const bare = entries(dir).find((row) => !row.id.endsWith('#2'));
+      return bare === undefined ? '?' : bare.t === 'use approach A' ? 'A' : 'B';
+   };
+   const ab = holder('a');
+   const ba = holder('b');
+   // Q5's first two cases cannot tell "creation order" from "the name sorts first": the file called
+   // `-a` was also the one written first both times. Moving content A to a name that sorts LAST
+   // separates them -- and the difference is the whole conclusion. If the winner follows the name,
+   // the order is DETERMINISTIC for a given corpus and cannot drift between runs of an unchanged
+   // directory; if it does not, the order is the filesystem's and no caller controls it at all.
+   const renamed = holder('a', 'z');
+   console.log(
+      `\n${'='.repeat(72)}\nQ5: what decides which file the sweep reads first?\n${'='.repeat(72)}`,
+   );
+   console.log(`  named a/b, wrote A first -> winner ${ab}`);
+   console.log(`  named a/b, wrote B first -> winner ${ba}`);
+   console.log(`  wrote A first, but named it z (so it sorts LAST) -> winner ${renamed}`);
+   console.log(
+      ab === ba
+         ? '  creation order: NO EFFECT (the winner did not follow which file was written first)'
+         : '  creation order: DECIDES',
+   );
+   console.log(
+      renamed === ab
+         ? '  name order:     NO EFFECT (moving A to the end of the alphabet changed nothing)'
+         : `  name order:     DECIDES (A moved to a name sorting last, and ${renamed} won instead)`,
+   );
+   console.log(
+      renamed === ab
+         ? `  => The order is the FILESYSTEM's own: not creation order, not the name. It is stable for\n` +
+              `     an unchanged directory, which is why no run above moved an id -- and it is derivable\n` +
+              `     from nothing a caller sets, so the unstable-id claim cannot be forced by fixture.`
+         : '  => The NAME decides, so the sweep order is deterministic for a given corpus and does not\n' +
+              '     drift on an unedited directory. The unstable-id claim then needs a RENAME or a newly\n' +
+              '     appeared file -- caller actions, not accidents.',
+   );
+   return { ab, ba, renamed };
+}
+
 const results = [scenario('b'), scenario('a')];
+orderProbe();
 
 console.log(`\n${'='.repeat(72)}\nVERDICT\n${'='.repeat(72)}`);
 const fired = results.filter((r) => r.skippedWasBare && (r.collided || r.unstable.length));
@@ -185,7 +268,8 @@ console.log(
            `  NOT REPRODUCED: the bead's second claim, 'entry ids that are not stable across runs'.\n` +
            `  No event's id changed and none disappeared. The colliding write is REFUSED, so the id\n` +
            `  already in the store stands -- the damage is a refused write and a false alarm, not a\n` +
-           `  moved id. Whether a flipped readdir order between runs would move one is UNTESTED here.`
+           `  moved id. Whether a flipped readdir order could move one is what Q5 above tests -- and a\n` +
+           `  flip is the one thing the original claim needed and never checked.`
       : '\n  REFUTED: neither ordering produced a warning or an id change.',
 );
 
