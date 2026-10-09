@@ -326,7 +326,9 @@ A few conventions this repo holds itself to, in case you're reading the source:
 - **Every assertion is mutation-tested.** A check must be shown to *fail* before it is trusted to
   pass — a rule that never fires looks exactly like a rule that passes. `pnpm mutate <spec>` is what
   runs that check: it plants each fault a spec names, runs the one test that must notice, and restores
-  the file by sha256 rather than trusting the restore. Specs live in `scripts/mutations/`, one per
+  the file by sha256 rather than trusting the restore. Then it rebuilds, because the test it spawned
+  compiles the mutated source into `dist/`, and a restore that stopped at the source would leave the
+  mutant built into the tree. Specs live in `scripts/mutations/`, one per
   finished feature.
 - **Measurements, not estimates.** Numbers in comments and in `docs/evidence/` carry the command that
   produced them and the date they were taken. Where a design and the evidence disagree, the evidence

@@ -4,6 +4,7 @@ import {
   asRecord,
   executed,
   parseArgs,
+  repairVerdict,
   resolveSpecPath,
   validateSpec,
 } from './mutate.mjs';
@@ -303,5 +304,53 @@ describe('resolveSpecPath()', () => {
     expect(resolveSpecPath('elsewhere/another-spec.json')).toMatch(
       /elsewhere\/another-spec\.json$/,
     );
+  });
+});
+
+describe('repairVerdict()', () => {
+  /**
+   * The second restore, which for a year's worth of runs did not exist.
+   *
+   * `restoreAll` puts back the source bytes this run wrote and checks them by sha256 -- but the killer
+   * tests' own `beforeAll` compiles the mutated source into `dist/`, and nothing put THAT back. So a
+   * run could report `killed by every named killer` over a tree whose built CLI executed the mutant:
+   * measured, reproduced, and recorded as `dogfood/0070`. `repairVerdict` is the claim the rebuild is
+   * allowed to make; the rebuild itself is shell, and stays where the shell belongs.
+   */
+  it('reads a rebuild that succeeded as a tree with no build of a mutant left in it', () => {
+    const verdict = repairVerdict(0, '');
+    expect(verdict.ok).toBe(true);
+    expect(verdict.line).toContain('no build output is left holding a mutant');
+  });
+
+  it('does not let a FAILED rebuild read as a clean tree', () => {
+    // THE REGRESSION THIS FUNCTION EXISTS FOR. The rebuild is the last thing a run does, after a
+    // verdict it has already printed. Fold a failure into that green -- or drop it -- and `dist/` is
+    // left holding the mutant with nothing saying so, which is `dogfood/0070` again, with the repair
+    // switched off rather than missing.
+    const verdict = repairVerdict(
+      2,
+      "packages/cli/src/x.ts(3,7): error TS2345: Argument of type 'string' is not assignable to 'number'.\n",
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.line).toContain('FAILED');
+    expect(verdict.line).toContain("Argument of type 'string' is not assignable to 'number'");
+    expect(verdict.line).not.toContain('no build output is left holding a mutant');
+  });
+
+  it('quotes the build’s own last words, bounded, so a runaway error list cannot bury the verdict', () => {
+    const out = Array.from({ length: 40 }, (_, i) => `error line ${String(i)}`).join('\n');
+    const verdict = repairVerdict(1, out);
+    expect(verdict.line).toContain('error line 39');
+    expect(verdict.line).not.toContain('error line 20');
+  });
+
+  it('still says what to do when the build printed nothing at all', () => {
+    // `spawnSync` reports a signal as `status: null`, and a build killed by the same Ctrl+C that ended
+    // the run is exactly this case: a failure with no output to quote.
+    const verdict = repairVerdict(1, '');
+    expect(verdict.ok).toBe(false);
+    expect(verdict.line).toContain('may still hold a build of a mutant');
+    expect(verdict.line.trimEnd().endsWith('not be run.')).toBe(true);
   });
 });

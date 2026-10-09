@@ -31,13 +31,18 @@
  * and is the only way to mutate work that is not yet committed. A second run is refused while another
  * holds the lock, because two runs restore each other's bytes and neither would notice.
  *
+ * AND IT REBUILDS, because the restore is two jobs, not one. `restoreAll` puts back the source bytes
+ * the run wrote; the killer tests' own `beforeAll` then has to be undone too, since it compiles the
+ * mutated source into `dist/` before the killer ever runs. A run that skipped the second job reported
+ * *killed by every named killer* over a tree whose built CLI executed the mutant -- `dogfood/0070`.
+ *
  * Usage:
  *   node scripts/mutate.mjs <spec> [--allow-dirty]
  *
  *   <spec> is a path, or a bare name resolved under scripts/mutations/ as `<name>.json`.
  *
- * Exit codes: 0 every named killer killed its mutant; 1 a survivor, a dead killer, or a failed
- * restore; 2 usage error; 130 on SIGINT.
+ * Exit codes: 0 every named killer killed its mutant and the tree still builds; 1 a survivor, a dead
+ * killer, a failed restore, or a failed rebuild; 2 usage error; 130 on SIGINT.
  *
  * A minimal port of grizzly's `.agents/review-feedback/scripts/mutate.mjs`, cut to ascend's shape:
  * there is no server to restart and no per-mutant deploy, so the whole `target`/`restart`/`Lane` axis
@@ -218,6 +223,58 @@ export function applyMutant(text, mutant) {
   return { ok: true, text: text.replace(mutant.find, () => mutant.replace) };
 }
 
+/**
+ * The incremental project build the killer tests run in `beforeAll` -- and therefore the one artifact a
+ * mutant is built INTO that this runner does not write.
+ *
+ * `packages/cli/test/cli.test.ts:35` is the shape: the CLI suites spawn `packages/cli/dist/bin.js`, so
+ * their `beforeAll` runs `node node_modules/typescript/bin/tsc -b` from the repo root. A mutant planted
+ * in a SOURCE file is thus also compiled into `dist/` before the killer ever sees it, and restoring the
+ * source -- which is all `restoreAll` does -- leaves the build output holding the mutant. The run then
+ * reports *killed by every named killer* over a tree whose built CLI executes mutated code. Measured,
+ * reproduced in six steps, and recorded as `dogfood/0070` / `asc-e9zm`.
+ *
+ * Reached through the repo's own local compiler rather than `npx tsc`, so the repair cannot depend on
+ * PATH, reach the network, or install anything.
+ */
+const REBUILD = { file: join('node_modules', 'typescript', 'bin', 'tsc'), args: ['-b'] };
+
+/**
+ * What a finished run may SAY about the build output it caused -- the artifact the sha256 restore
+ * cannot check, precisely because this runner never wrote it.
+ *
+ * The whole function is one claim: a repair that failed must not read as a clean tree. `tsc -b`
+ * returning non-zero means the tree no longer builds, a package's `dist/` may yet hold a build of a
+ * mutant, and the green verdict above is worth nothing until that is said out loud -- so it is said
+ * on its own line, quoting the build's own last words rather than paraphrasing them.
+ *
+ * The output is tailed rather than passed through: a project build that fails prints its errors and
+ * then a count, and an unbounded dump would bury the verdict the line belongs to.
+ *
+ * @param {number} code  Exit status of the rebuild.
+ * @param {string} out   Everything it printed, stdout and stderr together.
+ * @returns {{ ok: boolean, line: string }}
+ */
+export function repairVerdict(code, out) {
+  const command = `${REBUILD.file} ${REBUILD.args.join(' ')}`;
+  if (code === 0) {
+    return { ok: true, line: `rebuild: ${command} ok -- no build output is left holding a mutant` };
+  }
+  const tail = out
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line !== '')
+    .slice(-10)
+    .join('\n  ');
+  return {
+    ok: false,
+    line:
+      `rebuild: FAILED -- ${command} exited ${String(code)}, so the tree does not build and\n` +
+      `  packages/*/dist may still hold a build of a mutant. The verdict above is not trustworthy\n` +
+      `  until it does, and the built CLI must not be run.\n  ${tail}`,
+  };
+}
+
 // ----------------------------------------------------------------------- the shell
 //
 // Below here is effect: spawning vitest, writing the working tree, holding the lock. The decisions
@@ -316,6 +373,28 @@ function restoreAll() {
 }
 
 /**
+ * Put the build output back in agreement with the sources this run restored.
+ *
+ * `restoreAll` undoes what this run WROTE; this undoes what it CAUSED. Both are needed, and only the
+ * second covers the artifact a killer test's own `beforeAll` produced -- see `REBUILD`.
+ *
+ * Synchronous on purpose: it runs from `main`'s `finally` and from the signal handler, and both need
+ * the repair finished before the lock is released and the process ends. Ctrl+C still reaches the build
+ * itself, because `spawnSync` keeps the child in this process group, so an interrupted run aborts the
+ * repair and reports the failure rather than hanging on it.
+ *
+ * @returns {{ ok: boolean, line: string }}
+ */
+function repairBuild() {
+  const { status, stdout, stderr } = spawnSync(
+    process.execPath,
+    [join(repoRoot, REBUILD.file), ...REBUILD.args],
+    { cwd: repoRoot, encoding: 'utf8' },
+  );
+  return repairVerdict(status ?? 1, `${stdout}${stderr}`);
+}
+
+/**
  * Restore on the way out, however the run ends.
  *
  * Registered from `main` rather than at module scope on purpose: this module is IMPORTED by
@@ -332,6 +411,10 @@ function installSignalHandlers() {
         console.log(
           `  restored ${String(restored.length)};${failed.length > 0 ? ` COULD NOT RESTORE ${failed.join(', ')}` : ''}`,
         );
+        // Interrupting a hung killer is the LIKELIER way to leave `dist/` holding a mutant, so the
+        // repair belongs on this path at least as much as on a clean finish. Its failure cannot fail a
+        // run that is already ending; it is printed, and the message says what to do about it.
+        console.log(`  ${repairBuild().line}`);
         try {
           unlinkSync(LOCK);
         } catch {
@@ -506,24 +589,33 @@ async function main(argv) {
   /** @type {string[][]} */
   const rows = [];
   let failed = 0;
+  let noVerdict = false;
+  /**
+   * Filled by the `finally` below, which every path out of the `try` runs -- including the one that
+   * issues no verdict. There is deliberately no `null` branch: a path that reaches the report without
+   * having tried to repair the build would be a path that ran a killer and did not clean up after it.
+   *
+   * @type {{ ok: boolean, line: string }}
+   */
+  let repair;
   try {
     // Baselines first, over every named killer: a killer that already fails is not evidence.
     failed = await runBaselines(uniqueKillers(mutants));
     if (failed > 0) {
-      console.log(
-        '\nno verdict: every named killer must run, and pass, before a mutant is applied.',
-      );
-      return 1;
-    }
-
-    for (const m of mutants) {
-      if (interrupted) break;
-      const result = await runMutant(m);
-      rows.push(result.row);
-      if (result.failed) failed += 1;
+      noVerdict = true;
+    } else {
+      for (const m of mutants) {
+        if (interrupted) break;
+        const result = await runMutant(m);
+        rows.push(result.row);
+        if (result.failed) failed += 1;
+      }
     }
   } finally {
+    // Two restores, and they are different jobs: the source bytes this run WROTE, then the build
+    // output its killer tests CAUSED. Skipping the second is what `dogfood/0070` records.
     restoreAll();
+    repair = repairBuild();
     try {
       unlinkSync(LOCK);
     } catch {
@@ -531,14 +623,27 @@ async function main(argv) {
     }
   }
 
+  // Reported on every path that ran a killer, including the one that issues no verdict: a repair this
+  // run could not complete is a fact about the tree, not about the verdict.
+  if (noVerdict) {
+    console.log('\nno verdict: every named killer must run, and pass, before a mutant is applied.');
+    console.log(`\n${repair.line}`);
+    return 1;
+  }
+
   console.log('\n| id | verdict | killers that died | survivors |');
   console.log('|---|---|---|---|');
   for (const r of rows) console.log(`| ${r.join(' | ')} |`);
+  console.log(`\n${repair.line}`);
   console.log(
     `\n${String(rows.length)} mutant(s), ${String(failed)} problem(s). ` +
-      (failed > 0 ? 'FAILS.' : 'Every named killer killed its mutant.'),
+      (failed > 0
+        ? 'FAILS.'
+        : repair.ok
+          ? 'Every named killer killed its mutant.'
+          : 'Every named killer killed its mutant, but the run left the tree unbuildable.'),
   );
-  return failed > 0 ? 1 : 0;
+  return failed > 0 || !repair.ok ? 1 : 0;
 }
 
 // The guard is what lets `scripts/mutate-core.test.ts` import the decisions above without running a

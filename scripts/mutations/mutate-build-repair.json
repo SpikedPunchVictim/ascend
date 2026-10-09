@@ -1,0 +1,69 @@
+{
+  "_": "Kill-check for the SECOND restore in scripts/mutate.mjs: the build output a mutation run CAUSES but does not write. A killer test's beforeAll compiles the mutated source into dist/, so restoring the source alone left the mutant built into the tree while the run reported 'killed by every named killer' -- measured and recorded as dogfood/0070 / asc-e9zm. repairVerdict() is the claim the rebuild is allowed to make, and every mutant below breaks one clause of it. No intended survivor: each of the five is observable, so declaring one equivalent would mean inventing one.",
+  "mutants": [
+    {
+      "id": "N1",
+      "file": "scripts/mutate.mjs",
+      "find": "    ok: false,\n    line:\n      `rebuild: FAILED --",
+      "replace": "    ok: true,\n    line:\n      `rebuild: FAILED --",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "does not let a FAILED rebuild read as a clean tree"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "still says what to do when the build printed nothing at all"
+        }
+      ]
+    },
+    {
+      "id": "N2",
+      "file": "scripts/mutate.mjs",
+      "find": "until it does, and the built CLI must not be run.",
+      "replace": "until it does.",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "still says what to do when the build printed nothing at all"
+        }
+      ]
+    },
+    {
+      "id": "N3",
+      "file": "scripts/mutate.mjs",
+      "find": "    .slice(-10)\n",
+      "replace": "    .slice(0)\n",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "quotes the build"
+        }
+      ]
+    },
+    {
+      "id": "N4",
+      "file": "scripts/mutate.mjs",
+      "find": "no build output is left holding a mutant` };",
+      "replace": "ok` };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "reads a rebuild that succeeded as a tree with no build of a mutant left in it"
+        }
+      ]
+    },
+    {
+      "id": "N5",
+      "file": "scripts/mutate.mjs",
+      "find": "`rebuild: FAILED -- ${command} exited",
+      "replace": "`rebuild: ${command} exited",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "does not let a FAILED rebuild read as a clean tree"
+        }
+      ]
+    }
+  ]
+}

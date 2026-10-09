@@ -7,7 +7,7 @@
 | **Surfaced by** | `pnpm mutate derive-key-identity`, then a dry-run of the built CLI against the real corpus during the `asc-hbxl` end-to-end check |
 | **Entry type(s)** | none — the defect is in `scripts/mutate.mjs` and the test harness, not in a recorded type |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | fixed in the working tree, uncommitted as of 2026-10-09 — see **Resolution** |
 
 ## What was found
 
@@ -92,6 +92,82 @@ building first, which no gate step does — and `align check` reads source, not 
   a clean tree.
 - The fix must also cover the OTHER test files that rebuild in `beforeAll`, not just
   `ingest.test.ts`; naming a single file's fix would leave the class open.
+
+## Resolution
+
+Fixed in `scripts/mutate.mjs`, in the working tree, 2026-10-09. The restore is two jobs and the runner
+now does both: `restoreAll()` puts back the source bytes the run wrote, and a new `repairBuild()` then
+runs the same incremental build the killers' `beforeAll` runs — `node
+node_modules/typescript/bin/tsc -b` from the repo root, this repo's own compiler, no `npx`, no PATH
+dependence, no network — so the build output is put back in agreement with the sources. It runs from
+`main`'s `finally`, which every exit path already went through, **and** from the signal handler:
+interrupting a hung killer is the likelier way to leave a mutant in `dist/`, so that path needed it at
+least as much as a clean finish did.
+
+A rebuild that FAILS is not folded into the green. It prints on its own line, and it fails the run, so
+exit 0 now means *every named killer killed its mutant **and** the tree still builds*.
+
+**Restoring the bytes `dist/` happened to hold was the alternative, and it was rejected.** It needs
+every output directory enumerated, a deletion path for the files a build creates, and it restores a
+*pre-existing* staleness rather than repairing anything — it restores correctly by luck. The hazard is
+not that `dist/` differs from what it was; it is that `dist/` disagrees with the source. A rebuild
+re-establishes that by construction, for every artifact, including ones nobody enumerated.
+
+**The metric, re-run as the proof.** The six steps above were run as one `pnpm mutate
+derive-key-identity`, and the step-3 / step-5 measurement repeated afterwards:
+
+```
+$ grep -c "within a transcript and were disambiguated" packages/cli/dist/commands/ingest/claude-code.js
+0
+```
+
+It was `1` before this change. The run that leaves it `0` still reports `6 mutant(s), 0 problem(s).
+Every named killer killed its mutant.` — with the repair said aloud, so its absence is visible too:
+
+```
+rebuild: node_modules/typescript/bin/tsc -b ok -- no build output is left holding a mutant
+```
+
+**The failure path was driven, not reasoned about.** A single file was added to `packages/analysis/src`
+holding `export const buildBreakProbe: number = 'not a number';`, making the real `tsc -b` fail, and
+the spec re-run against it. Measured output:
+
+```
+rebuild: FAILED -- node_modules/typescript/bin/tsc -b exited 2, so the tree does not build and
+  packages/*/dist may still hold a build of a mutant. The verdict above is not trustworthy
+  until it does, and the built CLI must not be run.
+  packages/analysis/src/__build-break-probe.ts(4,14): error TS2322: Type 'string' is not assignable to type 'number'.
+
+5 mutant(s), 0 problem(s). Every named killer killed its mutant, but the run left the tree unbuildable.
+```
+
+`5 mutant(s), 0 problem(s)` — every killer killed its mutant — and the run still **exits 1**. That is
+the whole point: the green was true and insufficient, and the run says so. The probe was deleted
+immediately after; `tsc -b` then reported `No errors found`.
+
+**The class, measured rather than inferred.** "Consequences and constraints" above says the other
+specs "also rebuild the tree, so the class is plausibly wider, but that is inferred, not measured."
+Measured 2026-10-09 by reading each spec's killer files for a `beforeAll` that invokes `tsc`: of the
+four specs, **2** leave `dist/` holding a mutant — `derive-key-identity`, through `ingest.test.ts`, and
+`types-capture`, through `types-capture.test.ts:27`, which is the same `execFileSync(process.execPath,
+[…typescript/bin/tsc, '-b'])` from the repo root as `cli.test.ts:35` — and **2** do not:
+`derive-accept` and `statement-count` both kill through pure unit tests that never build. The repair
+is unconditional, so it covers the second pair at the cost of one wasted build rather than leaving a
+silent gap.
+
+**The new assertions are mutation-tested**, because a check added to the instrument every other check
+rests on is the last one that should go untested. `scripts/mutations/mutate-build-repair.json` plants
+five mutants in `scripts/mutate.mjs` — swallow a failed repair into a green verdict, drop the
+instruction the message exists to give, keep the *first* lines of the build output instead of the last,
+stop naming what the success line claims, stop labelling the failure — and each is killed by a named
+test in `scripts/mutate-core.test.ts`.
+
+**Honest limits.** The repair is a `tsc -b`. If this repo's build ever stops being `tsc -b`, the repair
+degrades to a no-op that still exits 0, and no test here would notice, because the runner would be
+faithfully running a build that no longer produces the artifact the killers spawn. What is measured
+about the other three specs is their `beforeAll`, not their behaviour end to end. And a repair that
+succeeds is proven to leave *no mutant in `dist/`*; it is not proven to leave the identical bytes that
+were there before, which it does not — it leaves a build of the restored source.
 
 ## Links
 

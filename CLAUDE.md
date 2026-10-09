@@ -161,6 +161,13 @@ would silently revert an edit that is not the runner's. `--allow-dirty` override
 path it may revert before the first mutant runs. The restore is checked by sha256, not trusted — a
 mutant left behind would be reported as a kill it did not earn and would poison every later run.
 
+**The restore is two jobs.** That sha256 check covers the SOURCE bytes the run wrote; it cannot cover
+the build output the run *caused*, because a killer test's own `beforeAll` runs `tsc -b` and compiles
+the mutated source into `dist/`. So the runner ends by rebuilding the tree — from `main`'s `finally`
+and from the signal handler — and fails the run if that rebuild fails, printing the build's own
+output. A green verdict means *every named killer killed its mutant **and the tree still builds***
+(`dogfood/0070`).
+
 **It is deliberately not in `quality-gate` or `.githooks/pre-commit`.** One run is minutes, the gate
 already costs 226–672 s and moves with machine load (`ascend-gate-cost-and-corpus-flake`), and a spec
 only exists once a feature is finished — so a gate step would red commits that have nothing to do
