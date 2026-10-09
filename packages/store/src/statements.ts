@@ -59,6 +59,32 @@ const isSpace = (char: string | undefined): boolean =>
   char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '\f' || char === '\v';
 
 /**
+ * Which quoted state a character OPENS.
+ *
+ * A table rather than four `else if`s in the `normal` state, so that state asks its question once
+ * instead of testing four characters in turn.
+ */
+const QUOTE_OPENS = new Map<string, ScanState>([
+  ["'", 'single'],
+  ['"', 'double'],
+  ['`', 'backtick'],
+  ['[', 'bracket'],
+]);
+
+/**
+ * The closing character of each state whose closer is DOUBLED to escape it -- `'it''s'`, `"a""b"`,
+ * `` `a``b` ``.
+ *
+ * `bracket` is deliberately absent: SQLite gives `[...]` no escape at all, so the first `]` ends it
+ * and there is no doubling rule for it to share.
+ */
+const QUOTE_CLOSES = new Map<ScanState, string>([
+  ['single', "'"],
+  ['double', '"'],
+  ['backtick', '`'],
+]);
+
+/**
  * The number of statements in `sql`.
  *
  * Quoting follows SQLite's own rules, and each has its own way of escaping its closing character:
@@ -78,42 +104,21 @@ export function statementCount(sql: string): number {
     const next = sql[index + 1];
 
     switch (state) {
-      case 'normal':
+      case 'normal': {
+        const opens = char === undefined ? undefined : QUOTE_OPENS.get(char);
         if (char === ';') {
           if (hasContent) count += 1;
           hasContent = false;
           index += 1;
-        } else if (char === '-') {
+        } else if (char === '-' && next === '-') {
           // `--` to end of line; a lone `-` is the subtraction operator and stays content.
-          if (next === '-') {
-            state = 'line';
-            index += 2;
-          } else {
-            hasContent = true;
-            index += 1;
-          }
-        } else if (char === '/') {
-          if (next === '*') {
-            state = 'block';
-            index += 2;
-          } else {
-            hasContent = true;
-            index += 1;
-          }
-        } else if (char === "'") {
-          state = 'single';
-          hasContent = true;
-          index += 1;
-        } else if (char === '"') {
-          state = 'double';
-          hasContent = true;
-          index += 1;
-        } else if (char === '`') {
-          state = 'backtick';
-          hasContent = true;
-          index += 1;
-        } else if (char === '[') {
-          state = 'bracket';
+          state = 'line';
+          index += 2;
+        } else if (char === '/' && next === '*') {
+          state = 'block';
+          index += 2;
+        } else if (opens !== undefined) {
+          state = opens;
           hasContent = true;
           index += 1;
         } else {
@@ -121,38 +126,25 @@ export function statementCount(sql: string): number {
           index += 1;
         }
         break;
+      }
 
       // Each quoted state consumes its terminator and one character past a doubled escape, so
-      // `'a''b'` stays inside one string and does not end at the first `'`.
+      // `'a''b'` stays inside one string and does not end at the first `'`. ONE case for all three,
+      // because it is one rule; three copies of an escape rule is where one gets fixed and the
+      // others do not.
       case 'single':
-        if (char === "'") {
-          if (next === "'") index += 2;
-          else {
-            state = 'normal';
-            index += 1;
-          }
-        } else index += 1;
-        break;
-
       case 'double':
-        if (char === '"') {
-          if (next === '"') index += 2;
+      case 'backtick': {
+        const terminator = QUOTE_CLOSES.get(state);
+        if (char === terminator) {
+          if (next === terminator) index += 2;
           else {
             state = 'normal';
             index += 1;
           }
         } else index += 1;
         break;
-
-      case 'backtick':
-        if (char === '`') {
-          if (next === '`') index += 2;
-          else {
-            state = 'normal';
-            index += 1;
-          }
-        } else index += 1;
-        break;
+      }
 
       case 'bracket':
         // No escape: SQLite has no way to write `]` inside `[...]`, so the first one ends it.

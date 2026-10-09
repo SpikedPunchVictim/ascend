@@ -1180,29 +1180,34 @@ export function createDeriver(): Deriver {
     lastVerdict = undefined;
   };
 
-  const accept = (record: TranscriptRecord, file: TranscriptFile): readonly DerivedEntry[] => {
-    const out: DerivedEntry[] = [];
+  /**
+   * What `accept` reads off ONE record, and every branch below shares.
+   *
+   * Each branch used to pull these off `record` where it stood, which made the record's shape and
+   * the file it came from ambient to nine separate readers. Gathering them once and naming the
+   * shape is what lets a branch be read on its own -- and a positional list this long is where the
+   * next argument lands in the wrong slot.
+   */
+  interface Accepted {
+    readonly record: TranscriptRecord;
+    readonly file: TranscriptFile;
+    readonly out: DerivedEntry[];
+    readonly sessionId: string | undefined;
+    readonly occurredAt: string | undefined;
+    readonly uuid: string | undefined;
+    readonly locality: Locality;
+    readonly blocksIn: readonly Record<string, unknown>[];
+  }
 
-    if (path !== file.path) {
-      // The pending run and the pending reports belong to the file being left, so both are
-      // flushed BEFORE the reset.
-      flushRun(out);
-      flushReports(out);
-      begin();
-      path = file.path;
-    }
-
-    counters.records += 1;
-
-    const sessionId = str(record['sessionId']);
-    const occurredAt = str(record['timestamp']);
-    const uuid = str(record['uuid']);
-    const locality = localityOf(record, file.project);
-    const blocksIn = blocks(record);
-
-    // Index this record's tool invocations before reading its results: a denial and the
-    // invocation it refused are on DIFFERENT records, so the name is only knowable from a
-    // map built as the file streams past.
+  /**
+   * Index this record's tool invocations before anything reads its results, and write
+   * `skill_activation` for a `Skill` call as it goes past.
+   *
+   * The index is the reason this runs FIRST: a denial and the invocation it refused are on
+   * DIFFERENT records, so the name is only knowable from a map built as the file streams past.
+   */
+  const acceptToolUseBlocks = (a: Accepted): void => {
+    const { record, file, out, sessionId, occurredAt, locality, blocksIn } = a;
     for (const block of blocksIn) {
       if (block['type'] !== 'tool_use') continue;
       const id = str(block['id']);
@@ -1243,229 +1248,309 @@ export function createDeriver(): Deriver {
         }
       }
     }
+  };
 
-    // ---- tool_denial ------------------------------------------------------
+  /** `tool_denial` -- a refusal the harness recorded, named by the invocation it refused. */
+  const acceptToolDenial = (a: Accepted): void => {
+    const { record, file, out, sessionId, occurredAt, locality, blocksIn } = a;
     const denialKind = str(record['toolDenialKind']);
-    if (denialKind !== undefined) {
-      const useId = toolUseId(blocksIn);
-      if (sessionId === undefined || useId === undefined) {
-        counters.unkeyable += 1;
-      } else {
-        const name = invocations.get(useId)?.name;
-        emit(
-          out,
-          'tool_denial',
-          `${sessionId}:${useId}`,
-          sessionId,
-          file.project,
-          occurredAt,
-          locality,
-          {
-            denial_kind: denialKind,
-            tool_use_id: useId,
-            ...(name === undefined ? {} : { tool_name: name }),
-          },
-        );
-      }
-    }
-
-    // ---- context_compaction ----------------------------------------------
-    const metadata = rec(record['compactMetadata']);
-    if (metadata !== undefined) {
-      const pre = num(metadata['preTokens']);
-      const post = num(metadata['postTokens']);
-      const dropped = num(metadata['cumulativeDroppedTokens']);
-      const duration = num(metadata['durationMs']);
-      const trigger = str(metadata['trigger']);
-      const discovered = list(metadata['preCompactDiscoveredTools']);
-      if (sessionId === undefined || uuid === undefined) {
-        // The identity is the record's own uuid, because a compaction has no tool call to
-        // name it by -- `cumulativeDroppedTokens` is cumulative across the session, so it
-        // names the Nth compaction only by accident.
-        counters.unkeyable += 1;
-      } else if (
-        trigger === undefined ||
-        pre === undefined ||
-        post === undefined ||
-        dropped === undefined ||
-        duration === undefined
-      ) {
-        // All five are `required` in the spec and were present on 438 of 438 measured
-        // compactions. Emitting an entry that cannot satisfy its own definition would fail
-        // validation downstream, so the record is counted here instead -- the count is the
-        // signal that the transcript's shape moved.
-        counters.unkeyable += 1;
-      } else {
-        emit(
-          out,
-          'context_compaction',
-          `${sessionId}:${uuid}`,
-          sessionId,
-          file.project,
-          occurredAt,
-          locality,
-          {
-            trigger,
-            pre_tokens: pre,
-            post_tokens: post,
-            cumulative_dropped_tokens: dropped,
-            duration_ms: duration,
-            // OMITTED, never `[]`. Present on 282 of 438; on the other 156 the transcript says
-            // nothing, and an empty array would say it looked and found none.
-            ...(discovered === undefined ? {} : { discovered_tools: discovered }),
-          },
-        );
-      }
-    }
-
-    // ---- skill_activation -------------------------------------------------
-    const skill = str(record['attributionSkill']);
-    if (skill !== undefined) {
-      if (run !== undefined && run.skill === skill) {
-        // Same activation, still running. The FIRST record's facts stand.
-      } else {
-        flushRun(out);
-        const claimed = claims.get(skill) ?? 0;
-        if (claimed > 0) claims.set(skill, claimed - 1);
-        const inherited = claimed === 0 && file.kind === 'subagent';
-        if (inherited) counters.inheritedSkillRuns += 1;
-        if (sessionId === undefined || uuid === undefined) {
-          // Only a run that would have been WRITTEN is a lost entry. A claimed or inherited one
-          // is already counted elsewhere, so an unkeyable record there loses nothing.
-          if (claimed === 0 && !inherited) counters.unkeyable += 1;
-        } else {
-          run = {
-            emits: claimed === 0 && !inherited,
-            skill,
-            agent: str(record['attributionAgent']),
-            sessionId,
-            project: file.project,
-            occurredAt,
-            locality,
-            uuid,
-          };
-        }
-      }
-    }
-
-    // ---- verification_run and user_correction -----------------------------
+    if (denialKind === undefined) return;
     const useId = toolUseId(blocksIn);
+    if (sessionId === undefined || useId === undefined) {
+      counters.unkeyable += 1;
+      return;
+    }
+    const name = invocations.get(useId)?.name;
+    emit(
+      out,
+      'tool_denial',
+      `${sessionId}:${useId}`,
+      sessionId,
+      file.project,
+      occurredAt,
+      locality,
+      {
+        denial_kind: denialKind,
+        tool_use_id: useId,
+        ...(name === undefined ? {} : { tool_name: name }),
+      },
+    );
+  };
 
+  /** `context_compaction` -- one entry per compaction, keyed by the record's own uuid. */
+  const acceptCompaction = (a: Accepted): void => {
+    const { record, file, out, sessionId, uuid, occurredAt, locality } = a;
+    const metadata = rec(record['compactMetadata']);
+    if (metadata === undefined) return;
+    const pre = num(metadata['preTokens']);
+    const post = num(metadata['postTokens']);
+    const dropped = num(metadata['cumulativeDroppedTokens']);
+    const duration = num(metadata['durationMs']);
+    const trigger = str(metadata['trigger']);
+    const discovered = list(metadata['preCompactDiscoveredTools']);
+    if (sessionId === undefined || uuid === undefined) {
+      // The identity is the record's own uuid, because a compaction has no tool call to
+      // name it by -- `cumulativeDroppedTokens` is cumulative across the session, so it
+      // names the Nth compaction only by accident.
+      counters.unkeyable += 1;
+      return;
+    }
+    if (
+      trigger === undefined ||
+      pre === undefined ||
+      post === undefined ||
+      dropped === undefined ||
+      duration === undefined
+    ) {
+      // All five are `required` in the spec and were present on 438 of 438 measured
+      // compactions. Emitting an entry that cannot satisfy its own definition would fail
+      // validation downstream, so the record is counted here instead -- the count is the
+      // signal that the transcript's shape moved.
+      counters.unkeyable += 1;
+      return;
+    }
+    emit(
+      out,
+      'context_compaction',
+      `${sessionId}:${uuid}`,
+      sessionId,
+      file.project,
+      occurredAt,
+      locality,
+      {
+        trigger,
+        pre_tokens: pre,
+        post_tokens: post,
+        cumulative_dropped_tokens: dropped,
+        duration_ms: duration,
+        // OMITTED, never `[]`. Present on 282 of 438; on the other 156 the transcript says
+        // nothing, and an empty array would say it looked and found none.
+        ...(discovered === undefined ? {} : { discovered_tools: discovered }),
+      },
+    );
+  };
+
+  /**
+   * `skill_activation`'s attributed half -- the run a `Skill` call starts, opened by the records
+   * carrying `attributionSkill`.
+   *
+   * A run is HELD rather than written (`SkillRun`), because its facts are spread across the records
+   * it spans; `flushRun` writes it when the next run opens or the file ends.
+   */
+  const acceptSkillAttribution = (a: Accepted): void => {
+    const { record, file, out, sessionId, uuid, occurredAt, locality } = a;
+    const skill = str(record['attributionSkill']);
+    if (skill === undefined) return;
+    if (run !== undefined && run.skill === skill) {
+      // Same activation, still running. The FIRST record's facts stand.
+      return;
+    }
+    flushRun(out);
+    const claimed = claims.get(skill) ?? 0;
+    if (claimed > 0) claims.set(skill, claimed - 1);
+    const inherited = claimed === 0 && file.kind === 'subagent';
+    if (inherited) counters.inheritedSkillRuns += 1;
+    if (sessionId === undefined || uuid === undefined) {
+      // Only a run that would have been WRITTEN is a lost entry. A claimed or inherited one
+      // is already counted elsewhere, so an unkeyable record there loses nothing.
+      if (claimed === 0 && !inherited) counters.unkeyable += 1;
+      return;
+    }
+    run = {
+      emits: claimed === 0 && !inherited,
+      skill,
+      agent: str(record['attributionAgent']),
+      sessionId,
+      project: file.project,
+      occurredAt,
+      locality,
+      uuid,
+    };
+  };
+
+  /**
+   * `verification_run` -- a check command's verdict, written when it CHANGES.
+   *
+   * The filter is a filter rather than a preference, and the numbers are in the comment below: the
+   * corpus holds 6,826 commands that run a check, of which 486 are the moments the gate moved.
+   */
+  const acceptVerification = (a: Accepted): void => {
+    const { file, out, sessionId, occurredAt, locality, blocksIn } = a;
     for (const block of blocksIn) {
       if (block['type'] !== 'tool_result') continue;
       const resultId = str(block['tool_use_id']);
       if (resultId === undefined) continue;
 
-      // ---- verification_run ----------------------------------------------
       const invocation = invocations.get(resultId);
-      if (invocation?.name === 'Bash') {
-        const command = invocation.command;
-        if (command !== undefined) {
-          const run = checkRun(command);
-          if (run !== undefined) {
-            const reading = readVerdict(run.exitStatusIsCheck, block);
-            if (reading === 'unverdictable') {
-              counters.unverdictable += 1;
-            } else if (reading === 'masked') {
-              counters.masked += 1;
-            } else {
-              const { verdict, source } = reading;
-              const runner = run.runner;
-              const previous = lastVerdict;
-              // The filter, and it is a filter rather than a preference. Measured: the corpus
-              // holds 6,826 commands that run a check, which without this filter would make
-              // `pnpm test` an entry and put a row in the store for every keystroke of a
-              // red-green loop. A verdict CHANGE, or a first verified pass, is 486 -- the
-              // moments the gate actually moved. 6,826 is the size of the signal, not of the
-              // store, and it grows every time anyone runs a test.
-              //
-              // The chain is per FILE, not per session id, and the difference is measured:
-              // chaining across a session id gives 171, because a session's subagent
-              // transcripts share the parent's id and a verdict carried between two separate
-              // conversations fabricates relationships neither one had.
-              const firstPass = previous === undefined && verdict;
-              const changed = previous !== undefined && previous !== verdict;
-              if (sessionId === undefined) {
-                // Attribution failure on a verdict that WAS readable. Handled the same
-                // conservative way as an unreadable one just above: the chain does not
-                // advance. Advancing it here would let a LATER, attributable run silently
-                // inherit this value as `previous_verdict` -- attributing a fact to a run the
-                // store never actually holds, which is the exact fabrication this project's
-                // rule forbids. Counted only when it was actually a candidate for an entry: a
-                // repeat that matches the known chain was never going to be written even with
-                // a session id, so counting it here would overstate what was lost.
-                if (firstPass || changed) counters.unkeyable += 1;
-              } else {
-                lastVerdict = verdict;
-                if (firstPass || changed) {
-                  emit(
-                    out,
-                    'verification_run',
-                    `${sessionId}:${resultId}`,
-                    sessionId,
-                    file.project,
-                    occurredAt,
-                    locality,
-                    {
-                      runner,
-                      verdict: verdict ? 'passed' : 'failed',
-                      verdict_source: source,
-                      // OMITTED on a first verified pass. "There was no earlier run" and
-                      // "the earlier run agreed" are different facts.
-                      ...(previous === undefined
-                        ? {}
-                        : { previous_verdict: previous ? 'passed' : 'failed' }),
-                    },
-                  );
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+      if (invocation?.name !== 'Bash') continue;
+      const command = invocation.command;
+      if (command === undefined) continue;
+      const run = checkRun(command);
+      if (run === undefined) continue;
 
-    // ---- user_correction --------------------------------------------------
+      const reading = readVerdict(run.exitStatusIsCheck, block);
+      if (reading === 'unverdictable') {
+        counters.unverdictable += 1;
+        continue;
+      }
+      if (reading === 'masked') {
+        counters.masked += 1;
+        continue;
+      }
+      const { verdict, source } = reading;
+      const runner = run.runner;
+      const previous = lastVerdict;
+      // The filter, and it is a filter rather than a preference. Measured: the corpus
+      // holds 6,826 commands that run a check, which without this filter would make
+      // `pnpm test` an entry and put a row in the store for every keystroke of a
+      // red-green loop. A verdict CHANGE, or a first verified pass, is 486 -- the
+      // moments the gate actually moved. 6,826 is the size of the signal, not of the
+      // store, and it grows every time anyone runs a test.
+      //
+      // The chain is per FILE, not per session id, and the difference is measured:
+      // chaining across a session id gives 171, because a session's subagent
+      // transcripts share the parent's id and a verdict carried between two separate
+      // conversations fabricates relationships neither one had.
+      const firstPass = previous === undefined && verdict;
+      const changed = previous !== undefined && previous !== verdict;
+      if (sessionId === undefined) {
+        // Attribution failure on a verdict that WAS readable. Handled the same
+        // conservative way as an unreadable one just above: the chain does not
+        // advance. Advancing it here would let a LATER, attributable run silently
+        // inherit this value as `previous_verdict` -- attributing a fact to a run the
+        // store never actually holds, which is the exact fabrication this project's
+        // rule forbids. Counted only when it was actually a candidate for an entry: a
+        // repeat that matches the known chain was never going to be written even with
+        // a session id, so counting it here would overstate what was lost.
+        if (firstPass || changed) counters.unkeyable += 1;
+        continue;
+      }
+      lastVerdict = verdict;
+      if (!firstPass && !changed) continue;
+      emit(
+        out,
+        'verification_run',
+        `${sessionId}:${resultId}`,
+        sessionId,
+        file.project,
+        occurredAt,
+        locality,
+        {
+          runner,
+          verdict: verdict ? 'passed' : 'failed',
+          verdict_source: source,
+          // OMITTED on a first verified pass. "There was no earlier run" and
+          // "the earlier run agreed" are different facts.
+          ...(previous === undefined ? {} : { previous_verdict: previous ? 'passed' : 'failed' }),
+        },
+      );
+    }
+  };
+
+  /** `user_correction` -- the user's own words, when the transcript carries them. */
+  const acceptCorrection = (a: Accepted): void => {
+    const { record, file, out, sessionId, uuid, occurredAt, locality, blocksIn } = a;
     const feedback = str(record['userFeedback']);
-    if (feedback !== undefined) {
-      if (sessionId === undefined || uuid === undefined) {
-        counters.unkeyable += 1;
-      } else {
-        const name = useId === undefined ? undefined : invocations.get(useId)?.name;
-        // The AskUserQuestion clarification form carries none of the user's own words -- see
-        // `unquotable` on `DeriveCounters`. The entry still stands (the user did act), it is
-        // only the prose that is withheld, so `evidenceText` is passed as `undefined` rather
-        // than the harness's own questions.
-        const quotable = !feedback.startsWith(CLARIFICATION_PREAMBLE);
-        if (!quotable) counters.unquotable += 1;
-        emit(
-          out,
-          'user_correction',
-          `${sessionId}:${uuid}`,
-          sessionId,
-          file.project,
-          occurredAt,
-          locality,
-          { ...(name === undefined ? {} : { tool_name: name }) },
-          quotable ? feedback : undefined,
-        );
-      }
+    if (feedback === undefined) return;
+    if (sessionId === undefined || uuid === undefined) {
+      counters.unkeyable += 1;
+      return;
+    }
+    const useId = toolUseId(blocksIn);
+    const name = useId === undefined ? undefined : invocations.get(useId)?.name;
+    // The AskUserQuestion clarification form carries none of the user's own words -- see
+    // `unquotable` on `DeriveCounters`. The entry still stands (the user did act), it is
+    // only the prose that is withheld, so `evidenceText` is passed as `undefined` rather
+    // than the harness's own questions.
+    const quotable = !feedback.startsWith(CLARIFICATION_PREAMBLE);
+    if (!quotable) counters.unquotable += 1;
+    emit(
+      out,
+      'user_correction',
+      `${sessionId}:${uuid}`,
+      sessionId,
+      file.project,
+      occurredAt,
+      locality,
+      { ...(name === undefined ? {} : { tool_name: name }) },
+      quotable ? feedback : undefined,
+    );
+  };
+
+  /**
+   * One element of a `ReportFindings` call's `findings[]`, shaped into the properties to store -- or
+   * `undefined`, having counted why it cannot be.
+   *
+   * Two DIFFERENT refusals, kept apart because conflating them would blur which one fired: a value
+   * outside our closed vocabulary, and a field the tool's own schema requires. Neither emits.
+   */
+  const shapeFinding = (
+    index: number,
+    raw: unknown,
+    reportId: string,
+    model: string | undefined,
+  ): { index: number; properties: Record<string, unknown> } | undefined => {
+    const finding = rec(raw);
+    const category = finding === undefined ? undefined : str(finding['category']);
+    const filePath = finding === undefined ? undefined : str(finding['file']);
+    const summary = finding === undefined ? undefined : str(finding['summary']);
+
+    if (!isFindingLens(category)) {
+      counters.offVocabularyFindings += 1;
+      return undefined;
+    }
+    if (filePath === undefined || summary === undefined) {
+      counters.unreportableFindings += 1;
+      return undefined;
     }
 
-    // ---- review_finding ---------------------------------------------------
-    // ONE ENTRY PER ELEMENT of `findings[]`, and the identity is `(tool_use id, index)`: a
-    // report is one call carrying N findings, so the id names the CALL and the index names the
-    // finding within it. `context_compaction`'s precedent, one level down -- there the record
-    // uuid was the identity and the position was implicit; here it cannot be, because N
-    // findings share both the record and the tool_use id.
-    //
-    // Read from THIS record's own tool_use block, and HELD there rather than written: the
-    // findings are an ARGUMENT to the call, not a result of it, so they are on the same record
-    // that names the call -- but whether the call was ACCEPTED is on its RESULT, which is a LATER
-    // record. Writing at the call meant a call the harness REFUSED still contributed its findings,
-    // and a refusal is followed by a corrected retry carrying the SAME ones, so the count doubled
-    // rather than gaining a stray row (`asc-2uov`). This is the pending-result machinery the
-    // sentence that used to sit here said it was avoiding, and for the reason it gave.
+    const line = finding === undefined ? undefined : num(finding['line']);
+    const scenario = finding === undefined ? undefined : str(finding['failure_scenario']);
+    const verdict = finding === undefined ? undefined : str(finding['verdict']);
+    return {
+      index,
+      properties: {
+        class: category,
+        file: filePath,
+        summary,
+        tool_use_id: reportId,
+        captured_by: 'reported',
+        // ABSENT, never 0: a finding is not always line-anchored, and `0` is a line number
+        // a reader would believe.
+        ...(line === undefined ? {} : { line }),
+        ...(scenario === undefined ? {} : { failure_scenario: scenario }),
+        ...(verdict === undefined ? {} : { verdict }),
+        // The model that produced the RECORD, which is the reviewer's own stream. Absent
+        // when the transcript named none -- and NOT special-cased for `<synthetic>` the way
+        // `normalize.ts`'s `model.context` is: over every project on 2026-09-28, 33
+        // `ReportFindings` calls, 0 from a synthetic record. The failure mode if one ever
+        // appears is a visible `reviewer_model: '<synthetic>'`, a wrong value someone can see
+        // rather than a drop nobody can. `review.finding` carries the same value
+        // (asc-gtnu.11), so the log and the store agree.
+        ...(model === undefined ? {} : { reviewer_model: model }),
+      },
+    };
+  };
+
+  /**
+   * `review_finding`'s CALL half: shape every finding a `ReportFindings` call carries, and HOLD it.
+   *
+   * ONE ENTRY PER ELEMENT of `findings[]`, and the identity is `(tool_use id, index)`: a report is one
+   * call carrying N findings, so the id names the CALL and the index names the finding within it.
+   * `context_compaction`'s precedent, one level down -- there the record uuid was the identity and
+   * the position was implicit; here it cannot be, because N findings share both the record and the
+   * tool_use id.
+   *
+   * Read from THIS record's own tool_use block, and HELD there rather than written: the findings are
+   * an ARGUMENT to the call, not a result of it, so they are on the same record that names the call
+   * -- but whether the call was ACCEPTED is on its RESULT, which is a LATER record. Writing at the
+   * call meant a call the harness REFUSED still contributed its findings, and a refusal is followed
+   * by a corrected retry carrying the SAME ones, so the count doubled rather than gaining a stray
+   * row (`asc-2uov`). This is the pending-result machinery the sentence that used to sit here said
+   * it was avoiding, and for the reason it gave.
+   */
+  const acceptReviewCall = (a: Accepted): void => {
+    const { record, file, sessionId, occurredAt, locality, blocksIn } = a;
     for (const block of blocksIn) {
       if (block['type'] !== 'tool_use' || str(block['name']) !== REPORT_FINDINGS_TOOL) continue;
       const reportId = str(block['id']);
@@ -1489,52 +1574,11 @@ export function createDeriver(): Deriver {
       const ready: { index: number; properties: Record<string, unknown> }[] = [];
 
       for (const [index, raw] of findings.entries()) {
-        const finding = rec(raw);
-        const category = finding === undefined ? undefined : str(finding['category']);
-        const filePath = finding === undefined ? undefined : str(finding['file']);
-        const summary = finding === undefined ? undefined : str(finding['summary']);
-
-        // Two DIFFERENT refusals, kept apart because conflating them would blur which one
-        // fired: a value outside our closed vocabulary, and a field the tool's own schema
-        // requires. See the counters for why neither emits.
-        if (!isFindingLens(category)) {
-          counters.offVocabularyFindings += 1;
-          continue;
-        }
-        if (filePath === undefined || summary === undefined) {
-          counters.unreportableFindings += 1;
-          continue;
-        }
-
-        const line = finding === undefined ? undefined : num(finding['line']);
-        const scenario = finding === undefined ? undefined : str(finding['failure_scenario']);
-        const verdict = finding === undefined ? undefined : str(finding['verdict']);
-        ready.push({
-          index,
-          properties: {
-            class: category,
-            file: filePath,
-            summary,
-            tool_use_id: reportId,
-            captured_by: 'reported',
-            // ABSENT, never 0: a finding is not always line-anchored, and `0` is a line number
-            // a reader would believe.
-            ...(line === undefined ? {} : { line }),
-            ...(scenario === undefined ? {} : { failure_scenario: scenario }),
-            ...(verdict === undefined ? {} : { verdict }),
-            // The model that produced the RECORD, which is the reviewer's own stream. Absent
-            // when the transcript named none -- and NOT special-cased for `<synthetic>` the way
-            // `normalize.ts`'s `model.context` is: over every project on 2026-09-28, 33
-            // `ReportFindings` calls, 0 from a synthetic record. The failure mode if one ever
-            // appears is a visible `reviewer_model: '<synthetic>'`, a wrong value someone can see
-            // rather than a drop nobody can. `review.finding` carries the same value
-            // (asc-gtnu.11), so the log and the store agree.
-            ...(model === undefined ? {} : { reviewer_model: model }),
-          },
-        });
+        const shaped = shapeFinding(index, raw, reportId, model);
+        if (shaped !== undefined) ready.push(shaped);
       }
 
-      // Held, not written: the result record decides. `accept`'s result branch resolves this the
+      // Held, not written: the result record decides. The result branch below resolves this the
       // moment the call's own `tool_result` arrives, and `flushReports` writes it if the file ends
       // first -- so a call this rule can SEE was refused is the only one that ever disappears.
       pendingReports.set(reportId, {
@@ -1546,14 +1590,20 @@ export function createDeriver(): Deriver {
         ready,
       });
     }
+  };
 
-    // ---- review_finding: the result decides whether the call counted ------
-    // A separate walk from the tool_result loop above, because a call's own result is only
-    // readable once the call has been buffered -- if a transcript ever carried both blocks on one
-    // record, resolving in the earlier loop would run before there was anything to resolve.
-    //
-    // `is_error === true` is the ONLY value that suppresses. An absent `is_error` is an unstated
-    // verdict, not a refusal, and writes the findings rather than quietly dropping them.
+  /**
+   * `review_finding`'s RESULT half: the call's own `tool_result` decides whether it counted.
+   *
+   * A separate walk from the tool_use loop above, because a call's own result is only readable once
+   * the call has been buffered -- if a transcript ever carried both blocks on one record, resolving
+   * in the earlier loop would run before there was anything to resolve.
+   *
+   * `is_error === true` is the ONLY value that suppresses. An absent `is_error` is an unstated
+   * verdict, not a refusal, and writes the findings rather than quietly dropping them.
+   */
+  const resolveReviewResults = (a: Accepted): void => {
+    const { out, blocksIn } = a;
     for (const block of blocksIn) {
       if (block['type'] !== 'tool_result') continue;
       const resultId = str(block['tool_use_id']);
@@ -1564,6 +1614,51 @@ export function createDeriver(): Deriver {
       if (block['is_error'] === true) counters.refusedFindings += report.ready.length;
       else emitReport(out, report);
     }
+  };
+
+  const accept = (record: TranscriptRecord, file: TranscriptFile): readonly DerivedEntry[] => {
+    const out: DerivedEntry[] = [];
+
+    if (path !== file.path) {
+      // The pending run and the pending reports belong to the file being left, so both are
+      // flushed BEFORE the reset.
+      flushRun(out);
+      flushReports(out);
+      begin();
+      path = file.path;
+    }
+
+    counters.records += 1;
+
+    const sessionId = str(record['sessionId']);
+    const occurredAt = str(record['timestamp']);
+    const uuid = str(record['uuid']);
+    const locality = localityOf(record, file.project);
+    const blocksIn = blocks(record);
+    const accepted: Accepted = {
+      record,
+      file,
+      out,
+      sessionId,
+      occurredAt,
+      uuid,
+      locality,
+      blocksIn,
+    };
+
+    // A plain sequence, and the order is load-bearing rather than incidental. The tool_use walk
+    // indexes the invocations every later branch reads; a review call's result can only resolve
+    // once the call itself has been buffered; and the skill run is flushed by whichever branch
+    // opens the NEXT run. Each branch is now readable on its own, which is the point -- this
+    // function is the list of what a record can mean, and nothing else.
+    acceptToolUseBlocks(accepted);
+    acceptToolDenial(accepted);
+    acceptCompaction(accepted);
+    acceptSkillAttribution(accepted);
+    acceptVerification(accepted);
+    acceptCorrection(accepted);
+    acceptReviewCall(accepted);
+    resolveReviewResults(accepted);
 
     return out;
   };
