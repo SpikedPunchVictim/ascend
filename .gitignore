@@ -39,6 +39,13 @@ node_modules/
 .align/last-scan.json
 .align/.lock
 
+# The mutation runner's lock, named individually for the same reason as `.align/.lock` above: it
+# records which process is mid-run on THIS checkout, so it is local state and not evidence. It sits
+# beside the specs rather than at the repo root because `git check-ignore -v .mutate.lock` exits 1
+# (measured 2026-10-09) -- a lock at the root survives a SIGKILLed run as an untracked file in
+# `git status`, which is exactly the noise that makes a real untracked file easy to skim past.
+scripts/mutations/.lock
+
 # The test-count scan (asc-049w): what the LAST run on THIS machine collected, written by
 # `vitest.test-count.ts`. Ignored for the same reason `.align/last-scan.json` is -- it is evidence
 # about one run on one checkout. The BASELINE it is compared against is the opposite: it is

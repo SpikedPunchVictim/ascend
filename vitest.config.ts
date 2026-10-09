@@ -6,7 +6,15 @@ const pkg = (name: string) =>
 
 export default defineConfig({
   test: {
-    include: ['packages/*/test/**/*.test.ts'],
+    /**
+     * `scripts/**` is included for ONE file, and it is here rather than in a package for the same
+     * reason it is not a package: `scripts/mutate.mjs` is the instrument every other test's
+     * credibility rests on -- it is the thing that shows an assertion *fails* before it is trusted
+     * to pass (`README.md`, `## Development`) -- so its own decisions, the corners where it could
+     * report a green it did not earn, are the corners that most need a test. Nothing under
+     * `scripts/` was reachable before this line, so that test could not exist.
+     */
+    include: ['packages/*/test/**/*.test.ts', 'scripts/**/*.test.ts'],
     environment: 'node',
     /**
      * Six workers, not the default one-per-core (12 here) -- `asc-3x1`.

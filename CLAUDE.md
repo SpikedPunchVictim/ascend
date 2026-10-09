@@ -38,8 +38,9 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 1. **File issues for remaining work** - Create beads for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
+3. **Run the mutation spec for the feature just finished** - `pnpm mutate <spec>`; report the result beside the gate result. A feature's spec is written when its tests are done, and this is where it gets run - see "A finished feature gets a mutation spec" under Conventions.
+4. **Update issue status** - Close finished work, update in-progress items
+5. **Handle git/sync by active profile**:
    ```bash
    # Conservative/minimal/default: report status and proposed commands; wait for approval.
    git status
@@ -49,7 +50,7 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
    git push
    git status
    ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
+6. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
 
 **Critical rules:**
 - Explicit user or orchestrator instructions override this Beads block.
@@ -131,6 +132,39 @@ that copy.
 `EV-16` found 0 of 15 sessions invoking `asc` in any form, so a design that depends on a reviewer
 choosing to run a CLI depends on the mechanism measured not to fire. A review that reports this way
 is counted; a review that only writes prose is not.
+
+### A finished feature gets a mutation spec, and `pnpm mutate` runs it
+
+`README.md` has claimed since before there was a tool for it that *"every assertion is
+mutation-tested — a check must be shown to fail before it is trusted to pass."* `pnpm mutate <spec>`
+is that tool. When a feature's tests are done, write a spec for it and run it before handing off;
+report the result beside the gate result.
+
+A spec is a JSON file at `scripts/mutations/<feature-or-test-name>.json`, and a bare name resolves
+there — `pnpm mutate types-capture` reads `scripts/mutations/types-capture.json`; a path is also
+accepted. It holds `mutants[]`, each with `id`, `file`, `find` (a string that must occur **exactly
+once** in `file`), `replace`, and `killers[]` of `{file, test}`, where `test` is a substring of one
+test's name. The three worked examples beside the runner are the format.
+
+**Every named killer must pass on the unmutated tree first**, and every one must fail once the
+mutant is planted — a test that already fails kills nothing, and a test that only *should* fail is
+the same false green as an assertion never shown to fail. A mutant with no killer, an empty spec, and
+an intended survivor that does not say `why` it is equivalent are all refused rather than warned.
+
+**Find the killers empirically, do not guess them.** Apply the mutant, run the owning test file with
+`--reporter=json`, and read the failing test names off its `assertionResults`. That is how the specs
+here were written, and it is the difference between a spec that records a check and one that records
+an intention.
+
+A run **edits the working tree**, so a target file with uncommitted changes is refused: the restore
+would silently revert an edit that is not the runner's. `--allow-dirty` overrides it and prints every
+path it may revert before the first mutant runs. The restore is checked by sha256, not trusted — a
+mutant left behind would be reported as a kill it did not earn and would poison every later run.
+
+**It is deliberately not in `quality-gate` or `.githooks/pre-commit`.** One run is minutes, the gate
+already costs 226–672 s and moves with machine load (`ascend-gate-cost-and-corpus-flake`), and a spec
+only exists once a feature is finished — so a gate step would red commits that have nothing to do
+with it. This is a session practice, not a pre-commit one.
 
 <!-- align:start -->
 ## align — architecture conformance

@@ -1,0 +1,55 @@
+{
+  "_": "Kill-check for the statement scanner in packages/store/src/statements.ts, written when the scanner was reviewed and its nine extracted closures were held to the README invariant. Each mutant breaks ONE property the scanner's own doc-comment claims, and names the single test that must notice. The killers were found empirically, not guessed: each mutant was applied, the owning test file was run with vitest's JSON reporter, and the failing test names were read off -- a killer that only *should* fail is exactly the false green this file exists to prevent. S1 is an intended survivor: the mutant is equivalent, so no test can kill it, and saying so is the point of the `why`.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/store/src/statements.ts",
+      "find": "if (next === terminator) index += 2;",
+      "replace": "if (next === terminator) index += 1;",
+      "killers": [
+        {
+          "file": "packages/store/test/statements.test.ts",
+          "test": "the statement scanner counts one statement however it is spelled"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/store/src/statements.ts",
+      "find": "  ['[', 'bracket'],\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/store/test/statements.test.ts",
+          "test": "the statement scanner counts one statement however it is spelled"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/store/src/statements.ts",
+      "find": "\n          if (hasContent) count += 1;\n",
+      "replace": "\n          count += 1;\n",
+      "killers": [
+        {
+          "file": "packages/store/test/statements.test.ts",
+          "test": "the statement scanner counts nothing for what SQLite would refuse as an empty statement"
+        }
+      ]
+    },
+    {
+      "id": "S1",
+      "file": "packages/store/src/statements.ts",
+      "find": "QUOTE_CLOSES.get(state)",
+      "replace": "QUOTE_CLOSES.get(state) ?? \"'\"",
+      "survivor": true,
+      "why": "The line is reached only from the `single`/`double`/`backtick` case, and `QUOTE_CLOSES` is a literal holding all three of those keys, so `.get` returns a string here every time and the fallback never fires -- a change no test can observe, and one no test should be written to catch. It is here so the run exercises the intended-survivor path and reports `held` rather than a false kill.",
+      "killers": [
+        {
+          "file": "packages/store/test/statements.test.ts",
+          "test": "the statement scanner counts one statement however it is spelled"
+        }
+      ]
+    }
+  ]
+}

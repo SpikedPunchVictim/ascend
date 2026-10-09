@@ -1,0 +1,101 @@
+{
+  "_": "Kill-check for the nine per-type closures in packages/adapter-claude-code/src/derive.ts, written when they were extracted into their own functions. Each mutant breaks ONE rule a closure encodes and names the single test that must notice. The killers were found empirically rather than guessed -- each mutant was applied, derive.test.ts was run with vitest's JSON reporter, and the failing test names were read off -- because a killer that only *should* fail is the same false green as an assertion that is never shown to fail. There is NO intended survivor here, and that is the honest result rather than an omission: all eight mutants are observable, so declaring one equivalent to exercise the `held` path would have meant inventing one. That path is exercised by scripts/mutations/types-capture.json and statement-count.json.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "        ...(name === undefined ? {} : { tool_name: name }),\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "tool_denial resolves the tool name from the invoking record, not the denying one"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "const changed = previous !== undefined && previous !== verdict;",
+      "replace": "const changed = false;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "verification_run emits a change from pass to fail"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "const quotable = !feedback.startsWith(CLARIFICATION_PREAMBLE);",
+      "replace": "const quotable = true;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "user_correction OMITS evidence_text for the AskUserQuestion clarification form"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "const inherited = claimed === 0 && file.kind === 'subagent';",
+      "replace": "const inherited = false;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "writes NO activation for a subagent run it inherited from its parent"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "if (run?.skill !== invoked) claims.set(invoked, (claims.get(invoked) ?? 0) + 1);",
+      "replace": "claims.set(invoked, (claims.get(invoked) ?? 0) + 1);",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "leaves no claim behind for a call made while its own skill is still running"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "if (block['is_error'] === true) counters.refusedFindings += report.ready.length;",
+      "replace": "if (false) counters.refusedFindings += report.ready.length;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "writes NO entry for a call the harness REFUSED"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "pre_tokens: pre,",
+      "replace": "pre_tokens: post,",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "context_compaction emits the five required token fields"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "...(line === undefined ? {} : { line }),",
+      "replace": "...(line === undefined ? {} : { line: -1 }),",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "maps the harness category to class"
+        }
+      ]
+    }
+  ]
+}
