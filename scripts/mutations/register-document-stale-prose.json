@@ -1,0 +1,61 @@
+{
+  "_": "Kill-check for the warning asc-w0b2 added to `packages/cli/src/register-document.ts`. The defect it closes: `registerType` resolves a document by the hash of its SHAPE, so a file exported before a shape bump is registered as the OLDER version and writes its prose there -- while `asc types show <name>`, `asc types brief <name>` and every other surface that names the type read the latest. Every value the command printed was correct (the version, `prose-updated`, `bump none`) and the one fact a reader needed was absent. The warning is `proseWrittenToAnOlderVersion`, and its call site is guarded by `result.proseUpdated`. The two mutants that matter most are M1, which restores the silence, and M3, which removes the `proseUpdated` guard so the warning fires on an idempotent re-run -- a command that changed no fact, which is how a warning becomes one a reader learns to skip. M4 is the plausible future edit: looking the version up by number instead of asking for the latest, which makes the two always agree and silently disables the whole check. Killers were found empirically -- each mutant applied, this test file run, the failing names read off -- rather than guessed, because a killer that only SHOULD fail is the same false green as an assertion never shown to fail. There is NO intended survivor: all four mutants are observable.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/register-document.ts",
+      "find": "  if (latest === undefined || latest.version === version) return [];",
+      "replace": "  if (latest !== undefined) return [];",
+      "killers": [
+        {
+          "file": "packages/cli/test/register-document.test.ts",
+          "test": "warns, naming both versions and what to do, when the shape resolves to an older one"
+        },
+        {
+          "file": "packages/cli/test/register-document.test.ts",
+          "test": "warns on a dry run too, which is when the document can still be fixed"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/register-document.ts",
+      "find": "  if (latest === undefined || latest.version === version) return [];",
+      "replace": "  if (latest === undefined || latest.version !== version) return [];",
+      "killers": [
+        {
+          "file": "packages/cli/test/register-document.test.ts",
+          "test": "warns, naming both versions and what to do, when the shape resolves to an older one"
+        },
+        {
+          "file": "packages/cli/test/register-document.test.ts",
+          "test": "says nothing when the resolved version IS the latest"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/register-document.ts",
+      "find": "      ...(result.proseUpdated ? proseWrittenToAnOlderVersion(db, result.name, result.version) : []),",
+      "replace": "      ...(true ? proseWrittenToAnOlderVersion(db, result.name, result.version) : []),",
+      "killers": [
+        {
+          "file": "packages/cli/test/register-document.test.ts",
+          "test": "says nothing on an idempotent re-run of a stale document, which writes nothing"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/register-document.ts",
+      "find": "  const latest = findType(db, name);",
+      "replace": "  const latest = findType(db, name, version);",
+      "killers": [
+        {
+          "file": "packages/cli/test/register-document.test.ts",
+          "test": "warns, naming both versions and what to do, when the shape resolves to an older one"
+        }
+      ]
+    }
+  ]
+}

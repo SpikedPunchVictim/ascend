@@ -147,6 +147,10 @@ export function registerDocumentVia(
       ...(result.outcome === 'created'
         ? droppedGuidance(document, db, result.name, result.version)
         : []),
+      // The mirror of the warning above, asked of the same write: `droppedGuidance` speaks when a
+      // NEW version lost something, this when an OLD one silently gained it. Only when prose was
+      // actually written -- an idempotent re-run changes nothing and stays quiet.
+      ...(result.proseUpdated ? proseWrittenToAnOlderVersion(db, result.name, result.version) : []),
       // Said out loud, because a document's `status` is easy not to notice: it usually arrives one
       // command earlier, through `asc types export` of a type someone retired, and the registration
       // itself reports `created`. `changed` is zero for a family already retired, and there is
@@ -214,6 +218,50 @@ function droppedGuidance(
       `declared ${JSON.stringify(previous.guidance[field])}. A new version keeps only what its ` +
       `document says, so it has none -- add ${field} to the document and define it again to keep it.`,
   );
+}
+
+/**
+ * One warning when this write replaced the prose of a version that is no longer the latest
+ * (asc-w0b2).
+ *
+ * `registerType` resolves a document by the hash of its SHAPE, so a document exported before a
+ * shape bump -- a stale file, which is ordinary, since `asc types export` has no `--version` flag
+ * and a file on disk outlives the bump -- is registered as the older version and writes its prose
+ * THERE. Every value the command then prints is correct: the version is the version it wrote to,
+ * the outcome `prose-updated` is true, the bump `none` is true. What is missing is the one thing a
+ * reader needs, that no surface which names the type will show what they just wrote -- `asc types
+ * show <name>` and `asc types brief <name>` read the latest, and this is not it.
+ *
+ * This is the mirror of `droppedGuidance` above, and the sentence in its comment is the reason:
+ * *what was wrong was the silence*. There the silence was about a field a NEW version lost; here it
+ * is about a write that landed on an OLD one, where nobody reads.
+ *
+ * Asked only when prose was actually written. An idempotent re-run of a stale document changes no
+ * fact, and warning on it would fire on every run -- the same reason `typeLines` declines to emit a
+ * line for that case. A `created` registration is the latest version by construction and cannot
+ * reach here either.
+ *
+ * Computed on a dry run too, because that is when the document can still be fixed -- the argument
+ * `droppedGuidance` makes for itself, and why `asc types define --dry-run` reports the version it
+ * WOULD write to rather than the latest.
+ */
+function proseWrittenToAnOlderVersion(db: SqlDatabase, name: string, version: number): string[] {
+  // No version argument, so `findType` answers the latest row -- the same call `droppedGuidance`
+  // makes on the line above, one version up.
+  const latest = findType(db, name);
+  // `findType` answers `undefined` rather than throwing when a name is not registered, so its type
+  // requires the guard. It cannot fire here: `version` came out of the table this reads. Answering
+  // `[]` is what `droppedGuidance` does with its own, rather than inventing a second behaviour for
+  // a case neither can reach.
+  if (latest === undefined || latest.version === version) return [];
+  return [
+    `this document's shape is version ${String(version)} of ${name}, so that is where its prose ` +
+      `was written. Version ${String(latest.version)} is the latest, and the surfaces that read ` +
+      `${name} by name -- 'asc types show ${name}', 'asc types brief ${name}' -- read the latest, ` +
+      `so the prose just written is not what they show. It is readable with 'asc types show ` +
+      `${name} --version ${String(version)}'; to change what the type says now, run ` +
+      `'asc types export ${name}', edit that document, and define it again.`,
+  ];
 }
 
 /**

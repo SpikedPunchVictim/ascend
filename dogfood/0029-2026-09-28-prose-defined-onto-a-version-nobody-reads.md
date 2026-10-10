@@ -7,7 +7,7 @@
 | **Surfaced by** | a probe run to check whether `asc-my84`'s prose edit had reached the live store — `asc types define` on a document that carried version 1's shape |
 | **Entry type(s)** | none. The defect is in `asc types define`'s outcome line, and in what it does not warn about |
 | **Severity** | P3 |
-| **Status** | open |
+| **Status** | fixed in the working tree 2026-10-09: the command now warns when the resolved version is not the latest. See *The fix* below |
 
 ## What was found
 
@@ -144,9 +144,77 @@ read into it.
 
 ## Links
 
-- Bead: `asc-w0b2` (P3, open)
+- Bead: `asc-w0b2` (P3, fixed in the working tree 2026-10-09)
 - The work whose probe produced it: `asc-my84`, and `dogfood/0026` (the same silence about the same
   type, one day earlier)
 - Related: `dogfood/0021` (a dated measurement in a type's own description — version 2's new text and
   version 1's restored text are both that), `dogfood/0024` (an edited handler re-keys its rows: the
   other way a write lands somewhere a reader does not look)
+
+---
+
+## The fix — 2026-10-09 (`asc-w0b2`)
+
+The silence this record names is closed by a warning, in the voice and in the place `droppedGuidance`
+already established in the same function.
+
+`proseWrittenToAnOlderVersion` (`packages/cli/src/register-document.ts`) is asked when this
+registration wrote prose, and answers nothing unless the version it wrote to is not the latest for
+that name. When it does answer, it names both version numbers, says that the surfaces reading the
+type *by name* read the latest and so do not show what was just written, says where it *is* readable
+(`asc types show <name> --version N`), and says what to do about it (`asc types export <name>`, edit
+that document, define it again).
+
+**Three properties were decided rather than assumed, and each is why the fix is where it is.**
+
+- **Asked only when prose was actually written.** `result.proseUpdated` is the producer's own answer
+  to "did this emit a line for a prose change" (`packages/store/src/line-producers.ts`). An idempotent
+  re-run of a stale document changes no fact, and warning on it would fire on every run of a command
+  that did nothing — the same case `typeLines` already declines to emit a line for. A warning that
+  fires when nothing happened is how a reader learns to skip a warning.
+- **Placed in `registerDocumentVia`, not in `asc types define`.** That module's whole reason for
+  existing is that a refusal noticed in one command must apply to all of them. `asc types import`,
+  `asc import`, `asc init` and `asc ingest claude-code` reach the producer through the same function
+  and all already render `result.warnings`, so the silence closes in every command that could have
+  it rather than only in the one where it was noticed.
+- **The latest version is asked of `findType(db, name)`** — the call `droppedGuidance` already makes
+  one version up, with no version argument and so the `ORDER BY version DESC LIMIT 1` row — not of a
+  new query, and not of the version just resolved, which is the thing being compared against.
+
+**The one thing this record asked for that the fix deliberately does not do.** The suggestion below
+was to name *the entry count on each* version. `TypeSummary.entryCount` is counted over entries
+recorded against **any** version of the name and not yet struck (`packages/store/src/registry.ts`),
+so it cannot produce the per-version 0/112 split this record quotes; `struckCount` is likewise a
+name-level total. A new store query per version, carrying its own tests, for a number prose does not
+by design affect, was not worth it — so the warning names the two versions and what to do, and stops
+there.
+
+**What was deliberately not changed.** `outcome` keeps its three values, so `--json` and the table
+contract are unchanged and no existing caller or script has to learn a fourth.
+
+**The evidence it works.** Five cases were added to `packages/cli/test/register-document.test.ts`
+(15 → 20 tests): the warning itself and its four silences — the resolved version *is* the latest; an
+idempotent re-run, which writes nothing; version 2's prose being left alone, which is the fact the
+warning exists to report; and a dry run, which is when the document can still be fixed.
+
+Four mutants went into `scripts/mutations/register-document-stale-prose.json`, and the run is the
+assertion that the cases are load-bearing rather than merely green:
+
+```
+$ pnpm mutate register-document-stale-prose --allow-dirty
+| id | verdict | killers that died | survivors |
+| M1 | killed by every named killer | 2 | - |
+| M2 | killed by every named killer | 2 | - |
+| M3 | killed by every named killer | 1 | - |
+| M4 | killed by every named killer | 1 | - |
+rebuild: node_modules/typescript/bin/tsc -b ok -- no build output is left holding a mutant
+4 mutant(s), 0 problem(s). Every named killer killed its mutant.
+```
+
+The two that matter are **M1**, which restores the silence this record is about, and **M3**, which
+drops the `proseUpdated` guard so the warning fires on an idempotent re-run. M1 is killed only by the
+cases that assert the warning, and M3 only by the idempotent-re-run case — so the guard and the
+warning are each pinned by a different test, and neither can be removed without a red. **M4** is the
+plausible future edit: looking the version up by number instead of asking for the latest, which makes
+the two always agree and silently disables the whole check. The killer names were read off the
+failing tests' own output after each mutant was planted, not guessed.

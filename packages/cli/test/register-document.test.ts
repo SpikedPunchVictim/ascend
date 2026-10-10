@@ -335,3 +335,91 @@ describe('asc-6jf -- a new version that omits the previous version’s guidance'
     });
   });
 });
+
+describe('asc-w0b2 -- prose written to a version that is not the latest', () => {
+  /**
+   * Two shapes of one type, so one name holds two versions.
+   *
+   * `v1` is what a document exported BEFORE the bump looks like, and that is the whole setup: the
+   * store resolves a document by the hash of its shape and not by recency, so a stale file lands on
+   * version 1 however many versions have been minted since. `asc types export` has no `--version`
+   * flag, so a file on disk outliving a bump is ordinary rather than careless.
+   */
+  const v1 = (description: string): TypeDocument => ({
+    name: 'widget_reviewed',
+    properties: [{ name: 'widget_kind', type: 'string', description }],
+  });
+
+  const v2 = (description: string): TypeDocument => ({
+    name: 'widget_reviewed',
+    properties: [
+      { name: 'widget_kind', type: 'string', description },
+      { name: 'reviewer', type: 'string' },
+    ],
+  });
+
+  const register = (store: Fixture, doc: TypeDocument, at: string, dryRun = false) =>
+    registerDocument(store.root, store.indexFile, doc, { registeredAt: at, dryRun });
+
+  /** The arrangement every case below starts from: version 1 exists, version 2 is the latest. */
+  const twoVersions = (store: Fixture): void => {
+    register(store, v1('ORIGINAL'), AT);
+    register(store, v2('ORIGINAL'), LATER);
+  };
+
+  it('warns, naming both versions and what to do, when the shape resolves to an older one', () => {
+    withStore((store) => {
+      twoVersions(store);
+      const stale = register(store, v1('EDITED'), THIRD);
+
+      // Every value the command prints is correct. That is the point of the case: the outcome is
+      // true and the version is true, and neither says that nobody reading the type by name will
+      // see the prose that was just written.
+      expect(stale.outcome).toBe('prose-updated');
+      expect(stale.version).toBe(1);
+
+      expect(stale.warnings).toHaveLength(1);
+      const [warning] = stale.warnings;
+      expect(warning).toMatch(
+        /version 1 of widget_reviewed, so that is where its prose was written/,
+      );
+      expect(warning).toMatch(/Version 2 is the latest/);
+      expect(warning).toMatch(/asc types show widget_reviewed --version 1/);
+      expect(warning).toMatch(/asc types export widget_reviewed/);
+    });
+  });
+
+  it('says nothing when the resolved version IS the latest', () => {
+    withStore((store) => {
+      register(store, v1('ORIGINAL'), AT);
+      expect(register(store, v1('EDITED'), LATER).warnings).toEqual([]);
+    });
+  });
+
+  it('says nothing on an idempotent re-run of a stale document, which writes nothing', () => {
+    withStore((store) => {
+      twoVersions(store);
+      const again = register(store, v1('ORIGINAL'), THIRD);
+      // Not merely quiet -- nothing happened. A warning here would fire on every run of a command
+      // that changed no fact, which is how a real warning becomes one a reader learns to skip.
+      expect(again.outcome).toBe('unchanged');
+      expect(again.warnings).toEqual([]);
+    });
+  });
+
+  it('warns on a dry run too, which is when the document can still be fixed', () => {
+    withStore((store) => {
+      twoVersions(store);
+      expect(register(store, v1('EDITED'), THIRD, true).warnings).toHaveLength(1);
+    });
+  });
+
+  it('leaves version 2’s prose alone, which is the fact the warning exists to report', () => {
+    withStore((store) => {
+      twoVersions(store);
+      register(store, v1('EDITED'), THIRD);
+      expect(findType(store.db, 'widget_reviewed', 1)?.prose['widget_kind']).toBe('EDITED');
+      expect(findType(store.db, 'widget_reviewed', 2)?.prose['widget_kind']).toBe('ORIGINAL');
+    });
+  });
+});
