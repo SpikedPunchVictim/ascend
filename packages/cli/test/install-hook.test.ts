@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { scriptNotice } from '../src/commands/install-hook.js';
 import { flatten } from './helpers.js';
@@ -1080,6 +1080,135 @@ describe('asc install-hook: lifecycle stages for say: handlers (asc-tuur.4)', ()
       },
     });
     expect(live.stderr).toBe('');
+  });
+});
+
+/**
+ * Putting a bare `asc` on the session's PATH (asc-zser).
+ *
+ * Every assertion here drives the generated shell text rather than reading it, because the two
+ * failure modes this feature has are both invisible to a byte comparison. A shim that is written
+ * correctly and not executable is byte-identical to one that works; and a `printf` whose escapes are
+ * wrong produces a file that exists, looks plausible, and sets nothing. So the shim is EXECUTED, and
+ * the `PATH` write is handed to a real `sh` that sources it and then asks the shell where `asc` is.
+ *
+ * The measurements behind this are `docs/evidence/EV-47.md`.
+ */
+describe('asc install-hook: the `asc` shim on PATH (asc-zser)', () => {
+  const shimPath = (dir: string): string => join(dir, '.ascend', 'bin', 'asc');
+
+  /** Run a shell snippet in `dir` with a PATH that holds nothing but the system and `node`. */
+  function shell(dir: string, script: string): Run {
+    const result = spawnSync('sh', ['-c', script], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { HOME: dir, PATH: `/usr/bin:/bin:${dirname(process.execPath)}` },
+    });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  /** Run the generated hook the way Claude Code's SessionStart does, with an env file to write to. */
+  function sessionStart(dir: string, envFile: string): Run {
+    const result = spawnSync('sh', [scriptPath(dir)], {
+      cwd: dir,
+      encoding: 'utf8',
+      input: '',
+      env: {
+        HOME: dir,
+        PATH: '/usr/bin:/bin',
+        CLAUDE_PROJECT_DIR: dir,
+        CLAUDE_ENV_FILE: envFile,
+      },
+    });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  it('writes a shim that is executable and actually runs this checkout', () => {
+    const dir = project();
+    expect(asc(['install-hook', '--yes'], dir).status).toBe(0);
+
+    // Executable, not merely present: a shim that lost its bit is byte-identical to a working one
+    // and is the difference between `asc` and `permission denied` in every session.
+    expect(lstatSync(shimPath(dir)).mode & 0o111).not.toBe(0);
+
+    const run = shell(dir, `"${shimPath(dir)}" --version`);
+    expect(run.status).toBe(0);
+    // The version of the binary this test is driving, which is the one the shim is supposed to have
+    // resolved. Asserting only exit 0 would pass against a shim that ran the wrong `asc`.
+    expect(run.stdout).toContain(
+      execFileSync(process.execPath, [bin, '--version'], { encoding: 'utf8' }).trim(),
+    );
+  });
+
+  it("puts the shim's directory on the PATH of the session the hook starts, and only once", () => {
+    const dir = project();
+    asc(['install-hook', '--yes'], dir);
+    const envFile = join(dir, 'envfile.sh');
+    writeFileSync(envFile, '');
+
+    expect(sessionStart(dir, envFile).status).toBe(0);
+
+    // Sourced three times, because `/clear` re-fires SessionStart into a session whose env file
+    // already holds the entry. The `case` in the written text is what makes that a no-op rather
+    // than a PATH that grows by one directory per clear.
+    const sourced = shell(
+      dir,
+      `. '${envFile}'; . '${envFile}'; . '${envFile}'; ` +
+        `printf '%s\\n' "$(command -v asc)" "$(printf '%s' "$PATH" | tr ':' '\\n' | grep -c '\\.ascend/bin')"`,
+    );
+    expect(sourced.status).toBe(0);
+    expect(sourced.stdout.trimEnd().split('\n')).toEqual([shimPath(dir), '1']);
+  });
+
+  it('writes no PATH entry at all once the shim is gone, rather than a dead directory', () => {
+    const dir = project();
+    asc(['install-hook', '--yes'], dir);
+    const envFile = join(dir, 'envfile.sh');
+    writeFileSync(envFile, '');
+    rmSync(shimPath(dir));
+
+    expect(sessionStart(dir, envFile).status).toBe(0);
+    // The hook and the shim are one generation and the hook's export is gated on the shim being
+    // EXECUTABLE, so the two cannot disagree about whether a bare `asc` is supposed to resolve here.
+    expect(readFileSync(envFile, 'utf8')).toBe('');
+  });
+
+  it('is a no-op the second time, with the shim current', () => {
+    const dir = project();
+    expect(asc(['install-hook', '--yes'], dir).status).toBe(0);
+    const second = asc(['install-hook', '--yes'], dir);
+
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain('already installed');
+  });
+
+  it('rewrites a shim that has lost its executable bit, rather than calling the install current', () => {
+    const dir = project();
+    asc(['install-hook', '--yes'], dir);
+    // The bit is the whole difference between a shim that works and one that prints `permission
+    // denied` in every session, and it is invisible to a byte comparison -- restoring a checkout
+    // from an archive, or copying without `-p`, drops it and leaves the bytes identical.
+    chmodSync(shimPath(dir), 0o644);
+
+    const second = asc(['install-hook', '--yes'], dir);
+
+    expect(second.status).toBe(0);
+    expect(second.stdout).not.toContain('already installed');
+    expect(lstatSync(shimPath(dir)).mode & 0o111).not.toBe(0);
+  });
+
+  it('writes no PATH entry for a shim that is present but not executable', () => {
+    const dir = project();
+    asc(['install-hook', '--yes'], dir);
+    const envFile = join(dir, 'envfile.sh');
+    writeFileSync(envFile, '');
+    chmodSync(shimPath(dir), 0o644);
+
+    expect(sessionStart(dir, envFile).status).toBe(0);
+    // The guard tests `-x`, not `-f`, and this is the measurement that says why: a present-but-dead
+    // shim on `PATH` turns `asc: not found` into `permission denied`, which is a worse error to
+    // debug, so the directory is left off entirely until the file can actually be run.
+    expect(readFileSync(envFile, 'utf8')).toBe('');
   });
 });
 

@@ -296,6 +296,15 @@ export interface HookState {
    * bytes it would write. Unknown is not the same answer as stale, and the check says so.
    */
   readonly scriptCurrent: boolean | undefined;
+  /** Where the `asc` shim lives, project-relative -- the same string `install-hook` writes. */
+  readonly shimPath: string;
+  /**
+   * Byte-equal to what `shimScript` would write today AND executable -- or `undefined` for the same
+   * reason `scriptCurrent` is. Both files are the same generation of the same install, which is why
+   * one check reports on both: "is the machinery current" is one question, and "which of the two is
+   * stale" is a detail of the answer rather than a second verdict.
+   */
+  readonly shimCurrent: boolean | undefined;
 }
 
 /**
@@ -347,7 +356,7 @@ export function hookGeneration(state: HookState): readonly DoctorFinding[] {
       },
     ];
   }
-  if (state.scriptCurrent === undefined) {
+  if (state.scriptCurrent === undefined || state.shimCurrent === undefined) {
     return [
       {
         check: 'hook_generation',
@@ -359,13 +368,21 @@ export function hookGeneration(state: HookState): readonly DoctorFinding[] {
       },
     ];
   }
-  if (state.scriptCurrent) {
+  // Which of the two files is behind, named rather than assumed. They are written together, so in
+  // practice they age together -- but the shim can lose its executable bit on its own (restored
+  // from an archive, copied without `-p`) and a message that blamed the script for that would send
+  // its reader to diff a file that is byte-identical to the one they should have.
+  const stale = [
+    ...(state.scriptCurrent ? [] : ['the hook script']),
+    ...(state.shimCurrent ? [] : ['the `asc` shim']),
+  ];
+  if (stale.length === 0) {
     return [
       {
         check: 'hook_generation',
         status: 'ok',
         subject: state.scriptPath,
-        detail: 'the installed script is the generation this ascend would write',
+        detail: 'the installed script and shim are the generation this ascend would write',
       },
     ];
   }
@@ -375,8 +392,9 @@ export function hookGeneration(state: HookState): readonly DoctorFinding[] {
       status: 'warn',
       subject: state.scriptPath,
       detail:
-        'written by an older ascend, so it teaches what the brief used to say and resolves a ' +
-        'binary the way it used to; `asc install-hook` rewrites it',
+        `${stale.join(' and ')} ${stale.length === 1 ? 'was' : 'were'} written by an older ascend, ` +
+        `so it teaches what the brief used to say and resolves a binary the way it used to; ` +
+        `\`asc install-hook\` rewrites both`,
     },
   ];
 }

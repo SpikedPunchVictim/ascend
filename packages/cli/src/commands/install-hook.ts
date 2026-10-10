@@ -88,7 +88,7 @@
  * is about what the hook DOES rather than what this command WRITES.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Flags } from '@oclif/core';
@@ -100,10 +100,13 @@ import {
   hookScript,
   INSTALLED_MARKER,
   isScriptCurrent,
+  isShimCurrent,
   ownBinaryRelativePath,
   resolveOwnBinary,
   SCRIPT_MARKER,
   SCRIPT_RELATIVE_PATH,
+  SHIM_RELATIVE_PATH,
+  shimScript,
 } from '../hook-script.js';
 import { findProjectRoot } from '../project.js';
 import { writablePath } from '../symlink.js';
@@ -548,17 +551,32 @@ export default class InstallHook extends BaseCommand {
     // than something to make them translate.
     const scriptRequested = join(root, ...SCRIPT_RELATIVE_PATH.split('/'));
     const scriptPath = writablePath(scriptRequested);
-    const scriptContent = hookScript(ownBinaryRelativePath(root, binary));
+    const ownRelative = ownBinaryRelativePath(root, binary);
+    const scriptContent = hookScript(ownRelative);
     const scriptCurrent = isScriptCurrent(scriptPath, scriptContent);
+
+    // The `asc` shim (asc-zser), written unconditionally. `shimScript` takes the absolute path as
+    // well as the root-relative one, so a project whose ascend lives in somebody else's checkout
+    // gets a working shim rather than a silent no-op -- the case that has no relative path to write.
+    // The hook script gates its `PATH` entry on `-x` for this same file, so the two artifacts cannot
+    // end up disagreeing about whether a bare `asc` is supposed to resolve in this project.
+    const shimRequested = join(root, ...SHIM_RELATIVE_PATH.split('/'));
+    const shimPath = writablePath(shimRequested);
+    const shimContent = shimScript(binary, ownRelative);
+    const shimCurrent = isShimCurrent(shimPath, shimContent);
+
+    // One generation, two files. `doctor` reports on both under one check for the same reason: a
+    // project is either running the machinery this ascend would write or it is not, and asking
+    // "which of the two is stale" is a question for the message rather than for the verdict.
+    const artifactsCurrent = scriptCurrent && shimCurrent;
 
     // "Already installed" needs BOTH facts, not just the settings command: `SETTINGS_COMMAND` is a
     // fixed constant with no per-project variation (`withHook`'s doc comment), so once a project is
     // on generation 3 that string can never again distinguish a current script from a stale one --
     // reading the script itself is the only way left to answer "is this current".
-    const alreadyInstalled = merged.alreadyInstalled && scriptCurrent;
+    const alreadyInstalled = merged.alreadyInstalled && artifactsCurrent;
     const settingsNeedsWrite = !merged.alreadyInstalled || stageChanges.length > 0;
     const nothingToDo = alreadyInstalled && stageChanges.length === 0;
-    const scriptNeedsWrite = !scriptCurrent;
     // "Fresh" means `locateAscendHook` found nothing at all -- neither a stale command nor a current
     // one. Whenever that is NOT the case and the combined result is still not current, this is an
     // upgrade rather than a first install, whether it is the settings command, the script, or both
@@ -585,6 +603,7 @@ export default class InstallHook extends BaseCommand {
         yes,
         requested,
         scriptRequested,
+        shimRequested,
         merged.command,
         !merged.alreadyInstalled,
         upgraded,
@@ -593,8 +612,15 @@ export default class InstallHook extends BaseCommand {
       if (settingsNeedsWrite) {
         this.writeAtomically(target, `${JSON.stringify(next, null, 2)}\n`);
       }
-      if (scriptNeedsWrite) {
+      if (!artifactsCurrent) {
         this.writeAtomically(scriptPath, scriptContent);
+        this.writeAtomically(shimPath, shimContent);
+        // AFTER the rename, deliberately. `writeAtomically` renames a temp file, so the shim
+        // arrives mode 644 -- a file, not a program. Setting the bit first would leave a window
+        // where `asc` resolves and names a file that does not exist yet; this order leaves one
+        // where the file is current by bytes and not executable, which `isShimCurrent` calls stale
+        // and the next install repairs.
+        chmodSync(shimPath, 0o755);
       }
     }
 
@@ -616,10 +642,9 @@ export default class InstallHook extends BaseCommand {
         } else if (stageChanges.length === 0) {
           this.warn(`${requested} already names ${scriptPath}; only that script would change.`);
         }
-        this.warn(
-          `the script at ${scriptPath} would be (re)written -- it resolves the ascend binary ` +
-            `when it runs, so nothing in it depends on this machine.`,
-        );
+        for (const line of generatedNotices(scriptPath, shimRequested, 'would be (re)written')) {
+          this.warn(line);
+        }
       }
     }
 
@@ -644,6 +669,16 @@ export default class InstallHook extends BaseCommand {
         `${STORE_DIR}/ is gitignored, so a teammate who clones this repository gets the hook ` +
           `and no store: the hook is inert in their checkout until they run 'asc init', and ` +
           `they see nothing rather than an error. That is intended, not a bug.`,
+      );
+      // Said here rather than left to `.gitignore`'s own comment, because the failure mode of
+      // getting it wrong is quiet: a generated file that is neither tracked nor ignored sits in
+      // `git status` forever, and a tree nobody reads is how a real untracked file gets missed.
+      // asc-zser also puts a rule for it there; this is the sentence that tells a user who reads
+      // only the command's own output.
+      this.warn(
+        `${SHIM_RELATIVE_PATH} is gitignored for the same reason, and regenerated in full by ` +
+          `this command -- two checkouts of one project would otherwise fight over one copy of ` +
+          `a script that resolves \`$root\` at run time.`,
       );
     }
   }
@@ -761,6 +796,7 @@ export default class InstallHook extends BaseCommand {
     yes: boolean,
     target: string,
     scriptPath: string,
+    shimPath: string,
     command: string,
     settingsNeedsWrite: boolean,
     upgraded: boolean,
@@ -782,6 +818,9 @@ export default class InstallHook extends BaseCommand {
         `start, before printing the entry-type brief it already printed.`,
     );
     this.warn(scriptNotice(scriptPath, target, existsSync(scriptPath)));
+    for (const line of generatedNotices(scriptPath, shimPath, 'will be (re)written')) {
+      this.warn(line);
+    }
     if (settingsNeedsWrite) {
       this.warn(
         upgraded
@@ -795,8 +834,9 @@ export default class InstallHook extends BaseCommand {
     for (const line of stageLines) this.warn(line);
     if (!(await this.ask('Install it? [y/N] '))) {
       throw refusal(
-        `Not installed: consent was not given, so neither ${target} nor ${scriptPath} was ` +
-          `changed. Run 'asc install-hook --dry-run' to review the command on its own.`,
+        `Not installed: consent was not given, so none of ${target}, ${scriptPath} or ` +
+          `${shimPath} was changed. Run 'asc install-hook --dry-run' to review the command on ` +
+          `its own.`,
       );
     }
   }
@@ -845,6 +885,31 @@ export default class InstallHook extends BaseCommand {
  * true: a user upgrading an install was once told the script did not exist in the same sentence
  * that said it would be rewritten.
  */
+/**
+ * The lines that say what this command writes BESIDE `settings.json`, and what each file is for.
+ *
+ * Two files now, and they are not the same kind of thing: `.claude/ascend-hook.sh` is the hook, and
+ * the `${STORE_DIR}/bin/asc` shim is a program the user's own shell runs. A consent prompt that
+ * named only the first would be asking to write a file the user never sees used.
+ *
+ * The second line is the one a user has to understand to predict what happens next: it is the only
+ * sentence anywhere that says a bare `asc` will work in the *next* session rather than in the shell
+ * they are typing in, where the hook has not run yet.
+ */
+export function generatedNotices(
+  scriptPath: string,
+  shimPath: string,
+  verb: string,
+): readonly string[] {
+  return [
+    `the script at ${scriptPath} ${verb} -- it resolves the ascend binary when it runs, so nothing ` +
+      `in it depends on this machine.`,
+    `the shim at ${shimPath} ${verb}, and the hook puts its directory on the PATH of each ` +
+      `session's shell -- which is what makes a bare \`asc\` work with no alias to define. Not ` +
+      `this shell: the hook runs at session start, so it takes effect from the next session.`,
+  ];
+}
+
 export function scriptNotice(scriptPath: string, target: string, exists: boolean): string {
   const verb = exists
     ? `ascend will also rewrite ${scriptPath}`

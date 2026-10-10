@@ -20,6 +20,21 @@ root=${CLAUDE_PROJECT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null &
 # file one project's transcripts into another project's database, silently and irreversibly.
 cd "$root" || exit 0
 
+# Put a bare `asc` on this session's PATH, for the shell Claude Code hands to the tools in it.
+#
+# ABOVE the resolution below, and the order is load-bearing rather than tidy: the resolution ends in
+# `exit 0` when it finds no binary, and the ordinary outside-the-project install -- where the shim
+# is the ONLY thing that will ever put `asc` on PATH -- is precisely the case that reaches that
+# exit. With this block below it, the hook would exit before writing the entry that makes the shim
+# reachable, and `install-hook` would report success while no session ever saw a bare `asc`.
+# Measured: the export produced nothing until this block moved (the scratch project's own hook run
+# exited 0 at the resolution and never reached the write).
+ascend_bin_dir="$root/.ascend/bin"
+if [ -n "$CLAUDE_ENV_FILE" ] && [ -x "$ascend_bin_dir/asc" ]; then
+  printf 'case ":$PATH:" in\n  *":%s:"*) ;;\n  *) export PATH="%s:$PATH" ;;\nesac\n' \
+    "$ascend_bin_dir" "$ascend_bin_dir" >> "$CLAUDE_ENV_FILE"
+fi
+
 # To record an entry by hand, run: asc record TYPE -  (a JSON entry on stdin)
 # The resolution below is THIS script's own job -- how a hook finds a binary that is not on
 # PATH -- and is not a form to copy: an allow rule matches the literal text of a command, so a

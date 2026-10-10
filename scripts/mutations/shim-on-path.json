@@ -1,0 +1,113 @@
+{
+  "_": "Kill-check for asc-zser: the PATH export the generated hook writes, the shim it points at, and the ignore line that keeps the shim out of git. Each mutant breaks ONE line the feature added and names the test that must notice. The kill is what proves the test is measuring this line rather than passing for an unrelated reason -- the two failure modes here (a shim written correctly but not executable, a printf whose escapes are wrong) both produce a file that looks right and does nothing, so a spec that only asserted bytes would go green over a dead install.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "${pathExport}\n\n${byHand}${resolution}",
+      "replace": "${byHand}${resolution}",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "puts the shim's directory on the PATH of the session the hook starts, and only once"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "if [ -n \"$CLAUDE_ENV_FILE\" ] && [ -x \"$ascend_bin_dir/asc\" ]; then",
+      "replace": "if [ -z \"$CLAUDE_ENV_FILE\" ] && [ -x \"$ascend_bin_dir/asc\" ]; then",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "puts the shim's directory on the PATH of the session the hook starts, and only once"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "&& [ -x \"$ascend_bin_dir/asc\" ]",
+      "replace": "&& [ -f \"$ascend_bin_dir/asc\" ]",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "writes no PATH entry for a shim that is present but not executable"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "  printf 'case \":$PATH:\" in\\\\n  *\":%s:\"*) ;;\\\\n  *) export PATH=\"%s:$PATH\" ;;\\\\nesac\\\\n' \\\\",
+      "replace": "  printf 'export PATH=\"%s:$PATH\"\\\\n' \\\\",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "puts the shim's directory on the PATH of the session the hook starts, and only once"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "    return (statSync(path).mode & 0o111) !== 0;",
+      "replace": "    return true;",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "rewrites a shim that has lost its executable bit, rather than calling the install current"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "    exec node \"$bin\" \"$@\"",
+      "replace": "    exec \"$bin\" \"$@\"",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "writes a shim that is executable and actually runs this checkout"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "  if (binaryRelativeToRoot === undefined) {\n    const quoted = shellQuote(binaryAbsolute);\n    candidates.push(`elif [ -f ${quoted} ]; then`, `  bin=${quoted}`);\n  }",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "writes a shim that is executable and actually runs this checkout"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/cli/src/commands/init.ts",
+      "find": "  `${SHIM_DIR_RELATIVE_PATH}/`,",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/init.test.ts",
+          "test": "creates the store, ignores it, and installs the four starter types"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "packages/cli/src/commands/install-hook.ts",
+      "find": "    const artifactsCurrent = scriptCurrent && shimCurrent;",
+      "replace": "    const artifactsCurrent = shimCurrent;",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "reads a script written before that line as stale, so an existing install upgrades"
+        }
+      ]
+    }
+  ]
+}

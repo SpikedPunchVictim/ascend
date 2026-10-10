@@ -80,6 +80,7 @@ import {
   type Store,
 } from '@ascend/store';
 import { BaseCommand } from '../base.js';
+import { SHIM_DIR_RELATIVE_PATH } from '../hook-script.js';
 import { findGitRoot, findProjectRoot } from '../project.js';
 import { registerDocumentVia } from '../register-document.js';
 import { STARTER_TYPES } from '../starters.js';
@@ -116,6 +117,11 @@ const ARCHIVE_DIR = '.ascend-archived';
  *     nothing to anybody else -- the same reason it was ignored when it was the store.
  *   - **The ingest cursor**, which holds absolute paths into one machine's home directory
  *     (`asc-i5tj.14`, `ingest-cursor.ts`).
+ *   - **The `bin/` directory**, which holds the `asc` shim `install-hook` writes (`asc-zser`). It is
+ *     named here even though it is written by a different command, because this is the file that
+ *     owns which parts of `.ascend/` git sees, and the shim bakes in an absolute path to one
+ *     machine's build when the binary sits outside the project (`hook-script.ts`'s `shimScript`).
+ *     Committing it would put one checkout's path in every teammate's clone.
  *
  * Each file is named rather than the directory being un-ignored wholesale with `!` rules, because a
  * negation list silently reverses whenever a new derived file appears inside a directory that is
@@ -130,6 +136,9 @@ const DERIVED_ENTRIES: readonly string[] = [
   `${STORE_DIR}/${STORE_FILE}-wal`,
   `${STORE_DIR}/${STORE_FILE}-shm`,
   `${STORE_DIR}/${INGEST_CURSOR_FILE}`,
+  // The whole directory rather than the one file in it: everything `install-hook` puts there is
+  // generated, so a second artifact landing beside the shim should not need a second line here.
+  `${SHIM_DIR_RELATIVE_PATH}/`,
 ];
 
 /**

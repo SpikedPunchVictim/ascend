@@ -38,8 +38,8 @@ pnpm install          # runs `prepare`, which builds every package
 `pnpm install` builds; there is no separate build step to remember. If `dist/` is ever missing,
 `pnpm build` restores it.
 
-Nothing links an `asc` binary onto your `PATH` — the package is not published to npm, and this
-repo does not install itself globally. Run it by path:
+The package is not published to npm, and this repo does not install itself globally, so nothing
+links `asc` onto your `PATH` by itself. Run it by path:
 
 ```bash
 node packages/cli/dist/bin.js --help
@@ -51,13 +51,23 @@ A shell alias makes that pleasant:
 alias asc='node /path/to/ascend/packages/cli/dist/bin.js'
 ```
 
+Inside a project that has opted in with `asc install-hook`, you do not need the alias. The install
+writes a small shim to `.ascend/bin/asc` (gitignored, regenerated in full by every install) and the
+hook adds its directory to the `PATH` of each session's shell, through `CLAUDE_ENV_FILE`. A bare
+`asc` then resolves to this checkout's binary with nothing for you to define.
+
+The hook runs at session start, so the `PATH` entry takes effect **from the next session**, not in
+the one that ran the install. `asc doctor` reports the shim alongside the hook script, so an install
+that has fallen a generation behind says so rather than going quiet.
+
 ## Quickstart
 
 Everything below is real output from the commands as they ship today.
 
-It is written as bare `asc`, which is the alias at the end of [Install](#install). Nothing links an
-`asc` binary onto your `PATH` — the package is not published to npm — so without that alias, every
-`asc` below has to be `node packages/cli/dist/bin.js` instead.
+It is written as bare `asc`. That works if you ran `asc install-hook` in the project — the hook puts
+the shim's directory on each session's `PATH`, beginning with the session after the install. Before
+that, use the alias in [Install](#install), or spell every `asc` below as
+`node packages/cli/dist/bin.js`.
 
 ```bash
 cd ~/some/project
@@ -79,7 +89,9 @@ hook       SessionStart: asc types brief                offered, not installed
 `asc init` creates the store, adds `.ascend/` to `.gitignore`, and installs four starter types. It
 **never edits your settings** — the recall hook is offered, not installed. `asc install-hook` adds
 it, and only with your consent: it appends to `.claude/settings.json` rather than rewriting it, so a
-hook you already have (beads installs one) keeps working alongside it.
+hook you already have (beads installs one) keeps working alongside it. The install also writes the
+hook script at `.claude/ascend-hook.sh` and the `asc` shim at `.ascend/bin/asc`; both are generated
+whole on every run, so an edit to either is discarded rather than merged.
 
 Record something:
 
@@ -183,7 +195,7 @@ unchanged. That is the transfer and durability escape hatch for the registry.
 | `asc types define DOC` | Register a definition from JSON. `--dry-run` previews it. |
 | `asc types deprecate NAME` | Retire a type, keeping the entries already recorded. |
 | `asc types export` / `import` | Round-trip definitions as JSON documents. |
-| `asc install-hook` | Add a `SessionStart` hook so every session starts knowing the types. `--dry-run` previews it. |
+| `asc install-hook` | Add a `SessionStart` hook so every session starts knowing the types, and put `asc` on each session's `PATH`. `--dry-run` previews it. |
 
 Every command supports `--help`. Mutating commands (`init`, `record`, `ingest claude-code`, `types
 define`, `types deprecate`, `types import`, `install-hook`) support `--dry-run` — and
@@ -247,7 +259,8 @@ drill-down), `asc stats` and the analysis layer behind it, `asc annotate`, `asc 
 `asc invalidate`, `asc export` and `asc import`, `asc handlers check` and `compare`, and
 `asc install-hook` and `asc install-skill` (the analysis skill and its slash command), and
 `asc doctor` (dead types, near-duplicate names, version drift, per-property not_applicable and
-not_measured counts, and the brief's size against its 2,000-token cap).
+not_measured counts, the brief's size against its 2,000-token cap, and whether the installed hook
+script and `asc` shim are still the generation this ascend would write).
 
 Underneath all of them the store, the registry, generated views and the three-state model are
 complete.

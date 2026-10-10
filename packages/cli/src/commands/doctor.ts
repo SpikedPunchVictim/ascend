@@ -18,10 +18,13 @@ import { runDoctor, type HookState } from '../doctor.js';
 import {
   hookScript,
   isScriptCurrent,
+  isShimCurrent,
   namesAscendHook,
   ownBinaryRelativePath,
   resolveOwnBinary,
   SCRIPT_RELATIVE_PATH,
+  SHIM_RELATIVE_PATH,
+  shimScript,
 } from '../hook-script.js';
 import { findProjectRoot } from '../project.js';
 
@@ -64,13 +67,18 @@ export default class Doctor extends BaseCommand {
     }
 
     const own = resolveOwnBinary();
+    const ownRelative = own.kind === 'resolved' ? ownBinaryRelativePath(root, own.path) : undefined;
+    const shimAbsolute = join(root, ...SHIM_RELATIVE_PATH.split('/'));
     return {
       scriptPath: SCRIPT_RELATIVE_PATH,
       installed: namesAscendHook(settingsText),
       scriptExists: existsSync(absolute),
       scriptCurrent:
+        own.kind === 'resolved' ? isScriptCurrent(absolute, hookScript(ownRelative)) : undefined,
+      shimPath: SHIM_RELATIVE_PATH,
+      shimCurrent:
         own.kind === 'resolved'
-          ? isScriptCurrent(absolute, hookScript(ownBinaryRelativePath(root, own.path)))
+          ? isShimCurrent(shimAbsolute, shimScript(own.path, ownRelative))
           : undefined,
     };
   }

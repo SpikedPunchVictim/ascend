@@ -22,7 +22,7 @@
  * as plain data; the reading happens in `commands/doctor.ts`.
  */
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { relative, sep } from 'node:path';
 
 import { STORE_DIR } from '@ascend/store';
@@ -56,6 +56,20 @@ export const INSTALLED_MARKER = 'types brief';
  * second copy gets appended beside it -- the exact failure these markers exist to prevent.
  */
 export const SCRIPT_MARKER = 'ascend-hook.sh';
+
+/**
+ * The `asc` shim `install-hook` writes, and the directory it sits in -- which is the directory the
+ * SessionStart hook appends to the session's `PATH` (asc-zser).
+ *
+ * Inside `${STORE_DIR}/` rather than `.claude/`, and under `bin/` rather than loose, for two
+ * reasons that point the same way. `.claude/` is tracked configuration, and this file resolves
+ * `$root` at run time and is regenerated in full by every install -- committing it would put two
+ * checkouts of one project in conflict over a file neither reads. And `${STORE_DIR}/` is already
+ * the directory the generated hook script refuses to work without, so "a project with no store has
+ * no shim" needs no second guard: the hook exits before the shim is ever consulted.
+ */
+export const SHIM_DIR_RELATIVE_PATH = `${STORE_DIR}/bin`;
+export const SHIM_RELATIVE_PATH = `${SHIM_DIR_RELATIVE_PATH}/asc`;
 
 /**
  * Whether `settingsText` -- the raw contents of `.claude/settings.json`, or `undefined` when there
@@ -99,6 +113,26 @@ export function namesAscendHook(settingsText: string | undefined): boolean {
 export function ownBinaryRelativePath(root: string, binary: string): string | undefined {
   const path = relative(root, binary).split(sep).join('/');
   return path.startsWith('..') ? undefined : path;
+}
+
+/**
+ * The two lines that make this checkout's own binary one of the candidates, or nothing at all when
+ * that binary lives outside the root -- there is no relative path to write in that case, and a
+ * `.claude/`-relative spelling of an absolute path elsewhere would name a file that is not there.
+ *
+ * Shared by `hookScript` and `shimScript`, which is why it is a function rather than a repeated
+ * five-line expression: the two generated files must agree, forever, on which binary they are
+ * talking about, and the way two spellings of one resolution go wrong is by drifting apart slowly
+ * enough that nobody notices until a hook runs the wrong ascend.
+ */
+function ownBinaryLines(binaryRelativeToRoot: string | undefined): readonly string[] {
+  if (binaryRelativeToRoot === undefined) return [];
+  // `shellQuote` rather than a bare template interpolation: this path is computed from real
+  // directory names, which on macOS routinely contain spaces, and the total escaping `shellQuote`
+  // documents is what lets it sit safely right after the unquoted `"$root"` it is concatenated
+  // onto -- two adjacent quoted tokens with no space between them are ONE shell word.
+  const quoted = shellQuote(`/${binaryRelativeToRoot}`);
+  return [`elif [ -f "$root"${quoted} ]; then`, `  bin="$root"${quoted}`];
 }
 
 /**
@@ -156,15 +190,7 @@ export function ownBinaryRelativePath(root: string, binary: string): string | un
  * pointing at a file that no longer holds the function.
  */
 export function hookScript(binaryRelativeToRoot: string | undefined): string {
-  const ownBinaryLines = ((): readonly string[] => {
-    if (binaryRelativeToRoot === undefined) return [];
-    // `shellQuote` rather than a bare template interpolation: this path is computed from real
-    // directory names, which on macOS routinely contain spaces, and the total escaping `shellQuote`
-    // documents is what lets it sit safely right after the unquoted `"$root"` it is concatenated
-    // onto -- two adjacent quoted tokens with no space between them are ONE shell word.
-    const quoted = shellQuote(`/${binaryRelativeToRoot}`);
-    return [`elif [ -f "$root"${quoted} ]; then`, `  bin="$root"${quoted}`];
-  })();
+  const ownLines = ownBinaryLines(binaryRelativeToRoot);
 
   // The one sentence that stops a reader copying the resolution below (`asc-l38f`, dogfood/0028).
   // The asymmetry it names is structural, not a bug to be fixed: an allow rule matches the LITERAL
@@ -191,11 +217,50 @@ export function hookScript(binaryRelativeToRoot: string | undefined): string {
     '  bin="$ASCEND_BIN"',
     'elif [ -f "$root/node_modules/.bin/asc" ]; then',
     '  bin="$root/node_modules/.bin/asc"',
-    ...ownBinaryLines,
+    ...ownLines,
     'elif command -v asc >/dev/null 2>&1; then',
     '  bin="$(command -v asc)"',
     'else',
     '  exit 0',
+    'fi',
+  ].join('\n');
+
+  // The PATH half (asc-zser). Everything above finds a binary that is NOT on PATH; this puts one
+  // that IS, so that a bare `asc` in the session's own shell resolves -- which is what README
+  // §Install could not promise and dogfood/0050 paid for.
+  //
+  // **`$CLAUDE_ENV_FILE` is run, not read.** Claude Code executes it as a shell script before each
+  // Bash command, in the same shell process, so an export written here governs a command run later
+  // in the SAME session. Measured, not assumed: 4/4 sessions against a 0/4 control with the write
+  // removed and nothing else changed (`docs/evidence/EV-47.md`). That is also why the export is a
+  // real `export PATH` and not a `settings.json` `env` entry, whose values are literal -- a `PATH`
+  // there would REPLACE the inherited one with the literal string `$PATH:...`.
+  //
+  // **The guard is required, not defensive.** The variable is set for SessionStart, Setup,
+  // CwdChanged and FileChanged hooks and unset for every other event, and an unguarded append to an
+  // unset path fails with `sh: : No such file or directory` and exit 1 (measured, EV-47) -- which
+  // would turn every session of every project into a reported hook failure.
+  //
+  // **`printf`, not a heredoc, because the two stages expand different things.** The format is
+  // single-quoted, so `$PATH` survives into the file as literal text for the session's shell to
+  // expand; `%s` is filled with `$root` expanded HERE, so the file names an absolute directory and
+  // nothing about this machine's `PATH` is baked into it. An unquoted heredoc would expand both and
+  // a quoted one neither.
+  //
+  // **The `case` is what makes the write idempotent**, and it is evaluated when the FILE is run, in
+  // the session's own shell, not here. A session that fires SessionStart twice -- `/clear` does --
+  // would otherwise stack a second copy of the same directory onto `PATH` on every fire.
+  //
+  // **`-x` on the shim, not `-n` on the directory**, is what ties the two halves together: a project
+  // where `install-hook` wrote no shim (its binary lives outside the root, so the shim could only
+  // ever find itself) gets no `PATH` entry either, and no entry is written for a directory that has
+  // since been deleted. The two generated files therefore cannot disagree about whether a bare `asc`
+  // is supposed to resolve here.
+  const pathExport = [
+    `ascend_bin_dir="$root/${SHIM_DIR_RELATIVE_PATH}"`,
+    'if [ -n "$CLAUDE_ENV_FILE" ] && [ -x "$ascend_bin_dir/asc" ]; then',
+    `  printf 'case ":$PATH:" in\\n  *":%s:"*) ;;\\n  *) export PATH="%s:$PATH" ;;\\nesac\\n' \\`,
+    '    "$ascend_bin_dir" "$ascend_bin_dir" >> "$CLAUDE_ENV_FILE"',
     'fi',
   ].join('\n');
 
@@ -221,6 +286,17 @@ root=\${CLAUDE_PROJECT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null 
 # file one project's transcripts into another project's database, silently and irreversibly.
 cd "$root" || exit 0
 
+# Put a bare \`asc\` on this session's PATH, for the shell Claude Code hands to the tools in it.
+#
+# ABOVE the resolution below, and the order is load-bearing rather than tidy: the resolution ends in
+# \`exit 0\` when it finds no binary, and the ordinary outside-the-project install -- where the shim
+# is the ONLY thing that will ever put \`asc\` on PATH -- is precisely the case that reaches that
+# exit. With this block below it, the hook would exit before writing the entry that makes the shim
+# reachable, and \`install-hook\` would report success while no session ever saw a bare \`asc\`.
+# Measured: the export produced nothing until this block moved (the scratch project's own hook run
+# exited 0 at the resolution and never reached the write).
+${pathExport}
+
 ${byHand}${resolution}
 
 case "$bin" in
@@ -243,6 +319,107 @@ fi
 run ingest claude-code >/dev/null 2>&1
 run types brief
 `;
+}
+
+/**
+ * The `asc` shim itself: the command a session's shell finds on `PATH`, which forwards to whichever
+ * ascend binary this project's checkout actually holds.
+ *
+ * **Why a shim, and not simply the directory the binary already lives in.** That would be the whole
+ * feature in one line, and it is what the Claude Code docs' own example does -- and it does nothing
+ * here, or in any source checkout. `dist/bin.js` is named `bin.js` and is mode 644 (measured on this
+ * checkout), so there is no directory to put on `PATH` that yields a command called `asc`. The
+ * binary is reachable only as `node <path>`, and the only way a shell can spell that as one word is
+ * a file that does it -- which is this one.
+ *
+ * **The resolution is the hook script's, minus its last fallback -- and the omission is the whole
+ * reason this can exist.** `command -v asc` would return THIS file: the shim's own directory is on
+ * `PATH` precisely because the shim is what put it there, so the lookup would find the thing doing
+ * the looking and `exec` itself forever. Removing that one fallback is what makes a shim possible at
+ * all, and it is why the last candidate here is an absolute path rather than a `PATH` search.
+ *
+ * **That absolute path is baked in, and it is NOT the mistake `dogfood/0009` records.** asc-cjm
+ * moved the binary's location out of `.claude/settings.json` because that file is *tracked*: a path
+ * measured on one checkout is wrong for every teammate, and wrong for the same person the moment the
+ * checkout moves. Neither holds here. This file is gitignored, written per machine, and rewritten in
+ * full by every run of `install-hook` -- so it names the binary of *this* machine's install, which is
+ * the only thing it was ever asked to name. The relative form is preferred when the binary is inside
+ * the root, because it survives the checkout being moved; the absolute form is the fallback for the
+ * ordinary case of a checkout used to install into somebody else's project, where there is no
+ * relative path to write and without this there would be no shim at all.
+ *
+ * **The failure is loud, unlike the hook script's silent `exit 0`.** That contract belongs to a
+ * background hook, which must never turn a session start into a wall of output; this is a command
+ * the user typed, and a command that exits silently is indistinguishable from one that did nothing.
+ * 127 is the shell's own "command not found". The message carries context, problem and fix rather
+ * than the raw path alone.
+ */
+export function shimScript(
+  binaryAbsolute: string,
+  binaryRelativeToRoot: string | undefined,
+): string {
+  const candidates = [
+    'elif [ -f "$root/node_modules/.bin/asc" ]; then',
+    '  bin="$root/node_modules/.bin/asc"',
+    ...ownBinaryLines(binaryRelativeToRoot),
+  ];
+  if (binaryRelativeToRoot === undefined) {
+    const quoted = shellQuote(binaryAbsolute);
+    candidates.push(`elif [ -f ${quoted} ]; then`, `  bin=${quoted}`);
+  }
+
+  return `#!/bin/sh
+# Written by \`asc install-hook\`. Puts a bare \`asc\` on the PATH of this project's sessions, so a
+# reader who is told to run \`asc ...\` does not have to define an alias first. Regenerated in full
+# every time that command runs, so a hand edit here does not survive the next install or upgrade --
+# see hook-script.ts's \`shimScript\`.
+#
+# This is the other half of \`.claude/ascend-hook.sh\`: that script finds a binary that is NOT on
+# PATH, and this is what the session's shell finds ON it. Nothing is written into a global bin
+# directory, so removing this project's ascend is \`rm -r ${STORE_DIR}/\`.
+
+root=\${CLAUDE_PROJECT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." 2>/dev/null && pwd)}
+
+if [ -n "$ASCEND_BIN" ] && [ -f "$ASCEND_BIN" ]; then
+  bin="$ASCEND_BIN"
+${candidates.join('\n')}
+else
+  echo "asc: no ascend binary for $root -- re-run 'asc install-hook' from the checkout that should run it" >&2
+  exit 127
+fi
+
+case "$bin" in
+  *.js)
+    command -v node >/dev/null 2>&1 || {
+      echo "asc: $bin needs node, and node is not on PATH" >&2
+      exit 127
+    }
+    exec node "$bin" "$@"
+    ;;
+  *)
+    exec "$bin" "$@"
+    ;;
+esac
+`;
+}
+
+/**
+ * Whether `path` already holds exactly `expected` **and** a shell could run it.
+ *
+ * Byte equality alone is not enough for the shim, and this is not a hypothetical: the shim is a
+ * command, and a copy that is byte-identical but has lost its executable bit -- restored from an
+ * archive, copied without `-p`, rewritten by an editor that replaced rather than modified the file
+ * -- is a file the doctor would call current and the shell calls `permission denied`. That is
+ * exactly the false green `isScriptCurrent` exists to prevent, one layer down, and the mode is part
+ * of the artifact rather than a property of the filesystem that nobody has to think about.
+ */
+export function isShimCurrent(path: string, expected: string): boolean {
+  if (!isScriptCurrent(path, expected)) return false;
+  try {
+    return (statSync(path).mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
 }
 
 /**

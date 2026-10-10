@@ -91,8 +91,9 @@ function gitignore(dir: string): string {
  * **`.ascend/` itself is NOT ignored any more and that is the epic** (E12.4): the JSONL tree under
  * it is the store, so a checkout that ignored the directory would carry no records at all. What is
  * ignored is the index and its WAL/SHM (a pure function of the tree), the legacy database a project
- * part-way through the cutover still holds, and the ingest cursor (absolute paths into one
- * machine's home directory).
+ * part-way through the cutover still holds, the ingest cursor (absolute paths into one
+ * machine's home directory), and the `bin/` directory `install-hook` writes the `asc` shim into
+ * (asc-zser).
  *
  * Spelled out rather than imported from the command, for the reason the other readers here are:
  * a test that asked the command what it would write could not notice the answer changing.
@@ -105,6 +106,7 @@ const DERIVED_IGNORES = [
   '.ascend/ascend.db-wal',
   '.ascend/ascend.db-shm',
   '.ascend/ingest-cursor.json',
+  '.ascend/bin/',
 ];
 
 /** A `.gitignore` holding `extra`'s lines and then the derived ones, in that order. */

@@ -1,5 +1,5 @@
 {
-  "_": "Kill-check for asc-mu20: the hook-generation freshness check and the leaf module it reads. Each mutant breaks ONE branch or identity that asc-mu20 introduced, and names the test that must notice. M5 and M6 break the shared `hook-script.ts` identities that install-hook and doctor now agree on; M7 breaks the escape guard that keeps branch 3 out of a script written for a project the binary sits outside of.",
+  "_": "Kill-check for asc-mu20: the hook-generation freshness check and the leaf module it reads. Each mutant breaks ONE branch or identity that asc-mu20 introduced, and names the test that must notice. M5 and M6 break the shared `hook-script.ts` identities that install-hook and doctor now agree on; M7 breaks the escape guard that keeps branch 3 out of a script written for a project the binary sits outside of. M3, M4 and M8 were respelled in place when asc-zser turned the single `scriptCurrent` branch into the two-file `stale` computation -- the mutants moved with the code rather than being dropped, because the branch they kill is still the one this spec exists for. M6 carries ONE killer where it carried two, and the reason is measured: inverting `isScriptCurrent` inverts it for the SHIM as well, because `isShimCurrent` calls it first, so a project whose script is stale and whose shim is identical now rewrites for the shim's reason and `install-hook.test.ts`'s 'reads a script written before that line as stale' passes under the mutant. That test is not weakened -- under the real code the shim is current and the script alone drives the outcome -- but it can no longer attribute the rewrite when the mutant flips both. Its coverage moved to `shim-on-path.json`'s M9, which ignores `scriptCurrent` and nothing else.",
   "mutants": [
     {
       "id": "M1",
@@ -32,8 +32,8 @@
     {
       "id": "M3",
       "file": "packages/cli/src/doctor.ts",
-      "find": "  if (state.scriptCurrent) {",
-      "replace": "  if (!state.scriptCurrent) {",
+      "find": "    ...(state.scriptCurrent ? [] : ['the hook script']),",
+      "replace": "    ...(state.scriptCurrent ? ['the hook script'] : []),",
       "killers": [
         {
           "file": "packages/cli/test/doctor.test.ts",
@@ -48,8 +48,8 @@
     {
       "id": "M4",
       "file": "packages/cli/src/doctor.ts",
-      "find": "  if (state.scriptCurrent === undefined) {",
-      "replace": "  if (state.scriptCurrent !== undefined) {",
+      "find": "  if (state.scriptCurrent === undefined || state.shimCurrent === undefined) {",
+      "replace": "  if (state.scriptCurrent !== undefined && state.shimCurrent !== undefined) {",
       "killers": [
         {
           "file": "packages/cli/test/doctor.test.ts",
@@ -78,10 +78,6 @@
         {
           "file": "packages/cli/test/doctor-cli.test.ts",
           "test": "sees the hook it installs, and warns once that script is edited by hand"
-        },
-        {
-          "file": "packages/cli/test/install-hook.test.ts",
-          "test": "reads a script written before that line as stale, so an existing install upgrades"
         }
       ]
     },
@@ -94,6 +90,22 @@
         {
           "file": "packages/cli/test/install-hook.test.ts",
           "test": "writes a script containing none of this checkout's own absolute paths"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/cli/src/doctor.ts",
+      "find": "  if (stale.length === 0) {",
+      "replace": "  if (stale.length > 0) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "is quiet when the installed script is byte-identical to what this ascend writes"
+        },
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "warns on an older generation, naming the path and the command that fixes it"
         }
       ]
     }

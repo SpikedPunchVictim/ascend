@@ -27,6 +27,25 @@ function noHook(): HookState {
     installed: false,
     scriptExists: false,
     scriptCurrent: undefined,
+    shimPath: '.ascend/bin/asc',
+    shimCurrent: undefined,
+  };
+}
+
+/**
+ * The hook state of a project running the machinery this ascend would write: both generated files
+ * present and current. `asc-zser` added the second one, so every case that used to be spelled with
+ * `scriptCurrent` alone now has to say what the shim is doing too -- which is the point, because the
+ * two are one generation and a check that saw only one of them could call a broken install current.
+ */
+function installedHook(overrides: Partial<HookState> = {}): HookState {
+  return {
+    ...noHook(),
+    installed: true,
+    scriptExists: true,
+    scriptCurrent: true,
+    shimCurrent: true,
+    ...overrides,
   };
 }
 
@@ -368,24 +387,14 @@ describe('the installed hook script, against the generation this ascend would wr
   });
 
   it('is quiet when the installed script is byte-identical to what this ascend writes', () => {
-    const [finding] = hookGeneration({
-      scriptPath: '.claude/ascend-hook.sh',
-      installed: true,
-      scriptExists: true,
-      scriptCurrent: true,
-    });
+    const [finding] = hookGeneration(installedHook());
 
     expect(finding?.status).toBe('ok');
     expect(finding?.detail).toContain('this ascend would write');
   });
 
   it('warns on an older generation, naming the path and the command that fixes it', () => {
-    const [finding] = hookGeneration({
-      scriptPath: '.claude/ascend-hook.sh',
-      installed: true,
-      scriptExists: true,
-      scriptCurrent: false,
-    });
+    const [finding] = hookGeneration(installedHook({ scriptCurrent: false }));
 
     expect(finding?.status).toBe('warn');
     expect(finding?.subject).toBe('.claude/ascend-hook.sh');
@@ -393,15 +402,41 @@ describe('the installed hook script, against the generation this ascend would wr
     expect(finding?.detail).toContain('asc install-hook');
   });
 
+  /**
+   * `asc-zser`'s half of the same check, and the reason it is not folded into `scriptCurrent`.
+   *
+   * The shim can go stale on its own -- the script is byte-identical, the shim has lost its
+   * executable bit or was written by an older ascend -- and a check that only looked at the script
+   * would call that install current while `asc` printed `permission denied` in every session. The
+   * detail has to name the SHIM, not the script, or the reader is sent to diff a file that is
+   * already right.
+   */
+  it('warns about the shim alone when only the shim is stale, and does not blame the script', () => {
+    const [finding] = hookGeneration(installedHook({ shimCurrent: false }));
+
+    expect(finding?.status).toBe('warn');
+    expect(finding?.detail).toContain('`asc` shim');
+    expect(finding?.detail).toContain('older ascend');
+    expect(finding?.detail).toContain('asc install-hook');
+    expect(finding?.detail).not.toContain('the hook script');
+  });
+
+  it('names both generated files when both are behind', () => {
+    const [finding] = hookGeneration(installedHook({ scriptCurrent: false, shimCurrent: false }));
+
+    expect(finding?.status).toBe('warn');
+    expect(finding?.detail).toContain('the hook script and the `asc` shim');
+  });
+
   it('warns when settings.json names the hook but the script is gone', () => {
-    const [finding] = hookGeneration({
-      scriptPath: '.claude/ascend-hook.sh',
-      installed: true,
-      scriptExists: false,
-      // A missing file is `false` from `isScriptCurrent` -- the same answer as stale -- so the
-      // check must read `scriptExists` separately to tell the two apart and name the right fix.
-      scriptCurrent: false,
-    });
+    const [finding] = hookGeneration(
+      installedHook({
+        scriptExists: false,
+        // A missing file is `false` from `isScriptCurrent` -- the same answer as stale -- so the
+        // check must read `scriptExists` separately to tell the two apart and name the right fix.
+        scriptCurrent: false,
+      }),
+    );
 
     expect(finding?.status).toBe('warn');
     expect(finding?.detail).toContain('missing');
@@ -409,12 +444,9 @@ describe('the installed hook script, against the generation this ascend would wr
   });
 
   it('reports currency as unknown rather than guessing when its own binary cannot be resolved', () => {
-    const [finding] = hookGeneration({
-      scriptPath: '.claude/ascend-hook.sh',
-      installed: true,
-      scriptExists: true,
-      scriptCurrent: undefined,
-    });
+    const [finding] = hookGeneration(
+      installedHook({ scriptCurrent: undefined, shimCurrent: undefined }),
+    );
 
     // Unknown is a third answer, not a synonym for stale: `info` prompts without claiming the
     // script is wrong, and the detail says which fact is missing.

@@ -32,6 +32,13 @@ node_modules/
 # Archived stores and backups, kept beside the live one (local-only, never committed).
 .ascend-archived/
 
+# The `asc` shim `asc install-hook` writes, and the directory it has to sit in for the session's
+# PATH entry to find it (`hook-script.ts`'s `shimScript`). Ignored for the reason named above: it
+# is generated, regenerated in full by every install, and it resolves `$root` at run time, so two
+# checkouts of the same project would fight over one committed copy. The records are the tracked
+# thing; this is machinery that rebuilds itself.
+.ascend/bin/
+
 # align machine-local files — telemetry (opt-in: ALIGN_TELEMETRY=1 / --telemetry / align.config.ts telemetry:true)
 # and the scan-observation record, which is evidence about THIS checkout only (ADR 029).
 .align/telemetry.jsonl
