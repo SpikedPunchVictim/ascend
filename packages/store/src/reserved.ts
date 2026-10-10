@@ -76,9 +76,12 @@ export const RESERVED_SCHEME = 'invalidation';
  *
  * So: one contaminated field on an entry that otherwise stands is NOT `wrong_value`, and currently
  * has no label. Field-scoped invalidation is the obvious generalisation and is deliberately not
- * built, by the same rule that admitted only three labels -- one real instance is not yet a
- * category. `asc-y7p` holds the case, and a second instance of a different shape is what should
- * reopen it.
+ * built, by the same rule that admits a label here only when a real instance is already in the
+ * corpus -- one real instance is not yet a category. `asc-zz7r` holds the case, and a second
+ * instance of a different shape is what should reopen it.
+ *
+ * That sentence used to count the labels ("admitted only three"), and the count went stale the
+ * moment `duplicate` made it four -- the rule is what matters here, not its membership (`dogfood/0074`).
  */
 export const INVALIDATION_LABELS = [
   'wrong_subject',

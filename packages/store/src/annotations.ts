@@ -945,8 +945,14 @@ export interface InvalidationRow {
  * caller of `registerScheme`, including this module's own `recordAnnotations`, which is why this
  * function registers the scheme itself, through `registerSchemeUnchecked`, rather than asking a
  * caller to register it first. Idempotent the same way any scheme is (the module comment on
- * `registerScheme`): the first invalidation of a store mints version 1, and every one after it
- * reuses that version because the shape -- the three labels, no rules -- never changes.
+ * `registerScheme`): the first invalidation of a store mints a version for the vocabulary current
+ * at the time, and every one after it reuses that version while the labels are unchanged.
+ *
+ * "While the labels are unchanged" is load-bearing, and this sentence used to claim the shape
+ * "never changes" -- which the vocabulary's own widening disproved. Adding `duplicate` gave the
+ * reserved scheme a second shape, which is why `INVALIDATION_SCHEME_HISTORY` above exists at all,
+ * and it moves a store that had already invalidated onto a new version rather than extending the
+ * old one (`dogfood/0074`).
  *
  * There is no `id` in `RecordInvalidationInput`, unlike `AnnotationInput.id`, and that is a
  * departure from the module comment's "time and ids are injected, never read" rather than a

@@ -44,8 +44,9 @@
  * **A mistake cannot be withdrawn, by decision (asc-k6p.2).** There is no `--uninvalidate`, no
  * retraction annotation and no edit path back: `asc invalidate --help` and `asc --help` each contain
  * zero occurrences of retract, withdraw, undo or reinstate (measured 2026-09-28). The owner decided
- * on the same date to keep it that way until a real mistaken invalidation exists -- the test that
- * admitted only three labels, applied to a mechanism instead of a word. The two shapes of mistake
+ * on the same date to keep it that way until a real mistaken invalidation exists -- the rule that
+ * admits a label only when a real instance is already in the corpus, applied to a mechanism instead
+ * of a word. The two shapes of mistake
  * are not equally stuck, and the difference is what a later design has to answer for:
  *
  *   - **A wrong label** on an entry that really did stop counting has a remedy today. Invalidating
