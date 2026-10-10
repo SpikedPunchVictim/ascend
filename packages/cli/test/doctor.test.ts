@@ -5,6 +5,8 @@ import {
   briefSize,
   deadTypes,
   exportStatus,
+  hookGeneration,
+  type HookState,
   nearDuplicates,
   propertyStates,
   runDoctor,
@@ -12,6 +14,21 @@ import {
 } from '../src/doctor.js';
 
 /** `asc doctor`'s checks (asc-12a), over hand-built registry summaries and profiles. */
+
+/**
+ * The ordinary "never opted in" hook state: nothing named in settings, nothing on disk.
+ *
+ * Module-scoped rather than declared inside the hook describe, because `runDoctor`'s own test needs
+ * a `HookState` too and is declared above it.
+ */
+function noHook(): HookState {
+  return {
+    scriptPath: '.claude/ascend-hook.sh',
+    installed: false,
+    scriptExists: false,
+    scriptCurrent: undefined,
+  };
+}
 
 function summary(name: string, overrides: Partial<TypeSummary> = {}): TypeSummary {
   return {
@@ -264,6 +281,7 @@ describe('runDoctor', () => {
     const findings = runDoctor(
       [summary('note')],
       [profile('note', [property('text', { measured: 5 })])],
+      noHook(),
     );
     expect(findings.map((finding) => finding.check)).toEqual([
       'dead_type',
@@ -272,6 +290,7 @@ describe('runDoctor', () => {
       'property_states',
       'brief_size',
       'export',
+      'hook_generation',
     ]);
   });
 });
@@ -324,5 +343,82 @@ describe('a struck entry stops counting, and both zeros are told apart (asc-9xi0
     const [finding] = exportStatus(2, 3);
     expect(finding?.subject).toContain('5');
     expect(finding?.subject).toContain('3 struck');
+  });
+});
+
+/**
+ * `asc-mu20`: a generated artifact whose generator changed is invisible until someone re-runs the
+ * generator, and `asc install-hook` is opt-in. These four cases are the bead's own list.
+ *
+ * The check compares BYTES, never the file's date -- a script touched yesterday can be a generation
+ * behind and one from a year ago can be exactly right -- so `current` here means `isScriptCurrent`
+ * agreed, which is the same identity the install command uses. What is asserted is the verdict and
+ * the reason, because the reason is what sends a reader somewhere useful.
+ */
+describe('the installed hook script, against the generation this ascend would write (asc-mu20)', () => {
+  it('says nothing is drifting when no hook was ever installed', () => {
+    const [finding] = hookGeneration(noHook());
+
+    // `ok`, not a warning: a hook is a choice, and a project that never made it is not unhealthy.
+    // The row still exists -- a quiet check that says so is what tells "checked, clean" apart from
+    // "never ran", which is this module's contract for every check it owns.
+    expect(finding?.status).toBe('ok');
+    expect(finding?.check).toBe('hook_generation');
+    expect(finding?.detail).toContain('nothing is drifting');
+  });
+
+  it('is quiet when the installed script is byte-identical to what this ascend writes', () => {
+    const [finding] = hookGeneration({
+      scriptPath: '.claude/ascend-hook.sh',
+      installed: true,
+      scriptExists: true,
+      scriptCurrent: true,
+    });
+
+    expect(finding?.status).toBe('ok');
+    expect(finding?.detail).toContain('this ascend would write');
+  });
+
+  it('warns on an older generation, naming the path and the command that fixes it', () => {
+    const [finding] = hookGeneration({
+      scriptPath: '.claude/ascend-hook.sh',
+      installed: true,
+      scriptExists: true,
+      scriptCurrent: false,
+    });
+
+    expect(finding?.status).toBe('warn');
+    expect(finding?.subject).toBe('.claude/ascend-hook.sh');
+    expect(finding?.detail).toContain('older ascend');
+    expect(finding?.detail).toContain('asc install-hook');
+  });
+
+  it('warns when settings.json names the hook but the script is gone', () => {
+    const [finding] = hookGeneration({
+      scriptPath: '.claude/ascend-hook.sh',
+      installed: true,
+      scriptExists: false,
+      // A missing file is `false` from `isScriptCurrent` -- the same answer as stale -- so the
+      // check must read `scriptExists` separately to tell the two apart and name the right fix.
+      scriptCurrent: false,
+    });
+
+    expect(finding?.status).toBe('warn');
+    expect(finding?.detail).toContain('missing');
+    expect(finding?.detail).toContain('asc install-hook');
+  });
+
+  it('reports currency as unknown rather than guessing when its own binary cannot be resolved', () => {
+    const [finding] = hookGeneration({
+      scriptPath: '.claude/ascend-hook.sh',
+      installed: true,
+      scriptExists: true,
+      scriptCurrent: undefined,
+    });
+
+    // Unknown is a third answer, not a synonym for stale: `info` prompts without claiming the
+    // script is wrong, and the detail says which fact is missing.
+    expect(finding?.status).toBe('info');
+    expect(finding?.detail).toContain('cannot resolve its own executable');
   });
 });

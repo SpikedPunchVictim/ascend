@@ -1,0 +1,101 @@
+{
+  "_": "Kill-check for asc-mu20: the hook-generation freshness check and the leaf module it reads. Each mutant breaks ONE branch or identity that asc-mu20 introduced, and names the test that must notice. M5 and M6 break the shared `hook-script.ts` identities that install-hook and doctor now agree on; M7 breaks the escape guard that keeps branch 3 out of a script written for a project the binary sits outside of.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/doctor.ts",
+      "find": "  if (!state.installed) {",
+      "replace": "  if (state.installed) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "says nothing is drifting when no hook was ever installed"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/doctor.ts",
+      "find": "  if (!state.scriptExists) {",
+      "replace": "  if (state.scriptExists) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "warns when settings.json names the hook but the script is gone"
+        },
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "is quiet when the installed script is byte-identical to what this ascend writes"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/doctor.ts",
+      "find": "  if (state.scriptCurrent) {",
+      "replace": "  if (!state.scriptCurrent) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "warns on an older generation, naming the path and the command that fixes it"
+        },
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "is quiet when the installed script is byte-identical to what this ascend writes"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/doctor.ts",
+      "find": "  if (state.scriptCurrent === undefined) {",
+      "replace": "  if (state.scriptCurrent !== undefined) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "reports currency as unknown rather than guessing when its own binary cannot be resolved"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "return settingsText.includes(INSTALLED_MARKER) || settingsText.includes(SCRIPT_MARKER);",
+      "replace": "return settingsText.includes(INSTALLED_MARKER) && settingsText.includes(SCRIPT_MARKER);",
+      "killers": [
+        {
+          "file": "packages/cli/test/doctor-cli.test.ts",
+          "test": "sees the hook it installs, and warns once that script is edited by hand"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "    return readFileSync(path, 'utf8') === expected;",
+      "replace": "    return readFileSync(path, 'utf8') !== expected;",
+      "killers": [
+        {
+          "file": "packages/cli/test/doctor-cli.test.ts",
+          "test": "sees the hook it installs, and warns once that script is edited by hand"
+        },
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "reads a script written before that line as stale, so an existing install upgrades"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "  return path.startsWith('..') ? undefined : path;",
+      "replace": "  return path;",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "writes a script containing none of this checkout's own absolute paths"
+        }
+      ]
+    }
+  ]
+}

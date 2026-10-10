@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -83,6 +83,7 @@ describe('asc doctor', () => {
       'property_states',
       'brief_size',
       'export',
+      'hook_generation',
     ]);
   });
 
@@ -96,5 +97,39 @@ describe('asc doctor', () => {
     const rows = (JSON.parse(asc(['doctor', '--json'], dir).stdout) as { rows: Finding[] }).rows;
     const dead = rows.filter((row) => row.check === 'dead_type' && row.status === 'warn');
     expect(dead.map((row) => row.subject).sort()).toEqual([...starters].sort());
+  });
+
+  /**
+   * `asc-mu20` through the real binary: the check has to see the hook the install command actually
+   * wrote, and the unit tests in `doctor.test.ts` cannot prove that -- they hand `runDoctor` a
+   * `HookState` directly, so a command that passed a constant one would still pass them all. This
+   * drives the same project from "never opted in" to "installed" to "stale" and reads the verdict at
+   * each step, so the wiring from `commands/doctor.ts` through `runDoctor` is exercised end to end.
+   *
+   * The script is staled by APPENDING a byte, not by touching a date: currency is byte equality, so
+   * an appended comment is the smallest edit that makes it a different generation, and it is the one
+   * a hand-edit produces.
+   */
+  it('sees the hook it installs, and warns once that script is edited by hand (asc-mu20)', () => {
+    const dir = project();
+    const hookRow = (): Finding | undefined =>
+      (JSON.parse(asc(['doctor', '--json'], dir).stdout) as { rows: Finding[] }).rows.find(
+        (row) => row.check === 'hook_generation',
+      );
+
+    const before = hookRow();
+    expect(before?.status).toBe('ok');
+    expect(before?.detail).toContain('nothing is drifting');
+
+    expect(asc(['install-hook', '--yes'], dir).status).toBe(0);
+    const installed = hookRow();
+    expect(installed?.status).toBe('ok');
+    expect(installed?.detail).toContain('this ascend would write');
+
+    appendFileSync(join(dir, '.claude', 'ascend-hook.sh'), '# a hand edit\n');
+    const stale = hookRow();
+    expect(stale?.status).toBe('warn');
+    expect(stale?.detail).toContain('older ascend');
+    expect(stale?.detail).toContain('asc install-hook');
   });
 });

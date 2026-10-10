@@ -31,7 +31,13 @@ import { BRIEF_CAP_BYTES, briefText } from './brief-text.js';
 import { countCodePoints } from './budget.js';
 
 export type DoctorCheck =
-  'dead_type' | 'near_duplicate' | 'version_drift' | 'property_states' | 'brief_size' | 'export';
+  | 'dead_type'
+  | 'near_duplicate'
+  | 'version_drift'
+  | 'property_states'
+  | 'brief_size'
+  | 'export'
+  | 'hook_generation';
 
 export interface DoctorFinding {
   readonly check: DoctorCheck;
@@ -266,10 +272,120 @@ export function exportStatus(live: number, struck: number): readonly DoctorFindi
   ];
 }
 
+/**
+ * What the command could see about this project's installed hook, as plain data (`asc-mu20`).
+ *
+ * Gathered by `commands/doctor.ts` rather than read here, for the reason this module is pure: the
+ * check is a function of four facts, and none of them is a store call.
+ *
+ * `installed` and `scriptExists` are separate questions and neither implies the other. A settings
+ * file can name the hook while the script is gone (a clone that dropped an untracked file, a hand
+ * edit), and a script can be sitting there while the settings file names nothing -- in which case it
+ * is not installed, whatever is on disk, and Claude Code will never run it.
+ */
+export interface HookState {
+  /** Where the script lives, project-relative -- the same string `install-hook` writes. */
+  readonly scriptPath: string;
+  /** Whether `.claude/settings.json` names an ascend hook at all, by either generation marker. */
+  readonly installed: boolean;
+  /** Whether the script file is there. */
+  readonly scriptExists: boolean;
+  /**
+   * Byte-equal to what `hookScript` would write today, exactly as `isScriptCurrent` defines it --
+   * or `undefined` when this ascend cannot resolve its own executable and so cannot compute the
+   * bytes it would write. Unknown is not the same answer as stale, and the check says so.
+   */
+  readonly scriptCurrent: boolean | undefined;
+}
+
+/**
+ * Whether the installed hook script is the generation this ascend would write (`asc-mu20`).
+ *
+ * **The artifact is generated, the generator changes, and nothing re-runs it.** `asc install-hook`
+ * is opt-in and user-triggered, because it writes shared, tracked `.claude/settings.json`; the
+ * script beside it is rewritten only on a re-run. So upgrading ascend moves what the brief prints
+ * and leaves every existing project's script teaching the previous generation's text, with nothing
+ * reporting the skew. `install-hook --dry-run` does report it -- `upgrade` is one of its outcomes --
+ * but that is a command nobody has a reason to run. This check is the same fact, on the command that
+ * runs when someone asks whether their registry is healthy.
+ *
+ * **Byte equality, and deliberately the same one `isScriptCurrent` defines**, so there is one
+ * identity rather than two: doctor computing currency its own way would be a second answer to a
+ * question that already has one, and the two would drift.
+ *
+ * **A project that never opted in is `ok`, not a warning.** Nothing was installed, so nothing is
+ * drifting, and a hook is a choice rather than a requirement. The row is still emitted: a quiet
+ * check that says so is what tells "checked, clean" apart from "never ran", which is this module's
+ * contract for every check it owns.
+ *
+ * The date on the file is not evidence and is not read. A script touched yesterday may be a
+ * generation behind, and one written a year ago may be exactly right -- which is the whole reason
+ * this compares bytes.
+ */
+export function hookGeneration(state: HookState): readonly DoctorFinding[] {
+  if (!state.installed) {
+    return [
+      {
+        check: 'hook_generation',
+        status: 'ok',
+        subject: state.scriptPath,
+        detail:
+          'no hook installed, so nothing is drifting; `asc install-hook` adds one if recall is ' +
+          'wanted',
+      },
+    ];
+  }
+  if (!state.scriptExists) {
+    return [
+      {
+        check: 'hook_generation',
+        status: 'warn',
+        subject: state.scriptPath,
+        detail:
+          'a hook is registered in .claude/settings.json but the script is missing, so every ' +
+          'session runs nothing; `asc install-hook` writes it again',
+      },
+    ];
+  }
+  if (state.scriptCurrent === undefined) {
+    return [
+      {
+        check: 'hook_generation',
+        status: 'info',
+        subject: state.scriptPath,
+        detail:
+          'a hook is registered and the script is present, but this ascend cannot resolve its own ' +
+          'executable, so what it would write cannot be computed and the answer is unknown',
+      },
+    ];
+  }
+  if (state.scriptCurrent) {
+    return [
+      {
+        check: 'hook_generation',
+        status: 'ok',
+        subject: state.scriptPath,
+        detail: 'the installed script is the generation this ascend would write',
+      },
+    ];
+  }
+  return [
+    {
+      check: 'hook_generation',
+      status: 'warn',
+      subject: state.scriptPath,
+      detail:
+        'written by an older ascend, so it teaches what the brief used to say and resolves a ' +
+        'binary the way it used to; `asc install-hook` rewrites it',
+    },
+  ];
+}
+
 /** Every check, in the order the report prints them. */
 export function runDoctor(
   summaries: readonly TypeSummary[],
   profiles: readonly TypeProfile[],
+  hook: HookState,
 ): readonly DoctorFinding[] {
   const entries = summaries.reduce((sum, summary) => sum + summary.entryCount, 0);
   const struck = summaries.reduce((sum, summary) => sum + summary.struckCount, 0);
@@ -280,5 +396,6 @@ export function runDoctor(
     ...propertyStates(profiles),
     ...briefSize(summaries),
     ...exportStatus(entries, struck),
+    ...hookGeneration(hook),
   ];
 }
