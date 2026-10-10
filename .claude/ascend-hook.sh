@@ -1,6 +1,6 @@
 #!/bin/sh
 # Written by `asc install-hook`. Regenerated in full every time that command runs, so a hand
-# edit here does not survive the next install or upgrade -- see install-hook.ts's `hookScript`.
+# edit here does not survive the next install or upgrade -- see hook-script.ts's `hookScript`.
 #
 # Resolves the project root and the ascend binary at RUN time, in THIS file, rather than in
 # .claude/settings.json: that file is shared, tracked, team configuration, and a path measured on
