@@ -90,7 +90,7 @@ repeats even when the finding does not.
   belong in a bead comment. Every measurable claim carries the measured value AND how it was
   obtained; paste exact tool output rather than paraphrasing a number. Where a value does not
   exist, omit it — never write `0` for unknown. A group under `MIN_N` (20,
-  `packages/analysis/src/proportion.ts:50`) is named as an anecdote, including when the anecdote
+  `packages/analysis/src/proportion.ts`) is named as an anecdote, including when the anecdote
   is about us.
 - **Say whether anyone was looking.** "Nobody was looking for it" is the most valuable sentence in
   the series — it is the evidence that dogfooding pays for itself.

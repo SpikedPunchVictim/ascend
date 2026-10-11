@@ -115,7 +115,7 @@ instruction in this file. Do not let "the rule looks obviously right" substitute
 
 ### MIN_N = 20
 
-(`packages/analysis/src/proportion.ts:50`). A group under 20 is an ANECDOTE and must be named as
+(`packages/analysis/src/proportion.ts`, where `MIN_N` is defined). A group under 20 is an ANECDOTE and must be named as
 one -- including when the anecdote is flattering. Report the n alongside every proportion you
 state; a percentage with no n beside it is not a finding.
 

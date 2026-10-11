@@ -532,7 +532,7 @@ describe('asc explore: proportions are Wilson-qualified, not bare percentages (a
 
   /**
    * The MIN_N boundary, both sides. `isSmallGroup(n)` is `n < MIN_N` (`MIN_N = 20`,
-   * `proportion.ts:50`), so `n = 20` is the first value that does NOT get the marker -- an
+   * `proportion.ts`, exported as `MIN_N`), so `n = 20` is the first value that does NOT get the marker -- an
    * off-by-one here (`<=` instead of `<`) would mark exactly the boundary case wrongly and every
    * assertion elsewhere in this file that merely checks the marker's PRESENCE would stay green.
    *
