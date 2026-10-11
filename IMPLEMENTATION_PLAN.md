@@ -4771,3 +4771,180 @@ unaffected — nothing was imported, moved, or restructured.
 3. Omitted, never fabricated: when a value does not exist, omit it. Never write `0` for unknown.
 4. Real data only: the real transcripts (read-only), a real model, the real CLI.
 5. State limitations plainly. Report failures verbatim.
+
+---
+
+## Stage E28: a backward existence join across a session's streams — `asc-gtnu.7`
+
+**Goal** — Let a handler triggered by a `review.finding` ask whether the implementer touched the
+file that finding names, in the same session, in another stream. **Existence only, no ordering**
+(owner's call, 2026-10-10): the emitted row says the file *was touched*, and never says it was
+touched *before* the finding. The name of the emitted field has to carry that difference, because
+the measurement behind it (EV-48) found the nearest edit is *after* the finding in 47 of 61 pairs —
+so `before` would be wrong more often than right.
+
+**Why this is not just un-refusing `before:` under `scope: session`.** `packages/core/src/event.ts`
+fixes the rule — *"every window is defined over `call` within one stream — never over file order or
+timestamps (asc-6ola.5, requirement (b))"* — and `compileBefore` refuses the cross-stream case for
+the same reason. EV-48 licenses `ts` as a sound cross-stream *order* (0 of
+1514 violations); it does not repeal requirement (b), and repealing (b) was a separate choice the
+owner did not take. This stage therefore adds **no ordering claim at all**.
+
+**Why it cannot be composed from what already exists.** Two routes were tried on paper; both fail:
+
+- *Trigger on the edit, forward-window for the finding.* `handlers/read-unused.yaml` is the exact
+  precedent shape — `window: { until: session.end, absent: { on: file.changed, where: { path: { eq:
+  $path } } } }` — and under `scope: session` the replay does offer the main stream's events before
+  the subagents', so the forward direction would match. It fails on the bound: a session-scoped
+  window must end on `until: <kind>`, and `session.end` is refused there because it is emitted once
+  per **stream**, not per session, so the window would close on the first
+  subagent stream to end. No existing kind bounds a session.
+- *Trigger on the finding, backward.* Refused, and there is nothing to search — `runHandler`
+  sees one event at a time and retains only `open`, `running` and one
+  `lastBefore` per partition. It never holds another stream's events.
+
+So the state has to be added, and it is the only part of this stage that is not plumbing.
+
+**Success Criteria** — A handler can write a construct of the form
+
+```yaml
+scope: session
+saw:
+  on: file.changed
+  where: { path: { eq: '$file' } }
+  as: implementer_touched_file
+```
+
+and `'${saw.implementer_touched_file}'` renders `true` or `false` — never empty, so an absent answer
+is distinguishable from a false one. It is **refused** where it cannot be honoured: under
+`scope: stream` (it could only ever see the trigger's own stream, which is what the caller already
+has), inside a `say:` handler (`SAY_EXCLUDES`), and with a `$` reference to
+anything but a trigger field or capture.
+
+**Tests** — `packages/core/test/handler.test.ts`:
+- a session-scoped `saw:` is true when another stream's earlier event matches, and false when none
+  does — the second is the test that matters, because a construct that only ever answers `true` is
+  the severity-zero class;
+- the same handler under `scope: stream` is **refused**, not silently narrowed;
+- a `$` reference in `saw.where` resolves against the **trigger**, not the watched event;
+- `saw` renders on a trigger that fires before any matching event has been offered (the partition's
+  index is empty) — `false`, not undefined;
+- `saw` is refused in a `say:` handler.
+
+**Mutation spec** — `scripts/mutations/handler-saw.json`, killers found empirically by planting the
+mutant, running `handler.test.ts --reporter=json` and reading the failing names off
+`assertionResults`. At minimum: drop the index write; default the answer to `true` rather than
+`false`; let `scope: stream` through; resolve `$` against the watched event instead of the trigger.
+
+**Status: Complete** — implemented, tested, `pnpm quality-gate` green. The one step not taken is
+`pnpm mutate handler-saw` through its runner, which refuses a dirty target; the four mutants were
+verified by hand instead (see the carried note below).
+
+---
+
+## Stage E29: give `evidence_record` a queryable prediction and its verdict — `asc-xqf1`
+
+**Goal** — Make the type's own declared analysis question answerable. `evidence_record` ships
+`analysis_questions[0] = "How often did a result contradict its pre-registered prediction?"`, and
+the census behind `EV-44` found none of its eight properties carries a prediction or a verdict. A
+record gains a `predictions` property holding each prediction written down before the run and what
+became of it.
+
+**Why the shape is `arms`' and not a scalar pair** (owner's call, 2026-10-10). The obvious small
+version — a `prediction` string beside a `verdict` — is refuted by the corpus this record would be
+written from: `EV-48` pre-registered **three** predictions with **three different outcomes** (P1
+partly refuted, P2 refuted, P3 held). A scalar pair expresses one of them and pushes the other two
+back into `measurement`'s prose, which is precisely the failure the bead is about. `arms` already
+solved this for measurement arms, and its own prose states the rule generally: *"make the losing arm
+a queryable field rather than a sentence buried in `measurement`'s prose"*. The bead names the same
+near-miss about itself: *"The identical reasoning applies to predictions and was not applied to
+them."*
+
+**Not a new mechanism, and no code changes.** `predictions` is a `json` property, optional, exactly
+like `arms`, and it inherits `arms`' empty-versus-absent convention with the same asymmetry: an
+**empty** array says predictions WERE pre-registered and none was contradicted; **absent** says no
+prediction was pre-registered. Nothing in `packages/core`, `packages/store` or `packages/cli` reads
+it, and nothing needs to — the point is that a `SELECT` can now count verdicts without a human
+reading `measurement`.
+
+**What changes**
+
+- **The store's registry** (`.ascend/types/0001.jsonl`) gains an `evidence_record` v2 document.
+  Registered through `asc types define`, which computes `type_hash` and mints the version; the
+  authored document deliberately carries neither, since `verifyDocumentHash` returns early when
+  `type_hash` is absent and `documentSpec` keeps `version`/`type_hash`/`status` out of identity.
+- **`dogfood/types.json`** is regenerated to the registry's current versions for all seven entries,
+  with `search_miss` finally given the `type_hash` it was missing. The premise first written here —
+  *"the artifact's own recorded rule is that a stale entry there is a deprecation waiting to be undone
+  by `pnpm dogfood:types`"* — is **refuted by measurement**: importing a document whose version is
+  behind the store reports `unchanged` / `bump none`, reverts nothing and mints nothing, and the
+  document's own `version` field is ignored entirely for registration (the store resolves a document
+  by the hash of its shape, not by recency). A stale entry was therefore harmless, and the artifact
+  sat stale for two days because leaving it was free — not because any rule forbade touching it. The
+  regeneration is a fixed point: all seven entries now import `unchanged`.
+- **`note`'s stranded guidance is fixed in the live store.** Regenerating the artifact surfaced that
+  `note`'s guidance had stayed on the version-1 row when its property moved `text` → `body`, so
+  `asc types show note` listed no guidance and bare `asc` rendered `note -- no record_when given` —
+  the character-for-character string the deliberately-guidanceless `hand_empty` renders. Applied via
+  `asc types define` of v2's shape carrying v1's guidance (`outcome prose-updated`, no version
+  minted), with the `prose` key renamed to the property v2 actually declares. Filed as `dogfood/0075`;
+  the absent guard is `asc-4f2w`.
+- **`packages/cli/skill/ascend-analysis/SKILL.md`** needs **no** change: it names `evidence_record`
+  once, in prose, and enumerates none of its fields — it defers to the store (*"Run bare `asc` to see
+  what each type wants before you record against it"*).
+
+**Success Criteria** — `asc types show evidence_record` lists `predictions`; the registry holds a
+v2 document whose `type_hash` the store computed rather than one the author stated; a record
+carrying `predictions` round-trips, and a `SELECT` over it counts verdicts without reading
+`measurement`; **existing v1 entries are untouched and still valid** — the property is optional, so
+nothing is invalidated and there is no migration, which is the whole reason to add a property rather
+than change one.
+
+**Tests** — the registry is data and nothing in the tree pins its shape, so there is no assertion
+whose mutation would move. Two candidates were weighed; one was already there, and the other was not
+the one first written here:
+
+- **A `json` property round-tripping through `asc types define` then `asc types export`** — added to
+  `packages/cli/test/types.test.ts`. The bullet first written here (round-trip of *the* property) and
+  the idempotence bullet were both partly already satisfied: `types.test.ts`'s `reports 'unchanged' on
+  a second run of the same document` and `register-document.test.ts`'s `asc-w0b2` block already cover
+  idempotence, twice, so it was not duplicated. What was genuinely uncovered is the `json` property on
+  the CLI path: every hand-written fixture in `types.test.ts` is scalar or enum, and the fixtures
+  elsewhere that declare a `json` property (`recorder.test.ts`, `state.test.ts`) reach the store
+  directly and never touch `define`. A `define` that dropped or coerced a non-scalar property would
+  have left every test in that file green — and `predictions`, like `arms`, is `json`.
+- **Shown to fail before being trusted to pass.** The mutant `if (type === 'json' || …)` in
+  `packages/store/src/document.ts` fails exactly that one test (`1 failed | 71 skipped`) and is
+  recorded in `scripts/mutations/types-json-roundtrip.json`. *Deleting* `'json'` from `PROPERTY_TYPES`
+  looks like the stronger mutant and is not one: `starters.ts` declares three `json` properties, so it
+  fails `tsc -b` and reports 72 skipped rather than a kill — it breaks the build, it does not isolate
+  the check.
+
+**The honest limitation, stated up front.** This makes the question *answerable*; it does not make it
+*answered*. The corpus's existing `evidence_record` entries are v1 and have no `predictions`, and
+entries are immutable, so the only records that can carry it are ones written after this stage. The
+first count off this field is therefore an **anecdote about one record**, not a rate — and it stays
+that way until records adopt the field, which is a behaviour, not a mechanism.
+
+**Verification** — `pnpm quality-gate`; `asc store verify --staged` (the pre-commit guard, since this
+stage writes store files — run, clean: *"no conflict markers, no unreadable lines, no lost record
+ids"* across 22 record files and 11398 record ids against the HEAD baseline); `asc types show
+evidence_record` lists `predictions`; and the artifact's own claim, re-run **against a throwaway
+store**: all seven entries reproduce at byte-identical `type_hash` values, with the four starters
+arriving `prose-updated` — which is also the evidence that the artifact carries guidance a bare `asc
+init` does not. `asc types import dogfood/types.json` against this store is now a fixed point: all
+seven `unchanged`.
+
+**Status: Complete.** `pnpm quality-gate` green: 138 test files passed, **3221 passed | 2 skipped
+(3223)** — one more than the pre-stage baseline of 3220 | 2 (3222), which is exactly the test added
+above and nothing else — with `align` green and baselined debt unmoved at 21 → 21.
+
+---
+
+## Stage E28 — carried note
+
+The E28 `saw:` construct is implemented and its killers are verified, but the work is **uncommitted**,
+so `pnpm mutate handler-saw` has not been run through the runner (it refuses a dirty target, and the
+tree holds unrelated work). The four mutants were verified by hand — plant, run
+`handler.test.ts --reporter=json`, read `assertionResults`, revert, confirm the source restored
+byte-identical — and that verification was repeated after the last edit to `withSaw`.
