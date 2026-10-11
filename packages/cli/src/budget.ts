@@ -62,9 +62,20 @@
  * charges non-ASCII per code point fails on emoji, which cost about three tokens each. The default
  * is calibrated for the content ascend produces and the content this user's store holds; a caller
  * whose store is full of CJK or emoji is outside what that calibration covers, and the honest
- * statement of that is here rather than in a footnote. The fix is a caller-settable ratio, which is
- * `asc-52u`'s documented follow-up rather than something to guess at now -- and `chars_per_token`
- * on every report is what makes the assumption visible in the meantime.
+ * statement of that is here rather than in a footnote. The per-call half of that fix shipped as
+ * `asc-squ` (`asc explore --chars-per-token`), and `chars_per_token` on every report is what makes
+ * the assumption visible to a caller who did not pass one.
+ *
+ * **THE RATIO IS PER CALL, AND THE REST OF THE FIX IS A RECORDED FORK RATHER THAN A SETTLED
+ * DESIGN** (`asc-vkuf`). A team whose store is CJK-heavy must pass the flag on every invocation,
+ * and a caller who forgets gets the false green `dogfood/0058` records -- the shipped ratio
+ * reported a fit that measured 2.53x over budget on a CJK fixture. The other half is to let a
+ * project declare the ratio once, in `.ascend/`, so `--max-tokens` is correct by default for that
+ * project's corpus, with the flag overriding it. It is not built because the promotion condition is
+ * unmet AND unsatisfiable from inside this repository: 0 non-Latin script across 6,904 records /
+ * 110,348 string values (`spike/asc-squ-ratio-survey.mjs`). The case against is in the bead too --
+ * a ratio written into the store is a number the store cannot verify, where the flag at least makes
+ * the caller's intent explicit.
  *
  * **ONE TOKEN PER TWO CODE POINTS, NOT PER TWO UTF-16 UNITS, AND THE MEASUREMENT ABOVE IS WHY.**
  * The ratio is defined against code points because that is the unit the six-output measurement used,
