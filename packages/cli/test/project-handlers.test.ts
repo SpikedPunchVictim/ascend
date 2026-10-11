@@ -186,6 +186,32 @@ describe('review-finding-nudge', () => {
   });
 });
 
+describe('sayStage: stage: pre is a request the harness has to be able to serve (asc-eve4)', () => {
+  it('resolves a pre handler on tool.use.start to pre-tool-use', () => {
+    expect(sayStage(loadHandler('on: tool.use.start\nstage: pre\nsay: hi\n'))).toBe('pre-tool-use');
+  });
+
+  it('keeps a handler that names no stage at post-tool-use, where the nudge was measured', () => {
+    // `tool.use.start` is the one kind two stages deliver. The default is the stage the one live
+    // say handler's compliance was measured under, so adding the other stage must not move it.
+    expect(sayStage(loadHandler('on: tool.use.start\nsay: hi\n'))).toBe('post-tool-use');
+  });
+
+  it('refuses stage: pre on a kind no pre stage delivers, rather than running it at post', () => {
+    // The silent downgrade this refuses. `file.changed` has no PreToolUse input, so a pre request
+    // would fall back to post-tool-use -- the handler would run at the other moment, saying its
+    // sentence late, and nothing in the report would say it had moved. A handler at the wrong
+    // moment is worse than one that refuses to load, because the refusal is the visible half.
+    expect(() => sayStage(loadHandler('on: file.changed\nstage: pre\nsay: hi\n'))).toThrow(
+      /stage: pre asks for pre-tool-use, which delivers only: tool\.use\.start/,
+    );
+  });
+
+  it('leaves a prompt handler at user-prompt-submit, which no tool stage can carry', () => {
+    expect(sayStage(loadHandler('on: prompt.submit\nsay: hi\n'))).toBe('user-prompt-submit');
+  });
+});
+
 describe('review-finding-table', () => {
   const handler = loadHandler(read('review-finding-table.yaml'));
 

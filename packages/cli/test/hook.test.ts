@@ -130,6 +130,64 @@ describe('asc hook post-tool-use', () => {
   });
 });
 
+describe('asc hook pre-tool-use', () => {
+  const PRE = [
+    'on: tool.use.start',
+    'stage: pre',
+    'where:',
+    '  tool: Skill',
+    '  skill: {in: [bug-hunt]}',
+    "say: 'Report each finding with ReportFindings, before the review writes its report.'",
+    '',
+  ].join('\n');
+
+  const preCall = (dir: string, skill: string) => ({
+    session_id: 's-1',
+    cwd: dir,
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Skill',
+    tool_input: { skill },
+    tool_use_id: 'toolu_1',
+  });
+
+  it('prints the JSON envelope, the channel this stage was measured to deliver on', () => {
+    // `spike/exposure/FINDINGS.md` row PRE: PreToolUse JSON `additionalContext` reached the model
+    // 2/2 (n=2, one model, not a rate). Plain stdout was measured 0/2 on the other tool stage, so
+    // the envelope is what a tool stage prints and the stage name is the only thing that differs.
+    const dir = project({ 'pre.yaml': PRE });
+    const run = hook('pre-tool-use', preCall(dir, 'bug-hunt'), dir);
+    expect(run.status, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        additionalContext:
+          'Report each finding with ReportFindings, before the review writes its report.',
+      },
+    });
+  });
+
+  it('runs the pre handler and not the post one, and the post stage is the mirror of that', () => {
+    // The two stages deliver the SAME kind -- `tool.use.start` -- so a stage that ran both would
+    // say every sentence twice, once at each moment, which is the failure the split invites.
+    const dir = project({ 'pre.yaml': PRE, 'post.yaml': NUDGE });
+    expect(hook('pre-tool-use', preCall(dir, 'bug-hunt'), dir).stdout).toContain(
+      'before the review',
+    );
+    const post = hook('post-tool-use', skillCall(dir, 'bug-hunt'), dir);
+    expect(post.stdout).toContain('Report each finding from');
+    expect(post.stdout).not.toContain('before the review');
+  });
+
+  it('says nothing on a PostToolUse input handed to the pre stage', () => {
+    // The call has already run, so a pre handler has no moment left to arrive at. Named on stderr
+    // rather than guessed at, and never a non-zero exit: a hook that fails blocks the tool call.
+    const dir = project({ 'pre.yaml': PRE });
+    const run = hook('pre-tool-use', skillCall(dir, 'bug-hunt'), dir);
+    expect(run).toMatchObject({ status: 0, stdout: '' });
+    expect(run.stderr).toMatch(/not a PreToolUse hook input/);
+  });
+});
+
 describe('asc hook user-prompt-submit', () => {
   it('prints plain text, which is the channel this stage delivers', () => {
     const dir = project({

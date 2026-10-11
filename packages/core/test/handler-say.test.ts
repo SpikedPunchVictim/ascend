@@ -93,3 +93,40 @@ describe('compileHandler refuses a say handler that a live hook could not run', 
     expect(refused({ on: 'tool.use.start' })).toMatch(/emit: is required/);
   });
 });
+
+describe('stage: which side of the call a say handler speaks on (asc-eve4)', () => {
+  it('is absent unless asked for, so the default stays the caller’s to choose', () => {
+    // Not defaulted to `post` here on purpose. Core does not know which lifecycle stages a harness
+    // has (asc-tuur.4), so it cannot know that `post` is the measured one -- the front end holds
+    // that, and an absent key is how "no preference" is spelled.
+    expect(compileHandler(NUDGE).sayStage).toBeUndefined();
+    expect(compileHandler({ ...NUDGE, stage: 'post' }).sayStage).toBe('post');
+    expect(compileHandler({ ...NUDGE, stage: 'pre' }).sayStage).toBe('pre');
+  });
+
+  it('refuses a stage that is neither, rather than defaulting it to one of them', () => {
+    // The severity-zero shape this refusal exists for: a typo (or a full stage name) silently
+    // becoming `post` would run the handler at a moment its author did not ask for, and nothing
+    // in the report would say so.
+    expect(refused({ ...NUDGE, stage: 'after' })).toMatch(/stage: .*expected pre or post/);
+    expect(refused({ ...NUDGE, stage: 'pre-tool-use' })).toMatch(/stage: .*expected pre or post/);
+    expect(refused({ ...NUDGE, stage: true })).toMatch(/stage: .*expected pre or post/);
+  });
+
+  it('refuses stage on a handler that does not say anything', () => {
+    // A recorded entry is written from the transcript after the fact: there is no moment for it to
+    // arrive at, so the key would be a claim about a delivery that cannot happen.
+    expect(refused({ on: 'file.changed', stage: 'pre', emit: { p: '${path}' } })).toMatch(
+      /stage: .*only .*say/,
+    );
+  });
+
+  it('is part of the identity: asking for the other side changes the hash', () => {
+    // Two handlers that speak the same sentence at different moments are different handlers, and
+    // the key has to separate them or one would overwrite the other's entries.
+    expect(compileHandler({ ...NUDGE, stage: 'pre' }).hash).not.toBe(compileHandler(NUDGE).hash);
+    expect(compileHandler({ ...NUDGE, stage: 'pre' }).hash).not.toBe(
+      compileHandler({ ...NUDGE, stage: 'post' }).hash,
+    );
+  });
+});

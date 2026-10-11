@@ -39,6 +39,7 @@ import {
   type HandlerRow,
   type HandlerRun,
   type NormalizedEvent,
+  type SayStage,
   type TypeSpec,
 } from '@ascend/core';
 import { loadHandler } from './handler-yaml.js';
@@ -74,12 +75,18 @@ export interface ProjectHandlers {
 }
 
 /**
- * The stage a say handler runs at, or a `HandlerError` naming why none can. Core accepts `say:` on
- * any kind, because core does not know which stages a harness has; this is where "a hook that
+ * The stage a `say:` handler runs at, or a `HandlerError` naming why none can. Core accepts `say:`
+ * on any kind, because core does not know which stages a harness has; this is where "a hook that
  * would never fire" is refused, for `asc handlers check` and for the loader alike.
+ *
+ * `stage: pre` is a request for the moment before the call (asc-eve4). Two stages deliver
+ * `tool.use.start` and only one of them is before, so a preference is obeyed only where a stage
+ * actually serves it -- and where none does the handler is refused rather than quietly run at the
+ * other moment, which is the difference between a nudge that arrives early and one that lies.
  */
 export function sayStage(handler: CompiledHandler): HookStage {
-  const stage = stageForKind(handler.on);
+  const wanted = handler.sayStage === undefined ? undefined : SAY_STAGE_HOOK[handler.sayStage];
+  const stage = stageForKind(handler.on, wanted);
   if (stage === undefined) {
     throw new HandlerError(
       `say: no lifecycle hook delivers ${handler.on}, so this handler would never run. ` +
@@ -88,8 +95,21 @@ export function sayStage(handler: CompiledHandler): HookStage {
           .join(', ')}`,
     );
   }
+  if (wanted !== undefined && stage !== wanted) {
+    throw new HandlerError(
+      `say: stage: ${String(handler.sayStage)} asks for ${wanted}, which delivers only: ` +
+        `${HOOK_STAGES[wanted].kinds.join(', ')}. ${handler.on} is delivered by ${stage} -- ` +
+        'drop stage: to run the handler there.',
+    );
+  }
   return stage;
 }
+
+/** A `pre`/`post` preference as the stage the CLI spells (asc-eve4). */
+const SAY_STAGE_HOOK: Readonly<Record<SayStage, HookStage>> = {
+  pre: 'pre-tool-use',
+  post: 'post-tool-use',
+};
 
 /**
  * Load every handler in `<projectRoot>/handlers`. Typed and say handlers are returned by role;

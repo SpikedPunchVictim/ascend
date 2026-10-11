@@ -328,10 +328,11 @@ interface StageWant {
 }
 
 /**
- * The PostToolUse matcher that covers `handlers`: the tools their `where.tool` names, or `''`
+ * The tool-stage matcher that covers `handlers`: the tools their `where.tool` names, or `''`
  * (every tool) as soon as one handler does not narrow it to literals. Read off the parsed spec,
- * because a compiled `where` is a function. Narrowing matters: an unmatched PostToolUse hook is a
- * process started on every tool call of every session.
+ * because a compiled `where` is a function. Shared by both tool stages (asc-eve4) -- narrowing
+ * matters the same on pre and post: an unmatched hook is a process started on every tool call of
+ * every session.
  */
 export function stageMatcher(handlers: readonly SayHandler[]): string {
   const tools = new Set<string>();
@@ -370,7 +371,9 @@ function stageWants(say: readonly SayHandler[]): StageWant[] {
           : {
               command: stageCommand(stage),
               // UserPromptSubmit takes no matcher; `''` is what "every source" is written as.
-              matcher: stage === 'post-tool-use' ? stageMatcher(using) : '',
+              // Every TOOL stage does, pre- and post- alike, and narrowing matters the same on
+              // both: an unmatched hook is a process started on every tool call of every session.
+              matcher: stage === 'user-prompt-submit' ? '' : stageMatcher(using),
             },
     };
   });

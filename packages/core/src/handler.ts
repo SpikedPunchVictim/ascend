@@ -72,6 +72,7 @@ const TOP_KEYS = new Set([
   'type',
   'maps',
   'say',
+  'stage',
 ]);
 
 /**
@@ -458,7 +459,20 @@ export interface CompiledHandler {
    * harness stages exist.
    */
   readonly say: boolean;
+  /**
+   * Which side of its trigger a `say:` handler speaks on (asc-eve4): `pre` for the moment before
+   * the call, `post` for after it, `undefined` when the handler did not say.
+   *
+   * Absent rather than defaulted to `post`, because core does not know which stages a harness has
+   * and so cannot know which is the measured one. `pre` is a request, not a promise: whether a
+   * stage exists to deliver it is the front end's to answer, and it refuses rather than silently
+   * running the handler at the other moment.
+   */
+  readonly sayStage: SayStage | undefined;
 }
+
+/** The moment a `say:` handler's sentence arrives, named relative to its trigger (asc-eve4). */
+export type SayStage = 'pre' | 'post';
 
 const isMap = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -1123,6 +1137,24 @@ export function compileHandler(parsed: unknown): CompiledHandler {
       }
     }
   }
+  const stageSpec = parsed['stage'];
+  if (stageSpec !== undefined) {
+    // On a handler that records rather than says, this key has nothing to describe: an entry is
+    // written from the transcript after the fact, so there is no moment for it to arrive at. The
+    // two are refused together rather than one silently ignored, because a `stage:` that did
+    // nothing would read as one that was honoured.
+    if (saySpec === undefined) {
+      refuse(
+        `stage: ${JSON.stringify(stageSpec)} is only meaningful on a say: handler -- a recorded ` +
+          'entry is written after the fact and arrives at no moment a stage could name.',
+      );
+    }
+    if (stageSpec !== 'pre' && stageSpec !== 'post') {
+      refuse(`stage: ${JSON.stringify(stageSpec)} -- expected pre or post`);
+    }
+  }
+  const sayStage: SayStage | undefined =
+    stageSpec === 'pre' ? 'pre' : stageSpec === 'post' ? 'post' : undefined;
   const description = parsed['description'];
   if (description !== undefined && typeof description !== 'string')
     refuse('description: must be a string');
@@ -1250,6 +1282,7 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     emit,
     judged,
     say: saySpec !== undefined,
+    sayStage,
   };
 }
 

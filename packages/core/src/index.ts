@@ -113,4 +113,5 @@ export {
   type MarkdownTable,
   type HandlerRow,
   type HandlerRun,
+  type SayStage,
 } from './handler.js';

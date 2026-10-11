@@ -13,10 +13,11 @@
  * then carries nothing -- a partial say is not written.
  *
  * **Output channels, as measured.** PostToolUse plain stdout reached the model 0/2 and its JSON
- * `additionalContext` 2/2 (`spike/exposure/FINDINGS.md`); UserPromptSubmit plain stdout 2/2. So
- * post-tool-use prints the JSON envelope and user-prompt-submit prints the text. The total is
- * capped at `MAX_SAY_BYTES`, well under the ~9 KB measured delivery ceiling, and a sentence that
- * would cross it is dropped whole and named on stderr, never cut mid-word.
+ * `additionalContext` 2/2; UserPromptSubmit plain stdout 2/2; PreToolUse JSON `additionalContext`
+ * 2/2 (`spike/exposure/FINDINGS.md`, row PRE; n=2, one model, not a rate). So the two tool stages
+ * print the JSON envelope and user-prompt-submit prints the text. The total is capped at
+ * `MAX_SAY_BYTES`, well under the ~9 KB measured delivery ceiling, and a sentence that would cross
+ * it is dropped whole and named on stderr, never cut mid-word.
  */
 
 import { resolve } from 'node:path';
@@ -85,15 +86,18 @@ export default class Hook extends BaseCommand {
 
     const said = this.fit(sayings(handlers, events));
     if (said === '') return;
+    // Both tool stages deliver through the JSON `additionalContext` -- PostToolUse 2/2 and
+    // PreToolUse 2/2 (`spike/exposure/FINDINGS.md`, row PRE). UserPromptSubmit is the odd one:
+    // plain stdout 2/2. So the exception is named rather than a rule that now has two members.
     this.emitText(
-      stage === 'post-tool-use'
-        ? JSON.stringify({
+      stage === 'user-prompt-submit'
+        ? said
+        : JSON.stringify({
             hookSpecificOutput: {
               hookEventName: HOOK_STAGES[stage].event,
               additionalContext: said,
             },
-          })
-        : said,
+          }),
     );
   }
 

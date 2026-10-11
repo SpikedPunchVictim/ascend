@@ -1,0 +1,101 @@
+{
+  "_": "Kill-check for asc-eve4 (`say:` handlers can ask to speak before their trigger). Each mutant breaks ONE line the four stages added, and names the test that must notice. Every killer here was found empirically -- the mutant was planted, the owning test file run with --reporter=json, and the failing name read off `assertionResults` -- rather than guessed from the test's title. M7 is the reason that matters: the mutant leaves the `pre` branch alone (pre still reaches the tool-stage envelope), so the pre-tool-use test survives it, and only the post and prompt tests notice.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/adapter-claude-code/src/hook-input.ts",
+      "find": "const DEFAULT_ORDER: readonly HookStage[] = ['user-prompt-submit', 'post-tool-use', 'pre-tool-use'];",
+      "replace": "const DEFAULT_ORDER: readonly HookStage[] = ['user-prompt-submit', 'pre-tool-use', 'post-tool-use'];",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/hook-input.test.ts",
+          "test": "keeps post-tool-use as the answer for a kind both stages deliver, with no preference given"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/adapter-claude-code/src/hook-input.ts",
+      "find": "  if (prefer !== undefined && delivers(prefer)) return prefer;",
+      "replace": "  if (prefer !== undefined) return prefer;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/hook-input.test.ts",
+          "test": "takes a preference when that stage delivers the kind, and falls back when it does not"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/adapter-claude-code/src/hook-input.ts",
+      "find": "  if (pre) return [call];",
+      "replace": "  if (pre && false) return [call];",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/hook-input.test.ts",
+          "test": "turns a PreToolUse into the call starting, and nothing the call has not done yet"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/core/src/handler.ts",
+      "find": "    if (stageSpec !== 'pre' && stageSpec !== 'post') {",
+      "replace": "    if (false) {",
+      "killers": [
+        {
+          "file": "packages/core/test/handler-say.test.ts",
+          "test": "refuses a stage that is neither, rather than defaulting it to one of them"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/core/src/handler.ts",
+      "find": "    if (saySpec === undefined) {",
+      "replace": "    if (false) {",
+      "killers": [
+        {
+          "file": "packages/core/test/handler-say.test.ts",
+          "test": "refuses stage on a handler that does not say anything"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/typed-handlers.ts",
+      "find": "  if (wanted !== undefined && stage !== wanted) {",
+      "replace": "  if (false) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/project-handlers.test.ts",
+          "test": "refuses stage: pre on a kind no pre stage delivers, rather than running it at post"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/cli/src/commands/hook.ts",
+      "find": "      stage === 'user-prompt-submit'",
+      "replace": "      stage === 'post-tool-use'",
+      "killers": [
+        {
+          "file": "packages/cli/test/hook.test.ts",
+          "test": "prints the JSON envelope with what a matching handler says"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/cli/src/commands/install-hook.ts",
+      "find": "              matcher: stage === 'user-prompt-submit' ? '' : stageMatcher(using),",
+      "replace": "              matcher: stage === 'post-tool-use' ? stageMatcher(using) : '',",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "installs a PreToolUse hook matched to the tools a pre handler names"
+        }
+      ]
+    }
+  ]
+}

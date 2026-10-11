@@ -973,6 +973,55 @@ describe('asc install-hook: lifecycle stages for say: handlers (asc-tuur.4)', ()
     const run = asc(['install-hook', '--yes', '--json'], dir);
     expect(rowsOf(run)).toHaveLength(1);
     expect(groups(dir, 'PostToolUse')).toEqual([]);
+    expect(groups(dir, 'PreToolUse')).toEqual([]);
+  });
+
+  it('writes no PreToolUse entry for a project whose handlers are all post ones (asc-eve4)', () => {
+    // The whole reason `stage:` is opt-in. A PreToolUse entry is a process started on every
+    // matching tool call, and an event with no handler behind it would pay that cost every call to
+    // print nothing -- so adding the stage to the vocabulary must not add it to the settings of a
+    // project that never asked for it.
+    const dir = project();
+    withHandler(dir, 'nudge.yaml', NUDGE);
+    asc(['install-hook', '--yes'], dir);
+    expect(groups(dir, 'PostToolUse')).toHaveLength(1);
+    expect(groups(dir, 'PreToolUse')).toEqual([]);
+  });
+
+  it('installs a PreToolUse hook matched to the tools a pre handler names', () => {
+    const dir = project();
+    withHandler(
+      dir,
+      'pre.yaml',
+      [
+        'on: tool.use.start',
+        'stage: pre',
+        'where:',
+        '  tool: Skill',
+        '  skill: {in: [bug-hunt]}',
+        "say: 'Report each finding with ReportFindings.'",
+        '',
+      ].join('\n'),
+    );
+    const run = asc(['install-hook', '--yes', '--json'], dir);
+    expect(rowsOf(run).filter((one) => one.action === 'PreToolUse')[0]).toMatchObject({
+      outcome: 'installed',
+    });
+    expect(groups(dir, 'PreToolUse')).toEqual([
+      {
+        matcher: 'Skill',
+        hooks: [
+          {
+            type: 'command',
+            command:
+              '[ ! -f "$CLAUDE_PROJECT_DIR/.claude/ascend-hook.sh" ] || ' +
+              'sh "$CLAUDE_PROJECT_DIR/.claude/ascend-hook.sh" pre-tool-use',
+          },
+        ],
+      },
+    ]);
+    // A tool stage is matched, not 'every tool': the same narrowing both stages already do.
+    expect(groups(dir, 'PostToolUse')).toEqual([]);
   });
 
   it('installs a PostToolUse hook matched to the tools the handler names', () => {
