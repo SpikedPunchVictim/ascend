@@ -393,11 +393,11 @@ the end-to-end EPIPE test belongs there, and until then the install step is **un
 
 **`type_hash` is preserved automatically, so `import` verifies it instead of carrying it.** Measured
 in the source rather than assumed: `type_hash = sha256(canonicalJson(definitionShape(canonicalize(
-spec))))` (`core/hash.ts:221`, `store/registry.ts:166`) — a pure function of the canonical shape,
+spec))))` (`core/hash.ts`, `store/registry.ts`) — a pure function of the canonical shape,
 `name` included. The same definition therefore hashes identically in any repo, so the risk is not
 that import *loses* the hash but that the document round-trip is lossy in a field the hash covers,
 which would break cross-repo comparability silently and permanently. The exported document carries
-`type_hash` and **import recomputes and refuses on mismatch**: ARCHITECTURE.md:279's "preserving
+`type_hash` and **import recomputes and refuses on mismatch**: ARCHITECTURE.md's "preserving
 `type_hash`" becomes a check that can fail loudly rather than a property assumed.
 
 | Decision | Choice | Why |
@@ -406,8 +406,8 @@ which would break cross-repo comparability silently and permanently. The exporte
 | Where a spec is read from | a **file path, or `-` for stdin** | Matches the Unix convention and `asc record --json -`. No default: a missing operand is a usage error naming the fix, never a hang. |
 | `asc types show` | **flat key/value rows** (`field`, `value`) for all three formats | The canonical document is `export`'s job. Keeping `show` rows-based preserves `Output`'s single-projection invariant, and a human gets a scannable list instead of a JSON blob elided at 60 characters. A script that wants the document runs `asc types export <name>`. |
 | `asc types brief` | **active types only**, one line each, `name — record_when` | The digest tells a model what it may record. Listing a deprecated type invites recording into a retired definition, and `asc types list` is still there for a full inventory. |
-| Bare `asc` | prints the **brief** — decided here, **implemented at the entry point, not by oclif** | ARCHITECTURE.md:429: recall is pull-only, so `asc` with no args is the discovery path. The `oclif.default` key this row originally proposed **does not exist in oclif 5.0.0** — see the correction below. |
-| `--dry-run` on define/import | **real work, then rollback** — a new `dryRun` option in the store, not CLI-side transaction plumbing | `registerType` already joins a caller's transaction (`store/registry.ts:229`), so nothing new is invented: the same validation, bump diff and view generation run and are then discarded. The store owns transaction semantics; the CLI composing `BEGIN`/`ROLLBACK` would put that knowledge in two layers. |
+| Bare `asc` | prints the **brief** — decided here, **implemented at the entry point, not by oclif** | ARCHITECTURE.md: recall is pull-only, so `asc` with no args is the discovery path. The `oclif.default` key this row originally proposed **does not exist in oclif 5.0.0** — see the correction below. |
+| `--dry-run` on define/import | **real work, then rollback** — a new `dryRun` option in the store, not CLI-side transaction plumbing | `registerType` already joins a caller's transaction (`store/registry.ts`), so nothing new is invented: the same validation, bump diff and view generation run and are then discarded. The store owns transaction semantics; the CLI composing `BEGIN`/`ROLLBACK` would put that knowledge in two layers. |
 | `define` on an already-registered shape whose prose changed | **update the prose and say so** | `registerType` returns `unchanged` without writing, so edited prose would otherwise be dropped while the command reported success — a silent no-op in the severity-zero class. `updateTypeProse` exists for exactly this. |
 | `deprecate` on an unknown name | **error, exit 1, listing the known names**; already-deprecated is **success reporting no change** | `deprecateType` returns a changed-row count and `0` means two different things. Reporting "deprecated" for a name that does not exist, or for one already retired, is a change that did not happen. |
 
@@ -516,11 +516,11 @@ the `asc types show` defect below mattered.
 
 **It cost the store nothing, and that was checked before it was built.** The store is type-agnostic
 by construction: every property is projected identically as `json_extract(e.properties_json,
-'$.<prop>')` (`store/views.ts:202`) with `stateCase` deciding the three-state value (`store/sql.ts:52`)
+'$.<prop>')` (`store/views.ts`) with `stateCase` deciding the three-state value (`store/sql.ts`)
 and one composite expression index per property. `json_type()` returns `'array'`/`'object'` — both
 non-NULL, so both read as `measured` and the absent-vs-null-vs-measured model is untouched. **Zero
 lines of `packages/store/src` changed.** `canonicalJson` sorts object keys but never reorders arrays
-(`core/hash.ts:196`), which is load-bearing here: `what_was_tried` reversed is a different fact, and
+(`core/hash.ts`), which is load-bearing here: `what_was_tried` reversed is a different fact, and
 a canonicalizer that sorted it would silently rewrite the sequence.
 
 | Decision | Choice | Why |
@@ -796,7 +796,7 @@ Supporting changes: `OpenOptions.readOnly` + `StaleStoreError` (`packages/store/
    re-filed rather than inherited.
 
 2. **E4.1's stated reason for M8 surviving is refuted.** M8 (the stdout EPIPE guard) was said to
-   survive because no command fills a 64 KiB pipe buffer. Measured: `@oclif/core/lib/command.js:57`
+   survive because no command fills a 64 KiB pipe buffer. Measured: `@oclif/core/lib/command.js`
    installs **its own** `process.stdout.on('error', …)` at module load, commented *"this occurs when
    stdout closes such as when piping to head"*. Removing ascend's guard changes nothing observable on
    stdout. The test now asserts **what it can actually show** — that the pipeline works — and says in
@@ -912,8 +912,8 @@ mechanism exists to encourage.
 asserted.
 
 1. **`Warning: warning: …` on every store warning.** oclif's `this.warn` already renders a
-   `Warning:` prefix, so the CLI's own `warning: ` doubled it. Present at `define.ts:67` and
-   `import.ts:119` since E4.2/E4.3 — **shipped for three stages because no test asserted the shape of
+   `Warning:` prefix, so the CLI's own `warning: ` doubled it. Present at `define.ts` and
+   `import.ts` since E4.2/E4.3 — **shipped for three stages because no test asserted the shape of
    the rendered line.** A warning channel nothing asserts is a channel that can be broken without
    anyone noticing, which is the false-green class this project treats as severity-zero.
 2. **A message that named three matches when there were six.** An earlier `confusableNames` took a
@@ -1015,7 +1015,7 @@ as the store itself.
   through it line-for-line.
   - **As built (2026-09-29, `packages/store/src/jsonl-files.ts`).** The acceptance sentence above is
     not literally executable: the spike's layouts are `records.jsonl` / `records/<day>.jsonl` under a
-    flat `types.jsonl` (`spike/git-layout/run.mjs:65-69,115`), which is NOT the layout this stage
+    flat `types.jsonl` (`spike/git-layout/run.mjs`), which is NOT the layout this stage
     implements, so its fixture FILES cannot round-trip through this layer as files.
     **The criterion was not met in substance either, and the first version of this note claimed it
     was.** That claim — "rewritten in substance rather than in letter" — was refuted by a review: the
@@ -1031,7 +1031,7 @@ as the store itself.
     duplication is positional, and a reader cannot delegate this to git.
   - **Two deviations from the text above, both evidence-driven.** (1) `<type_name>`/`<scheme>` path
     segments are a readable slug plus a 12-hex digest of the name, not the name and not an assumption
-    that it is canonical: `requireName` (`annotations.ts:394`) refuses only the empty string and the
+    that it is canonical: `requireName` (`annotations.ts`) refuses only the empty string and the
     reserved name, so a scheme name is ANY string and the real corpus holds `hand-denial`. A refusing
     guard threw on this project's own store the first time it saw real data; a percent-encoding draft
     replaced it and was not injective (`'\uD800'` and `'�'` encode to the same bytes), not
@@ -1133,7 +1133,7 @@ as the store itself.
     the test.
 - **E12.3 — the read layer.** Extract the interface the store package does not have today: every
   public function takes `db: DatabaseSync` (107 mentions across 14 modules) and
-  `interface Store { db: DatabaseSync }` (`db.ts:302`) is the only boundary. `align check` must stay
+  `interface Store { db: DatabaseSync }` (`db.ts`) is the only boundary. `align check` must stay
   green — this is the structural change most likely to redden it.
 
   **As built (2026-09-29), in progress.** Five decisions, taken before the change rather than
@@ -1480,7 +1480,7 @@ as the store itself.
       asserted a nested `withTransaction`'s row was absent, which is the meaning of a ROLLBACK and
       not of a COMMIT. `[ 'after', 'caller', 'nested' ]` is what it measures now.
 
-      `registerType`'s own `dryRun` refusal (`registry.ts:453`) is untouched, and now reads as the
+      `registerType`'s own `dryRun` refusal (`registry.ts`) is untouched, and now reads as the
       opposite of the idiom that nests: it uses its own `BEGIN`/`ROLLBACK`, so it genuinely cannot
       promise an unchanged store inside a caller's transaction, while `withRollback` now can — which
       is why `produceLines` uses `withRollback` and not `dryRun`. Two previews, one of them nests.
@@ -1509,8 +1509,8 @@ as the store itself.
 
       **There is a SIXTH write site, and the ingest cursor has to move before the flip can happen at
       all (2026-09-29, `asc-i5tj.14`).** `asc ingest claude-code` is not in the five above: it calls
-      `recordEntry` (`claude-code.ts:738`) as well as `recordIngestCursor` (`:714`) and
-      `recordAppliedHandlers` (`:717`). After the flip the read handle is read-only, so those INSERTs
+      `recordEntry` (`claude-code.ts`) as well as `recordIngestCursor` and
+      `recordAppliedHandlers`. After the flip the read handle is read-only, so those INSERTs
       fail with *attempt to write a readonly database* — the command breaks outright, and it is the
       one command `.claude/ascend-hook.sh` runs at **every SessionStart**.
 
@@ -1543,12 +1543,12 @@ as the store itself.
       home** — the sidecar's `handlers` key, written into the same atomically-renamed file as the
       rows so the two cannot disagree, which is the reason the sidecar is one file rather than two.
       `created_by_ascend_version` is **deliberately dropped**, and it is *redundant* rather than
-      merely unread: every entry line already carries `ascend_version` (`jsonl.ts:168`, read back at
-      `replay.ts:48`), so the tree records which ascend version wrote each entry — finer-grained than
+      merely unread: every entry line already carries `ascend_version` (`jsonl.ts`, read back at
+      `replay.ts`), so the tree records which ascend version wrote each entry — finer-grained than
       one store-level key, which is why dropping it loses no information. Measured rather than
-      assumed: the only writer is `db.ts:801` (`INSERT OR IGNORE`, on every non-read-only open), and
+      assumed: the only writer is `db.ts` (`INSERT OR IGNORE`, on every non-read-only open), and
       no `src` reader exists — `meta` is read in exactly two places and both ask for
-      `index_fingerprint` (`jsonl-index.ts:594,735`). The read path had already stopped stamping it
+      `index_fingerprint` (`jsonl-index.ts`). The read path had already stopped stamping it
       (`project.ts`: *"There is no `ascendVersion` parameter, and its absence is the flip made
       visible"*), and `openIndex` opens read-only, so an index is never born with the key.
 
@@ -1608,7 +1608,7 @@ as the store itself.
     `.ascend/ascend.db` becomes unreachable from `src`. **Success:** the whole suite's reads go
     through the index and every existing read test passes unchanged — this is where E12.3's seam pays
     for itself, and the map says by how much: the flip is **two functions**, `openProject`
-    (`packages/cli/src/project.ts:151`) and `openQueryProject` (`:191`), because every reader reaches
+    (`packages/cli/src/project.ts`) and `openQueryProject`, because every reader reaches
     the store through `withProject`/`withQueryProject` in `base.ts` and none of the 22 `src` call
     sites names a database file at all. `Store` exposes no read API — `{ db, dir, file, migrations,
     close }` and nothing else, with reads as free functions over `store.db` — so `openIndex` already
@@ -1634,8 +1634,8 @@ as the store itself.
   - **E12.4d — retire the source of truth.** The SQLite store stops being a store; `asc export`/`asc
     import` keep working against the tree. **`asc init` is part of this and is easy to miss: it is
     the thing that creates the source of truth today** — `.ascend/` plus `ascend.db` through
-    `openStore` (`packages/cli/src/commands/init.ts:126`), and it appends the literal `.ascend/`
-    (`IGNORE_ENTRY`, `:60`, managed at `:240-302`) to `.gitignore`. In the new world it lays out the
+    `openStore` (`packages/cli/src/commands/init.ts`), and it appends the literal `.ascend/`
+    (`IGNORE_ENTRY`) to `.gitignore`. In the new world it lays out the
     tree instead, un-ignores the record subtree (the layout section's "un-ignore a subtree", which is
     a `.gitignore` edit and not a move), and emits `.gitattributes` — which **nothing in `src` writes
     today**: `writeGitattributes` exists in the store package with no production caller. The store's
@@ -1809,7 +1809,7 @@ as the store itself.
   neither is left looking like an oversight.
   *Status*: **Complete (2026-09-30) — two decisions, neither fixed, and the second is no longer merely
   argued.** The interleaving EV-38 labelled *argued* is written out and checked against the code, and
-  it holds — `replayInto` (`:690-702`) stamps in the same transaction as the replay, so the stamp left
+  it holds — `replayInto` stamps in the same transaction as the replay, so the stamp left
   behind is the last replayer's, and that is what makes this reachable:
   ```
   1. writer 1  before = T0; index stamp T0  -> current, branch (a)
@@ -1827,7 +1827,7 @@ as the store itself.
   write; replaying from the tree closes it and turns every write into a mini-build; taking the index
   lock across the append is what `writeProducedLines` already does — and that is the reason this is
   acceptable to leave: `writeLines` has no caller outside tests, and the real write path's version of
-  this race does not produce an omission, it produces a *build* (`:534-536`, writer 2 sees a
+  this race does not produce an omission, it produces a *build* (writer 2 sees a
   not-current index and builds), which is the orphan race Stage 1 and Stage 2 close. `openIndex` is a
   decision for the reason `EV-38` gives and one more: the answer it returns is *as of* the hash it
   took, which is what a read of a derived index is, whereas `buildIndex` PERSISTS an artifact
@@ -1873,7 +1873,7 @@ as the store itself.
 
 - **E12.8 — an invalidation, read as well as written (`asc-9xi0` + `asc-4wx6`, done 2026-09-30).** A
   strike is the store's only durable claim about why an entry stopped counting
-  (`ARCHITECTURE.md:600`), and two defects meant the claim held in neither direction. **Written:**
+  (`ARCHITECTURE.md`), and two defects meant the claim held in neither direction. **Written:**
   `recordInvalidation` refuses an empty reason, but `asc import` reaches the reserved scheme through
   `recordAnnotations`, whose only note gate was `note !== undefined && note === ''` — so an *absent*
   note became SQL NULL and a *whitespace-only* note was stored verbatim, both exiting 0, and
@@ -1957,7 +1957,7 @@ as the store itself.
 
   `dogfood/0045` also carries **a correction to `dogfood/0034`**, which claims `asc import` enforces
   *neither* of the two things `listInvalidations`' casts assume. That is wrong for the **label** half:
-  `restoreInvalidationScheme` (`annotations.ts:452`) refuses any scheme line whose `schemeHash`
+  `restoreInvalidationScheme` (`annotations.ts`) refuses any scheme line whose `schemeHash`
   differs from `INVALIDATION_SCHEME_SPEC`'s, so the closed label vocabulary *is* protected and only
   the reason cast was false. The claim was corrected rather than left, because a record of false scope
   is what a later reader cites to justify changing code that is already correct.
@@ -2054,7 +2054,7 @@ as the store itself.
   bump would mint **121 duplicate ids** and `dogfood/0024` is the record of exactly that failure for
   exactly this type (a version change that left the old rows counted beside the new, 47 struck by
   hand). The 9 already on disk needed the same remedy, for the same reason the store gave on
-  2026-09-30: **`openRecordWriter` appends** (`jsonl-files.ts:659`) and never rewrites, so a re-ingest
+  2026-09-30: **`openRecordWriter` appends** (`jsonl-files.ts`) and never rewrites, so a re-ingest
   removes nothing. Each phantom was struck `superseded` with `--superseded-by` naming its
   index-matched survivor; `asc types list` now reads `review_finding 2 13 74 56` where it read
   `83 / 47`. The counter `refusedFindings` was added AND wired to the ingest output — a count nobody
@@ -2075,7 +2075,7 @@ as the store itself.
 
 - **E12.11 — a preview that mints an id it will not use (`asc-mw1u`, P3, done 2026-10-01).**
   `asc record` mints a random UUID for any entry whose document does not name one
-  (`record.ts:692`), and `--dry-run` runs the same body, so **it mints its own**. The id a preview
+  (`record.ts`), and `--dry-run` runs the same body, so **it mints its own**. The id a preview
   reports is therefore not merely usually different from the id the write produces — it **cannot**
   be the same, because the two are two calls to `randomUUID`. `--dry-run --json` returns a row with
   the same `type_hash`, a `recorded_at`, a `states` map and `dry_run: true` as its only marker, so
@@ -2083,7 +2083,7 @@ as the store itself.
   decision documents before recording them, for their *warnings*; the ids were incidental, and
   *nobody was looking*. Recorded as `dogfood/0046`.
 
-  *The class was hunted and the count is **one**.* `annotate.ts:589` also mints annotation ids, and
+  *The class was hunted and the count is **one**.* `annotate.ts` also mints annotation ids, and
   `annotate --dry-run` does not report them in either arm — its row carries
   `scheme/outcome/considered/labelled/unclassified/dry_run` and no id at all. So there is no second
   instance to fix, and a source scan across `packages/*/src` finds exactly two `randomUUID` call
@@ -2096,7 +2096,7 @@ as the store itself.
   `id_provisional` marker; keep the key and set it to `null`. **Chosen: omit the id when it was
   minted** (dry-run arm only — a named id is still reproduced exactly, and a real run always reports
   a real one). The argument that settled it is the house rule this codebase already writes down at
-  `output.ts:207`: *"`evidence_text` is omitted when the entry has none rather than rendered as an
+  `output.ts`: *"`evidence_text` is omitted when the entry has none rather than rendered as an
   empty string, for the same reason every other absent value in this CLI is (`TASKS.md` #7): an
   empty evidence field and a missing one are different facts."* A specimen UUID is that same failure
   with a louder voice — a value wearing a value's clothes — and the project has refused exactly that
@@ -2112,7 +2112,7 @@ as the store itself.
   *The cost, stated plainly*: a key that is always present becomes absent in one arm, which is a
   breaking shape change by the contract's own rule (*"Increment only for a breaking shape change"*),
   so **`ascend_output` goes 2 → 3**. That is why this is a fork and not a default — the alternative
-  reads cost no bump. Two tests pin the literal (`output.test.ts:329`, `help-cli.test.ts:151`) and
+  reads cost no bump. Two tests pin the literal (`output.test.ts`, `help-cli.test.ts`) and
   both move with their comment naming this reason, which is what they ask for.
 
   **Stages.** 1 — the contract bump, in `output.ts` and both pinning tests. 2 — `record.ts` omits
@@ -2165,7 +2165,7 @@ as the store itself.
 
   *Where the check may live is decided by a second measurement, not by taste.* Every writer funnels
   through `recordEntry` → `validateEntry` — `asc record`, `asc import`, `asc ingest`, and
-  `asc index build`'s replay (`jsonl-index.ts:969`) — so a **refusal raised in that funnel would make
+  `asc index build`'s replay (`jsonl-index.ts`) — so a **refusal raised in that funnel would make
   `asc index build` throw on this tree's four existing no-op lines**. The precedent does not transfer:
   `asc-4wx6` put its refusal in the corpus parser for exactly this reach, and its pre-flight measured
   **0** existing violations. Here the pre-flight measures 4, two of them deliberate. So the guard goes
@@ -2269,16 +2269,16 @@ needs SQLite — which is the file's own standing rule (no index, no DB, in this
 |---|---|
 | **Blast radius of the refusal** | `.ascend/entries/*/*.jsonl`: **6,822 lines, 6,822 distinct ids, 0 ids appearing twice at all** — so nothing here is bricked, and `dedupeByIdentity` is currently a no-op on this tree (it exists for merge scenarios, not for this one) |
 | **Blast radius of the cap** | entries + annotations: **10,727 record lines, max 9,046 B, p99 2,420 B, p99.9 6,632 B, 0 over 10,000 B, 0 over 1 MiB** — the largest single line is 1/116th of the cap |
-| **Can the refusal fire on a normal path?** | No. Annotation ids are random UUIDs (`by_kind` et al.) or content hashes (`inv-<sha256>`), so distinct content already implies a distinct id; derived *entry* ids are `derived:claude-code:<type>:<session>:<key>`, not content-addressed, so a changed re-ingest *can* produce the shape — and the ingest path already catches exactly that before writing, by comparing fingerprints and reporting a collision (`cli/src/commands/ingest/claude-code.ts:829-848`) |
+| **Can the refusal fire on a normal path?** | No. Annotation ids are random UUIDs (`by_kind` et al.) or content hashes (`inv-<sha256>`), so distinct content already implies a distinct id; derived *entry* ids are `derived:claude-code:<type>:<session>:<key>`, not content-addressed, so a changed re-ingest *can* produce the shape — and the ingest path already catches exactly that before writing, by comparing fingerprints and reporting a collision (`cli/src/commands/ingest/claude-code.ts`) |
 
 #### Stage 1 — `asc-2ezs`: one id with two distinct contents is refused at read
 
-**What exists.** `dedupeByIdentity` (`jsonl-files.ts:292-302`, applied at `:530-531`) already collapses
+**What exists.** `dedupeByIdentity` (`jsonl-files.ts`) already collapses
 byte-identical lines on their **canonical serialization**, which is the whole of the bead's second
 half. What does not exist is the refusal: `readRecordTree` returns **both** lines today, and two tests
-assert exactly that (`jsonl-files.test.ts:315-330`, `:828-847`). The only refusal anywhere is
+assert exactly that (`jsonl-files.test.ts`). The only refusal anywhere is
 incidental and unhelpful — `buildIndex` → `replayEntry` → `recordEntry` throws a content-blind
-`DuplicateEntryError` naming **only the id** (`recorder.ts:277-278`), with no file and no line.
+`DuplicateEntryError` naming **only the id** (`recorder.ts`), with no file and no line.
 
 **Tests (RED first)** — in `store/test/jsonl-files.test.ts`:
 - **S3, both lines in one file** (what a union merge actually produces): `readRecordTree` **throws**,
@@ -2291,15 +2291,15 @@ incidental and unhelpful — `buildIndex` → `replayEntry` → `recordEntry` th
 - **Annotations too**: same id, two contents, refused by the same rule (annotations dedupe today for
   exactly the reasons entries do, and a hand-edited tree can hold the shape even though no producer
   emits it).
-- The test at `:315-330` (*"orders two records that share an id by their text"*) **is replaced by the
+- The test *"orders two records that share an id by their text"* **is replaced by the
   refusal test** — its premise was that the two lines survive to be ordered.
 
 **Implementation**: `readRecordTree` must carry each line's coordinate, which it already computes and
-throws with (`parsed.where`, see the kind and partition guards at `:518-534`) but currently discards.
+throws with (`parsed.where`, see the kind and partition guards) but currently discards.
 Collect `{line, where}` per kind and have the dedupe function refuse: on a second line bearing an id
 already seen **with a different canonical text**, throw naming the id, the first coordinate and the
 second. Dedupe **first**, then the id check, so byte-identical duplicates are removed rather than
-reported. `rewrite.ts:17` is *"the only code that reads a tree `readRecordTree` would refuse"* — its
+reported. `rewrite.ts` is *"the only code that reads a tree `readRecordTree` would refuse"* — its
 doc gains the second class it cannot repair, because a contradiction is not resolvable by a rewrite
 either: the repair is a hand-edit, and the message must say so.
 
@@ -2320,9 +2320,9 @@ that is the `write` helper beside it, and both refusal tests moved onto it.
 
 #### Stage 2 — `asc-8uzh`: a record over 1 MiB is refused at write time
 
-**What exists.** `RecordWriter.append` (`jsonl-files.ts:643-675`) already computes the record's exact
-byte length at `:655` and accumulates it; the **file** cap deliberately never refuses a record
-(`:657-658`, tested at `:512-519`). There is **no per-record check anywhere**.
+**What exists.** `RecordWriter.append` (`jsonl-files.ts`) already computes the record's exact
+byte length and accumulates it; the **file** cap deliberately never refuses a record
+(tested). There is **no per-record check anywhere**.
 
 **The cap, decided by the owner 2026-10-02: 1 MiB (1,048,576 B), refused.** 116× the largest line
 measured above.
@@ -2334,7 +2334,7 @@ measured above.
 - The **default** is the owner's number: `MAX_BYTES_PER_RECORD` is exported and asserted, the way
   `MAX_RECORDS_PER_FILE` already is.
 - `maxBytesPerRecord` of `0` and `-1` is refused at writer construction with the existing
-  `"... must be positive, but it is ..."` shape (`:610-622`, tested at `:563-571`).
+  `"... must be positive, but it is ..."` shape (tested).
 - **The two caps are different rules, and the test says so**: the existing *"writes a record larger
   than the cap instead of rolling forever"* stays **green** — a file cap still never refuses — while a
   record cap does. One asserts the rollover arithmetic, the other the write refusal.
@@ -2354,17 +2354,17 @@ thresholds"* and the two non-positive arms. Every one of the three went RED firs
 
 #### Stage 3 — what the refusal takes away, and the docs that must stop saying the opposite
 
-**The ORDER rule loses its third key.** `inRecordedOrder` (`:255-268`) sorts entries and annotations by
+**The ORDER rule loses its third key.** `inRecordedOrder` sorts entries and annotations by
 `(time, id, serialized text)`, and the third key exists *only* because `(time, id)` could tie — which
 required one id with two contents, the exact shape Stage 1 now refuses. After Stage 1 at most one line
 per id can reach the sort, so `(time, id)` is total and the key is unreachable. **Remove it** and
-rewrite the ORDER bullet at `:58-63`, which currently says *"an entry's id is derived and
+rewrite the ORDER bullet, which currently says *"an entry's id is derived and
 content-addressed for derived entries, so ONE id legitimately carries TWO contents"* — two claims, and
 **both are false**: derived ids are `session:key`, not content hashes, and the shape is now refused
 rather than legitimate. The decorate-sort-undecorate structure exists to avoid recomputing the
 serialization in the comparator; with the key gone it goes too.
 
-**`dedupeByIdentity`'s doc (`:289-290`) says the opposite of what ships.** *"Distinct content under ONE
+**`dedupeByIdentity`'s doc says the opposite of what ships.** *"Distinct content under ONE
 id is deliberately not collapsed… owned by `asc-2ezs`"* — after this, it is not collapsed, it is
 **refused**, and the sentence must say that and why (collapsing would lose a record; refusing keeps
 both coordinates and lets a human choose).
@@ -2375,7 +2375,7 @@ order between them is the whole design (dedupe first, or every re-ingest of an u
 refuses). The ORDER bullet was rewritten, and the orphaned doc comment above `OrderableLine` — which
 claimed *"the serialized text is a final tiebreak"* — had its claim replaced, since after Stage 1 the
 tiebreak is unreachable and the reader's total order comes from `onePerIdentity` instead. The
-decorate-sort-undecorate structure the plan expected to find at `:255-268` was there and did go with
+decorate-sort-undecorate structure the plan expected to find was there and did go with
 it: `inRecordedOrder` built `{line, time, text}` per line and sorted the records, deliberately
 avoiding a `serializeCorpus` call inside a comparator that runs O(n log n) times. With the text key
 gone, the decoration lost its only use and the function is a plain sort on two fields — a slightly
@@ -2425,13 +2425,13 @@ F and G, found while a measurement was running and **nobody was looking for it**
 | `asc types brief` — the `SessionStart` payload | nothing: `asc record` occurs **0** times; only `asc ingest` (6) and `asc query` (1), both in *"Never by hand"* prose | n/a | n/a |
 | `README.md` §Install | `node packages/cli/dist/bin.js`; or an alias in the reader's shell profile | yes | no |
 | `README.md` §Quickstart | `asc record review_completed …`, offered as literally runnable | **no** — `command -v asc` exits 1 | yes |
-| `ARCHITECTURE.md:331` | documents `Bash(asc record:*)` — a grant for a name that resolves nowhere | — | yes |
+| `ARCHITECTURE.md` | documents `Bash(asc record:*)` — a grant for a name that resolves nowhere | — | yes |
 | `.claude/ascend-hook.sh` | `node "$root"/packages/cli/dist/bin.js` | yes | **no** |
 
 **No artifact names a form that is both runnable and granted**, and that is structural rather than
 an oversight in any one file. `asc` is a bare name nowhere in a project: `command -v asc` exits 1,
 `node_modules/.bin/asc` does not exist, `@ascend/cli` is `private: true` and unpublished
-(`README.md:41-42` says so in as many words). And a `Bash(<prefix>:*)` allow rule matches the
+(`README.md` says so in as many words). And a `Bash(<prefix>:*)` allow rule matches the
 **literal command text**, after compound-command splitting and a fixed wrapper list — it *"doesn't
 match the same program invoked in a different form"* — so `Bash(asc record:*)` can never match
 `node …/bin.js record …`, relative or absolute, in any layout. Nothing in the shipped hook script can
@@ -2442,13 +2442,13 @@ what it teaches is a form the grant refuses.
 **Three corrections to `dogfood/0028`'s account, measured 2026-10-01 before deciding anything.** The
 body is immutable, so they land in its Status cell (the `dogfood/0037` precedent):
 
-1. **The "wall" is a headless artifact.** `spike/ev16-arms.mjs:295` sets
+1. **The "wall" is a headless artifact.** `spike/ev16-arms.mjs` sets
    `ALLOWED = 'Read,Edit,Write,Bash(node test.js),Bash(asc:*)'`, and the arms ran
    `--permission-mode dontAsk`, which auto-denies every call that would otherwise prompt. In a real
    interactive session F2's denied `node …/bin.js` would have **prompted**. The finding's severity is
-   friction, which is real — `ARCHITECTURE.md:331`'s stated concern is *"A permission prompt per
+   friction, which is real — `ARCHITECTURE.md`'s stated concern is *"A permission prompt per
    record kills the workflow"* — and not unreachability.
-2. **The shim was the harness's.** `spike/ev16-arms.mjs:169` creates `.shim/asc` and `:428` prepends
+2. **The shim was the harness's.** `spike/ev16-arms.mjs` creates `.shim/asc` and prepends
    it to `PATH`. `0028` already says this; what it does not say is that the same file's grant is what
    made `node …/bin.js` denyable at all. On this checkout the hook script's own form is **allowed**,
    by `Bash(node *)` in the untracked `.claude/settings.local.json` — an accident, and not something
@@ -2465,7 +2465,7 @@ expands) — is the only fix that makes the artifacts *true* rather than *consis
 as its own bead rather than carried by two P2 discovery defects, because it costs a new tracked file,
 a new hook duty and a folder-trust step.
 
-**Where the line goes is a correctness question, not a preference.** `packages/cli/src/doctor.ts:213`
+**Where the line goes is a correctness question, not a preference.** `packages/cli/src/doctor.ts`
 assembles its size figure from `briefLine` alone and compares it to `BRIEF_CAP_BYTES`, and
 `brief-text.ts`'s own doc says the renderer is shared *"so that the size doctor reports is the size of
 what the brief actually prints."* A line emitted by the **hook script** would sit outside both the cap
@@ -2477,7 +2477,7 @@ and the doctor's count: the payload would exceed `BRIEF_CAP_BYTES` by an uncount
 *Goal*: line 1 of `asc types brief`'s stdout names the command; the whole text still fits the cap and
 the doctor's number still equals it.
 *Tests, RED first*: `types/brief` emits the command line first and the type lines after it (the
-`toHaveLength(1)` shape assertion at `packages/cli/test/types.test.ts:527` becomes a stated two-part
+`toHaveLength(1)` shape assertion at `packages/cli/test/types.test.ts` becomes a stated two-part
 shape, because this is a deliberate reversal of the *"No header, no rule, no counts"* rule and must be
 recorded as one); **the cheap detector made permanent** — the brief's text contains `asc record`,
 which is the one-line check `dogfood/0028` names as having caught this before it was ever measured
@@ -2487,7 +2487,7 @@ first and drops whole type lines, and the fallback note still claims no file.
 *Implementation*: one `briefText`/`briefLines` in `brief-text.ts` used by **both** `types/brief.ts` and
 `doctor.ts` — two renderings is the drift the file exists to prevent — with the header outside the
 counted line set so `fitBrief`'s `kept`/`total` stay about types. `--json` is left unchanged, and the
-asymmetry documented in `output.ts`'s own idiom (`output.ts:468`: *"A consumer knows which command it
+asymmetry documented in `output.ts`'s own idiom (`output.ts`: *"A consumer knows which command it
 ran"*).
 
 **Status**: Complete (2026-10-01). `RECORD_COMMAND` (`Record with: asc record TYPE --json -`, 37
@@ -2502,7 +2502,7 @@ rather than in each caller's early return. `--json` untouched (`columns` and `ro
 with the asymmetry argued in the command's own header comment.
 
 RED→GREEN: 13 failed of 99 across the three chosen files. **The full gate then found a fourteenth
-assertion of the reversed contract that I had not thought to look for** — `init.test.ts:568` pinned
+assertion of the reversed contract that I had not thought to look for** — `init.test.ts` pinned
 the brief to exactly 4 non-empty lines. Its budget guard was right and only the line count encoded the
 old rule, so it now asserts the header's exact text plus `lines.slice(1)).toHaveLength(4)`, keeping
 "a later starter cannot quietly double it" intact. That is the gate earning its place: three files I
@@ -2526,7 +2526,7 @@ Full gate green: **124 files / 2905 passed, 2 skipped**; `format:check`, `typech
 *Goal*: a session that reads `.claude/ascend-hook.sh` is told what to run by hand and that the path
 resolution below it is the hook's own.
 *Tests, RED first*: the generated script carries the comment; `--dry-run` shows it; the byte-equality
-currency check at `install-hook.ts:337` still calls a current script current and a stale one stale —
+currency check at `install-hook.ts` still calls a current script current and a stale one stale —
 every existing install will read `upgraded`, which is the designed behaviour and not a regression;
 end-to-end, install into a scratch project and `sh` the script, asserting stdout is **exactly** the
 brief and nothing more.
@@ -2543,7 +2543,7 @@ after the fact rather than making it unrepresentable. No `echo`; the script's ru
 unchanged, byte for byte.
 
 **One plan claim was wrong and is corrected here**: `--dry-run` does **not** show the script.
-`install-hook.ts:775` warns `dry run: nothing was written` and the report carries the settings
+`install-hook.ts` warns `dry run: nothing was written` and the report carries the settings
 command and the outcome — so there is no dry-run arm for a comment inside a file the dry run does not
 write. The test is the installed file itself.
 
@@ -2586,7 +2586,7 @@ fix, carrying the measured reason it cannot ride on these two; then the gate.
 **Status**: Complete (2026-10-01). `dogfood/0028`'s Status cell is closed and carries the **three
 corrections** (immutable body, `0037`'s precedent): the `dontAsk` harness made F2's denials *prompts*
 rather than a wall; the shim and the `Bash(asc:*)`-vs-`Bash(node …)` asymmetry were properties of
-*that arm's grant* (`spike/ev16-arms.mjs:169`, `:428`, `:295`), not of Claude Code, and the script's
+*that arm's grant* (`spike/ev16-arms.mjs`), not of Claude Code, and the script's
 own path form is allowed on this checkout; and the body's *"converts a discovery problem into a denial
 problem, which is worse"* is false for the remedy the README already ships, because **an alias does
 work in a Bash tool call**. Its README row moves from `(P2, open)` to fixed.
@@ -2625,13 +2625,13 @@ through `ReportFindings`, so they are in the store as `review_finding` entries a
 **F1 (`asc-k0l9`, `assumption_audit`) — the advertised command exits 1.** `asc record TYPE --json -`
 reads the entry from **standard input**, and the payload supplies none and never says so. Measured in
 a scratch project: `record review_completed --json - < /dev/null` → `standard input is not valid
-JSON: Unexpected end of JSON input.`, exit 1. `ARCHITECTURE.md:333` writes the same spelling *with*
+JSON: Unexpected end of JSON input.`, exit 1. `ARCHITECTURE.md` writes the same spelling *with*
 the qualifier — *"**`asc record <type> --json -`** (stdin) is the primary path"* — and the brief's
 rendering dropped it.
 
 **Decided by the owner (2026-10-01): keep the stdin form and restore the qualifier.** The
 alternative — advertise the `--prop` form — was offered with its case (it matches `README.md`
-§Quickstart and fails prescriptively) and declined, because it overrides `ARCHITECTURE.md:333`'s
+§Quickstart and fails prescriptively) and declined, because it overrides `ARCHITECTURE.md`'s
 designated primary path, and `--prop`'s shell-escaping cost on long `evidence_text` is exactly what
 that document chose stdin to avoid. No form is literally runnable with placeholders, so the choice
 is which form a session should be *handed*, and the criterion is which failure teaches the next step:
@@ -2678,7 +2678,7 @@ cap charges -- against the **4,581** free at the time of measurement, and it is 
 > ... the 4,543 free", which is wrong twice. 4,543 subtracts the E12.13 header's 38 bytes a second
 > time: the measurement was taken *after* E12.13, when the brief read 3,419 as `asc doctor` counts
 > it, so headroom was 8,000 − 3,419 = **4,581** — the figure
-> `.agents/research/2026-10-01-bug-hunt-e12-13.md:110` states verbatim. And "62 bytes" silently
+> `.agents/research/2026-10-01-bug-hunt-e12-13.md` states verbatim. And "62 bytes" silently
 > dropped the newline, which is what the cap is charged for; the consistent figure is 63. The plan is
 > a record, so the numbers stand as written above only where they were true when written.
 
@@ -2745,12 +2745,12 @@ run by three independent agents reading the same diff; the findings below are th
 being handed back with the numbers.
 
 **F1 (`asc-fkp1`, the highest-ranked finding) — the fix taught a spelling three other artifacts had
-already abandoned.** E12.14 rendered `ARCHITECTURE.md:333`'s spelling literally:
+already abandoned.** E12.14 rendered `ARCHITECTURE.md`'s spelling literally:
 `asc record TYPE --json -`. That document is the design record; three *later* artifacts had all
 moved away from it, and the brief is the one a session reads first:
 
 ```
-$ grep -n 'record ' packages/cli/src/commands/record.ts   # :15-26, "There is no spelling that keeps both."
+$ grep -n 'record ' packages/cli/src/commands/record.ts   # "There is no spelling that keeps both."
 $ asc record --help                                       # [DOCUMENT]  Path to an entry document, or `-` for standard input
 $ grep -n 'asc record' README.md                          # cat reviews.json | asc record review_completed -
 ```
@@ -2771,7 +2771,7 @@ lengths 37/38/62/63). Every figure in the file now states its unit and its newli
 **F3 — the plan asserted a number that was never true.** E12.14's Implementation paragraph claimed
 **4,543** free. That subtracts E12.13's 38-byte header a second time: the measurement was taken after
 E12.13, so headroom was 8,000 − 3,419 = **4,581**, which
-`.agents/research/2026-10-01-bug-hunt-e12-13.md:110` states verbatim. Corrected in place with the
+`.agents/research/2026-10-01-bug-hunt-e12-13.md` states verbatim. Corrected in place with the
 correction visible, because the plan is a record.
 
 **F4 — `dogfood/0028` carried two unreconciled byte counts.** The body measured 3,603 on 2026-09-28
@@ -2871,7 +2871,7 @@ Error: a document (-) and entry flags (--prop/--na/--evidence) cannot be combine
 ```
 
 exit **2**. The recovery ascend prescribed is refused by the command ascend printed it from — and
-`IMPLEMENTATION_PLAN.md:2478-2480` records *that recovery* as the criterion for preferring stdin over
+`IMPLEMENTATION_PLAN.md` records *that recovery* as the criterion for preferring stdin over
 the flag form, so the rationale rested on a dead end. The `--na` half is the same: a real command in
 general, equally refused beside a document.
 
@@ -3005,12 +3005,12 @@ identifiers come from TYPE/PROPERTY names through `ident()`. Hostile names (`a/b
 `asc export | asc import`.
 
 **Two corrections, one of them a comment that described the function below it wrongly.**
-`jsonl-files.ts:43-45` said bytes outside `[A-Za-z0-9._-]` "are percent-encoded by `encodeSegment`";
+`jsonl-files.ts` said bytes outside `[A-Za-z0-9._-]` "are percent-encoded by `encodeSegment`";
 the function folds to a lowercase slug and appends a 12-hex-char digest of a lossless spelling of the
-name, and its own header (`:142-166`) records percent-encoding being tried and rejected on three
+name, and its own header records percent-encoding being tried and rejected on three
 measured counts. That comment is exactly what sends a reviewer hunting a fourth encoder that does not
-exist. Fixed in place. The bead's description repeated the same claim and cited `requireName` at
-`:394` rather than `:358-374`; both corrected in a comment rather than by rewriting the description,
+exist. Fixed in place. The bead's description repeated the same claim and cited `requireName`;
+ both corrected in a comment rather than by rewriting the description,
 so the record of what was found survives beside the correction.
 
 **The coverage that was missing, and the mutation that proves it.** `store/test/jsonl-files.test.ts`
@@ -3081,7 +3081,7 @@ population rate. Measured by ingesting into a fresh store and reading it back �
 `user_correction` 20), **44 days** (2026-08-02 … 2026-09-15), 34 sessions, 12 projects, 1 clock
 reading. Three findings change what E6/E7 must be built against:
 
-- **The corpus is 44 days deep, not two years** — `derived-types.ts:69`'s *"backfill of two years"*
+- **The corpus is 44 days deep, not two years** — `derived-types.ts`'s *"backfill of two years"*
   is off by ~17×, which matters because E7's changepoint work is sized in days.
 - **`na` is 0 for every field of every derived type**, so `asc explore` reporting a 0.0% N/A ratio
   on a derived corpus is correct rather than broken.
@@ -3092,7 +3092,7 @@ reading. Three findings change what E6/E7 must be built against:
 Also measured, and filed as `asc-5hs`: no derived entry carries envelope provenance (0/1,491 for
 `cwd`, `repo`, `git_sha`, `branch`), and `project` collapses **282 distinct real working
 directories into 15 labels** — while the true `cwd` and `gitBranch` sit on **100%** of the records
-that trigger every derived event. `EV-write-cost.md:58`'s ~16.6k-entry backfill is also **11×**
+that trigger every derived event. `EV-write-cost.md`'s ~16.6k-entry backfill is also **11×**
 the real yield; the decision it supports is unaffected and conservative.
 
 **Status: In Progress** (`asc-dh0`) — the E5 chain is done: `asc-ct3` (streaming reader)
@@ -3132,12 +3132,12 @@ no entry data; invalidation works as a reserved scheme; every proportion carries
 small groups are flagged.
 
 **Amended 2026-10-02, on closing `asc-k6p`.** Verified against the tree. Five of the six hold:
-`matchingEntryIds`/`schemeCensus` report matches and the remainder (`annotations.ts:333/1431`, kept
+`matchingEntryIds`/`schemeCensus` report matches and the remainder (`annotations.ts`, kept
 non-negative and ordered biggest-class-first); `backtest` reports Wilson-bounded precision/recall and
-writes nothing (`analysis/src/backtest.ts:155`, `annotate.ts:313-465`); `cohenKappa` scores two schemes
-over the same entries (`agreement.ts:177`); invalidation is a reserved scheme (`reserved.ts`,
-`sql.ts:100`); and Wilson intervals with `[SMALL GROUP]` flagging cover every proportion the module
-enumerates (`proportion.ts:199`, `output.ts:181`). Three corrections:
+writes nothing (`analysis/src/backtest.ts`, `annotate.ts`); `cohenKappa` scores two schemes
+over the same entries (`agreement.ts`); invalidation is a reserved scheme (`reserved.ts`,
+`sql.ts`); and Wilson intervals with `[SMALL GROUP]` flagging cover every proportion the module
+enumerates (`proportion.ts`, `output.ts`). Three corrections:
 
 - **"dropping a scheme loses no entry data" is UNBUILT, and vacuously true.** No drop operation exists
   anywhere, so nothing can lose data by dropping — the false-green shape, not a satisfied criterion.
@@ -3145,10 +3145,10 @@ enumerates (`proportion.ts:199`, `output.ts:181`). Three corrections:
   describes was never written.
 - **"automatically applied" was never true.** `annotations.ts` claimed a rule is "automatically applied
   to entries recorded next month"; `matchingEntryIds`' only caller is `asc annotate`, and a stored rule
-  cannot be replayed without retyping it (`annotate.ts:266-271`). Comment corrected; filed as
+  cannot be replayed without retyping it (`annotate.ts`). Comment corrected; filed as
   `asc-cx9w`.
 - **"simultaneously" is untested.** Two schemes coexist over the same entries and kappa scores them
-  (`cli/test/annotations.test.ts:1148`), but by sequential invocations; nothing exercises concurrency.
+  (`cli/test/annotations.test.ts`), but by sequential invocations; nothing exercises concurrency.
 
 **Tests** — `packages/analysis` against fixtures with hand-computed expected values (Wilson, kappa,
 chi-square, log-odds, FP-growth support/confidence, CUSUM changepoints); scheme isolation;
@@ -3156,14 +3156,14 @@ immutability of annotated entries.
 
 **EV-constraints carried in — AMENDED 2026-10-02, on verifying `asc-xgo` against the tree: two of the
 three are UNBUILT, and the third is unmet on the surface it is stated about.** The tautology check and
-the temporal-block control required by `EV-patterns` (`docs/evidence/EV-patterns.md:126-138`) exist
+the temporal-block control required by `EV-patterns` (`docs/evidence/EV-patterns.md`) exist
 nowhere in `packages/*/src` — `grep -rniE "tautolog|temporal.block|functional.depend|within.day"`
 returns nothing, and no bead tracked them; filed as `asc-fwpe`. `asc-xgo.1`'s close reason asserts a
 "NEW REQUIREMENT FOR E7" for an effective-sample-size / pseudoreplication check; `grep -riE
 "pseudoreplic|effective.sample"` returns nothing and no bead tracked it either; filed as `asc-0hys`.
 The shuffled-label control that produced the `tool_name × project` verdict **is** present and
-test-pinned (`association.ts:509`, `association.test.ts:327-379`), but `asc stats` cannot reach it —
-`rankAssociations` takes a single argument at `stats.ts:387`, so `permutations` defaults to 0 and the
+test-pinned (`association.ts`, `association.test.ts`), but `asc stats` cannot reach it —
+`rankAssociations` takes a single argument at `stats.ts`, so `permutations` defaults to 0 and the
 report omits `pPermuted`; filed as `asc-jpka`, which also carries the "catches marginal-driven but not
 definitional artifacts" limitation that lives only in EV-patterns and not in the module. The finding is
 recorded as `dogfood/0055`.
@@ -3200,9 +3200,9 @@ the shuffled-label control on the command surface — is closed.
 for the other five modes. The report states the iteration count and the floor as **arithmetic from
 `N`** (`1/(N+1)`), which is not cosmetic: the acceptance's own parenthetical — *"EV-patterns measured a
 5,000-iteration floor of p=0.0025"* — is **wrong**, and this is the second correction to reach this
-plan. `spike/spike-patterns.mjs:86`, the file `EV-patterns` names as its method, runs
+plan. `spike/spike-patterns.mjs`, the file `EV-patterns` names as its method, runs
 **400** iterations, and `git log -p` shows that literal never changed; the 5,000 belongs to
-`spike/spike-controls.mjs:27`'s **block** control. `1/401 = 0.0024937655860349127` prints as `0.0025`,
+`spike/spike-controls.mjs`'s **block** control. `1/401 = 0.0024937655860349127` prints as `0.0025`,
 which is why the wrong count read as consistent. Filed `asc-h3sv`, `dogfood/0066`, and a dated
 Amendment to `docs/evidence/EV-patterns.md` — **and, unlike the correction `dogfood/0065` is about,
 this one went into the artifacts and not only here.**
@@ -3215,7 +3215,7 @@ suppressed as DEFINITIONAL, **p = 0.0002** at this control's floor. A test pins 
 distrust a verification section.** This plan's own hand-checkable claim (`project × tool_name` ≈
 0.2095) **failed**: the command returns **0.184539**. `permutationNull` is **order-sensitive** —
 Fisher-Yates walks the array it is *given* — so a p belongs to *(seed, row order)*, and the command
-reads `ORDER BY recorded_at, id` (`packages/store/src/pages.ts:117`) while a file scan reads append
+reads `ORDER BY recorded_at, id` (`packages/store/src/pages.ts`) while a file scan reads append
 order. Same columns, same seed, same 400 iterations: **0.184539** vs **0.209476**; `denial_kind ×
 tool_name` **0.017456** vs **0.029925**; observed χ² identical in both, which is what isolates the
 order. The module's doc comment had claimed the opposite in as many words — *"reproducible from its
@@ -3243,12 +3243,12 @@ shipped behaviour is the honest one:
 
 - *"missing exports"* is not reportable. `asc export` writes to stdout and leaves no trace in the
   store, so whether an export exists is not a fact anything holds. `exportStatus` states that it
-  cannot see one and how much is at stake (`doctor.ts:249-267`, pinned by `doctor.test.ts:251`), which
+  cannot see one and how much is at stake (`doctor.ts`, pinned by `doctor.test.ts`), which
   is the whole of what "reporting a missing export" can honestly mean. Detection would mean inventing
   a filename convention and reporting false absences.
 - *"ratios"* became **counts**, deliberately: a ratio over 3 entries reads like one over 300, so
   `propertyStates` reports `measured N of M` and names a group under `MIN_N` an anecdote
-  (`doctor.ts:172-174`). The denominator is *declared* entries, which is why the fourth profile state
+  (`doctor.ts`). The denominator is *declared* entries, which is why the fourth profile state
   `not_declared` sits outside it — an entry that never declared the property is a coverage question,
   not a fill-rate one.
 - Two checks the design review routed here have **no signal to read**, and `doctor.ts`'s header states
@@ -3259,7 +3259,7 @@ shipped behaviour is the honest one:
 
 **Status: Complete** (`asc-20p`) — 2/2 children. Verified against the tree 2026-10-02: `deadTypes`,
 `nearDuplicates`, `versionDrift`, `propertyStates`, `briefSize` and `exportStatus` are all present and
-test-pinned (`doctor.test.ts:80/105/126/187/212/251`); `--across` unions project DBs via ATTACH and
+test-pinned (`doctor.test.ts`); `--across` unions project DBs via ATTACH and
 `types import` verifies each document's `type_hash` before writing. Criterion 5 is met as amended
 above, not as first written.
 
@@ -3378,7 +3378,7 @@ Cyrillic 1.63, Arabic 1.10) are unaffected.
 **Success Criteria** — the flag sets the ratio used by the fit and the report echoes the value
 actually used; a ratio `<= 0` is a usage error (exit 2); `--chars-per-token` without `--max-tokens` is
 a usage error naming the fix, on the `--dry-run`/`--dump` precedent (*"Named rather than ignored"*,
-`explore.ts:832-841`); a CJK-heavy fixture fits at a ratio that DOES make the estimate a ceiling,
+`explore.ts`); a CJK-heavy fixture fits at a ratio that DOES make the estimate a ceiling,
 where the default does not; `--dump`'s `file_tokens` and `chars_per_token` use the caller's ratio too.
 
 **Stage 1 — thread the ratio through the fit** (`packages/cli/src/budget.ts`). `estimateTokens`
@@ -3664,7 +3664,7 @@ falsifiers, and a commitment to report every proportion as an anecdote under `MI
 elided by the renderer.** The reading is **DIRECT 4 · OUTSIDE SCHEMA 2 · ABSENT 3**. One prediction
 **held** (P1 — the pattern is not unique to `evidence_record`), one was **incomplete** (P2 — I named one
 answerability mode and there are two), and one was **refuted** (P3 — all 8 derived versions declare zero
-questions, so `handlers/check.ts:112`'s `judged[i]` ↔ `analysis_questions[i]` alignment is used by no
+questions, so `handlers/check.ts`'s `judged[i]` ↔ `analysis_questions[i]` alignment is used by no
 type in this store).
 
 **The mode the pre-registration missed is the one worth carrying.** For `decision`, Q0 and Q1 *are*
@@ -3707,7 +3707,7 @@ in **its own tree**, `events/`, beside `entries/`.
 **Stored DERIVED, and the derive version is checked on read.** The line written is the `NormalizedEvent`
 itself, not a transcript record, so replaying needs no adapter. That makes the envelope's
 `derive_version` load-bearing: a log derived at another version is **refused**, naming both, because
-`event.ts:45` states exactly what replaying it would do — *"a count moves when this moves, with no
+`event.ts` states exactly what replaying it would do — *"a count moves when this moves, with no
 handler changed."* The check is **per line**, not per file: a log half-written by one version and half by
 another must not replay as one consistent history.
 
@@ -3806,7 +3806,7 @@ yet **ages out** the log — this stage makes the count survive the transcript, 
 ## Stage E22: an effective sample size for clustered entries — `asc-0hys`
 
 **The gap.** `asc-xgo.1`'s close reason asserted a "NEW REQUIREMENT FOR E7" for an
-effective-sample-size / pseudoreplication check, `EV-patterns.md:225-230` names it, and E7 was closed
+effective-sample-size / pseudoreplication check, `EV-patterns.md` names it, and E7 was closed
 without it. Measured 2026-10-02 (`grep -riE "pseudoreplic|effective.sample|dwell" packages/*/src`)
 it was never built and no bead tracked it. The failure it exists for: a significance test assumes
 independent observations, and a session contributes many entries — so treating them as independent
@@ -4080,7 +4080,7 @@ only thing that can see a deleted test is a number carried forward by hand.
 **`asc-0hys` closed 2026-10-05 against its ACCEPTANCE, and the description is not fully built.** All
 three acceptance clauses hold: the analysis layer computes an effective N; the surfaces that report a
 p-value or a Wilson interval state which N they used; and a fixture with known clustering shows the
-corrected N smaller and the interval wider (`design-effect.test.ts:88` is the bead's own case — ten
+corrected N smaller and the interval wider (`design-effect.test.ts` is the bead's own case — ten
 entries from one session, `effectiveN 1`, `deff 10`, against the CLI control arm's `n=7` → effective
 `n=3` and `4.5-77.1%` where the uncorrected row reads `8.2-64.1%`). The description's stronger
 sentence — *"or otherwise correct for the clustering, **wherever N is quoted as the basis of a
@@ -4365,7 +4365,7 @@ against the acceptance's own words:
 
 ## Stage E24: the tautology check and the temporal-block control — `asc-fwpe`
 
-**Goal**: the two controls `docs/evidence/EV-patterns.md:126-138` names as *required additions to E7*
+**Goal**: the two controls `docs/evidence/EV-patterns.md` names as *required additions to E7*
 exist in code and are measured against the real corpus, so the finding list can be re-issued with the
 number of survivors stated **after** the controls rather than before.
 
@@ -4373,7 +4373,7 @@ number of survivors stated **after** the controls rather than before.
 scores the corpus's strongest association and **survives the shuffled control** — shuffling destroys the
 identity and the result still looks significant. The "Thursday 41.1 %" finding is a confound whose
 marginal concentration is *real*, so the shuffled control is structurally blind to it. EV-patterns says
-so about itself (`:151-153`): *"the two controls proposed above are untested designs, not measured
+so about itself: *"the two controls proposed above are untested designs, not measured
 remedies"* — which makes the deliverable a design **and** a measurement.
 
 ### Measured before planning (2026-10-05, read-only, `spike/corpus.db`)
@@ -4484,7 +4484,7 @@ exported next to `MIN_N`.
 **Tests (RED first)**: identity block order reproduces the observed statistic (the mutation that catches
 an accidental no-op shuffle); a block-driven confound puts the observed inside the null; a real
 within-block association puts it outside — **both arms**, per the standing "report the losing arm"
-rule; seeded reproducibility and seed sensitivity, matching `association.test.ts:352-369`; unequal
+rule; seeded reproducibility and seed sensitivity, matching `association.test.ts`; unequal
 block sizes (the 143-vs-1 case) neither throw nor drop rows; the returned shape is `PermutationNull`, so
 callers treat it uniformly.
 
@@ -4497,7 +4497,7 @@ plainly that the null is not marginal-preserving **and that this is the point**.
 **Tests (RED first)**, `association.test.ts`: a definitional pair is absent from `report.pairs` and
 present in the report's disclosure with its coefficient; a 0.389 pair stays; `pBlocked` appears only
 with blocks **and** a declared-temporal column, and the key is **omitted rather than `undefined`**
-(`exactOptionalPropertyTypes`), matching the `pPermuted` discipline at `association.ts:663-666`; the FDR
+(`exactOptionalPropertyTypes`), matching the `pPermuted` discipline at `association.ts`; the FDR
 family counts the **surviving** pairs, pinned by a test, since a definitional pair cannot be a false
 discovery; suppressing every pair yields an empty ranking that says so rather than throwing.
 
@@ -4536,7 +4536,7 @@ scripts/test-baseline.mjs` → *"baseline 3049 / 3047, 31 above baseline"*, `ali
 
 The planned deliverable was: a throwaway `spike/spike-controls.mjs` reproducing both tables above so the
 record's numbers are regenerable rather than transcribed; then **re-issue `EV-patterns.md` as a dated
-Amendment** in the file's own house style (`:167`), stating the survivor count after both controls —
+Amendment** in the file's own house style, stating the survivor count after both controls —
 **3 of `tool-denial`'s 10 pairs** (`denial_kind` × `tool_name`, `× project`, `× repo`): 4 flagged by the
 temporal control, 1 suppressed as definitional, 2 already artifacts of marginals — reconciled against
 the existing Amendment's "8 of 16" rather than restated; a bead for the **third** control the Amendment
@@ -4615,7 +4615,7 @@ each transcript's own `gitBranch`, with no subprocess anywhere, on 6,860 entries
 documented as a future one, and a caller reading that sentence could not tell it from the two with no
 writer at all. The three are now described as two states rather than one.
 
-**The record's label was wrong, and that is the half worth having.** `spike/spike-controls.mjs:51`
+**The record's label was wrong, and that is the half worth having.** `spike/spike-controls.mjs`
 defines the spike's `repo` column as `COALESCE(git_branch, '(none)')` — it is the **git branch**. So
 `EV-patterns`' headline `project × repo` (V = 0.761) and Correction 1's 0.828 are measurements of
 `project × branch`. A dated Amendment names the pair correctly. The finding is untouched: `asc-h7nq`
