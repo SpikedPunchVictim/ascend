@@ -1,0 +1,61 @@
+{
+  "_": "Kill-check for asc-gtnu.7. Each mutant breaks ONE part of the `saw:` construct and names the tests observed FAILING when it was planted. Names were read off assertionResults of `vitest run packages/core/test/handler.test.ts --reporter=json`, not guessed.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/core/src/handler.ts",
+      "find": "    const list = seen.get(partition(event));\n    if (list === undefined) seen.set(partition(event), [event]);\n    else list.push(event);",
+      "replace": "    const list = seen.get(partition(event));\n    void list;",
+      "killers": [
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "is true when a matching event of the watched kind came from ANOTHER stream of the session"
+        },
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "resolves a $ reference in saw.where against the TRIGGER, not the watched event"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/core/src/handler.ts",
+      "find": "(name === sawName ? (answer ? 'true' : 'false') : scope(name))",
+      "replace": "(name === sawName ? 'true' : scope(name))",
+      "killers": [
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "is false when no matching event was offered"
+        },
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "renders the literal string false on an empty index, never undefined or empty"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/core/src/handler.ts",
+      "find": "  if (scope !== 'session') {",
+      "replace": "  if (scope === 'session' && false) {",
+      "killers": [
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "refuses scope: stream, rather than silently narrowing"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/core/src/handler.ts",
+      "find": "      sawAnswer = (seen.get(key) ?? []).some((watched) => sawSpec.match(watched, scope));",
+      "replace": "      sawAnswer = (seen.get(key) ?? []).some((watched) => sawSpec.match(watched, (name) => read(watched, name)));",
+      "killers": [
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "resolves a $ reference in saw.where against the TRIGGER, not the watched event"
+        }
+      ]
+    }
+  ]
+}

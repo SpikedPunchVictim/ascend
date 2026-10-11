@@ -64,6 +64,7 @@ const TOP_KEYS = new Set([
   'capture',
   'where',
   'before',
+  'saw',
   'each',
   'window',
   'emit',
@@ -79,10 +80,20 @@ const TOP_KEYS = new Set([
  * backward reference or a session scope would each need events the call does not have, and would
  * be silently never satisfied rather than refused.
  */
-const SAY_EXCLUDES = ['emit', 'window', 'each', 'before', 'type', 'judged', 'scope'] as const;
+const SAY_EXCLUDES = [
+  'emit',
+  'window',
+  'each',
+  'before',
+  'saw',
+  'type',
+  'judged',
+  'scope',
+] as const;
 const WINDOW_KEYS = new Set(['calls', 'until', 'first', 'count', 'absent', 'at_least', 'any']);
 const WATCHER_KEYS = new Set(['on', 'where']);
 const BEFORE_KEYS = new Set(['on', 'where']);
+const SAW_KEYS = new Set(['on', 'where', 'as']);
 const OPERATORS = new Set([
   'eq',
   'ne',
@@ -389,6 +400,29 @@ interface Before {
   readonly match: Test;
 }
 
+/**
+ * The `saw:` key: has an event of `on` matching `where` ALREADY been offered to this handler, in
+ * any stream of the session? (asc-gtnu.7).
+ *
+ * **EXISTENCE ONLY, NO ORDERING.** Unlike `before`, this makes no claim about which came first.
+ * EV-48 measured the nearest edit as AFTER the finding in 47 of 61 pairs, so a backward "the edit
+ * that preceded this finding" would be wrong more often than right; the honest question the corpus
+ * can answer is whether the edit exists at all.
+ *
+ * **`where` IS FILTERED AT TRIGGER TIME, NOT WHILE RECORDING.** `before.where` filters while
+ * recording (see its docblock) because a `$` reference there is refused and its filter does not
+ * depend on the trigger. A `$` reference inside `saw.where` names a field of the TRIGGER, so the
+ * filter CANNOT be evaluated when the watched event is seen -- there is no trigger yet -- and the
+ * opposite choice has to be made here. The cost is honest and stated: every event of the watched
+ * kind the session offers is RETAINED UNFILTERED for the run, matched against the trigger when one
+ * arrives. It is bounded by one session's events of one kind, not the whole stream.
+ */
+interface Saw {
+  readonly on: string;
+  readonly match: Test;
+  readonly as: string;
+}
+
 /** A compiled handler. `spec` is the parsed form the hash is computed from. */
 export interface CompiledHandler {
   readonly spec: Json;
@@ -407,6 +441,7 @@ export interface CompiledHandler {
   readonly itemCaptures: readonly Capture[];
   readonly where: Test;
   readonly before: Before | undefined;
+  readonly saw: Saw | undefined;
   readonly each: Each | undefined;
   readonly window: Window | undefined;
   readonly emit: readonly (readonly [string, Template])[];
@@ -706,6 +741,8 @@ interface TemplateNames {
   readonly window: Window | undefined;
   /** The kind a `before:` reference reads, or `undefined` when the handler declares none. */
   readonly before: string | undefined;
+  /** The name a `saw:` reference reads, or `undefined` when the handler declares none. */
+  readonly saw: string | undefined;
 }
 
 function checkTemplateName(name: string, names: TemplateNames, where: string): void {
@@ -739,6 +776,25 @@ function checkTemplateName(name: string, names: TemplateNames, where: string): v
       );
     }
     pathType(kind, name.slice('before.'.length), where);
+    return;
+  }
+  if (name === 'saw') {
+    const own =
+      names.saw === undefined
+        ? 'this handler declares no saw:'
+        : `the handler's saw: is named ${names.saw}, so the reference is \${saw.${names.saw}}`;
+    return refuse(`${where}: \${${name}} names no reference -- ${own}`);
+  }
+  if (name.startsWith('saw.')) {
+    const as = names.saw;
+    if (as === undefined) {
+      return refuse(
+        `${where}: \${${name}} is not available from this handler, which declares no saw:`,
+      );
+    }
+    if (name.slice('saw.'.length) !== as) {
+      return refuse(`${where}: \${${name}} -- this handler's saw: is named ${as}`);
+    }
     return;
   }
   if (name.startsWith('window.')) {
@@ -1011,6 +1067,37 @@ function compileBefore(spec: unknown, scope: HandlerScope): Before {
 }
 
 /**
+ * The `saw:` key: existence of a matching event of `on` anywhere in the session (asc-gtnu.7).
+ *
+ * `where` is compiled with `kind` as the WATCHED kind (for plain keys) and the handler's own `on`
+ * as `triggerKind` in `context` (for `$` references) -- the mechanism that lets `$file` on the
+ * trigger decide which watched events match. That trigger-dependence is why the filter runs at
+ * trigger time rather than while recording; see the `Saw` docblock.
+ */
+function compileSaw(spec: unknown, scope: HandlerScope, context: RefContext): Saw {
+  if (!isMap(spec)) return refuse('saw: must be a map');
+  for (const key of Object.keys(spec)) {
+    if (!SAW_KEYS.has(key)) refuse(`saw: unknown key ${key}`);
+  }
+  const kind = spec['on'];
+  if (typeof kind !== 'string' || !Object.hasOwn(EVENT_KINDS, kind)) {
+    return refuse(`saw.on: ${JSON.stringify(kind)} is not an event kind`);
+  }
+  if (scope !== 'session') {
+    return refuse(
+      "saw: is not available under scope: stream -- a saw: could only ever see the trigger's " +
+        'own stream, which is exactly what the caller already has, so it is refused rather than ' +
+        'silently narrowed to that. Add scope: session to make the join cross-stream.',
+    );
+  }
+  const as = spec['as'];
+  if (typeof as !== 'string' || !NAME.test(as)) {
+    return refuse('saw.as: must be a name (lowercase letters, digits and _)');
+  }
+  return { on: kind, match: compileWhere(spec['where'], kind, context, 'saw.where'), as };
+}
+
+/**
  * Compile a parsed handler, or throw `HandlerError` naming what is wrong.
  *
  * `parsed` must already be plain JSON-shaped data; the YAML loader guarantees that, and so must
@@ -1087,6 +1174,8 @@ export function compileHandler(parsed: unknown): CompiledHandler {
   const before =
     parsed['before'] === undefined ? undefined : compileBefore(parsed['before'], scope);
 
+  const saw = parsed['saw'] === undefined ? undefined : compileSaw(parsed['saw'], scope, context);
+
   let each: Each | undefined;
   if (eachSpec !== undefined && isMap(eachSpec) && eachSpec['table'] !== undefined) {
     each = compileTableEach(eachSpec, on, captureNames, itemCaptures);
@@ -1133,6 +1222,7 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     maps,
     window,
     before: before?.on,
+    saw: saw?.as,
   };
   const emit = Object.entries(emitSpec).map(
     ([key, value]) =>
@@ -1154,6 +1244,7 @@ export function compileHandler(parsed: unknown): CompiledHandler {
     itemCaptures,
     where,
     before,
+    saw,
     each,
     window,
     emit,
@@ -1423,12 +1514,22 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
    * so that the two keys cannot disagree about what a partition is.
    */
   const lastBefore = new Map<string, NormalizedEvent>();
+  /**
+   * Every event of the handler's watched `saw:` kind seen in this run, per partition (asc-gtnu.7).
+   *
+   * RETAINED UNFILTERED, because `saw.where` is trigger-dependent: a `$` reference in it names a
+   * field of the trigger, so there is no trigger yet when the watched event is seen and no way to
+   * decide the match here. The honest cost is one session's events of one kind held for the run,
+   * not the whole stream; the filter is applied when a trigger arrives, in `step`.
+   */
+  const seen = new Map<string, NormalizedEvent[]>();
   let triggers = 0;
   let unclosed = 0;
   let noMatch = 0;
   let unsatisfiedBefore = 0;
   let malformedItems = 0;
   const window = handler.window;
+  const sawSpec = handler.saw;
   /** The handler-level scope. Named apart from the template `Scope` every row is built with. */
   const handlerScope = handler.scope;
 
@@ -1599,6 +1700,19 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
           : read(earlier, name.slice('before.'.length))
         : scope(name);
 
+  /**
+   * Wrap a trigger's scope so `${saw.<as>}` reads the answer instead of the trigger.
+   *
+   * It renders `'true'` or `'false'` and NEVER empty, so an absent answer cannot be confused with
+   * a false one: a handler that asks whether an edit exists gets a definite no, not a gap. Returns
+   * `scope` itself when the handler declares no `saw:`, exactly as `withBefore` does.
+   */
+  const sawName = sawSpec === undefined ? undefined : `saw.${sawSpec.as}`;
+  const withSaw = (scope: Scope, answer: boolean | undefined): Scope =>
+    answer === undefined
+      ? scope
+      : (name) => (name === sawName ? (answer ? 'true' : 'false') : scope(name));
+
   const step = (event: NormalizedEvent): readonly HandlerRow[] => {
     const key = partition(event);
     const out: HandlerRow[] = [];
@@ -1699,7 +1813,14 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
       earlier = lastBefore.get(key);
       if (earlier === undefined) unsatisfiedBefore += 1;
     }
-    const emitScope = withBefore(scope, earlier);
+    // The `saw:` answer, evaluated against the TRIGGER's `scope` as the second argument of the
+    // `Test` -- which is what makes a `$` reference in `saw.where` name a trigger field. The
+    // watched list is read BEFORE this trigger is recorded below, so a `saw:` never sees itself.
+    let sawAnswer: boolean | undefined;
+    if (sawSpec !== undefined) {
+      sawAnswer = (seen.get(key) ?? []).some((watched) => sawSpec.match(watched, scope));
+    }
+    const emitScope = withSaw(withBefore(scope, earlier), sawAnswer);
 
     if (window === undefined) {
       out.push(...rows(event, emitScope, undefined));
@@ -1720,16 +1841,23 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
   };
 
   /**
-   * Record the event as the partition's most recent `before:` match.
+   * Record the event for the backward keys. AFTER the trigger body, which is what makes `before`
+   * mean strictly earlier and a `saw:` never see its own trigger.
    *
-   * AFTER the trigger body, which is what makes `before` mean strictly earlier. `before.where`
-   * cannot hold `$` references (`compileBefore`), so the trigger scope this passes is never read.
+   * `before.where` cannot hold `$` references (`compileBefore`), so the trigger scope it passes is
+   * never read. `saw.where` CAN, so the events it wants are kept UNFILTERED -- the filter is
+   * trigger-dependent and runs in `step` when a trigger arrives, not here.
    */
   const record = (event: NormalizedEvent): void => {
     const spec = handler.before;
-    if (spec === undefined || event.kind !== spec.on) return;
-    if (!spec.match(event, () => undefined)) return;
-    lastBefore.set(partition(event), event);
+    if (spec !== undefined && event.kind === spec.on && spec.match(event, () => undefined)) {
+      lastBefore.set(partition(event), event);
+    }
+    const watching = sawSpec;
+    if (watching === undefined || event.kind !== watching.on) return;
+    const list = seen.get(partition(event));
+    if (list === undefined) seen.set(partition(event), [event]);
+    else list.push(event);
   };
 
   const accept = (event: NormalizedEvent): readonly HandlerRow[] => {
@@ -1743,6 +1871,7 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     open.clear();
     running.clear();
     lastBefore.clear();
+    seen.clear();
   };
 
   return {

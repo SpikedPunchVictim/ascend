@@ -1310,3 +1310,140 @@ describe('a window decided with no match is counted, not dropped', () => {
     expect(handler.unclosed).toBe(before);
   });
 });
+
+/**
+ * `saw:` -- a session-scoped, existence-only backward join (asc-gtnu.7).
+ *
+ * The construct answers "in this session, in ANY stream, has an event of `on` matching `where`
+ * already been offered to this handler?" and makes NO ordering claim: EV-48 measured the nearest
+ * edit as AFTER the finding in 47 of 61 pairs, so a `before`-style claim would be wrong more often
+ * than right. A `$` reference inside `saw.where` resolves against the TRIGGER while a plain key
+ * resolves against the WATCHED event, which is why the filter cannot be applied at record time.
+ */
+describe('saw: an existence-only backward join, session-scoped', () => {
+  /** An event in a named stream. `seq` is the caller's; a merged partition is the point. */
+  const at = (
+    kind: string,
+    stream: { session: string; agent: string },
+    seq: number,
+    fields: Record<string, unknown> = {},
+  ): NormalizedEvent => ({
+    kind,
+    session_id: stream.session,
+    agent_id: stream.agent,
+    seq,
+    call: 1,
+    derive_version: 4,
+    ...fields,
+  });
+
+  const MAIN = { session: 's1', agent: 'main' };
+  const SUB = { session: 's1', agent: 'agent-x' };
+
+  /** A read whose file an implementer may have edited, in any stream of the same session. */
+  const spec = {
+    scope: 'session',
+    on: 'file.read',
+    saw: { on: 'file.changed', where: { path: { eq: '$path' } }, as: 'implementer_touched_file' },
+    emit: { p: '${path}', touched: '${saw.implementer_touched_file}' },
+  };
+
+  const drive = (s: unknown, events: readonly NormalizedEvent[]): { rows: HandlerRow[] } => {
+    const handler = runHandler(compileHandler(s));
+    const rows = events.flatMap((event) => [...handler.accept(event)]);
+    handler.finish();
+    return { rows };
+  };
+
+  it('is true when a matching event of the watched kind came from ANOTHER stream of the session', () => {
+    const { rows } = drive(spec, [
+      at('file.changed', SUB, 0, { path: '/a.ts', tool: 'Edit' }),
+      at('file.read', MAIN, 1, { path: '/a.ts', tool: 'Read' }),
+    ]);
+    expect(rows[0]?.fields).toEqual({ p: '/a.ts', touched: 'true' });
+  });
+
+  it('is false when no matching event was offered -- not true whenever a kind appeared', () => {
+    // The severity-zero case: a construct that only ever answers true. No `file.changed` at all.
+    const { rows } = drive(spec, [at('file.read', MAIN, 1, { path: '/a.ts', tool: 'Read' })]);
+    expect(rows[0]?.fields).toEqual({ p: '/a.ts', touched: 'false' });
+  });
+
+  it('is false when the watched kind appeared but never matched where', () => {
+    const { rows } = drive(spec, [
+      at('file.changed', SUB, 0, { path: '/other.ts', tool: 'Edit' }),
+      at('file.read', MAIN, 1, { path: '/a.ts', tool: 'Read' }),
+    ]);
+    expect(rows[0]?.fields['touched']).toBe('false');
+  });
+
+  it('resolves a $ reference in saw.where against the TRIGGER, not the watched event', () => {
+    // The watched event's path is `/a.ts`; the trigger reads `/b.ts`, which no watched event
+    // carries. A `$` resolved against the watched event would compare it to itself and answer
+    // true. The trigger's value decides, and flipping it flips the answer.
+    const watched = at('file.changed', SUB, 0, { path: '/a.ts', tool: 'Edit' });
+    const matched = drive(spec, [watched, at('file.read', MAIN, 1, { path: '/a.ts' })]);
+    expect(matched.rows[0]?.fields['touched']).toBe('true');
+    const unmatched = drive(spec, [watched, at('file.read', MAIN, 1, { path: '/b.ts' })]);
+    expect(unmatched.rows[0]?.fields['touched']).toBe('false');
+  });
+
+  it('renders the literal string false on an empty index, never undefined or empty', () => {
+    const { rows } = drive(spec, [at('file.read', MAIN, 1, { path: '/a.ts' })]);
+    expect(rows[0]?.fields['touched']).toBe('false');
+    expect(rows[0]?.fields['touched']).not.toBe('');
+    expect(rows[0]?.fields['touched']).not.toBeUndefined();
+  });
+
+  it('refuses scope: stream, rather than silently narrowing it to the trigger’s own stream', () => {
+    expect(refused({ ...spec, scope: 'stream' })).toMatch(/scope: session/);
+  });
+
+  it('is refused in a say handler', () => {
+    expect(refused({ on: 'check.run', say: 'hi', saw: spec.saw })).toMatch(/cannot also have saw/);
+  });
+
+  const base = { scope: 'session', on: 'file.read', emit: { touched: '${saw.t}' } };
+  it.each([
+    ['a saw that is not a map', { ...base, saw: 'nope' }, /saw: must be a map/],
+    [
+      'an unknown key',
+      { ...base, saw: { on: 'file.changed', when: 'x', as: 't' } },
+      /saw: unknown key when/,
+    ],
+    [
+      'a kind that does not exist',
+      { ...base, saw: { on: 'file.change', as: 't' } },
+      /is not an event kind/,
+    ],
+    ['a missing as', { ...base, saw: { on: 'file.changed' } }, /saw\.as: must be a name/],
+    [
+      'an as that is not a name',
+      { ...base, saw: { on: 'file.changed', as: 'Bad' } },
+      /saw\.as: must be a name/,
+    ],
+    [
+      'a $ reference to a field the trigger lacks',
+      {
+        ...base,
+        saw: { on: 'file.changed', where: { path: { eq: '$nope' } }, as: 't' },
+      },
+      /has no field "nope"/,
+    ],
+  ])('refuses %s in a saw: block', (_name, s, message) => {
+    expect(refused(s)).toMatch(message);
+  });
+
+  it('refuses a ${saw.…} template naming the wrong reference, and a bare ${saw}', () => {
+    // The suffix must be the `as` name; anything else names nothing. A bare `${saw}` names no
+    // reference either, so it is refused rather than resolving to the namespace.
+    expect(refused({ ...spec, emit: { touched: '${saw.other}' } })).toMatch(
+      /this handler's saw: is named implementer_touched_file/,
+    );
+    expect(refused({ ...spec, emit: { touched: '${saw}' } })).toMatch(/names no reference/);
+  });
+
+  it('refuses a ${saw.…} template on a handler that declares no saw', () => {
+    expect(refused({ on: 'file.read', emit: { touched: '${saw.x}' } })).toMatch(/declares no saw:/);
+  });
+});
