@@ -3,6 +3,7 @@ import {
   applyMutant,
   asRecord,
   executed,
+  literalPattern,
   parseArgs,
   repairVerdict,
   resolveSpecPath,
@@ -62,6 +63,45 @@ describe('executed()', () => {
     const out = ['      Tests  3 passed (3)', '      Tests  1 passed (1)'].join('\n');
 
     expect(executed(out)).toBe(1);
+  });
+});
+
+describe('literalPattern()', () => {
+  /**
+   * `vitest -t` is a REGEX, and the `Killer` typedef calls `test` "the one test name that must notice
+   * this mutant" -- a name, not a pattern. Nothing reconciled the two, so the pattern a spec author
+   * wrote was never the pattern that ran (`dogfood/0076`).
+   *
+   * Both directions are tested, because they fail differently and only one of them is loud. A `$` in
+   * a killer name is an end-of-string anchor that matches NO test, so the run refuses and the spec
+   * author is told their killer is dead -- the loud half. A `.` matches any character, so the killer
+   * can be satisfied by a DIFFERENT test than the one named, and the run reports a kill it did not
+   * earn -- the quiet half, and the false green this whole file exists to prevent.
+   */
+  it('escapes a `$`, so a killer name is matched as text rather than as an end-of-string anchor', () => {
+    expect(literalPattern('resolves a $ reference in saw.where')).toBe(
+      'resolves a \\$ reference in saw\\.where',
+    );
+  });
+
+  it('makes the pattern match its own name and nothing else, which is the contract', () => {
+    const name = 'a (b) [c] {d} e+f? g|h i^j k*l';
+    const pattern = new RegExp(literalPattern(name));
+
+    expect(pattern.test(name)).toBe(true);
+    expect(pattern.test('axb')).toBe(false);
+  });
+
+  it('escapes a `.`, so a killer cannot be satisfied by a different test than the one it names', () => {
+    expect(new RegExp(literalPattern('names settings.json')).test('names settingsXjson')).toBe(
+      false,
+    );
+  });
+
+  it('leaves an ordinary name exactly as it was, since escaping it would be the same string', () => {
+    expect(literalPattern('writes the index LAST, so a failed write leaves nothing to read')).toBe(
+      'writes the index LAST, so a failed write leaves nothing to read',
+    );
   });
 });
 

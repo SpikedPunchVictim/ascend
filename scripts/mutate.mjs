@@ -131,6 +131,38 @@ export function executed(output) {
 }
 
 /**
+ * A killer's test name as a `vitest -t` pattern that matches that name and nothing else.
+ *
+ * **`-t` IS A REGEX, NOT A SUBSTRING MATCH, AND THE `Killer` TYPE SAYS OTHERWISE.** Its typedef calls
+ * `test` "the one test name that must notice this mutant", so every spec author before this wrote a
+ * name; what ran was a pattern, and neither the runner nor anything else reconciled the two
+ * (`dogfood/0076`).
+ *
+ * The two directions fail differently, and only one is loud:
+ *
+ *   - **Too narrow.** `$` is an end-of-string anchor, so the killer
+ *     `resolves a $ reference in saw.where against the TRIGGER, not the watched event` matched NO test.
+ *     `vitest` exits 0 with every test skipped, `executed()` reads 0, and the run stops with
+ *     `DEAD KILLER ... matched no test` -- which blames the spec for a pattern the author never wrote.
+ *     That is how this was found: it held up an entire mutation run.
+ *   - **Too wide, and silent.** `.` matches any character, so
+ *     `warns when settings.json names the hook but the script is gone` also matches any name differing
+ *     only at that dot. A mutant is then certified by a test that is not the one the spec names -- a
+ *     kill it did not earn, arriving as a green verdict. This is the half that matters, and nothing
+ *     would have reported it; it is exactly the false green `executed()`'s own docblock was written to
+ *     close, one level down.
+ *
+ * Escaping every metacharacter makes the typedef true, and costs a spec author nothing: a literal
+ * substring of a test name is what the three worked examples beside the runner were already writing.
+ *
+ * @param {string} test
+ * @returns {string}
+ */
+export function literalPattern(test) {
+  return test.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * Where a spec argument points. A bare name is a shorthand for `scripts/mutations/<name>.json`.
  *
  * @param {string} arg
@@ -336,7 +368,7 @@ const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
  * @returns {Promise<{ code: number, out: string }>}
  */
 function runKiller(killer) {
-  return sh('npx', ['vitest', 'run', killer.file, '-t', killer.test]);
+  return sh('npx', ['vitest', 'run', killer.file, '-t', literalPattern(killer.test)]);
 }
 
 /**
