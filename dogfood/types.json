@@ -36,6 +36,10 @@
         "required": true
       },
       {
+        "name": "predictions",
+        "type": "json"
+      },
+      {
         "name": "question",
         "type": "text",
         "required": true
@@ -51,9 +55,10 @@
       "measured_on": "When the measurement was actually taken, if that differs from when this entry was written. The envelope's own `recorded_at` is when the ENTRY was written, which can trail the measurement by however long it took to write it up -- leave this out when the two coincide.",
       "measurement": "The numbers, raw, with n. Exact text, as printed by whatever produced them -- not a summary, not a rounded restatement. A number without the sample size it came from is not a measurement a later reader can trust.",
       "method": "What was run, against what data, and how many times. Name the tool or script, the input it ran over, and the repeat count -- a method that does not say how many times something ran cannot be told apart from a single lucky sample.",
-      "question": "The question, named BEFORE anything was run. Write it as it was asked at the start, not as it reads now that the answer is known -- a question restated in light of its own answer stops being a question and becomes a justification."
+      "question": "The question, named BEFORE anything was run. Write it as it was asked at the start, not as it reads now that the answer is known -- a question restated in light of its own answer stops being a question and becomes a justification.",
+      "predictions": "A JSON array, one entry per prediction written down BEFORE the run, each carrying the prediction and its verdict -- for example `[{\"prediction\": \"the nearest edit is before the finding\", \"verdict\": \"REFUTED\"}]`. This is `arms`' argument turned on this type's own analysis question: without it, \"how often did a result contradict its pre-registered prediction\" could only be answered by counting the WORD in the prose of `docs/evidence/*.md`, which cannot tell a prediction's verdict from a sentence that merely mentions one, and which a record stating its predictions in a table contributes nothing to. State the verdict in the record's own words, and restate the falsifier when one was written down. An EMPTY array is a real answer -- predictions were pre-registered and none was contradicted -- so leave the property out entirely to say no prediction was pre-registered."
     },
-    "type_hash": "f2f796ca3c0beaaeac9289e4773e92ee63316df6eb5f8e97ab2bac6002663707",
+    "type_hash": "a18a685a20a3242b477e1d27a4e75a7f5f8668dad31740258f4f6a3cf06e7cb9",
     "purpose": "Keep measured answers to questions named before measuring.",
     "analysis_questions": ["How often did a result contradict its pre-registered prediction?"],
     "review_after": 50
@@ -62,16 +67,16 @@
     "name": "note",
     "properties": [
       {
-        "name": "text",
+        "name": "body",
         "type": "string"
       }
     ],
     "description": "A correction to an earlier entry, or a finding that fits no other registered type.",
     "record_when": "you need to correct something an earlier entry got wrong, or you have something worth recording that does not match any other type's shape. `note` is the type of last resort: reach for a more specific type first, and use `note` only when none fits -- a corpus where everything is a `note` is a corpus where nothing can be queried by shape.",
     "prose": {
-      "text": "The correction or finding, in prose. State plainly what it corrects if it corrects something -- naming the entry or claim being corrected is what makes this findable later instead of just another unattached sentence."
+      "body": "The correction or finding, in prose. State plainly what it corrects if it corrects something -- naming the entry or claim being corrected is what makes this findable later instead of just another unattached sentence."
     },
-    "type_hash": "96880b60e9c795766c5b6eb02da5a42611683b14bbe9a7e5e77a558b8a2e4b77",
+    "type_hash": "2a540393995c08a9dace9182293103e0ebf0fc06af41910f65ec1916b7e4c718",
     "purpose": "The last-resort type, for what fits no other shape.",
     "analysis_questions": ["What share of notes should have been another type?"]
   },
@@ -81,77 +86,67 @@
     "record_when": "a search misleads you -- a grep, rg, glob, FTS query or `asc query` whose result you read as an answer and which was not one. Record it at the moment you find out, and record it EVEN IF you caught it before acting, because the near-misses are the ones that measure how often the instrument lies rather than how often you were lucky. The countable question this type exists to answer is 'how often does our searching mislead us, and in which way', so `failure_mode` and `caught` are the two fields that must be right. NOT for a search that simply found nothing when nothing was there -- that is a correct answer, and recording it drowns the ones that matter. The test is whether the RESULT supported a conclusion the evidence did not: a zero read as 'does not exist' qualifies, a zero read as 'zero' does not.",
     "properties": [
       {
-        "name": "pattern",
-        "type": "text",
+        "name": "caught",
+        "type": "enum",
         "required": true,
-        "description": "The pattern as it was actually written, verbatim and unescaped-as-typed. Not a description of it. The whole value of this entry to a later reader is being able to see the literal string that misled someone, and a paraphrase of a pattern is a different pattern."
+        "enum_values": [
+          "after_wrong_claim",
+          "before_acting",
+          "by_someone_else",
+          "never_caught_in_session"
+        ]
       },
       {
         "name": "command",
-        "type": "text",
-        "description": "The full invocation, including flags and redirections. `grep -c` and `grep -o` fail in different ways and the flags are usually where the failure lives -- `-c` counts LINES not matches, `-o` changes what a count means, and a compound `-e a -e b` reports that something matched without saying what."
+        "type": "text"
       },
       {
-        "name": "search_tool",
-        "type": "enum",
-        "required": true,
-        "enum_values": ["grep", "rg", "ugrep", "glob", "fts", "asc_query", "other"],
-        "description": "Which instrument. Named `search_tool` rather than `tool` because the corpus already holds `tool_name` on derived entries, where it means a Claude Code tool such as Bash or Read -- a different kind of thing, and the drift guard was right to flag the collision. Kept as a field rather than baked into the type name so that 'how often does grep mislead us' is a WHERE clause and not a separate type: the failure modes are shared across instruments, and splitting by tool would split the counts that make them visible."
-      },
-      {
-        "name": "scope",
-        "type": "text",
-        "required": true,
-        "description": "What was searched -- paths, globs, or the region of a file. Scope is a failure mode in its own right: a pattern can be correct and still answer the wrong question because the haystack contained a region where a match means something else."
+        "name": "corrected_by",
+        "type": "text"
       },
       {
         "name": "expected",
         "type": "text",
-        "required": true,
-        "description": "What the searcher expected the result to mean, written as the claim they were about to make. Not 'I expected matches' -- 'I expected a match to prove the hook fired'. Without this the entry cannot show why the result was misleading, only what it was."
-      },
-      {
-        "name": "returned",
-        "type": "text",
-        "required": true,
-        "description": "What came back, exact text as printed, including a count or an error message. A paraphrase of a number is a new number."
+        "required": true
       },
       {
         "name": "failure_mode",
         "type": "enum",
         "required": true,
         "enum_values": [
-          "compound_pattern",
-          "wrong_vocabulary",
-          "wrong_scope",
           "absence_wrongly_trusted",
+          "compound_pattern",
+          "flag_semantics",
           "overmatch",
           "tool_error",
-          "flag_semantics"
-        ],
-        "description": "How it misled. `compound_pattern`: several alternates in one search, so a hit does not say which matched. `wrong_vocabulary`: the pattern was guessed from the wrong output format or schema, so it could never have matched. `wrong_scope`: the pattern matched in a region where a match does not support the claim. `absence_wrongly_trusted`: zero results read as 'does not exist'. `overmatch`: matched far more than intended and the excess was not noticed. `tool_error`: the search itself errored and the error was stepped over rather than read. `flag_semantics`: the flags meant something other than what the searcher assumed."
+          "wrong_scope",
+          "wrong_vocabulary"
+        ]
       },
       {
-        "name": "caught",
+        "name": "pattern",
+        "type": "text",
+        "required": true
+      },
+      {
+        "name": "returned",
+        "type": "text",
+        "required": true
+      },
+      {
+        "name": "scope",
+        "type": "text",
+        "required": true
+      },
+      {
+        "name": "search_tool",
         "type": "enum",
         "required": true,
-        "enum_values": [
-          "before_acting",
-          "after_wrong_claim",
-          "by_someone_else",
-          "never_caught_in_session"
-        ],
-        "description": "When it was noticed. This is the field that turns the type into a measurement rather than a diary: `before_acting` counts near-misses, `after_wrong_claim` counts times a false statement was actually made and then retracted. A corpus of only `before_acting` entries is a corpus that is not recording its real failures."
+        "enum_values": ["asc_query", "fts", "glob", "grep", "other", "rg", "ugrep"]
       },
       {
         "name": "wrong_conclusion",
-        "type": "text",
-        "description": "The claim that was actually made or nearly made on this evidence, in the words it was stated in. Omit when nothing was concluded -- never write 'none' or an empty string, which are indistinguishable from an unfilled field."
-      },
-      {
-        "name": "corrected_by",
-        "type": "text",
-        "description": "The search or check that produced the real answer, verbatim, so the entry carries the remedy and not only the fault. Where the fix was a different KIND of evidence rather than a better pattern -- reading a file, a token count, an experiment -- say that instead."
+        "type": "text"
       }
     ],
     "purpose": "Measure how often this project’s searches mislead it, and in which way.",
@@ -159,7 +154,20 @@
       "Which failure_mode dominates?",
       "What share were caught before_acting rather than after a wrong claim?"
     ],
-    "review_after": 20
+    "review_after": 20,
+    "prose": {
+      "caught": "When it was noticed. This is the field that turns the type into a measurement rather than a diary: `before_acting` counts near-misses, `after_wrong_claim` counts times a false statement was actually made and then retracted. A corpus of only `before_acting` entries is a corpus that is not recording its real failures.",
+      "command": "The full invocation, including flags and redirections. `grep -c` and `grep -o` fail in different ways and the flags are usually where the failure lives -- `-c` counts LINES not matches, `-o` changes what a count means, and a compound `-e a -e b` reports that something matched without saying what.",
+      "corrected_by": "The search or check that produced the real answer, verbatim, so the entry carries the remedy and not only the fault. Where the fix was a different KIND of evidence rather than a better pattern -- reading a file, a token count, an experiment -- say that instead.",
+      "expected": "What the searcher expected the result to mean, written as the claim they were about to make. Not 'I expected matches' -- 'I expected a match to prove the hook fired'. Without this the entry cannot show why the result was misleading, only what it was.",
+      "failure_mode": "How it misled. `compound_pattern`: several alternates in one search, so a hit does not say which matched. `wrong_vocabulary`: the pattern was guessed from the wrong output format or schema, so it could never have matched. `wrong_scope`: the pattern matched in a region where a match does not support the claim. `absence_wrongly_trusted`: zero results read as 'does not exist'. `overmatch`: matched far more than intended and the excess was not noticed. `tool_error`: the search itself errored and the error was stepped over rather than read. `flag_semantics`: the flags meant something other than what the searcher assumed.",
+      "pattern": "The pattern as it was actually written, verbatim and unescaped-as-typed. Not a description of it. The whole value of this entry to a later reader is being able to see the literal string that misled someone, and a paraphrase of a pattern is a different pattern.",
+      "returned": "What came back, exact text as printed, including a count or an error message. A paraphrase of a number is a new number.",
+      "scope": "What was searched -- paths, globs, or the region of a file. Scope is a failure mode in its own right: a pattern can be correct and still answer the wrong question because the haystack contained a region where a match means something else.",
+      "search_tool": "Which instrument. Named `search_tool` rather than `tool` because the corpus already holds `tool_name` on derived entries, where it means a Claude Code tool such as Bash or Read -- a different kind of thing, and the drift guard was right to flag the collision. Kept as a field rather than baked into the type name so that 'how often does grep mislead us' is a WHERE clause and not a separate type: the failure modes are shared across instruments, and splitting by tool would split the counts that make them visible.",
+      "wrong_conclusion": "The claim that was actually made or nearly made on this evidence, in the words it was stated in. Omit when nothing was concluded -- never write 'none' or an empty string, which are indistinguishable from an unfilled field."
+    },
+    "type_hash": "0a3755e80613fddae112a0580adb7d52897aa0cfa439ea8646d2a8feb9176f4d"
   },
   {
     "name": "decision",

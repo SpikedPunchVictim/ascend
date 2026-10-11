@@ -648,13 +648,17 @@ If you wrote the question down first, it is an EV record. If the tool handed it 
 dogfood record. A finding can cite both — 0001 does.
 
 **The one file here that is not a record.** [`types.json`](types.json) predates this convention
-and stays: it is the replayable definition of the two types this project defined for itself,
-`evidence_record` and `note`, exported by name so a fresh `asc init` reproduces them at
-byte-identical `type_hash` values (`f2f796ca`, `96880b60`, verified in commit `8fbabef` against a
-throwaway store). Schema only — a fresh clone gets the types and none of the corpus. It belongs in
-this directory for the same reason everything else here does: the types exist because dogfooding
-needed them. Since `asc-sny1` it also carries this project's own guidance — `purpose`,
-`analysis_questions` and `review_after` — for the hand-recorded types, the four starters included.
+and stays: it is the replayable definition of this repository's own seven types — `note` and
+`evidence_record`, which it defined for itself, `search_miss` beside them, and the four starters —
+exported by name so a fresh `asc init` reproduces every one at byte-identical `type_hash` values.
+Re-verified 2026-10-11 against a throwaway store: all seven reproduce. The pair this sentence used
+to pin (`f2f796ca`, `96880b60`) were those types' version 1, which the registry still holds beside
+the current `a18a685a` and `2a540393`, so nothing was lost when `evidence_record` gained
+`predictions` and `note` moved `text` to `body`. Schema only — a fresh clone gets the types and
+none of the corpus. It belongs in this directory for the same reason everything else here does:
+the types exist because dogfooding needed them. Since `asc-sny1` it also carries this project's
+own guidance — `purpose`, `analysis_questions` and `review_after` — for the hand-recorded types,
+the four starters included.
 Those values are this repository's intentions, not defaults, so they live here rather than in
 `starters.ts`; `asc types import dogfood/types.json` applies them in place, with no version bump.
 

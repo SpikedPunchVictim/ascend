@@ -495,6 +495,41 @@ describe('asc types define, and how a prose key is spelled', () => {
   });
 });
 
+describe('a json property survives the round trip, which `arms` and `predictions` rest on', () => {
+  /**
+   * `evidence_record` carries `arms`, and since `asc-xqf1` `predictions` beside it, as `json`
+   * properties -- the shape that makes a losing arm or a refuted prediction a queryable field
+   * rather than a sentence buried in `measurement`'s prose.
+   *
+   * `types define` is the only way such a property enters a store and `types export` the only way
+   * `dogfood/types.json` is rebuilt, and nothing drove a `json` property through that pair: the
+   * hand-written fixtures here (`REVIEW`, `STAGE`) are scalar and enum only, and the fixtures that
+   * do declare one (`recorder.test.ts`, `state.test.ts`) reach the store directly, so a `define`
+   * that dropped or coerced a non-scalar property would leave every test in this file green.
+   */
+  const PREDICTED = {
+    name: 'probe_predicted',
+    properties: [
+      { name: 'verdict', type: 'text', required: true },
+      { name: 'predictions', type: 'json' },
+    ],
+  };
+
+  it('keeps the json property, uncoerced, through define and export', () => {
+    const dir = project();
+    const run = asc(['types', 'define', json(dir, 'p.json', PREDICTED)], dir);
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('created');
+
+    const [stored] = documents(asc(['types', 'export', 'probe_predicted'], dir).stdout);
+    expect(stored?.['properties']).toEqual([
+      { name: 'predictions', type: 'json' },
+      { name: 'verdict', type: 'text', required: true },
+    ]);
+  });
+});
+
 describe('asc types show', () => {
   it('reports the latest version, and the fields a caller reads', () => {
     const dir = project();

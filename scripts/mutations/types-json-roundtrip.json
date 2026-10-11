@@ -1,0 +1,17 @@
+{
+  "_": "Kill-check for asc-xqf1's test. `evidence_record` carries `arms`, and `predictions` beside it, as `json` properties -- the shape that makes a losing arm or a refuted prediction a queryable field instead of prose. This mutant makes `types define` refuse a `json` property at runtime while leaving the build intact, so the round trip breaks for the reason the test exists and for no other. Killer name was read off `assertionResults` of `vitest run packages/cli/test/types.test.ts --reporter=json`, not guessed. NOTE: deleting 'json' from PROPERTY_TYPES in packages/core/src/spec.ts is NOT a usable mutant -- packages/cli/src/starters.ts declares three `json` properties, so that edit fails `tsc -b` and the whole file reports 72 skipped rather than one kill. It breaks the build, it does not isolate the check.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/store/src/document.ts",
+      "find": "if (typeof type !== 'string' || !(PROPERTY_TYPES as readonly string[]).includes(type)) {",
+      "replace": "if (type === 'json' || typeof type !== 'string' || !(PROPERTY_TYPES as readonly string[]).includes(type)) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/types.test.ts",
+          "test": "keeps the json property, uncoerced, through define and export"
+        }
+      ]
+    }
+  ]
+}
