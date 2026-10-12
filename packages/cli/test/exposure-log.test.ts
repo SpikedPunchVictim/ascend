@@ -40,8 +40,6 @@ const base: DecidedRecord = {
   hook_event: 'PostToolUse',
   tool_use_id: 'toolu_1',
   channel: 'additional_context',
-  payload_sha256: 'deadbeef',
-  payload_bytes: 42,
 };
 
 describe('exposureIdOf', () => {
@@ -104,8 +102,7 @@ describe('writeDecided / readDecided', () => {
       hook_event: 'PostToolUse',
     });
     const [record] = readDecided(tree);
-    expect(record).not.toHaveProperty('payload_sha256');
-    expect(record).not.toHaveProperty('payload_bytes');
+    // `channel` is the one optional field left, and it is still absent rather than defaulted.
     expect(record).not.toHaveProperty('channel');
   });
 

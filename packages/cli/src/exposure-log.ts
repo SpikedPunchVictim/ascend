@@ -41,8 +41,15 @@ export const DECIDED_FILE = 'decided.jsonl';
 /**
  * One decision: this intervention, at this trigger, in this unit, took this arm.
  *
- * The payload fields are OPTIONAL because a held-out unit has no payload. `arm` and the unit are
- * not optional; without them there is nothing to join.
+ * A held-out unit has no payload and no channel, so those fields are OPTIONAL. `arm` and the unit
+ * are not optional; without them there is nothing to join.
+ *
+ * **There is deliberately no `payload_sha256`/`payload_bytes` here** (`asc-xn4g`). They were declared
+ * for a marker scheme that was designed and then not built, and the numbers they would hold are not
+ * the hook's to take: the hook decides and exits, and what the harness recorded after it is in the
+ * transcript, not in this record. That measurement lives on `hook.delivery` (`bytes`, `sha256`),
+ * where it is read back off the harness's own `attachment` record -- see the kind's docblock in
+ * `@ascend/core`. Declaring them here would advertise a writer that does not exist.
  */
 export interface DecidedRecord {
   /** The join key, and the string embedded in the delivered payload's markers. */
@@ -65,8 +72,6 @@ export interface DecidedRecord {
   readonly prompt_id?: string;
   /** How it was sent, when it was. */
   readonly channel?: string;
-  readonly payload_sha256?: string;
-  readonly payload_bytes?: number;
 }
 
 const path = (tree: string): string => join(tree, EXPOSURE_DIR, DECIDED_FILE);

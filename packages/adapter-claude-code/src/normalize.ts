@@ -23,6 +23,7 @@
 import {
   MAIN_AGENT,
   canonicalJson,
+  sha256Hex,
   type EventRole,
   type EventValue,
   type NormalizedEvent,
@@ -69,8 +70,13 @@ import type { TranscriptFile } from './transcript-file.js';
  * 11: every event carries `segment`, and a compaction boundary is a `segment.start` event
  *    (asc-73cb): one more event per boundary, 149 on this project on 2026-09-28, so `seq` and a
  *    count of all events move with no handler changed.
+ * 12: `hook.delivery`, one event per `hook_success` attachment record (asc-xn4g), so a delivery
+ *    is checkable rather than assumed. One more event per hook run. On this project on 2026-10-12
+ *    the observed population is dominated by other tools' hooks -- a session-status script on
+ *    every Bash call -- so this count moves by far more than ascend's own deliveries, and a reader
+ *    counting it is counting the machine's hooks, not this feature's.
  */
-export const EVENT_DERIVE_VERSION = 11;
+export const EVENT_DERIVE_VERSION = 12;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -275,6 +281,50 @@ function taskNotification(record: TranscriptRecord): Record<string, string> | un
     if (found?.[1] !== undefined) out[tag] = found[1].trim();
   }
   return out;
+}
+
+/**
+ * The `hook.delivery` fields for a `hook_success` attachment, or `undefined` for any other record.
+ *
+ * A PURE parse at module level, like `taskNotification` above it, rather than an emitter closure
+ * like `modelContext`: it reads a record and returns fields, which is what lets the digest be
+ * driven from a synthetic attachment in a unit test without a whole session around it. The caller
+ * -- which is inside `createNormalizer`, where `emit` and the envelope live -- does the emitting.
+ *
+ * The `sha256` and `bytes` are the whole point: they let a replay judge what became of a delivery
+ * by recomputing what it would have said, WITHOUT the log carrying the injected text (see the
+ * kind's docblock in `event.ts` for why that matters). Nothing here reads `content` beyond hashing
+ * it, so a hook that prints a great deal costs a digest and two numbers.
+ *
+ * `content`, NOT `stdout`, and the two are different strings. Measured 2026-10-12 over the real
+ * corpus: `content` equals `stdout` on 9,453 of 86,877 `hook_success` attachments, `stderr` on
+ * 10,631, and neither on the other 66,809 -- the commonest difference being a trimmed trailing
+ * newline (`"Session status updated."` against `"Session status updated.\n"`). `content` is what
+ * the harness carried into the stream, which is the thing replay recomputes; `stdout` is what the
+ * hook printed. Hashing the wrong one compares a sentence against a sentence-plus-newline forever
+ * and reads as a permanent near-miss.
+ *
+ * Every field is ABSENT when the record does not carry it, rather than defaulted. `command` and
+ * `hook_event` follow the same rule as `exit_code`, rather than writing `''`: an empty string is a
+ * value, and a reader filtering on `command !== ''` would be counting a default as a measurement.
+ */
+function hookDelivery(record: TranscriptRecord): Readonly<Record<string, EventValue>> | undefined {
+  if (record['type'] !== 'attachment') return undefined;
+  const attachment = rec(record['attachment']);
+  if (attachment === undefined || attachment['type'] !== 'hook_success') return undefined;
+  const content = typeof attachment['content'] === 'string' ? attachment['content'] : '';
+  const exit = attachment['exitCode'];
+  const id = str(attachment['toolUseID']);
+  const hookEvent = str(attachment['hookEvent']);
+  const command = str(attachment['command']);
+  return {
+    ...(id === undefined ? {} : { id }),
+    ...(hookEvent === undefined ? {} : { hook_event: hookEvent }),
+    ...(command === undefined ? {} : { command }),
+    ...(typeof exit === 'number' ? { exit_code: exit } : {}),
+    bytes: Buffer.byteLength(content, 'utf8'),
+    sha256: sha256Hex(content),
+  };
 }
 
 interface Pending {
@@ -662,6 +712,9 @@ export function createNormalizer(): Normalizer {
 
     const said = promptText(record);
     if (said !== undefined) emit(out, 'prompt.submit', calls, ts, { text: said });
+
+    const delivery = hookDelivery(record);
+    if (delivery !== undefined) emit(out, 'hook.delivery', calls, ts, delivery);
 
     const notice = taskNotification(record);
     if (notice === undefined) {

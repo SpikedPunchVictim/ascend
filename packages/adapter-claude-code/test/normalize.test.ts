@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { EVENT_KINDS, eventFieldType, type NormalizedEvent } from '@ascend/core';
 import { EVENT_DERIVE_VERSION, createNormalizer } from '../src/index.js';
@@ -553,6 +554,131 @@ describe('segment', () => {
   });
 });
 
+/**
+ * `hook.delivery` (asc-xn4g): a hook's injected context, read off the harness's own `attachment`
+ * record. This is the ONLY thing that makes a delivery checkable -- without it, replay sees a
+ * transcript in which a withheld sentence and a delivered one are identical, and the AFTER arm of
+ * a holdout comparison cannot be split.
+ *
+ * The fields here come from a real record read out of `~/.claude/projects` on 2026-10-12 (read-only).
+ * `stdout` is present on the real record too and is deliberately NOT read: `content` is the stdin the
+ * harness handed the hook, which is the injected text, and hashing one of two equal strings is enough.
+ */
+describe('hook.delivery', () => {
+  const attachment = (attachment: Record<string, unknown>): TranscriptRecord => ({
+    type: 'attachment',
+    sessionId: 'sess-1',
+    timestamp: TS,
+    attachment,
+  });
+
+  const hookSuccess = (fields: Record<string, unknown> = {}): Record<string, unknown> => ({
+    type: 'hook_success',
+    hookName: 'asc hook PostToolUse',
+    hookEvent: 'PostToolUse',
+    toolUseID: 't1',
+    command: 'asc hook PostToolUse',
+    exitCode: 0,
+    content: 'a sentence',
+    stdout: 'a sentence',
+    stderr: '',
+    durationMs: 12,
+    ...fields,
+  });
+
+  const deliveries = (records: readonly TranscriptRecord[]): NormalizedEvent[] =>
+    normalize(records).filter((event) => event.kind === 'hook.delivery');
+
+  /**
+   * A copy of `fields` carrying only the keys not named, built by FILTERING rather than by deleting.
+   *
+   * A destructuring rest discards a binding, which is an unused variable under this repo's lint
+   * config (it exempts no prefix), and `delete copy[key]` trips `no-dynamic-delete`, which
+   * `corpus.test.ts` avoids only because its key is a literal. Filtering the entries sidesteps both
+   * and needs no per-key copy of the helper.
+   */
+  const without = (
+    fields: Record<string, unknown>,
+    keys: readonly string[],
+  ): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(fields).filter(([name]) => !keys.includes(name)));
+
+  const digest = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+
+  it('emits the event, the command, the exit status and the digest of what was injected', () => {
+    expect(deliveries([attachment(hookSuccess())])).toMatchObject([
+      {
+        id: 't1',
+        hook_event: 'PostToolUse',
+        command: 'asc hook PostToolUse',
+        exit_code: 0,
+        bytes: 10,
+        sha256: digest('a sentence'),
+      },
+    ]);
+  });
+
+  it('does NOT carry the injected text, so the log holds no second copy of it', () => {
+    // The absence IS the design: replay recomputes the sentence from the handlers and compares
+    // the digest, so storing `content` would put every injected sentence in the event log twice,
+    // and that log is measured rolling at ~1.33 MB/day (EV-39 Q1). A test asserting `content` were
+    // present would be pinning the thing the kind's docblock argues against.
+    const [event] = deliveries([attachment(hookSuccess())]);
+    expect(event?.['content']).toBeUndefined();
+    expect(Object.values(event ?? {})).not.toContain('a sentence');
+  });
+
+  it('leaves `id` ABSENT when the hook ran for no tool call, rather than defaulting it to empty', () => {
+    // Every `SessionStart` hook is this case. An empty id would join to nothing in the `decided`
+    // log while looking like a key that does -- the same reason the envelope omits absent fields.
+    const [event] = deliveries([attachment(without(hookSuccess(), ['toolUseID']))]);
+    expect(event).toBeDefined();
+    expect('id' in (event ?? {})).toBe(false);
+  });
+
+  it('counts BYTES rather than characters, so a multibyte sentence is not reported short', () => {
+    // A replay judges truncation by comparing `bytes` against the recomputed sentence, so a
+    // character count would read a 3-byte em dash as a one-byte difference and call a verbatim
+    // delivery truncated. `Buffer.byteLength` and `.length` differ on exactly this input.
+    const content = 'naïve — ok';
+    const [event] = deliveries([attachment(hookSuccess({ content }))]);
+    expect(event?.['bytes']).toBe(Buffer.byteLength(content, 'utf8'));
+    expect(event?.['bytes']).not.toBe(content.length);
+    expect(event?.['sha256']).toBe(digest(content));
+  });
+
+  it('leaves `exit_code` absent when the record carries none, rather than defaulting to zero', () => {
+    // Zero is a MEASURED outcome -- the hook ran and succeeded -- so writing it for a record that
+    // said nothing would make an unrecorded run indistinguishable from a clean one.
+    const [event] = deliveries([attachment(without(hookSuccess(), ['exitCode']))]);
+    expect('exit_code' in (event ?? {})).toBe(false);
+  });
+
+  it('leaves `command` and `hook_event` absent rather than writing the empty string', () => {
+    // An empty string IS a value: a reader filtering on `command !== ''` to find the hooks that
+    // named themselves would be counting this default as a measurement.
+    const [event] = deliveries([attachment(without(hookSuccess(), ['command', 'hookEvent']))]);
+    expect('command' in (event ?? {})).toBe(false);
+    expect('hook_event' in (event ?? {})).toBe(false);
+    // The digest is still taken: a hook that named neither still ran and still said something.
+    expect(event?.['sha256']).toBe(digest('a sentence'));
+  });
+
+  it('emits nothing for an attachment that is not a hook, and nothing for a non-attachment', () => {
+    // The predicate is one string comparison against the harness's own discriminator, so any value
+    // that is not `hook_success` is the same case and one of them stands for all.
+    expect(deliveries([attachment(hookSuccess({ type: 'file' }))])).toEqual([]);
+    expect(deliveries([prompt('a sentence')])).toEqual([]);
+  });
+
+  it('counts a redelivered hook twice, because each run is its own record', () => {
+    // Deliberately NOT deduplicated the way `agent.return` is: two `hook_success` records are two
+    // runs of the hook, and collapsing them would hide a hook that fired twice for one call --
+    // which is the delivery defect the AFTER arm exists to find.
+    expect(deliveries([attachment(hookSuccess()), attachment(hookSuccess())])).toHaveLength(2);
+  });
+});
+
 describe('model.context', () => {
   const contexts = (events: readonly NormalizedEvent[]): NormalizedEvent[] =>
     events.filter((event) => event.kind === 'model.context');
@@ -852,6 +978,7 @@ describe('review.finding, from a ReportFindings call', () => {
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 12: `hook.delivery` reads a `hook_success` attachment (asc-xn4g).
     // 11: every event carries `segment`; a compaction is `segment.start` (asc-73cb).
     // 10: `check.run` carries `paths` (asc-gtnu.10).
     // 9: `review.finding` carries `reviewer_model` (asc-gtnu.11).
@@ -862,7 +989,7 @@ describe('review.finding, from a ReportFindings call', () => {
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(11);
+    expect(EVENT_DERIVE_VERSION).toBe(12);
   });
 });
 

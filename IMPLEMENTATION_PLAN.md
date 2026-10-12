@@ -5017,7 +5017,105 @@ odd records they must agree on.
   **Complete.**
 - **E30.3 — replay reproduces the assignment, and derives the contamination flag.** A segment whose
   inherited summary mentions the intervention is **exposed, not control**
-  (`spike/holdout-unit/FINDINGS.md`). **Not started.**
+  (`spike/holdout-unit/FINDINGS.md`). **The core-vocabulary half is Complete** (`EVENT_DERIVE_VERSION`
+  12, `hook.delivery` emitted, 7 unit tests, 5 corpus tests green over 86,877 real deliveries); the
+  contamination flag is **Not started**.
+
+  **Owner's call, 2026-10-12: derive delivery from the `attachment` records; the marker scheme is
+  dropped rather than built.** Recorded here with the evidence above, because the decision contradicts
+  a written spike and the correction is the same act the per-session/per-segment conflict needed.
+
+  **Read before building it, and the read changed the design.** A hook's injected context is recorded
+  in the transcript as a `type: "attachment"` record, and the record carries everything delivery
+  would need — measured, this project's own corpus, read-only:
+
+  ```
+  attachment keys: type,hookName,toolUseID,hookEvent,content,stdout,stderr,exitCode,command,durationMs
+  attachment: {"type":"hook_success","hookName":"SessionStart:startup",
+               "toolUseID":"459d8bef-…","hookEvent":"SessionStart","content":"context_compaction -- …"}
+  ```
+
+  A different tool's PostToolUse hook, same shape: `hookName: "PostToolUse:Bash"`,
+  `command: "/Users/…/.config/iterm2/cc-status"`, `content: "Session status updated."`, `exitCode: 0`.
+  So the record names the **event**, the **exact command** (which is where the `--holdout` rate already
+  is), the **stdout that was injected**, and the **`toolUseID`** — which is the `tool_use_id` the
+  `decided` record already stores. That is the join, and it needs no marker.
+
+  **Three consequences, and the first is that the planned marker is unnecessary.** (1)
+  `guidance.delivery` is derivable from records that already exist, keyed on `toolUseID`, so the
+  `[asc:<exposure_id>] … [/asc:<exposure_id>]` scheme the exposure spike specifies buys nothing that
+  is not already there — and it would put machine text in front of the model for no gain, which is a
+  way to change the intervention while measuring it. (2) Delivered / truncated / not-delivered is read
+  off `attachment.content` directly rather than inferred from which marker survived, so the spike's
+  subtle marker-truncation argument disappears with the marker. (3) `payload_sha256` and `channel`
+  become derivable too, rather than needing the hook to compute them on the tool-call path.
+
+  **What the adapter does today:** `attachment` records are read for `agent.return` only, from
+  `attachment.prompt` (`asc-ggd4`). A `hook_success` attachment is skipped whole, so **replay cannot
+  currently see any hook delivery** — which is why nothing in the repo measures one. Surfacing them is
+  the first step of this stage, and it is adapter work rather than CLI work.
+
+  **One thing still unmeasured, and it gates the derivation:** whether a PostToolUse hook attachment
+  is written when the hook produces the **JSON envelope** (`hookSpecificOutput.additionalContext`)
+  rather than plain text, and whether it is written at all for a hook that prints nothing. The three
+  observed records are plain-text hooks that printed. Until that is run live, "delivery derivable
+  from the transcript" is traced rather than confirmed, and this stage says so.
+
+**E30.3 scoped, so the next window executes rather than re-derives.** This is a **core-vocabulary**
+change, not a CLI one, and the survey is done:
+
+- **`packages/core/src/event.ts`** — `EVENT_KINDS` is a plain record and has no kind for a hook
+  delivery. A `hook.delivery` kind is added beside `agent.return`.
+- **`packages/adapter-claude-code/src/normalize.ts`** — `EVENT_DERIVE_VERSION` is **11** and must
+  move to **12**; the emit goes in the record loop beside the `attachment` notification read, keyed
+  on `rec(record['attachment'])?.['type'] === 'hook_success'`.
+- **What the kind carries, and why not the payload.** `tool_use_id` (the join to `decided`),
+  `hook_event`, `exit_code`, `bytes`, and a `sha256` of `attachment.content`. **Not the content
+  itself**: the event log is measured rolling at ~1.33 MB/day (`EV-39` Q1), and replay does not need
+  a stored payload to judge delivery — it re-runs the handlers, recomputes the sentence it would have
+  said, and hashes it. Equal hash is *delivered verbatim*; shorter is *truncated*; no event is *not
+  delivered*. That is the same trick the marker scheme was invented to do, and it costs five fields
+  instead of a payload.
+- **`payload_sha256` / `payload_bytes` in `DecidedRecord` are the wrong home for those two numbers.**
+  The hook cannot know what the harness will record after it exits; they are the *delivery* side's
+  measurement, so they belong on `hook.delivery`. **Removed from the decided record 2026-10-12** rather
+  than left declared and permanently unfilled, with the type's docblock saying why they are gone, since
+  a declared-and-unwritten field reads as a writer that exists.
+- **Tests**: a `hook.delivery` unit test in `normalize.test.ts` driving a synthetic `attachment`
+  record; and the two corpus tests (`normalize-real-corpus.test.ts`) read `EVENT_KINDS`, so the bump
+  to 12 is what they will follow. **Done.**
+
+**E30.3 landed, and measuring the population falsified two sentences that were already written into
+the kind's docblock.** Both came from reading three records to design the kind; both died on being
+counted over all of them. Read-only over the real corpus, 2026-09-12 → 2026-10-12:
+
+- **86,877 `hook_success` attachments**, not three. `hook_event`: PreToolUse 46,871 / PostToolUse
+  35,895 / UserPromptSubmit 1,295 / Stop 1,254 / SessionStart 986 / SubagentStop 585 — **never absent
+  and never empty**.
+- **`content` is not the stdout.** It equals `stdout` on 9,453, `stderr` on 10,631, and **neither on
+  the other 66,809**, the commonest difference being a trimmed trailing newline
+  (`"Session status updated."` against `"Session status updated.\n"`). The design's own phrase —
+  "the stdout that was injected" — named the wrong string, and hashing `stdout` would have compared a
+  recomputed sentence against a sentence-plus-newline forever.
+- **`id` is present on all 86,877, including every `SessionStart`.** The written claim was that it is
+  *"ABSENT on a hook that runs for no tool call (every `SessionStart`)"*. What a `SessionStart` hook
+  actually carries is a UUID — an invocation id, not a tool-call id — and 4,120 deliveries
+  (SessionStart, Stop, UserPromptSubmit, SubagentStop) are that form. The rest split by **harness, not
+  by event**: ascend's own transcripts spell it `call_...` (6,961 PreToolUse), `grizzly` and `mast`
+  spell the same event `toolu_...`. A third `VOCABULARY_IS_NOT_OURS` instance, beside `agent_type` and
+  `model.context`.
+- **`exit_code` is 0 on all 86,877, and 23.1% carry no text at all** (20,084 zero-byte deliveries).
+  So `bytes: 0` is a common, distinguishable outcome rather than a missing value — which is what makes
+  the truncation rule in the docblock worth stating.
+- **ascend's own hook is 197 of the 86,877 (0.23%).** One iTerm2 status hook is 76,054 (87.6%).
+  `command` is therefore not a nicety: it is the only field that can separate deliveries by ascend
+  from deliveries by everything else, and the "UNEXERCISED for ascend's own hook" paragraph is now a
+  measurement rather than a caveat.
+
+  **Two of the corrections were of the same shape as the one that motivated the design**: a claim
+  generalised from a handful of records, written into a docblock as though it were the rule. The
+  three records were enough to design the *shape* of the kind; they were not enough to state any
+  property of the population, and the docblock stated three.
 - **E30.4 — `compare` splits the AFTER arm and says `controlled`.** The `observational` text must
   survive byte-identically for a run with no assignment — the existing test pins it as
   `/^observational -- /`. **Not started.**

@@ -172,6 +172,49 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
    * with the stream.
    */
   'segment.start': { index: 'number', trigger: 'string' },
+  /**
+   * A hook ran, read from the harness's own `attachment` record whose `attachment.type` is
+   * `hook_success` (asc-xn4g). It is what makes a delivery checkable: the record names the event
+   * and the exact command, and carries the text the hook produced.
+   *
+   * **The payload is not here, and its absence is the point.** Replay judges a delivery by
+   * re-running the handlers, recomputing the sentence it would have said, and comparing `sha256`
+   * against that -- equal is *delivered verbatim*, `bytes` shorter than the recomputed length is
+   * *truncated*, no event at all is *not delivered*. So `bytes: 0` is a real and distinguishable
+   * outcome rather than a missing value, and it is common. Storing the text instead would put every
+   * hook's output in the event log, which is measured rolling at ~1.33 MB/day (`EV-39` Q1); this
+   * population carries 2,170,732 bytes of it, mean 25.0 and max 3,756 per delivery.
+   *
+   * MEASURED 2026-10-12, read-only over the real corpus, 30 days (2026-09-12 -> 2026-10-12):
+   * 86,877 `hook_success` attachments. `hook_event` is PreToolUse 46,871 / PostToolUse 35,895 /
+   * UserPromptSubmit 1,295 / Stop 1,254 / SessionStart 986 / SubagentStop 585, and is never absent
+   * and never empty. 20,084 of the 86,877 carry no text at all. `exit_code` is 0 on all of them,
+   * which is what `hook_success` means -- a hook that failed is a separate
+   * `hook_non_blocking_error` attachment (15 in the same window), and this kind does not read it.
+   *
+   * `id` is the `toolUseID` the hook ran under, and it is present on ALL 86,877 -- including every
+   * `SessionStart`, which has no tool call of its own, so this is NOT a `tool_use` id on that
+   * event. Its SHAPE belongs to the streaming harness rather than to the hook event: ascend's own
+   * transcripts spell it `call_...` (6,961 PreToolUse) while this machine's `grizzly` and `mast`
+   * transcripts spell the same event `toolu_...` -- the same `VOCABULARY_IS_NOT_OURS` divergence as
+   * `model.context`'s. All 4,120 `SessionStart`/`Stop`/`UserPromptSubmit`/`SubagentStop` deliveries
+   * carry a UUID instead. So it joins a delivery to the `decided` record the dispatcher wrote
+   * before it ran, because both are the same `toolUseID`, but it reaches `tool.use.start` only on
+   * PreToolUse and PostToolUse, and only in a `call_...`/`toolu_...` form.
+   *
+   * `command` is the harness's own string, the same `VOCABULARY_IS_NOT_OURS` decision as `category`
+   * on `review.finding`, and here it is not hypothetical: ascend's own hook is 197 of the 86,877
+   * (0.23%). One person's iTerm2 status hook is 76,054 (87.6%). A reader who wants deliveries BY
+   * ascend has to filter on this field, and this field is the only thing that can say so.
+   */
+  'hook.delivery': {
+    id: 'string',
+    hook_event: 'string',
+    command: 'string',
+    exit_code: 'number',
+    bytes: 'number',
+    sha256: 'string',
+  },
   /** Synthetic: the stream ended. What closes every window still open. */
   'session.end': {},
 };
