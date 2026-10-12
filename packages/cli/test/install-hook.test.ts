@@ -1269,3 +1269,101 @@ describe('asc install-hook: the consent line about the script', () => {
     expect(scriptNotice('s.sh', 'settings.json', true)).not.toMatch(/does not exist/);
   });
 });
+
+describe('asc install-hook: the holdout rate (asc-xn4g)', () => {
+  const NUDGE = [
+    'on: tool.use.start',
+    'where:',
+    '  tool: Skill',
+    '  skill: {in: [bug-hunt]}',
+    "say: 'Report each finding from ${skill} with ReportFindings.'",
+    '',
+  ].join('\n');
+
+  const withHandler = (dir: string): void => {
+    mkdirSync(join(dir, 'handlers'), { recursive: true });
+    writeFileSync(join(dir, 'handlers', 'nudge.yaml'), NUDGE);
+  };
+
+  /** The command written for the PostToolUse stage, exactly as it stands in settings.json. */
+  const stageCommandIn = (dir: string): string => {
+    const groups = (settings(dir)['hooks'] as Record<string, unknown>)['PostToolUse'];
+    const entries = (groups as { hooks: { command: string }[] }[])[0]?.hooks;
+    return entries?.[0]?.command ?? '';
+  };
+
+  it('bakes the rate into the stage command, in the one place a reader would look', () => {
+    const dir = project();
+    withHandler(dir);
+    asc(['install-hook', '--yes', '--holdout', '0.3'], dir);
+    expect(stageCommandIn(dir)).toContain('--holdout 0.3');
+  });
+
+  it('installs no rate when none was asked for, exactly as before the flag existed', () => {
+    const dir = project();
+    withHandler(dir);
+    asc(['install-hook', '--yes'], dir);
+    expect(stageCommandIn(dir)).not.toContain('--holdout');
+  });
+
+  it('refuses a rate that leaves one side empty, and writes nothing at all', () => {
+    // `parseHoldoutFraction` refuses 0 and 1 -- a score over nothing is not a score -- and this is
+    // the caller that can say so out loud. The alternative, installing 0 as "no experiment", makes
+    // the person's command line and their settings.json agree on nothing.
+    for (const rate of ['0', '1', 'nope', '1.5', '-0.1']) {
+      const dir = project();
+      withHandler(dir);
+      const run = asc(['install-hook', '--yes', '--holdout', rate], dir);
+      expect(run.status, `--holdout ${rate} was accepted`).not.toBe(0);
+      expect(run.stderr).toContain('between 0 and 1');
+      expect(existsSync(settingsPath(dir))).toBe(false);
+    }
+  });
+
+  it('carries the rate through the script to asc hook, which is the only thing that makes it real', () => {
+    // The load-bearing one. `settings.json` naming a rate proves nothing: the entry runs through
+    // `ascend-hook.sh`, which forwarded only `"$1"` and would have dropped the flag silently -- an
+    // experiment reported on both sides and run on neither. So this executes the installed command
+    // and reads the decision the hook wrote.
+    const dir = project();
+    withHandler(dir);
+    asc(['install-hook', '--yes', '--holdout', '0.3'], dir);
+    const transcript = join(dir, 'transcript.jsonl');
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({ type: 'user', sessionId: 's-1', timestamp: '2026-10-12T00:00:00.000Z' })}\n`,
+    );
+    const live = spawnSync('sh', ['-c', stageCommandIn(dir)], {
+      cwd: dir,
+      input: JSON.stringify({
+        session_id: 's-1',
+        cwd: dir,
+        transcript_path: transcript,
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Skill',
+        tool_input: { skill: 'bug-hunt' },
+        tool_response: { success: true },
+        tool_use_id: 'toolu_1',
+      }),
+      encoding: 'utf8',
+      env: { ...process.env, HOME: dir, CLAUDE_PROJECT_DIR: dir, ASCEND_BIN: bin },
+    });
+    expect(live.status, live.stderr).toBe(0);
+    const decided = readFileSync(join(dir, '.ascend', 'exposure', 'decided.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { rate: number; segment: number; arm: string });
+    expect(decided).toHaveLength(1);
+    expect(decided[0]).toMatchObject({ rate: 0.3, segment: 0 });
+  });
+
+  it('reports an upgrade, not a no-op, when the rate changes', () => {
+    const dir = project();
+    withHandler(dir);
+    asc(['install-hook', '--yes', '--holdout', '0.3'], dir);
+    const again = asc(['install-hook', '--yes', '--holdout', '0.5', '--json'], dir);
+    const rows = (JSON.parse(again.stdout) as { rows: { action: string; outcome: string }[] }).rows;
+    expect(rows.find(({ action }) => action === 'PostToolUse')?.outcome).toBe('upgraded');
+    expect(stageCommandIn(dir)).toContain('--holdout 0.5');
+  });
+});

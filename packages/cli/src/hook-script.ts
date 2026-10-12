@@ -311,8 +311,13 @@ esac
 
 # With a stage (\`sh ascend-hook.sh post-tool-use\`), this is a lifecycle hook for the project's
 # say: handlers: the hook's JSON input is on stdin, and \`asc hook\` reads it from there.
+#
+# EVERY argument is forwarded, not just the stage, because a stage's entry may carry flags -- the
+# holdout rate \`asc install-hook --holdout\` bakes in (asc-xn4g). Forwarding \`"$1"\` alone dropped
+# them silently: the entry would read \`... post-tool-use --holdout 0.3\`, the flag would never
+# reach \`asc hook\`, and the project would run no experiment while its settings.json said it did.
 if [ -n "$1" ]; then
-  run hook "$1"
+  run hook "$@"
   exit 0
 fi
 

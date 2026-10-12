@@ -109,6 +109,7 @@ import {
   shimScript,
 } from '../hook-script.js';
 import { findProjectRoot } from '../project.js';
+import { parseHoldoutFraction } from '../holdout.js';
 import { writablePath } from '../symlink.js';
 import { loadProjectHandlers, type SayHandler } from '../typed-handlers.js';
 
@@ -315,10 +316,21 @@ function withHook(settings: Record<string, unknown>, command: string, target: st
 }
 
 /**
- * The settings command for one lifecycle stage (asc-tuur.4): the same script, given the stage.
- * Portable for the reason `SETTINGS_COMMAND` is -- the stage name is the only thing added.
+ * The settings command for one lifecycle stage (asc-tuur.4): the same script, given the stage --
+ * and the holdout rate, when one was asked for (asc-xn4g).
+ *
+ * **The rate is baked into this string rather than read from the store, and that is the same call
+ * `asc-vkuf` made about budgets.** A ratio written into the store is a number the store cannot
+ * verify; a flag on the entry is a number the person who installed it chose, written where they
+ * chose it, and visible in `settings.json` to anyone who asks what this project is running. The
+ * hook echoes it into every decision record it writes, so the intent is visible on both sides of
+ * the seam and neither has to be inferred from the other.
+ *
+ * Portable for the reason `SETTINGS_COMMAND` is -- the stage name and one decimal are the only
+ * things added, and neither names a path.
  */
-const stageCommand = (stage: HookStage): string => `${SETTINGS_COMMAND} ${stage}`;
+const stageCommand = (stage: HookStage, holdout: number | undefined): string =>
+  `${SETTINGS_COMMAND} ${stage}${holdout === undefined ? '' : ` --holdout ${String(holdout)}`}`;
 
 /** What one stage's managed entry should be, or `undefined` when no say handler uses the stage. */
 interface StageWant {
@@ -357,8 +369,8 @@ export function stageMatcher(handlers: readonly SayHandler[]): string {
   return [...tools].sort().join('|');
 }
 
-/** Which stages to install, from the project's say handlers. */
-function stageWants(say: readonly SayHandler[]): StageWant[] {
+/** Which stages to install, from the project's say handlers, at the rate they run under. */
+function stageWants(say: readonly SayHandler[], holdout: number | undefined): StageWant[] {
   return (Object.keys(HOOK_STAGES) as HookStage[]).map((stage) => {
     const using = say.filter((one) => one.stage === stage);
     const event = HOOK_STAGES[stage].event;
@@ -369,7 +381,7 @@ function stageWants(say: readonly SayHandler[]): StageWant[] {
         using.length === 0
           ? undefined
           : {
-              command: stageCommand(stage),
+              command: stageCommand(stage, holdout),
               // UserPromptSubmit takes no matcher; `''` is what "every source" is written as.
               // Every TOOL stage does, pre- and post- alike, and narrowing matters the same on
               // both: an unmatched hook is a process started on every tool call of every session.
@@ -504,6 +516,15 @@ export default class InstallHook extends BaseCommand {
     yes: Flags.boolean({
       description: 'Install without asking. Required when stdout is not a terminal.',
     }),
+    // The holdout rate (asc-xn4g). Vetted HERE, loudly, and never by the hook: this command is
+    // interactive and may refuse; `asc hook` may not, so a bad rate reaching it is silently read as
+    // "no experiment". The two refusals are the same predicate (`parseHoldoutFraction`, which
+    // rejects 0 and 1 -- either leaves one side empty) shouted at the only caller that can shout.
+    holdout: Flags.string({
+      description:
+        'A fraction strictly between 0 and 1; the share of units deliberately not shown.',
+      required: false,
+    }),
   };
 
   public async run(): Promise<void> {
@@ -527,6 +548,11 @@ export default class InstallHook extends BaseCommand {
     const target = writablePath(requested);
     const merged = withHook(this.readSettings(target), SETTINGS_COMMAND, requested);
 
+    // Refused rather than defaulted, and refused BEFORE anything is written: a rate this command
+    // cannot read is a person asking for an experiment, and installing no experiment while their
+    // command line said otherwise is the false-green this epic treats as severity-zero.
+    const holdout = this.holdoutRate(flags.holdout);
+
     // One managed entry per lifecycle stage this project's say: handlers use (asc-tuur.4), applied
     // on top of the SessionStart merge so the file is written once, with both.
     const loaded = loadProjectHandlers(root);
@@ -534,7 +560,7 @@ export default class InstallHook extends BaseCommand {
       this.warn(`handler ${failure.path} is not installed: ${failure.message}`);
     }
     let next = merged.next;
-    const stages = stageWants(loaded.say).map((want) => {
+    const stages = stageWants(loaded.say, holdout).map((want) => {
       const applied = withStageHook(next, want, requested);
       next = applied.next;
       return { ...want, outcome: applied.outcome };
@@ -661,7 +687,7 @@ export default class InstallHook extends BaseCommand {
           action: event,
           target: requested,
           outcome: dryRun && one !== 'already installed' ? `would ${verbOf(one)}` : one,
-          command: stageCommand(stage),
+          command: stageCommand(stage, holdout),
           dry_run: dryRun,
         })),
     ];
@@ -709,6 +735,21 @@ export default class InstallHook extends BaseCommand {
    * two. What stays here is the REFUSAL: this command is about to write a hook, so an unresolvable
    * binary must stop it, where the doctor only has to say that currency is unknown.
    */
+  /**
+   * The holdout rate this install is under, or `undefined` when none was asked for.
+   *
+   * Refuses loudly, unlike the hook's own reading of the same flag, because this is the one caller
+   * that can: a request for an experiment that this command cannot understand must not be installed
+   * as no experiment at all, or the person's command line and their settings agree on nothing and
+   * every later reading is over a controlled arm that was never controlled.
+   */
+  private holdoutRate(raw: string | undefined): number | undefined {
+    if (raw === undefined) return undefined;
+    const parsed = parseHoldoutFraction(raw);
+    if (typeof parsed === 'string') throw refusal(parsed);
+    return parsed;
+  }
+
   private ownBinary(): string {
     const own = resolveOwnBinary();
     if (own.kind === 'no-argv') {

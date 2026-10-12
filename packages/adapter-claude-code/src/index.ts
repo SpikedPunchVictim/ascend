@@ -60,6 +60,8 @@ export {
 
 export { outputVerdict, type OutputVerdict } from './output-verdict.js';
 
+export { hasCompactionBoundary, segmentIndexFrom } from './segment.js';
+
 export {
   checkRun,
   checkRunner,

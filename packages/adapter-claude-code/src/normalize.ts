@@ -30,6 +30,7 @@ import {
 import type { TranscriptRecord } from './decode.js';
 import { checkRun, execSegments, readVerdict } from './derive.js';
 import { isFindingLens } from './derived-types.js';
+import { hasCompactionBoundary } from './segment.js';
 import type { TranscriptFile } from './transcript-file.js';
 
 /**
@@ -649,10 +650,13 @@ export function createNormalizer(): Normalizer {
         })
       : [];
 
-    // A compaction boundary opens the next segment, and every event from here carries it.
-    const compacted = rec(record['compactMetadata']);
-    if (compacted !== undefined) {
+    // A compaction boundary opens the next segment, and every event from here carries it. WHICH
+    // records count as a boundary is `hasCompactionBoundary`'s to say, not this file's: the live
+    // hook counts the same boundaries out of a transcript without normalizing it (asc-xn4g), and
+    // two definitions would be free to drift.
+    if (hasCompactionBoundary(record)) {
       segment += 1;
+      const compacted = rec(record['compactMetadata']) ?? {};
       emit(out, 'segment.start', calls, ts, { index: segment, trigger: str(compacted['trigger']) });
     }
 

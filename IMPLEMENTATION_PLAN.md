@@ -4948,3 +4948,115 @@ so `pnpm mutate handler-saw` has not been run through the runner (it refuses a d
 tree holds unrelated work). The four mutants were verified by hand — plant, run
 `handler.test.ts --reporter=json`, read `assertionResults`, revert, confirm the source restored
 byte-identical — and that verification was repeated after the last edit to `withSaw`.
+
+---
+
+## Stage E30: a controlled arm for `asc handlers compare` — `asc-xn4g`
+
+**Goal** — Stop `compare` saying `observational` unconditionally. It has had no way to tell a unit
+that was shown a lesson from one that was not, so every comparison it reports is a before/after. A
+holdout gives it the missing half: a deterministic per-unit assignment, decided live at the hook,
+written down whether or not it was delivered, and baked into the installed entry at a rate the
+person who installed it chose.
+
+Owner's call, 2026-10-11: build **all** of it in this bead — the assignment, the intervention
+identity, the exposure format, and the power check — rather than splitting it.
+
+**The map, before any code.** Read-only survey of the surface, so the stages rest on what is there
+rather than on what the bead's prose implies. Each line names a construct, not a line number
+(`no-line-numbers-in-beads-or-docs`).
+
+| already exists | where |
+|---|---|
+| the holdout **unit** — a compaction segment of one stream, keyed NUL-joined because every stream's segments count from zero | `unitKey`, `handler-replay.ts` |
+| a deterministic holdout **function** — hash-based, so the split never reshuffles; `parseHoldoutFraction` refuses 0 and 1 | `holdout.ts` |
+| **the intervention identity** — `handler.hash`, the sha256 of the canonical parsed handler, and it **covers the delivered text** (a test asserts that changing the sentence changes the hash). Already in scope at the hook seam | `CompiledHandler.hash`, `handler.ts` |
+| the single print-or-stay-silent **seam**, with notes already going to stderr | `commands/hook.ts` |
+| `session_id`, `cwd` and `transcript_path` at hook time | `hook-input.ts`, `spike/hook-input-keys/FINDINGS.md` |
+
+| does NOT exist | consequence |
+|---|---|
+| **the exposure format** — `guidance.decided` / `guidance.delivery` are documented in `spike/exposure/FINDINGS.md` with **zero source symbols** | must be built, or the arm is unfalsifiable |
+| **the power check** — only a throwaway `spike/power/power.mjs`; its refusal is a sentence in a findings doc | must be built; requirement (3) of the bead |
+| **any notion of a controlled arm in `compare`** — `observational` is a module constant emitted unconditionally | part (2) of the bead |
+
+**The two spikes disagree, and the disagreement is load-bearing.** `spike/exposure/FINDINGS.md` says
+the holdout is assigned per *session* × intervention, *"not per event, because a model that saw the
+guidance once carries it for the rest of the session"*. `asc-6ola.4` (later) settled the unit as per
+**segment** × intervention, precisely because a compaction is where that carry-over stops being true
+— the reason the word "session" was wrong. The exposure spike predates `asc-6ola.4` and was never
+updated, and its `guidance.decided` field list is the casualty: it carries `session_id` and
+`agent_id?` but **no segment field at all**. Built literally from that table the arm is keyed per
+session and **there is nothing to join the unit on** — replay would be asked to reproduce an
+assignment whose input it cannot see. The record gains a segment component; the format doc's own
+field list is the thing to correct with it. This is a documentation conflict, not a code defect,
+which is why no test could have failed on it.
+
+**How the segment is defined, and why "they agree by construction" was wrong.** Replay does not
+count compactions — it reads `event['segment']`, which the **normalizer** sets: 0 at a stream's
+start, `+= 1` at each boundary. A live counter written independently would be a *second
+implementation of one definition*, free to drift silently — the divergence lens the bug-hunt skill
+ranks highest-yield. The predicate itself is one cheap check, so it is **extracted and shared** by
+both sides (`segment.ts`), the live hook counting it with a line scan rather than normalizing a whole
+transcript on every tool call. One definition, two callers, and an equivalence test over one fixture
+whose boundaries follow `assistant` records rather than prompts alone — a boundary on a record type
+the normalizer skips is exactly the divergence it exists to catch. The predicate keys on
+`compactMetadata` being an object and **not** on `type`/`subtype`, because the normalizer does not
+test those: keying on more than the normalizer keys on would make the two counts disagree on the
+odd records they must agree on.
+
+**What was built, and its status.**
+
+- **E30.1 — the assignment function.** `holdout-arm.ts`: `armKey(unit, intervention)` and
+  `armFor(unit, intervention, fraction)`, reusing `isHeldOut` rather than re-inventing it. 8 tests,
+  including the collision a printable join would allow — a hyphen inside a part cannot be read as the
+  separator. **Complete.**
+- **E30.2 — the hook decides live, and stays silent when held out.** `exposure-log.ts` (the
+  `guidance.decided` writer, 8 tests) and `commands/hook.ts` (`--holdout` → arm → silence → record, 7
+  tests), plus `install-hook --holdout <rate>` baking the rate into the stage entry (5 tests).
+  **Complete.**
+- **E30.3 — replay reproduces the assignment, and derives the contamination flag.** A segment whose
+  inherited summary mentions the intervention is **exposed, not control**
+  (`spike/holdout-unit/FINDINGS.md`). **Not started.**
+- **E30.4 — `compare` splits the AFTER arm and says `controlled`.** The `observational` text must
+  survive byte-identically for a run with no assignment — the existing test pins it as
+  `/^observational -- /`. **Not started.**
+- **E30.5 — the power check refuses too few clean units per arm** (`asc-6ola.3`), keeping **one**
+  definition of `MIN_N` (the existing `isSmallGroup` predicate, not a second `n < 20`). **Not
+  started.**
+
+**Two defects came out of driving it rather than reviewing it.** Both are the shape this plan's own
+risks warn about — a mechanism that reports success wrongly, which destroys trust in every other
+signal the system emits.
+
+- **The decision log was written outside the store.** `writeDecided` takes the store tree; the hook
+  handed it the project root, and the first test read from the same wrong directory, so the round
+  trip passed while `decided.jsonl` landed in `<project>/exposure/` — outside `.ascend/`, untracked,
+  and gone from the next clone. This is `storePaths`' own docblock defect reproduced verbatim, one
+  generation later. Fixed through `storePaths(root).tree`, and pinned by an assertion on the path
+  rather than on a round trip, because a round trip cannot tell the two apart.
+- **The generated hook script dropped every argument but the first.** `run hook "$1"` meant the
+  `--holdout 0.3` that `install-hook` writes into `settings.json` never reached `asc hook`: the
+  project would run no experiment while its settings said it did, and every reading of its
+  "controlled" arm would have been over an uncontrolled one. Changed to `run hook "$@"`; the
+  end-to-end test executes the installed command through `sh` and reads the rate back out of the
+  decision the hook wrote — nothing less proves the flag is real.
+
+**Risks, plainly.**
+
+- **The lag is unmeasured and it is the load-bearing one.** If the transcript lags a compaction, the
+  live arm assigns the wrong segment after every compaction — silently, and in a way that looks like
+  a working experiment. E30.2 asserts the known hazard; nobody has measured its width. It is
+  deliberately **not** written up as a test that would look like coverage.
+- **The live harness could not complete a session while this stage was built** — two runs died at
+  `init` before a model turn (`spike/hook-input-keys/FINDINGS.md`). E30.1 and E30.2 are testable with
+  synthetic inputs regardless, but **no live validation of the arm is currently possible on this
+  machine**, and that is a precondition for calling the feature proven rather than built.
+- **Intervention identity needed no invention, but its stability is not guaranteed.**
+  `handler.hash` already covers the delivered text, so "a new intervention" is well defined — but its
+  canonicalization removes only key-order and `undefined` differences, so an explicit
+  `scope: stream` written out where the default was previously omitted hashes differently while
+  meaning the same, and re-keys every unit onto a fresh arm mid-experiment. Nobody has measured how
+  often a handler is edited that way.
+- **`compare` is currently honest.** It says every result is observational. E30.4 can only make it
+  *less* honest if the split is wrong, which is why the no-assignment path must stay byte-identical.
