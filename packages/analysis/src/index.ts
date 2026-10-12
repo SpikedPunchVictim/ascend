@@ -89,9 +89,21 @@ export {
   MIN_N,
   ProportionError,
   wilson,
+  Z_BY_CONFIDENCE,
   type ConfidenceLevel,
   type Proportion,
 } from './proportion.js';
+
+export {
+  detectableReduction,
+  powerPlan,
+  powerVerdict,
+  PowerError,
+  requiredUnits,
+  type PowerInput,
+  type PowerPlan,
+  type PowerVerdict,
+} from './power.js';
 
 export {
   clusterDesign,

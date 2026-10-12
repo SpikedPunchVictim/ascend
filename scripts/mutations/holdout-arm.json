@@ -1,0 +1,141 @@
+{
+  "_": "Kill-check for asc-xn4g. The holdout arm end to end: the assignment function (E30.1), the split of the after arm and the read of the hook's own decisions (E30.4). Each mutant breaks ONE thing and names the test that must notice. The killers were found by running the mutant and reading the failing names off `assertionResults`, not by guessing which test ought to care.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/holdout-arm.ts",
+      "find": "  return isHeldOut(armKey(unit, intervention), ARM_SEED, fraction) ? 'held_out' : 'delivered';",
+      "replace": "  return isHeldOut(armKey(unit, intervention), ARM_SEED, fraction) ? 'delivered' : 'held_out';",
+      "killers": [
+        {
+          "file": "packages/cli/test/holdout-arm.test.ts",
+          "test": "holds out close to the fraction asked for"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "      if (arm === 'delivered') delivered.push(count);\n      else if (arm === 'held_out') heldOut.push(count);",
+      "replace": "      if (arm === 'held_out') delivered.push(count);\n      else if (arm === 'delivered') heldOut.push(count);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "splits the after arm by the arm each unit was assigned"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "      else unassigned += 1;",
+      "replace": "      else delivered.push(count);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "counts an after unit the hook never decided as unassigned"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "    after.length > unassigned\n      ? { delivered: arm(delivered), heldOut: arm(heldOut), unassigned }",
+      "replace": "    after.length > 0\n      ? { delivered: arm(delivered), heldOut: arm(heldOut), unassigned }",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "has no split at all when no after unit carries an assignment"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "  if (f === null || s === null || f.smallGroup || s.smallGroup) return undefined;",
+      "replace": "  if (f === null || s === null) return undefined;",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "withholds the controlled difference while either side is a small group"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "  return f.p - s.p;",
+      "replace": "  return s.p - f.p;",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "reports the controlled contrast as `difference`, not the after-minus-before one"
+        },
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "reports the difference, after minus before, once both arms reach MIN_N"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "    if (record.intervention_version !== intervention.version) continue;",
+      "replace": "    if (record.intervention_version === intervention.version) continue;",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "ignores another intervention, and another version of this one"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "    else if (seen !== record.arm) conflicted.add(unit);",
+      "replace": "    else if (seen !== record.arm) arms.set(unit, record.arm);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "leaves a unit out when its own decisions disagree about the arm"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "packages/cli/src/commands/handlers/compare.ts",
+      "find": "      add('design', split === undefined ? OBSERVATIONAL : CONTROLLED);",
+      "replace": "      add('design', OBSERVATIONAL);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-compare.test.ts",
+          "test": "says controlled and splits the after arm by the arm the hook assigned"
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "file": "packages/cli/src/commands/handlers/compare.ts",
+      "find": "        add('after.unassigned', split.unassigned);\n      }",
+      "replace": "      }",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-compare.test.ts",
+          "test": "counts an after unit the hook never decided as unassigned"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "file": "packages/cli/src/commands/handlers/compare.ts",
+      "find": "    const decided = root === undefined ? [] : readDecided(storePaths(root).tree);",
+      "replace": "    const decided = root === undefined ? [] : readDecided(root);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-compare.test.ts",
+          "test": "says controlled and splits the after arm by the arm the hook assigned"
+        }
+      ]
+    }
+  ]
+}

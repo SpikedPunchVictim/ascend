@@ -72,8 +72,12 @@ export const MIN_N = 20;
  * levels cover every use the CLI has; a level that is not here is refused rather than approximated,
  * because a quantile invented to fill a gap is a confidence interval that is wrong by an amount
  * nobody can see.
+ *
+ * EXPORTED FOR THE PLANNING SIDE (asc-6ola.3), because a sample size and the interval it is later
+ * read against must use the SAME alpha. A power calculation carrying its own copy of the 95% point
+ * would be a second definition of one fact, and the two would agree until one of them was corrected.
  */
-const Z_BY_CONFIDENCE = {
+export const Z_BY_CONFIDENCE = {
   0.9: 1.6448536269514722,
   0.95: 1.959963984540054,
   0.99: 2.5758293035489004,

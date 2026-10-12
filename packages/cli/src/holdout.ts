@@ -43,13 +43,17 @@ export function splitHoldout<T extends { readonly id: string }>(
 }
 
 /**
- * The `--holdout` value as a fraction strictly between 0 and 1, or a message saying why not.
+ * A fraction strictly between 0 and 1 from a command-line flag, or a message saying why not.
  * Zero and one are refused: either leaves one side empty, and a score over nothing is not a score.
+ *
+ * `flag` names the flag in the message, because the planning side (asc-6ola.3) asks for the same
+ * quantity under `--effect` and a refusal that named the wrong flag would send a reader to change
+ * an argument that was already right.
  */
-export function parseHoldoutFraction(raw: string): number | string {
+export function parseHoldoutFraction(raw: string, flag: string = '--holdout'): number | string {
   const value = Number(raw);
   if (raw.trim() === '' || !Number.isFinite(value) || value <= 0 || value >= 1) {
-    return `--holdout takes a fraction strictly between 0 and 1, such as 0.3; got '${raw}'.`;
+    return `${flag} takes a fraction strictly between 0 and 1, such as 0.3; got '${raw}'.`;
   }
   return value;
 }

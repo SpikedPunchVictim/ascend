@@ -1,11 +1,13 @@
 /**
- * What `asc handlers check` and `asc handlers compare` share: which projects' transcripts to replay,
- * the handler loader, and the `(log)` rows that report the horizon a count was taken over.
+ * What `asc handlers check`, `asc handlers compare` and `asc handlers power` share: which projects'
+ * transcripts to replay, the handler loader, the `(log)` rows that report the horizon a count was
+ * taken over, and the one rendering of a `Proportion`.
  */
 
 import { readFileSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { Flags } from '@oclif/core';
+import { MIN_N, type Proportion } from '@ascend/analysis';
 import { defaultTranscriptRoot } from '@ascend/adapter-claude-code';
 import { HandlerError, type CompiledHandler } from '@ascend/core';
 import { refusal, usageError } from './errors.js';
@@ -166,6 +168,34 @@ export function logRows(projects: readonly string[] | 'all', result: ReplayResul
   for (const [name, count] of Object.entries(result.counters))
     facts.push([`normalizer.${name}`, count]);
   return facts.map(([field, value]) => ({ [HANDLER]: LOG, [FIELD]: field, [VALUE]: value }));
+}
+
+/**
+ * Three decimals, which is the precision a proportion is read at and not a precision it is computed
+ * to. Here rather than in each command because `compare` and `power` both render intervals over the
+ * SAME replay, and two renderings of one `Proportion` in one command family is how a reader comes to
+ * believe they are two quantities.
+ */
+export function round(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+/**
+ * One cell per proportion, so the interval and the small-group flag cannot be separated from `p`.
+ *
+ * The small-group flag is spelled out with the `n` that earned it, because `MIN_N` is a floor on
+ * reporting and not a statement that the number is wrong -- a reader who sees the interval without
+ * the `n` it rests on cannot tell an anecdote from an estimate.
+ */
+export function describeProportion(proportion: Proportion | null): string {
+  if (proportion === null) return 'no units -- no estimate';
+  const text =
+    `${String(round(proportion.p))} ` +
+    `[${String(round(proportion.lower))}, ${String(round(proportion.upper))}] ` +
+    `${String(proportion.confidence * 100)}% Wilson`;
+  return proportion.smallGroup
+    ? `${text} (n=${String(proportion.n)} < ${String(MIN_N)}: anecdote)`
+    : text;
 }
 
 function defaultProject(): string {

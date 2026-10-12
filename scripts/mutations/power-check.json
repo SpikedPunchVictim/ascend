@@ -1,0 +1,173 @@
+{
+  "_": "Kill-check for asc-6ola.3. The planning-time power check: the closed form and its inversion (Stage A, packages/analysis/src/power.ts), the command that reports them (Stage B), the one rendering of a Proportion that compare and power now share, and the flag parser that names the flag it refused. Each mutant breaks ONE thing and names the test that must notice. The killers were found by running the mutant and reading the failing names off `assertionResults`, not by guessing which test ought to care.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/analysis/src/power.ts",
+      "find": "return (numerator / difference) ** 2 * designEffect;",
+      "replace": "return (numerator / difference) ** 2;",
+      "killers": [
+        {
+          "file": "packages/analysis/test/power.test.ts",
+          "test": "multiplies by the design effect, because clustering is a cost and never a discount"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/analysis/src/power.ts",
+      "find": "const pooled = holdout * baseline + other * treated;",
+      "replace": "const pooled = baseline;",
+      "killers": [
+        {
+          "file": "packages/analysis/test/power.test.ts",
+          "test": "reproduces the spike’s pooled search-miss cell, at 50% holdout"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/analysis/src/power.ts",
+      "find": "multiple: days / minNDays,",
+      "replace": "multiple: minNDays / days,",
+      "killers": [
+        {
+          "file": "packages/analysis/test/power.test.ts",
+          "test": "reproduces the spike’s 111.2x ratio of days-to-power against days-to-MIN_N"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/analysis/src/power.ts",
+      "find": "perArm: Math.ceil(clustered * Math.min(input.holdout, 1 - input.holdout)),",
+      "replace": "perArm: Math.ceil(clustered * Math.max(input.holdout, 1 - input.holdout)),",
+      "killers": [
+        {
+          "file": "packages/analysis/test/power.test.ts",
+          "test": "splits the total into the smaller arm by the holdout share"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/analysis/src/power.ts",
+      "find": "  if (arm < MIN_N) return { kind: 'too-few-units', arm, horizon };\n  if (plan.days <= horizon) return { kind: 'answerable', days: plan.days };",
+      "replace": "  if (plan.days <= horizon) return { kind: 'answerable', days: plan.days };\n  if (arm < MIN_N) return { kind: 'too-few-units', arm, horizon };",
+      "killers": [
+        {
+          "file": "packages/analysis/test/power.test.ts",
+          "test": "refuses the unit even when the horizon is long enough to power a sample that size"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/analysis/src/power.ts",
+      "find": "let low = 1e-9;",
+      "replace": "let low = 0;",
+      "killers": [
+        {
+          "file": "packages/analysis/test/power.test.ts",
+          "test": "returns the reduction whose requirement is the units in hand"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/analysis/src/power.ts",
+      "find": "const Z_POWER_80 = 0.8416212335729143;",
+      "replace": "const Z_POWER_80 = 1.2815515655446004;",
+      "killers": [
+        {
+          "file": "packages/analysis/test/power.test.ts",
+          "test": "reproduces the spike’s this-project search-miss cell, whose base rate is 18 of 1236"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/cli/src/commands/handlers/power.ts",
+      "find": "const successes = triggered.filter(([, count]) => count.rows > 0).length;",
+      "replace": "const successes = triggered.filter(([, count]) => count.rows >= 0).length;",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-power.test.ts",
+          "test": "counts the units the handler triggered in, and the successes the outcome names"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "packages/cli/src/commands/handlers/power.ts",
+      "find": "    .map((ts) => ts.slice(0, 10));",
+      "replace": "    .map((ts) => ts);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-power.test.ts",
+          "test": "counts the active days the units actually happened on"
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "file": "packages/cli/src/commands/handlers/power.ts",
+      "find": "return unit.split('\\u0000')[0] ?? unit;",
+      "replace": "return unit;",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-power.test.ts",
+          "test": "estimates the correction once one session holds two units"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "file": "packages/cli/src/commands/handlers/power.ts",
+      "find": "Math.floor(verdict.arm)",
+      "replace": "Math.ceil(verdict.arm)",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-power.test.ts",
+          "test": "refuses the unit when the horizon cannot fill MIN_N in each arm"
+        }
+      ]
+    },
+    {
+      "id": "M12",
+      "file": "packages/cli/src/commands/handlers/power.ts",
+      "find": "answerable here in ${String(Math.ceil(verdict.days))} active days",
+      "replace": "answerable here in ${String(Math.floor(verdict.days))} active days",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-power.test.ts",
+          "test": "says answerable, with the days, when the horizon is long enough"
+        }
+      ]
+    },
+    {
+      "id": "M13",
+      "file": "packages/cli/src/handler-scope.ts",
+      "find": "`[${String(round(proportion.lower))}, ${String(round(proportion.upper))}] ` +",
+      "replace": "`[${String(round(proportion.upper))}, ${String(round(proportion.upper))}] ` +",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-power.test.ts",
+          "test": "gives the base rate with its Wilson interval, in the rendering compare uses"
+        }
+      ]
+    },
+    {
+      "id": "M14",
+      "file": "packages/cli/src/holdout.ts",
+      "find": "return `${flag} takes a fraction strictly between 0 and 1, such as 0.3; got '${raw}'.`;",
+      "replace": "return `--holdout takes a fraction strictly between 0 and 1, such as 0.3; got '${raw}'.`;",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-power.test.ts",
+          "test": "refuses an --effect that is not a fraction strictly between 0 and 1"
+        }
+      ]
+    }
+  ]
+}

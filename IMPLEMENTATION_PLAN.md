@@ -5116,12 +5116,113 @@ counted over all of them. Read-only over the real corpus, 2026-09-12 → 2026-10
   generalised from a handful of records, written into a docblock as though it were the rule. The
   three records were enough to design the *shape* of the kind; they were not enough to state any
   property of the population, and the docblock stated three.
-- **E30.4 — `compare` splits the AFTER arm and says `controlled`.** The `observational` text must
-  survive byte-identically for a run with no assignment — the existing test pins it as
-  `/^observational -- /`. **Not started.**
-- **E30.5 — the power check refuses too few clean units per arm** (`asc-6ola.3`), keeping **one**
-  definition of `MIN_N` (the existing `isSmallGroup` predicate, not a second `n < 20`). **Not
-  started.**
+- **E30.4 — `compare` splits the AFTER arm and says `controlled`.** **Complete.** The `observational`
+  text survives byte-identically for a run with no assignment, pinned now by its literal in the
+  command test rather than by `/^observational -- /`, so a test that read the constant could not
+  tell it had changed. 10 new unit tests, 7 new command tests, 11 mutants in
+  `scripts/mutations/holdout-arm.json`, and `pnpm mutate holdout-arm` ends
+  `11 mutant(s), 0 problem(s). Every named killer killed its mutant.` — each killer found by planting
+  the mutant and reading the failing names off `assertionResults`, not by guessing which test ought to
+  care.
+
+  **The first run of that spec failed on a mutant of mine that did not compile**, and the way it
+  failed is `dogfood/0080` / `asc-5sdw`: M10 inverted the `split !== undefined` guard, which narrows
+  `split` to `undefined` and types as `TS18048` three times, so the killer file's own `tsc -b`
+  `beforeAll` threw and no test in it executed. `executed()` reads that zero as *the pattern matched
+  nothing* and prints `DEAD KILLER … matched no test`, naming a test name that matches exactly. M10 is
+  replaced by one that compiles and drops the `after.unassigned` row, killed by `counts an after unit
+  the hook never decided as unassigned`.
+
+  **The assignment is READ from the decided log, not recomputed with `armFor`, and that is the one
+  design choice worth recording.** Recomputing needs the rate — which lives in the installed command
+  line and in no file `compare` can read, so it would need a `--holdout` flag a digit away from
+  relabelling every unit silently — and it needs the handler version the decision was made under.
+  `armFor` on the version the file carries *today* re-keys every unit the moment the handler is
+  edited: the arm would follow the edit, which is exactly the re-keying `holdout-arm.ts` exists to
+  prevent. The decision record carries both the version and the arm, so the join is exact, neither
+  failure is reachable, and a handler edited since the experiment began yields **no** assignments —
+  after which the command goes on saying `observational`, which is true of it.
+
+  **`difference` is the contrast `design` names**, and there are two of them. With nothing assigned
+  it is `after − before` exactly as before. Once the after arm is split it is `delivered − held_out`,
+  because the `design` row sits beside it and the two must not disagree. The after-minus-before
+  number is not lost: both arms are still printed whole, so every number it is made of is on the
+  page. A unit named by no assignment is counted as `after.unassigned` and is in neither side —
+  the same place a unit whose own decisions contradict each other lands, since both are units no arm
+  can claim.
+
+  **Driven, not just tested.** `asc handlers compare` was run as the real binary over a scratch
+  fixture twice — once with no `.ascend/`, once with two decisions written — and the second run
+  printed `design: controlled`, the split rows, and `after.unassigned`. That run also surfaced the
+  join's scope, which no test could: the command reads the decided log of the project it is run
+  **in** (`findProjectRoot(process.cwd())`), so a run inside the ascend repo over a `/tmp` fixture's
+  transcripts is observational. That is the safe direction — a decision naming another project's
+  session names a unit the replay never saw and joins to nothing, so a wrong log can cost silence
+  but never a wrong arm — and it is said in the command's docblock.
+- **E30.5 — the planning-time power check** (`asc-6ola.3`), keeping **one** definition of `MIN_N` (the
+  existing `isSmallGroup` predicate, not a second `n < 20`). **Complete.** The bead's requirement
+  reads "refuses a comparison with < MIN_N clean units per arm"; `compare` already refuses to *estimate*
+  under that rule (E30.4's `contrast`), so what E30.5 adds is the check that has to run **before**
+  collecting, which is where `spike/power/FINDINGS.md` says a refusal means anything. Shape chosen by
+  the owner 2026-10-12.
+
+  **Stage A — the arithmetic, `packages/analysis/src/power.ts`.** Port `totalN(p0, rel, h)` and the
+  days/units derivation from `spike/power/power.mjs`, and nothing else. Pure over numbers: `p0`, a
+  relative reduction, a holdout share, units per active day, and a design effect. It returns units
+  needed, days to power, the days to clear MIN_N per arm, and the verdict. `packages/analysis` is
+  harness-neutral, so `session` and `segment` appear nowhere in it. **Done** — `requiredUnits`,
+  `powerPlan`, `detectableReduction` (bisection, `number | null`), `powerVerdict`, `PowerError`, and
+  the new export of `Z_BY_CONFIDENCE` from `proportion.ts`, because a sample size and the interval it
+  is later read against must use the same alpha. 25 tests; four of them reproduce the spike's own
+  printed cells (4448 / 6343 / 6395 / 9117) to the unit, which is the only kind of anchor available
+  here that was produced before the port existed.
+
+  **The port must NOT reuse the spike's ICC.** `power.mjs`'s `describe()` clamps the intraclass
+  correlation with `Math.max(0, …)`, so a scope it cannot estimate reads `icc 0.0000 deff 1`. The
+  measure in hand, M1/this-project: `units 1236 successes 18 … sessions 4 … icc 0.0000 mbar 309 … deff 1`.
+  `packages/analysis/src/design-effect.ts` (asc-0hys) already refuses that and returns the conservative
+  bound `rho = 1` with `rhoSource: 'assumed-perfect'`, which is the house rule FINDINGS.md's own item 2
+  states ("Below MIN_N units the check reports that the ICC cannot be estimated, rather than using 0").
+  **The two disagree by the cluster mean size**: at `mbar ≈ 309` the honest deff is ≈ 309 and the
+  clamped one is 1, so the spike's headline — *answerable here in about two months* — rests on the value
+  its own addendum then says not to trust ("an ICC from 3–4 clusters is not an estimate"). E30.5 reports
+  the bound, carries `rho_source` in the output, and lets the verdict be *not answerable here* when that
+  is what the arithmetic says. Which cluster key the caller passes is the caller's, as `design-effect.ts`
+  insists: the randomization unit is the **compaction segment** (asc-6ola.4), and correlation lives
+  between segments of one **session**, so sessions are the cluster.
+
+  **Stage B — `asc handlers power <file.yaml>`, reading the same replay `compare` reads.** One row per
+  handler: the outcome's base rate with its Wilson interval, units and units-per-active-day, clusters
+  with `rho`/`rho_source`/`design_effect` from `clusterDesign`, then units needed and days to power for
+  the stated effect and holdout share, the days to clear MIN_N per arm beside it, and one `verdict` row.
+  The unit that would work is named when the chosen one will not. Exit code stays 0 — a plan is not a
+  failure — and the refusal lives in the verdict row, which is the one thing `compare` cannot do because
+  `compare` is post-hoc.
+
+  **Tests**: `packages/analysis/test/power.test.ts` against hand-computed anchors and the spike's own
+  printed numbers where they agree (W5: the closed form lands within 5 points of a 10,000-rep simulation
+  at the analytic n — z 81.0%, Newcombe 80.8%), plus the refusals (no clusters, no active days, an
+  effect of 0, a holdout share of 0 or 1). Command tests drive the binary over a fixture, as
+  `handlers-compare.test.ts` does. Mutation spec `scripts/mutations/power-check.json`. **All four
+  done**: 26 analysis tests, 15 command tests, and `pnpm mutate power-check` at **14 mutant(s),
+  0 problem(s)**, exit 0, tree rebuilt clean.
+
+  **The spec failed its first run, and that is the useful part of this line.** Two of the 14 named
+  killers matched their test, ran, and passed anyway — `M5`'s swap of `powerVerdict`'s two checks and
+  `M9`'s drop of the day slice. Both were killers I wrote from "which test ought to care" rather than
+  from `assertionResults`, which is what the repo's convention forbids.
+  - `M5` differed only in the overlap where `days <= horizon` **and** `arm < MIN_N` at once — the
+    state where the wrong order reports `answerable` for a comparison the gate refuses to estimate.
+    Repaired with a test at that overlap (a 90% reduction is powered in 29 days against a 30-day
+    horizon *and* leaves 15 units in the smaller arm), which is worth having on its own merits.
+  - `M9` **no better-chosen killer could have caught**: the fixture put every session's events at one
+    instant of the day, so counting distinct timestamps and counting distinct days agreed by
+    construction. Repaired by giving each session a distinct minute — an edit to the input, not to
+    the assertion.
+
+  Recorded as `dogfood/0081`, with the measurement the convention had never had: **2 of 14 named
+  killers survived (14.3%)** — a group under `MIN_N`, named as an anecdote — against a rule stated
+  since before there was a tool for it and never once measured.
 
 **Two defects came out of driving it rather than reviewing it.** Both are the shape this plan's own
 risks warn about — a mechanism that reports success wrongly, which destroys trust in every other

@@ -84,7 +84,7 @@ const compaction = (session: string, day: number): string =>
     compactMetadata: { trigger: 'auto', preTokens: 100, postTokens: 10 },
   });
 
-function fixture(): string {
+function fixture(decided?: readonly Decision[]): string {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'asc-compare-')));
   dirs.push(home);
   const dir = join(home, '.claude', 'projects', PROJECT_DIR);
@@ -100,7 +100,42 @@ function fixture(): string {
     writeFileSync(join(dir, `${session}.jsonl`), `${lines.join('\n')}\n`);
   }
   writeFileSync(join(home, 'unfollowed.yaml'), UNFOLLOWED);
+  if (decided !== undefined) writeDecisions(home, decided);
   return home;
+}
+
+/**
+ * One decision the hook would have written, keyed to a unit of this fixture.
+ *
+ * `version` defaults to the loaded handler's own hash, read off a run first: the point of the join
+ * is that a decision counts only for the intervention version it was made under, so a test that
+ * guessed the hash would be testing the mismatch path instead of the match.
+ */
+interface Decision {
+  readonly session: string;
+  readonly segment: number;
+  readonly arm: 'delivered' | 'held_out';
+  readonly version?: string;
+}
+
+function writeDecisions(home: string, decided: readonly Decision[]): void {
+  const version = String(valueOf(compare(home), 'hash'));
+  const tree = join(home, '.ascend', 'exposure');
+  mkdirSync(tree, { recursive: true });
+  const lines = decided.map((one) =>
+    JSON.stringify({
+      exposure_id: `${one.session}:${String(one.segment)}`,
+      intervention_id: 'unfollowed',
+      intervention_version: one.version ?? version,
+      arm: one.arm,
+      rate: 0.3,
+      session: one.session,
+      agent: 'main',
+      segment: one.segment,
+      hook_event: 'PostToolUse',
+    }),
+  );
+  writeFileSync(join(tree, 'decided.jsonl'), `${lines.join('\n')}\n`);
 }
 
 interface Run {
@@ -180,5 +215,102 @@ describe('asc handlers compare', () => {
   it('refuses without --at', () => {
     const run = asc(['unfollowed.yaml', '--project', PROJECT_DIR], fixture());
     expect([run.status, run.stdout]).toEqual([2, '']);
+  });
+});
+
+/**
+ * The controlled arm, driven as the real binary (asc-xn4g).
+ *
+ * The after arm of this fixture is two units -- `sC`'s only segment and `sE`'s second -- so a
+ * decision about each one moves a whole unit, and a decision about anything else moves nothing.
+ */
+describe('asc handlers compare: the holdout arm', () => {
+  it('says controlled and splits the after arm by the arm the hook assigned', () => {
+    const home = fixture([
+      { session: 'sC', segment: 0, arm: 'held_out' },
+      { session: 'sE', segment: 1, arm: 'delivered' },
+    ]);
+    const run = compare(home);
+    expect(valueOf(run, 'design')).toMatch(/^controlled -- /);
+    expect([
+      valueOf(run, 'after.delivered.units'),
+      valueOf(run, 'after.delivered.with_row'),
+      valueOf(run, 'after.held_out.units'),
+      valueOf(run, 'after.held_out.with_row'),
+      valueOf(run, 'after.unassigned'),
+    ]).toEqual([1, 1, 1, 0, 0]);
+  });
+
+  it('keeps the whole after arm printed beside the split', () => {
+    // The split adds to the reading; it does not replace it. A reader who wants after-minus-before
+    // still has both arms, and a reader checking the split can see it add up.
+    const run = compare(
+      fixture([
+        { session: 'sC', segment: 0, arm: 'held_out' },
+        { session: 'sE', segment: 1, arm: 'delivered' },
+      ]),
+    );
+    expect([valueOf(run, 'after.units'), valueOf(run, 'before.units')]).toEqual([2, 3]);
+  });
+
+  it('counts an after unit the hook never decided as unassigned', () => {
+    // `sE`'s second segment matched the handler and produced a row, and no decision names it: the
+    // hook was not running for that unit. Reading it as either arm would invent an experiment.
+    const run = compare(fixture([{ session: 'sC', segment: 0, arm: 'held_out' }]));
+    expect([
+      valueOf(run, 'after.held_out.units'),
+      valueOf(run, 'after.delivered.units'),
+      valueOf(run, 'after.unassigned'),
+    ]).toEqual([1, 0, 1]);
+  });
+
+  it('stays observational when the decisions are for another version of the handler', () => {
+    // A handler edited since the experiment began. The units decided under the old sentence are not
+    // evidence about the new one, and saying `controlled` over them would claim that they are.
+    const home = fixture([{ session: 'sC', segment: 0, arm: 'held_out', version: 'ffffffff' }]);
+    const run = compare(home);
+    expect([valueOf(run, 'design'), valueOf(run, 'after.delivered.units')]).toEqual([
+      expect.stringMatching(/^observational -- /),
+      undefined,
+    ]);
+  });
+
+  it('stays observational when no decision names a unit in the replay', () => {
+    const run = compare(fixture([{ session: 'some-other-session', segment: 0, arm: 'held_out' }]));
+    expect([valueOf(run, 'design'), valueOf(run, 'after.unassigned')]).toEqual([
+      expect.stringMatching(/^observational -- /),
+      undefined,
+    ]);
+  });
+
+  it('withholds the controlled difference while a side is under MIN_N', () => {
+    const run = compare(
+      fixture([
+        { session: 'sC', segment: 0, arm: 'held_out' },
+        { session: 'sE', segment: 1, arm: 'delivered' },
+      ]),
+    );
+    expect(valueOf(run, 'difference')).toMatch(/^not estimated -- the delivered or held-out arm /);
+  });
+
+  it('prints no arm at all when the hook never ran, leaving every byte as it was', () => {
+    // The path this command has always had. `design` is the module's constant, printed here as a
+    // literal rather than imported, because "byte-identical" is the property and a test that read
+    // the constant could not tell it had changed. `difference` is after-minus-before, and no split
+    // row exists.
+    const run = compare(fixture());
+    expect([
+      valueOf(run, 'design'),
+      valueOf(run, 'difference'),
+      valueOf(run, 'after.unassigned'),
+      valueOf(run, 'after.delivered.units'),
+    ]).toEqual([
+      'observational -- the change was not assigned at random, so a difference is a correlation, ' +
+        'not the change’s effect',
+      'not estimated -- an arm has fewer than 20 units, and a difference between anecdotes is no ' +
+        'estimate',
+      undefined,
+      undefined,
+    ]);
   });
 });
