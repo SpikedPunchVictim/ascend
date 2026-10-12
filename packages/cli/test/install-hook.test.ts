@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { scriptNotice } from '../src/commands/install-hook.js';
+import { ownBinaryRelativePath, resolveHookBinary } from '../src/hook-script.js';
 import { flatten } from './helpers.js';
 
 /**
@@ -731,6 +732,12 @@ describe('asc install-hook: the script it writes works', () => {
   it('guard 2: exits 0 with no output when no binary resolves', () => {
     const dir = project();
     asc(['install-hook', '--yes'], dir);
+    // The shim has to go, and until `asc-xagi` it did not: the chain used to fall from
+    // `node_modules` straight to `command -v`, so a project that had just installed could not
+    // resolve the shim its own install had written and this fixture was silently testing the
+    // fall-through. Now the shim is a branch, so "no binary resolves" is a state you have to
+    // remove a file to reach -- which is the fix, not an inconvenience.
+    rmSync(join(dir, '.ascend', 'bin'), { recursive: true, force: true });
 
     const isolated = {
       ...process.env,
@@ -739,8 +746,8 @@ describe('asc install-hook: the script it writes works', () => {
       XDG_CACHE_HOME: join(dir, '.cache'),
       CLAUDE_PROJECT_DIR: dir,
       // No `asc` on `PATH` (still enough of one for `sh` itself to be found), no `$ASCEND_BIN`, no
-      // `node_modules/.bin/asc` in this fixture, and the script's own-checkout branch is absent
-      // (asserted in the describe block above) -- every one of the four resolution branches fails.
+      // `node_modules/.bin/asc` in this fixture, no shim, and the script's own-checkout branch is
+      // absent (asserted in the describe block above) -- every one of the five branches fails.
       PATH: '/bin:/usr/bin',
     };
     const command = hookCommands(dir)[0] ?? '';
@@ -1164,7 +1171,13 @@ describe('asc install-hook: the `asc` shim on PATH (asc-zser)', () => {
       input: '',
       env: {
         HOME: dir,
-        PATH: '/usr/bin:/bin',
+        // `node` is on the PATH because a real SessionStart has it -- Claude Code is a Node
+        // process, so the session it hands the hook has the interpreter that runs `asc`. Until
+        // `asc-xagi` this fixture could omit it and still pass, because the hook never reached a
+        // binary at all: `command -v asc` found nothing and the chain exited 0 silently. Now the
+        // shim resolves, so the shim's own `command -v node` gate is exercised and a PATH without
+        // node fails the hook for a reason this test is not about.
+        PATH: `/usr/bin:/bin:${dirname(process.execPath)}`,
         CLAUDE_PROJECT_DIR: dir,
         CLAUDE_ENV_FILE: envFile,
       },
@@ -1365,5 +1378,200 @@ describe('asc install-hook: the holdout rate (asc-xn4g)', () => {
     const rows = (JSON.parse(again.stdout) as { rows: { action: string; outcome: string }[] }).rows;
     expect(rows.find(({ action }) => action === 'PostToolUse')?.outcome).toBe('upgraded');
     expect(stageCommandIn(dir)).toContain('--holdout 0.5');
+  });
+});
+
+/**
+ * Which binary the generated chain actually reaches, and whether the TypeScript that GENERATED
+ * that chain says the same thing (`asc-xagi`).
+ *
+ * **This is the verification for the fix, and the `install-hook` probe that was planned instead was
+ * dropped in its favour.** The defect it closes (`dogfood/0082`) was a divergence between two
+ * answers to one question: the shell text decides which `asc` a hook runs, and `resolveHookBinary`
+ * decides which one `asc doctor` reports. A fix that added a branch to the shell alone would be a
+ * second copy of the chain and would drift again, so the branch is rendered FROM
+ * `HOOK_BINARY_ORDER` -- and these tests are what proves it, by running the shipped bytes and
+ * comparing the answer against the function rather than trusting that both were written down right.
+ *
+ * **The bytes on disk, not `hookScript`'s return value.** A test that asked the generator what it
+ * generated would agree with itself whatever was written, which is the shape of nearly every
+ * false-green this project has recorded.
+ *
+ * The two implementations are expected to agree on the branches the INSTALL owns, and expected to
+ * differ on the two it does not: `$ASCEND_BIN` is an override only the session can know, and
+ * `command -v asc` is the user's `PATH`. Each is asserted in its own direction below, because a
+ * "they agree" test that quietly stopped covering them would be the same drift one level up.
+ */
+describe('the chain that finds a binary, and the function that is generated from the same list (asc-xagi)', () => {
+  /**
+   * The part of the shipped script that decides which `asc` it runs, cut out of the file on disk.
+   *
+   * Found by its own first line rather than by any offset, and it THROWS when that line is missing:
+   * a test that extracted nothing would go on to compare two empty answers, and two empty answers
+   * are equal.
+   */
+  function resolutionBlock(dir: string): string {
+    const lines = readFileSync(scriptPath(dir), 'utf8').split('\n');
+    const start = lines.findIndex((line) => line.startsWith('if [ -n "$ASCEND_BIN" ]'));
+    if (start === -1) throw new Error('the generated script has no binary-resolution chain');
+    const end = lines.indexOf('fi', start);
+    if (end === -1) throw new Error('the binary-resolution chain is not closed');
+    return lines.slice(start, end + 1).join('\n');
+  }
+
+  /**
+   * Run that chain for real and report the path it chose, or `''` when every branch failed.
+   *
+   * `root` comes in through the environment rather than being derived from `$0` the way the script
+   * does it, because the block is being run on its own: the generated script's first act is to work
+   * `root` out from its own location, and cutting the block free leaves that unset.
+   */
+  function runChain(dir: string, env: NodeJS.ProcessEnv): string {
+    const result = spawnSync(
+      'sh',
+      ['-c', `root="$ASC_ROOT"\n${resolutionBlock(dir)}\nprintf '%s' "\${bin:-}"`],
+      { cwd: dir, encoding: 'utf8', env: { HOME: dir, ASC_ROOT: dir, ...env } },
+    );
+    if (result.status !== 0) throw new Error(`the resolution chain failed: ${result.stderr}`);
+    return result.stdout;
+  }
+
+  /** What the TypeScript says, in the same currency: a path, or `''` for "nothing". */
+  function resolverSays(dir: string): string {
+    const resolved = resolveHookBinary(dir, ownBinaryRelativePath(dir, realpathSync(bin)));
+    return resolved.kind === 'none' ? '' : resolved.path;
+  }
+
+  /** A PATH holding the system, `node`, and `first` ahead of both -- the pilot's shape exactly. */
+  function pathWith(first: string | undefined): string {
+    const rest = `/usr/bin:/bin:${dirname(process.execPath)}`;
+    return first === undefined ? rest : `${first}:${rest}`;
+  }
+
+  /**
+   * The fixture has to BE the shape the defect was found in, or the comparison is about something
+   * else. `asc` here is this checkout's `dist/bin.js`, and the project is a temp directory, so
+   * there is no path relative to it and the script is generated without that branch -- which is
+   * `dogfood/0082`'s "a project that is not the checkout ascend runs from".
+   */
+  function foreignCheckout(): string {
+    const dir = project();
+    expect(asc(['install-hook', '--yes'], dir).status).toBe(0);
+    expect(ownBinaryRelativePath(dir, realpathSync(bin))).toBeUndefined();
+    return dir;
+  }
+
+  it("reaches this project's own shim rather than another checkout's `asc` on PATH", () => {
+    const dir = foreignCheckout();
+    const elsewhere = join(dir, 'elsewhere');
+    mkdirSync(elsewhere, { recursive: true });
+    // Resolvable and RUNNABLE, which is the whole point: the pilot's foreign `asc` was found by
+    // `command -v`, so the hook ran it and the hook was inert. A test that made it unrunnable would
+    // pass against a chain that preferred it and merely noticed it was broken.
+    writeStub(join(elsewhere, 'asc'), '#!/bin/sh\necho "I am another checkout" \n');
+
+    const chosen = runChain(dir, { PATH: pathWith(elsewhere), ASCEND_BIN: undefined });
+    const shim = join(dir, '.ascend', 'bin', 'asc');
+
+    expect(chosen).toBe(shim);
+    expect(chosen).not.toBe(join(elsewhere, 'asc'));
+    // And the function that rendered that chain names the same file. `shim` rather than `relative`:
+    // this fixture has no relative path to write, which is what `foreignCheckout` asserted.
+    expect(resolverSays(dir)).toBe(shim);
+  });
+
+  it('prefers `node_modules/.bin/asc` to the shim, in the order the table states', () => {
+    const dir = foreignCheckout();
+    writeStub(join(dir, 'node_modules', '.bin', 'asc'), '#!/bin/sh\nexit 0\n');
+
+    const chosen = runChain(dir, { PATH: pathWith(undefined), ASCEND_BIN: undefined });
+
+    expect(chosen).toBe(join(dir, 'node_modules', '.bin', 'asc'));
+    // The two orders are the same order, and this is where a branch added to one of them alone
+    // would show up.
+    expect(resolverSays(dir)).toBe(chosen);
+  });
+
+  it('lets `$ASCEND_BIN` win over every branch, which is the one divergence by design', () => {
+    const dir = foreignCheckout();
+    const stub = join(dir, 'pinned-asc');
+    writeStub(stub, '#!/bin/sh\nexit 0\n');
+
+    const chosen = runChain(dir, { PATH: pathWith(undefined), ASCEND_BIN: stub });
+
+    expect(chosen).toBe(stub);
+    // `resolveHookBinary` does NOT model the override and must not: it answers which branch the
+    // INSTALL is responsible for, and `$ASCEND_BIN` is set by whoever runs the session. A doctor
+    // that reported the override as the hook's resolution would be reporting the environment it
+    // happened to be invoked in. Asserted as a divergence so a later "fix" toward agreement has to
+    // argue with a test that says why not.
+    expect(resolverSays(dir)).toBe(join(dir, '.ascend', 'bin', 'asc'));
+  });
+
+  /**
+   * The other half of the same boundary: `command -v asc` is reachable and is NOT modelled, so a
+   * hook CAN run an `asc` that `resolveHookBinary` reports nothing about. Recording it here is what
+   * keeps `none` from being read as "this hook is inert" -- `doctor` says the narrower thing.
+   */
+  it('reaches `asc` on PATH when nothing this install owns resolves, which the function reports as nothing', () => {
+    const dir = foreignCheckout();
+    rmSync(join(dir, '.ascend', 'bin'), { recursive: true, force: true });
+    const elsewhere = join(dir, 'elsewhere');
+    mkdirSync(elsewhere, { recursive: true });
+    writeStub(join(elsewhere, 'asc'), '#!/bin/sh\nexit 0\n');
+
+    const chosen = runChain(dir, { PATH: pathWith(elsewhere), ASCEND_BIN: undefined });
+
+    expect(chosen).toBe(join(elsewhere, 'asc'));
+    expect(resolverSays(dir)).toBe('');
+  });
+
+  /**
+   * A shim that is present but has lost its executable bit is NOT a binary the hook can run, and
+   * both implementations have to say so -- the shell with `-x`, the TypeScript with `isExecutableFile`.
+   *
+   * This is the one case where the two predicates could silently differ: `-f` is the test the other
+   * branches use, and using it here would make a mode-644 shim count as a resolution. The hook would
+   * then run it, get `permission denied`, and the reader would be looking at a file that exists --
+   * which is the same shape of false answer as the defect this whole change is about.
+   */
+  it('does not count a shim that has lost its executable bit, in either implementation', () => {
+    const dir = foreignCheckout();
+    const shim = join(dir, '.ascend', 'bin', 'asc');
+    chmodSync(shim, 0o644);
+
+    const chosen = runChain(dir, { PATH: pathWith(undefined), ASCEND_BIN: undefined });
+
+    expect(chosen).toBe('');
+    expect(resolverSays(dir)).toBe('');
+  });
+
+  /**
+   * A shim that resolves but cannot run is LOUD, and this pins that rather than leaving it to be
+   * discovered as a regression.
+   *
+   * The change under test makes the hook reach the shim, and the shim needs `node` on PATH to run a
+   * `.js` binary -- so a session whose PATH lacks node now reaches a binary and gets back a refusal
+   * where before it got silence. That is the direction to fail in: `dogfood/0082` cost a whole
+   * session precisely because an unrunnable hook said nothing, and the difference between this and
+   * the store guard's deliberate silence is that a missing `node` is something the reader can fix.
+   */
+  it('refuses loudly, rather than silently, when the shim resolves but cannot run', () => {
+    const dir = foreignCheckout();
+    const command = hookCommands(dir)[0] ?? '';
+    const run = spawnSync('sh', ['-c', command], {
+      cwd: dir,
+      encoding: 'utf8',
+      input: '',
+      env: {
+        HOME: dir,
+        PATH: '/usr/bin:/bin',
+        CLAUDE_PROJECT_DIR: dir,
+        ASCEND_BIN: undefined,
+      },
+    });
+
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain('node');
   });
 });

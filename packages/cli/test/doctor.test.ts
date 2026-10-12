@@ -29,6 +29,7 @@ function noHook(): HookState {
     scriptCurrent: undefined,
     shimPath: '.ascend/bin/asc',
     shimCurrent: undefined,
+    resolvedVia: undefined,
   };
 }
 
@@ -37,6 +38,9 @@ function noHook(): HookState {
  * present and current. `asc-zser` added the second one, so every case that used to be spelled with
  * `scriptCurrent` alone now has to say what the shim is doing too -- which is the point, because the
  * two are one generation and a check that saw only one of them could call a broken install current.
+ *
+ * `resolvedVia` defaults to `shim` -- the branch a project whose ascend lives outside its own root
+ * ends up on, and the one this check exists to be able to name. `asc-xagi`.
  */
 function installedHook(overrides: Partial<HookState> = {}): HookState {
   return {
@@ -45,6 +49,7 @@ function installedHook(overrides: Partial<HookState> = {}): HookState {
     scriptExists: true,
     scriptCurrent: true,
     shimCurrent: true,
+    resolvedVia: 'shim',
     ...overrides,
   };
 }
@@ -445,12 +450,53 @@ describe('the installed hook script, against the generation this ascend would wr
 
   it('reports currency as unknown rather than guessing when its own binary cannot be resolved', () => {
     const [finding] = hookGeneration(
-      installedHook({ scriptCurrent: undefined, shimCurrent: undefined }),
+      installedHook({ scriptCurrent: undefined, shimCurrent: undefined, resolvedVia: undefined }),
     );
 
     // Unknown is a third answer, not a synonym for stale: `info` prompts without claiming the
     // script is wrong, and the detail says which fact is missing.
     expect(finding?.status).toBe('info');
     expect(finding?.detail).toContain('cannot resolve its own executable');
+  });
+
+  /**
+   * `asc-xagi`'s informational half: which of the install's own branches a hook reaches.
+   *
+   * This is the fact a reader had no way to get while `dogfood/0082` was open. `install-hook` said
+   * `installed`, every session was inert, and nothing anywhere said the hook was reaching another
+   * checkout's `asc` through `PATH` rather than anything this project had installed. The branch is
+   * reported, never judged -- doctor exits 0 whatever it finds, and a project whose hook works is
+   * not made unhealthy by the fact that it works through `node_modules`.
+   */
+  it('names the branch the hook reaches, and warns about nothing while doing it', () => {
+    const [finding] = hookGeneration(installedHook({ resolvedVia: 'node-modules' }));
+
+    expect(finding?.status).toBe('ok');
+    expect(finding?.detail).toContain('resolves its binary via');
+    expect(finding?.detail).toContain('node_modules/.bin/asc');
+    // The override is named too, because it sits ahead of every branch reported here and a reader
+    // who has it set is not on the branch this sentence just told them about.
+    expect(finding?.detail).toContain('ASCEND_BIN');
+  });
+
+  it('names the project-relative branch as this project s own, not the ambient PATH', () => {
+    const [finding] = hookGeneration(installedHook({ resolvedVia: 'relative' }));
+
+    expect(finding?.detail).toContain('the checkout ascend is running from');
+  });
+
+  /**
+   * The branch is named ONLY where the installed bytes are the ones this ascend would write.
+   *
+   * A script a generation behind runs the chain of whichever ascend wrote it, which this function
+   * does not model -- so naming today's branch there would describe a file that is not on disk. The
+   * stale message is already true without it ("resolves a binary the way it used to"), and this
+   * pins that the two do not get mixed by a later edit that moves the clause up.
+   */
+  it('does not name a branch for a stale script, whose chain is not the one modelled here', () => {
+    const [finding] = hookGeneration(installedHook({ scriptCurrent: false, resolvedVia: 'shim' }));
+
+    expect(finding?.status).toBe('warn');
+    expect(finding?.detail).not.toContain('resolves its binary via');
   });
 });

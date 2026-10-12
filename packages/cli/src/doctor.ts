@@ -29,6 +29,7 @@ import type { TypeProfile, TypeSummary } from '@ascend/store';
 
 import { BRIEF_CAP_BYTES, briefText } from './brief-text.js';
 import { countCodePoints } from './budget.js';
+import type { HookBinaryKind } from './hook-script.js';
 
 export type DoctorCheck =
   | 'dead_type'
@@ -305,6 +306,41 @@ export interface HookState {
    * stale" is a detail of the answer rather than a second verdict.
    */
   readonly shimCurrent: boolean | undefined;
+  /**
+   * Which branch of the install's own chain a hook run in this project reaches --
+   * `resolveHookBinary`'s answer, with the path dropped, or `undefined` when there is no answer to
+   * report: this ascend cannot resolve its own executable and so cannot ask, or none of the
+   * install's own candidates resolves here. Either way the report makes no claim, which is the
+   * right output for both -- see `hookGeneration`, which is the only reader.
+   *
+   * **Reported, never a verdict, and only where it describes the file on disk.** A *stale* script
+   * runs the chain of whichever generation wrote it, which this ascend does not model; naming
+   * today's branch for it would be a claim about bytes that are not there.
+   */
+  readonly resolvedVia: HookBinaryKind | undefined;
+}
+
+/**
+ * The branch a hook reaches, in words a reader can act on rather than the kind's own spelling.
+ *
+ * `shim` and `relative` are internal names for two different filesystems facts, and a report is not
+ * the place to make a reader learn them. What the sentence has to convey is whether the hook reaches
+ * something this project OWNS or something the ambient machine happened to have -- which is the
+ * difference that made `dogfood/0082` an hour of reading rather than a line of output.
+ *
+ * `undefined` returns nothing, because there is no branch to name; the caller says that instead.
+ */
+function branchPhrase(state: HookState): string | undefined {
+  switch (state.resolvedVia) {
+    case 'node-modules':
+      return '`node_modules/.bin/asc` in this project';
+    case 'relative':
+      return 'the checkout ascend is running from';
+    case 'shim':
+      return `\`${state.shimPath}\`, written by this project's own install`;
+    case undefined:
+      return undefined;
+  }
 }
 
 /**
@@ -377,12 +413,29 @@ export function hookGeneration(state: HookState): readonly DoctorFinding[] {
     ...(state.shimCurrent ? [] : ['the `asc` shim']),
   ];
   if (stale.length === 0) {
+    // The branch is named ONLY here, and the restriction is the whole honesty of this field. On
+    // this path the installed bytes are the ones `hookScript` would write, so the chain the hook
+    // runs is the chain `resolveHookBinary` walked and the two answers are about the same file. On
+    // the paths above they are not: a script a generation behind runs the chain of whichever
+    // ascend wrote it, and a stale message that named today's branch would be describing bytes
+    // that are not on disk. That case already says the true thing -- "resolves a binary the way it
+    // used to" -- which is why it needs no branch name to be correct.
+    //
+    // `resolvedVia === 'none'` cannot be reached from here and is not a case to write a sentence
+    // for: reaching this point means `shimCurrent`, which is bytes AND the execute bit, and an
+    // executable shim is the candidate `resolveHookBinary` returns. The field drops `none` for
+    // that reason rather than reporting a state this check cannot be in.
+    const branch = branchPhrase(state);
     return [
       {
         check: 'hook_generation',
         status: 'ok',
         subject: state.scriptPath,
-        detail: 'the installed script and shim are the generation this ascend would write',
+        detail:
+          'the installed script and shim are the generation this ascend would write' +
+          (branch === undefined
+            ? ''
+            : `; it resolves its binary via ${branch} (unless \`$ASCEND_BIN\` overrides it)`),
       },
     ];
   }

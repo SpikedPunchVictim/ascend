@@ -1,0 +1,73 @@
+{
+  "_": "Kill-check for the one resolution chain `asc-xagi` gives a single identity. The defect it closes (`dogfood/0082`) was two implementations of one invariant disagreeing -- the generated shell decides which `asc` a hook runs, and `resolveHookBinary` decides which one `asc doctor` reports -- so the mutants below are mostly DIVERGENCE mutants: they break one implementation and leave the other, which is the failure a fix that hand-edited only the shell would have shipped. M1 is exactly that mutant, and it is the reason the branch is rendered from HOOK_BINARY_ORDER rather than written twice. The killers were found empirically rather than guessed: each mutant was applied, install-hook.test.ts and doctor.test.ts were run with vitest's JSON reporter, and the failing test names were read off its assertionResults. There is NO intended survivor, and that is the honest result rather than an omission: every mutant here is observable, so declaring one equivalent would have meant inventing one.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "  if (kind === 'shim') return `\"$root/${SHIM_RELATIVE_PATH}\"`;",
+      "replace": "  if (kind === 'shim') return undefined;",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "reaches this project's own shim rather than another checkout's `asc` on PATH"
+        },
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "refuses loudly, rather than silently, when the shim resolves but cannot run"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "  shim: 'x',",
+      "replace": "  shim: 'f',",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "does not count a shim that has lost its executable bit, in either implementation"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "const HOOK_BINARY_ORDER = ['node-modules', 'relative', 'shim'] as const;",
+      "replace": "const HOOK_BINARY_ORDER = ['shim', 'node-modules', 'relative'] as const;",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "prefers `node_modules/.bin/asc` to the shim, in the order the table states"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "    'elif command -v asc >/dev/null 2>&1; then',",
+      "replace": "    'elif false; then',",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "reaches `asc` on PATH when nothing this install owns resolves, which the function reports as nothing"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/doctor.ts",
+      "find": "function branchPhrase(state: HookState): string | undefined {",
+      "replace": "function branchPhrase(state: HookState): string | undefined {\n  return undefined;",
+      "killers": [
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "names the branch the hook reaches, and warns about nothing while doing it"
+        },
+        {
+          "file": "packages/cli/test/doctor.test.ts",
+          "test": "names the project-relative branch as this project s own, not the ambient PATH"
+        }
+      ]
+    }
+  ]
+}

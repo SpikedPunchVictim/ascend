@@ -21,6 +21,7 @@ import {
   isShimCurrent,
   namesAscendHook,
   ownBinaryRelativePath,
+  resolveHookBinary,
   resolveOwnBinary,
   SCRIPT_RELATIVE_PATH,
   SHIM_RELATIVE_PATH,
@@ -69,6 +70,12 @@ export default class Doctor extends BaseCommand {
     const own = resolveOwnBinary();
     const ownRelative = own.kind === 'resolved' ? ownBinaryRelativePath(root, own.path) : undefined;
     const shimAbsolute = join(root, ...SHIM_RELATIVE_PATH.split('/'));
+    // The branch an installed hook takes, asked of the function the shell chain is GENERATED from
+    // rather than re-derived here -- `asc-mu20`'s one-identity rule, applied to the second question
+    // about the hook. `none` is folded into `undefined` (no branch to name) rather than carried:
+    // `hookGeneration` explains why the state it names cannot be reported from, and a field whose
+    // one impossible value has to be handled at every reader is worse than one that cannot hold it.
+    const resolved = resolveHookBinary(root, ownRelative);
     return {
       scriptPath: SCRIPT_RELATIVE_PATH,
       installed: namesAscendHook(settingsText),
@@ -80,6 +87,7 @@ export default class Doctor extends BaseCommand {
         own.kind === 'resolved'
           ? isShimCurrent(shimAbsolute, shimScript(own.path, ownRelative))
           : undefined,
+      resolvedVia: own.kind === 'resolved' && resolved.kind !== 'none' ? resolved.kind : undefined,
     };
   }
 
