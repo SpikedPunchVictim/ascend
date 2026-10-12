@@ -147,6 +147,12 @@ export default class HandlersCheck extends BaseCommand {
       // trigger fired and no row came out" -- and before this line existed, only one of them was
       // printed, so a decided-no-match window was indistinguishable from one that never opened.
       add('noMatch', replay.noMatch);
+      // The third reading of "the trigger fired and no row came out" (asc-4031), and it sits here for
+      // the same reason as the two above: without it, a matched `absent` window is indistinguishable
+      // from the watched event never happening. Reported on every handler, not only `absent` ones,
+      // because the field is a property of the run rather than of the mode -- it is zero, honestly,
+      // for every handler that has no absent window.
+      add('matchedButAbsent', replay.matchedButAbsent);
       // Beside `rows` for the same reason as `noMatch`: a table row that could not be read is a
       // finding the report holds and the handler did not emit.
       if (handler.each?.mode === 'table') add('malformedItems', replay.malformedItems);

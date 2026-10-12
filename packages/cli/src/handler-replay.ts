@@ -51,6 +51,8 @@ export interface HandlerReplay {
   readonly unclosed: number;
   /** Windows DECIDED with "no match" as the verdict, by `until` or by the `calls` limit. */
   readonly noMatch: number;
+  /** Windows DECIDED by a match, in a mode that emits nothing for one: a matched `absent` window. */
+  readonly matchedButAbsent: number;
   /** Triggers whose `before:` reference had no match, so its `${before.…}` fields are absent. */
   readonly unsatisfiedBefore: number;
   /** Table rows skipped because their cells did not match their header (asc-tuur.3). */
@@ -283,6 +285,7 @@ export async function replayHandlers(
       triggers: run.triggers,
       unclosed: run.unclosed,
       noMatch: run.noMatch,
+      matchedButAbsent: run.matchedButAbsent,
       unsatisfiedBefore: run.unsatisfiedBefore,
       malformedItems: run.malformedItems,
     })),

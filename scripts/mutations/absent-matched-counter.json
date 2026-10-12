@@ -1,0 +1,69 @@
+{
+  "_": "Kill-check for the counter `asc-4031` adds: an `absent` window whose `match` predicate HIT, so the window was decided by a match and emits nothing for it. Before this the branch was a bare `continue` -- correct, and counted nowhere -- which left `rows: 0` over `triggers: 6` with two readings a reader could not tell apart. The mutants are chosen around the three places the number has to survive: the increment in the match loop (M1, M2), the copy the CLI carries out of the run (M3), and the one row that prints it (M4). M1 is not a deletion -- it is the mistake the root cause actually was, counting the decision under `noMatch` because its docblock enumerated two window modes out of three -- and it is killed by the same two tests as the deletion, which is the evidence that a counter landing in the wrong term fails the partition rather than passing quietly. The killers were found empirically rather than guessed: each mutant was applied, the owning files were run with vitest's JSON reporter, and the failing test names were read off its assertionResults. M5 is an intended survivor with its reason on the entry.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/core/src/handler.ts",
+      "find": "            matchedButAbsent += 1;",
+      "replace": "            noMatch += 1;",
+      "killers": [
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "counts an absent window closed by a match, which produced no row and no other number"
+        },
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "leaves nothing over across every outcome one handler reaches in one stream"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/core/src/handler.ts",
+      "find": "            matchedButAbsent += 1;",
+      "replace": "            ;",
+      "killers": [
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "counts an absent window closed by a match, which produced no row and no other number"
+        },
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "leaves nothing over across every outcome one handler reaches in one stream"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/handler-replay.ts",
+      "find": "      matchedButAbsent: run.matchedButAbsent,",
+      "replace": "      matchedButAbsent: 0,",
+      "killers": [
+        {
+          "file": "packages/cli/test/project-handlers.test.ts",
+          "test": "partitions every edit across all four counters, for both handlers"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/commands/handlers/check.ts",
+      "find": "      add('matchedButAbsent', replay.matchedButAbsent);\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-check.test.ts",
+          "test": "prints matchedButAbsent beside the other counters, and the four of them partition"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/core/src/handler.ts",
+      "find": "   * **Two of the three window modes, and that wording used to be the whole bug.** `WINDOW_KEYS`\n   * admits `first`, `count` and `absent`, and this docblock enumerated only the first two when it\n   * was written. A later reader adding `matchedButAbsent` read the same two and missed the third\n   * (asc-4031), which is why the enumeration here now names all three and says which two it covers.\n   * `absent` is not this counter's business and never was: an `absent` window is declared to `close`\n   * with \"no match\" only when its `until` arrives without its watched event.\n",
+      "replace": "",
+      "survivor": true,
+      "why": "It is a docblock, and no assertion reads one. This is an intended survivor rather than a gap for a reason worth writing down: the root cause of asc-4031 was exactly this enumeration -- a reader adding the counter read two of the three window modes -- and the correction to it is unkillable by construction. Prose cannot be mutation-tested, which is precisely why the fix cannot be the prose: the counter and the partition assertion beside it are what hold the invariant, and M1 and M2 are what prove they hold it. Planting this mutant changes no byte the evaluator executes."
+    }
+  ]
+}

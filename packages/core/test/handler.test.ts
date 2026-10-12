@@ -1312,6 +1312,138 @@ describe('a window decided with no match is counted, not dropped', () => {
 });
 
 /**
+ * `asc-4031`: the third way a decided window produces no row, and the partition it completes.
+ *
+ * `dogfood/0083` measured the shape over n8n: `handlers/edit-unverified.yaml` over that corpus
+ * printed `triggers 6, rows 0, unclosed 1, noMatch 0` -- one trigger accounted for and five not. The
+ * five were `absent` windows closed precisely BECAUSE a `check.run` matched. In the match loop, mode
+ * `absent` hit a bare `continue` that emitted nothing and incremented nothing, while every other
+ * exit from that loop produces something: `first` emits a row, `count` carries its count forward, and
+ * `close` increments `unclosed` or `noMatch` in every branch. So `rows: 0` over `triggers: 6` had two
+ * readings -- the watched thing never happened, or it happened six times and the handler deliberately
+ * said nothing -- and a control experiment turns on telling them apart.
+ *
+ * The PARTITION is asserted rather than the counter alone, because a counter that exists is not the
+ * same as a partition that closes: four separate counts cannot show a missing term, and `triggers` is
+ * the total a reader compares them against. It holds for a one-row-per-window handler, which is every
+ * handler in `handlers/`; a table handler emits one row per table row, so it does not hold there and
+ * nothing below claims it does.
+ */
+describe('a window decided BY a match is counted, and the counters partition the triggers (asc-4031)', () => {
+  const emit = { x: 'a' };
+
+  /**
+   * All four counters plus `triggers`, because a driver returning three of them cannot notice that
+   * the three do not sum to the fourth -- which is the defect this stage closes. `run` above returns
+   * `{rows, unclosed}` and no assertion built on it could have found this.
+   */
+  const drive = (
+    spec: unknown,
+    events: readonly NormalizedEvent[],
+  ): {
+    rows: number;
+    triggers: number;
+    unclosed: number;
+    noMatch: number;
+    matchedButAbsent: number;
+  } => {
+    const handler = runHandler(compileHandler(spec));
+    const rows = events.flatMap((event) => [...handler.accept(event)]).length;
+    handler.finish();
+    return {
+      rows,
+      triggers: handler.triggers,
+      unclosed: handler.unclosed,
+      noMatch: handler.noMatch,
+      matchedButAbsent: handler.matchedButAbsent,
+    };
+  };
+
+  /** The four terms, added the way the check's report invites a reader to add them. */
+  const decided = (counts: {
+    rows: number;
+    unclosed: number;
+    noMatch: number;
+    matchedButAbsent: number;
+  }): number => counts.rows + counts.unclosed + counts.noMatch + counts.matchedButAbsent;
+
+  const absent = {
+    on: 'agent.spawn',
+    window: { until: 'agent.return', absent: { on: 'check.run' } },
+    emit,
+  };
+
+  it('counts an absent window closed by a match, which produced no row and no other number', () => {
+    const counts = drive(
+      absent,
+      stream(
+        () => ev('agent.spawn', 1, { child_agent_id: 'a' }),
+        () => ev('check.run', 1, { runner: 'pnpm' }),
+      ),
+    );
+
+    // Nothing is emitted here, and that is correct: the absence verdict belongs to `until`, and the
+    // watched event did arrive. The counter is this window's whole contribution -- without it, the
+    // trigger leaves no trace in any number the report prints.
+    expect(counts).toEqual({
+      rows: 0,
+      triggers: 1,
+      unclosed: 0,
+      noMatch: 0,
+      matchedButAbsent: 1,
+    });
+    expect(decided(counts)).toBe(counts.triggers);
+  });
+
+  it('counts nothing here when the match never came, because that window emits its verdict', () => {
+    // The other side of the same branch. A change that incremented `matchedButAbsent` for a matched
+    // absent window by counting the branch rather than the decision would take this one with it.
+    const counts = drive(
+      absent,
+      stream(
+        () => ev('agent.spawn', 1, { child_agent_id: 'a' }),
+        () => ev('agent.return', 1, { child_agent_id: 'a' }),
+      ),
+    );
+
+    expect(counts).toEqual({
+      rows: 1,
+      triggers: 1,
+      unclosed: 0,
+      noMatch: 0,
+      matchedButAbsent: 0,
+    });
+    expect(decided(counts)).toBe(counts.triggers);
+  });
+
+  it('leaves nothing over across every outcome one handler reaches in one stream', () => {
+    // Three windows, three different outcomes, one handler: matched (counted here), unmatched
+    // (emits its verdict), and undecided when the stream ends (unclosed). This is the assertion the
+    // four separate counts cannot make.
+    const counts = drive(
+      absent,
+      stream(
+        () => ev('agent.spawn', 1, { child_agent_id: 'matched' }),
+        () => ev('check.run', 1, { runner: 'pnpm' }),
+        () => ev('agent.spawn', 2, { child_agent_id: 'unmatched' }),
+        () => ev('agent.return', 2, { child_agent_id: 'unmatched' }),
+        () => ev('agent.spawn', 3, { child_agent_id: 'undecided' }),
+        () => ev('session.end', 3),
+      ),
+    );
+
+    expect({
+      rows: counts.rows,
+      unclosed: counts.unclosed,
+      noMatch: counts.noMatch,
+      matchedButAbsent: counts.matchedButAbsent,
+    }).toEqual({ rows: 1, unclosed: 1, noMatch: 0, matchedButAbsent: 1 });
+    expect(counts.triggers).toBe(3);
+    expect(decided(counts)).toBe(counts.triggers);
+  });
+});
+
+/**
  * `saw:` -- a session-scoped, existence-only backward join (asc-gtnu.7).
  *
  * The construct answers "in this session, in ANY stream, has an event of `on` matching `where`

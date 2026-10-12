@@ -452,6 +452,59 @@ describe('asc handlers check: scope: session and before', () => {
 });
 
 /**
+ * `asc handlers check`: the third reading of "the trigger fired and no row came out" (asc-4031).
+ *
+ * The core test asserts the counter and the partition over a hand-built stream; this one asserts the
+ * number a READER sees, because the counter is only as good as the row that prints it, and that row
+ * lives in the command rather than in the replay. `dogfood/0083` was found by reading exactly this
+ * output over n8n: `rows 0` beside `triggers 6`, with five triggers in no number at all.
+ */
+
+/** An `absent` window whose watched `ls` arrives, which is precisely the case nothing counted. */
+const UNANSWERED_HANDLER = `on: command.run
+where: { head: bd }
+window:
+  until: prompt.submit
+  absent: { on: command.run, where: { head: ls } }
+emit: { head: '\${head}' }
+`;
+
+describe('asc handlers check: a window decided BY a match appears in the report (asc-4031)', () => {
+  it('prints matchedButAbsent beside the other counters, and the four of them partition', () => {
+    // beforeFixture's main stream is `bd close`, `ls`, `bd close`, and no `prompt.submit`: the first
+    // window is decided by the `ls` it watches for (nothing emitted, nothing else counted), the
+    // second is still open when the stream ends. Two triggers, one of them this counter's.
+    const home = beforeFixture();
+    writeFileSync(join(home, 'unanswered.yaml'), UNANSWERED_HANDLER);
+    const run = asc(['unanswered.yaml', '--project', XPROJECT, '--json'], home);
+
+    expect(run.status).toBe(0);
+    const counts = {
+      triggers: valueOf(run, 'unanswered', 'triggers'),
+      rows: valueOf(run, 'unanswered', 'rows'),
+      unclosed: valueOf(run, 'unanswered', 'unclosed'),
+      noMatch: valueOf(run, 'unanswered', 'noMatch'),
+      matchedButAbsent: valueOf(run, 'unanswered', 'matchedButAbsent'),
+    };
+    expect(counts).toEqual({
+      triggers: 2,
+      rows: 0,
+      unclosed: 1,
+      noMatch: 0,
+      matchedButAbsent: 1,
+    });
+
+    // The identity, over the numbers the command actually printed rather than over the ones the
+    // replay held: a row the renderer drops would leave the partition short here even though the
+    // counter was right.
+    const { triggers, rows, unclosed, noMatch, matchedButAbsent } = counts;
+    expect(
+      (rows as number) + (unclosed as number) + (noMatch as number) + (matchedButAbsent as number),
+    ).toBe(triggers);
+  });
+});
+
+/**
  * `handlers/review-finding.yaml` over a fixture that actually reports findings (asc-gtnu.5).
  *
  * No corpus holds a finding -- `ReportFindings` has been called 0 times across 1,236 files -- so

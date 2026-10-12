@@ -1497,8 +1497,34 @@ export interface HandlerRun {
    * `handlers/edit-verified.yaml` over this project's log: 488 of its 3,326 triggers are this case
    * (14.7%), and they are the same class `asc-6ola.9` found -- a verdict reported as a result when
    * the verdict was "nothing matched".
+   *
+   * **Two of the three window modes, and that wording used to be the whole bug.** `WINDOW_KEYS`
+   * admits `first`, `count` and `absent`, and this docblock enumerated only the first two when it
+   * was written. A later reader adding `matchedButAbsent` read the same two and missed the third
+   * (asc-4031), which is why the enumeration here now names all three and says which two it covers.
+   * `absent` is not this counter's business and never was: an `absent` window is declared to `close`
+   * with "no match" only when its `until` arrives without its watched event.
    */
   readonly noMatch: number;
+  /**
+   * Windows DECIDED by a match, in a mode that emits nothing for one: an `absent` window whose
+   * `match` predicate hit the watched event (asc-4031).
+   *
+   * **The third mode, and the last place a decided window was neither emitted nor counted.** Every
+   * other exit from the match loop produces something -- `first` emits a row, `count` carries its
+   * count forward, and `close` increments `unclosed` or `noMatch` in every branch. The `absent`
+   * branch hit a bare `continue`: correct, since the window's verdict IS "nothing was emitted", but
+   * invisible. So `rows: 0` over `triggers: 6` had two readings -- the watched thing never happened,
+   * or it happened six times and the handler deliberately said nothing -- and a control experiment
+   * turns on telling them apart. Measured over this project's log: 4,941 of 5,907 triggers (83.6%)
+   * with `handlers/edit-unverified.yaml`, and 5 of 6 (83.3%) over n8n's corpus.
+   *
+   * **The partition it completes holds for one-row-per-window handlers.** `triggers == rows +
+   * unclosed + noMatch + matchedButAbsent` for a handler whose `each` is absent or single, which is
+   * every handler in `handlers/` today. A table handler emits one row per table row, so that identity
+   * does not survive there and the tests below do not claim it does.
+   */
+  readonly matchedButAbsent: number;
   /**
    * Triggers whose `before:` reference found no match earlier in the partition, so the `${before.…}`
    * fields are ABSENT on their rows rather than filled with a zero or an empty string
@@ -1559,6 +1585,7 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
   let triggers = 0;
   let unclosed = 0;
   let noMatch = 0;
+  let matchedButAbsent = 0;
   let unsatisfiedBefore = 0;
   let malformedItems = 0;
   const window = handler.window;
@@ -1809,6 +1836,12 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
           }
           if (window.mode === 'absent') {
             // Decided: something matched, so nothing is emitted and the window is done.
+            //
+            // The count is the whole point of the line, because this is the ONLY exit from this loop
+            // that produces neither a row nor a counter (asc-4031). Everything a reader would
+            // otherwise use to tell "the watched thing never happened" from "it happened and the
+            // handler said nothing" is silent here -- see `matchedButAbsent`.
+            matchedButAbsent += 1;
             continue;
           }
           one.count += 1;
@@ -1918,6 +1951,9 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     },
     get noMatch() {
       return noMatch;
+    },
+    get matchedButAbsent() {
+      return matchedButAbsent;
     },
     get unsatisfiedBefore() {
       return unsatisfiedBefore;

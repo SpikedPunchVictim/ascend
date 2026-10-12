@@ -120,11 +120,40 @@ describe('edit-unverified and edit-verified', () => {
     expect([unverified.unclosed, verified.unclosed]).toEqual([1, 1]);
   });
 
-  it('partitions every edit: unverified + verified + unclosed = triggers', async () => {
+  it('partitions every edit across all four counters, for both handlers', async () => {
     const { unverified, verified } = await replay();
-    expect(unverified.rows.length + verified.rows.length + unverified.unclosed).toBe(
+    // ALL FOUR terms, where this test used to add three. `edit-unverified` is an `absent` handler, so
+    // the a.ts edit -- answered by the very `check.run` the window watches for -- is decided BY a
+    // match and lands in `matchedButAbsent`, which is the case `asc-4031` found counted nowhere. A
+    // three-term sum was green throughout that defect, which is why the partition is asserted as one
+    // identity rather than as a sum a reader has to trust is complete.
+    const decided = (run: {
+      rows: readonly unknown[];
+      unclosed: number;
+      noMatch: number;
+      matchedButAbsent: number;
+    }): number => run.rows.length + run.unclosed + run.noMatch + run.matchedButAbsent;
+    expect([decided(unverified), decided(verified)]).toEqual([
       unverified.triggers,
-    );
+      verified.triggers,
+    ]);
+
+    // And the terms themselves, so a change that moved one outcome into another's counter cannot
+    // keep the sum green. The a.ts edit emits no row and is neither unclosed nor a miss.
+    expect({
+      rows: unverified.rows.length,
+      unclosed: unverified.unclosed,
+      noMatch: unverified.noMatch,
+      matchedButAbsent: unverified.matchedButAbsent,
+    }).toEqual({ rows: 1, unclosed: 1, noMatch: 0, matchedButAbsent: 1 });
+    // The b.md edit reaches its `until` with no match, so it is a miss -- the same decision `first`
+    // makes, reached through the other mode, and counted here rather than by this counter.
+    expect({
+      rows: verified.rows.length,
+      unclosed: verified.unclosed,
+      noMatch: verified.noMatch,
+      matchedButAbsent: verified.matchedButAbsent,
+    }).toEqual({ rows: 1, unclosed: 1, noMatch: 1, matchedButAbsent: 0 });
   });
 });
 
