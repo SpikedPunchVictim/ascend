@@ -1,0 +1,105 @@
+{
+  "_": "Kill-check for the exit codes `asc-nopa` gives the generated hook script: a stage call that reached a binary which could not run must REPORT it, and must never use an exit code that blocks. The defect is the one `dogfood/0082` measured -- `run hook \"$@\"` followed by an unconditional `exit 0`, so the shim's 127, a stale ascend's 2 and the `.js` interpreter guard's silence all arrived at the reader as success -- and stderr from an exit-0 hook reaches nobody at all, so the pre-fix script's print was not a weak signal but no signal. The mutants are chosen around the three places a status can be lost or mis-sent: the stage path (M1 discards it as before, M2 passes it through unmapped, M3 keeps the fix's mapping but deletes the early exit that follows it), the interpreter guard (M4 silences it again, M5 gets the code right in shape and wrong in value), and the sentence both scripts print (M6 lets one copy drift). M7 is the opposite direction and is not about the fix at all: it makes the resolution's own fallthrough exit 1, which is what a fix that made everything loud would look like, and the tests it kills are the ones asserting that a project with nothing to run stays silent. The killers were found empirically rather than guessed: each mutant was applied, the owning file was run with vitest's JSON reporter, and the failing test names were read off its assertionResults. Each entry names the killers the run actually reported, which is why they are not all the same set. M3's first killer is a test that predates this bead -- a stage call falling through to `run ingest claude-code` and `run types brief` prints two JSON documents on one stream, and the existing test that parses stdout as one object is what catches it -- which is recorded because it is the evidence that the trailing `exit 0` is control flow and not the mask it looks like.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "  run hook \"$@\"\n  status=$?\n  [ \"$status\" -eq 0 ] || exit 1\n  exit 0\n",
+      "replace": "  run hook \"$@\"\n  exit 0\n",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "reports a resolved binary that failed, rather than discarding its status"
+        },
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "maps a resolved binary exit 2 to 1, because 2 would block a prompt"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "  run hook \"$@\"\n  status=$?\n  [ \"$status\" -eq 0 ] || exit 1\n  exit 0\n",
+      "replace": "  run hook \"$@\"\n  status=$?\n  [ \"$status\" -eq 0 ] || exit \"$status\"\n  exit 0\n",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "maps a resolved binary exit 2 to 1, because 2 would block a prompt"
+        },
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "reports a resolved binary that failed, rather than discarding its status"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "  run hook \"$@\"\n  status=$?\n  [ \"$status\" -eq 0 ] || exit 1\n  exit 0\n",
+      "replace": "  run hook \"$@\"\n  status=$?\n  [ \"$status\" -eq 0 ] || exit 1\n",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "writes a script that hands a stage call to asc hook, with the input on stdin"
+        },
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "does not fall through to the ingest-and-brief tail after a stage call"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "      echo \"${NEEDS_NODE_REFUSAL}\" >&2\n      exit 1\n",
+      "replace": "      echo \"${NEEDS_NODE_REFUSAL}\" >&2\n      exit 0\n",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "which used to be a second silent exit"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "      echo \"${NEEDS_NODE_REFUSAL}\" >&2\n      exit 1\n",
+      "replace": "      echo \"${NEEDS_NODE_REFUSAL}\" >&2\n      exit 127\n",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "which used to be a second silent exit"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "      echo \"${NEEDS_NODE_REFUSAL}\" >&2\n      exit 127\n",
+      "replace": "      echo \"asc: $bin needs node on PATH to run\" >&2\n      exit 127\n",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "prints one refusal sentence from both generated scripts"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/cli/src/hook-script.ts",
+      "find": "'  exit 0',",
+      "replace": "'  exit 1',",
+      "killers": [
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "stays silent when nothing resolves, because there is nothing to run"
+        },
+        {
+          "file": "packages/cli/test/install-hook.test.ts",
+          "test": "exits 0 with no output when no binary resolves"
+        }
+      ]
+    }
+  ]
+}

@@ -16,7 +16,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { scriptNotice } from '../src/commands/install-hook.js';
-import { ownBinaryRelativePath, resolveHookBinary } from '../src/hook-script.js';
+import {
+  NEEDS_NODE_REFUSAL,
+  ownBinaryRelativePath,
+  resolveHookBinary,
+} from '../src/hook-script.js';
 import { flatten } from './helpers.js';
 
 /**
@@ -1573,5 +1577,216 @@ describe('the chain that finds a binary, and the function that is generated from
 
     expect(run.status).not.toBe(0);
     expect(run.stderr).toContain('node');
+  });
+});
+
+/**
+ * What the installed script EXITS WITH when a session fires it (asc-nopa).
+ *
+ * The predecessor of this block asserted the script's stdout and its stderr, and never its status.
+ * That blind spot is exactly where the defect lived: `dogfood/0082`'s three lost sessions were a
+ * refusal that printed and then exited 0, and the reference is explicit that stderr from an exit-0
+ * hook reaches nobody -- not the transcript, not the model. So every case here asserts the STATUS
+ * first and the message second, and the case that matters most is the one asserting a status of 1
+ * rather than 2.
+ *
+ * **Why 1 and not the resolved binary's own code.** The shim says 127 and oclif says 2, and on
+ * `UserPromptSubmit` and `PreToolUse` a 2 BLOCKS -- the prompt never reaches the model. A stage entry
+ * can carry a flag a stale ascend does not know (`asc install-hook --holdout` bakes in
+ * `--holdout 0.3`), which is a plausible upgrade, not a hostile one, so passing the status through
+ * would turn an ordinary stale install into a wall. 1 is non-blocking on all three stages and still
+ * carries the first line of stderr to the reader.
+ *
+ * **And why some cases must stay silent.** "Nothing to run" and "something found that would not run"
+ * are different answers, and only the second is a breakage. The store guard and the resolution's own
+ * fallthrough are the first kind and are asserted here as hard as the loud cases are: a fix that made
+ * everything loud would file a teammate's store-less clone as an error on every session.
+ */
+describe('the installed script exits non-zero exactly when a binary it found could not run (asc-nopa)', () => {
+  /** The command session actually runs for the stage, read out of settings.json rather than assumed. */
+  function stageCommandIn(dir: string): string {
+    const groups = (settings(dir)['hooks'] as Record<string, unknown>)['PostToolUse'];
+    const entries = (groups as { hooks: { command: string }[] }[])[0]?.hooks;
+    return entries?.[0]?.command ?? '';
+  }
+
+  /** Run that command for real, with the hook's own JSON on stdin -- what a session does, not a copy. */
+  function runStage(dir: string, env: NodeJS.ProcessEnv): Run {
+    const command = stageCommandIn(dir);
+    expect(command).not.toBe('');
+    const result = spawnSync('sh', ['-c', command], {
+      cwd: dir,
+      encoding: 'utf8',
+      input: '',
+      env: { HOME: dir, CLAUDE_PROJECT_DIR: dir, ...env },
+    });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  /** A PATH with the system but no `node`: homebrew's node is not in either directory. */
+  const NO_NODE = { PATH: '/usr/bin:/bin' } as const;
+  /** The same, with the interpreter this test is running under -- a session that can actually run. */
+  const WITH_NODE = { PATH: `/usr/bin:/bin:${dirname(process.execPath)}` } as const;
+
+  /**
+   * A project installed the way the defect was found: no `node_modules`, so the shim is what the
+   * chain reaches, and a resolvable-and-runnable `asc` is what it hands back.
+   */
+  function installed(): string {
+    const dir = project();
+    // A handler first, because `install-hook` wires no PostToolUse stage without one -- which is the
+    // stage this whole block is about. Same shape the holdout block above installs.
+    mkdirSync(join(dir, 'handlers'), { recursive: true });
+    writeFileSync(
+      join(dir, 'handlers', 'nudge.yaml'),
+      [
+        'on: tool.use.start',
+        'where:',
+        '  tool: Skill',
+        '  skill: {in: [bug-hunt]}',
+        "say: 'Report each finding from ${skill} with ReportFindings.'",
+        '',
+      ].join('\n'),
+    );
+    expect(asc(['install-hook', '--yes'], dir).status).toBe(0);
+    expect(existsSync(join(dir, '.ascend', 'bin', 'asc'))).toBe(true);
+    return dir;
+  }
+
+  it('reports a resolved binary that failed, rather than discarding its status', () => {
+    // The defect in one line. The shim is what the hook reaches; it resolves and it exits non-zero;
+    // the pre-fix script ran it and then `exit 0`. Anything non-zero proves the status survived.
+    const dir = installed();
+    const broken = join(dir, 'broken-asc');
+    writeStub(broken, '#!/bin/sh\necho "asc: something broke" >&2\nexit 3\n');
+
+    const run = runStage(dir, { ...NO_NODE, ASCEND_BIN: broken });
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('something broke');
+  });
+
+  it('maps a resolved binary exit 2 to 1, because 2 would block a prompt', () => {
+    // The load-bearing assertion of the whole change, and the reason the fix is not a bare `exit $?`.
+    // A stale ascend given a flag it does not know answers the way oclif answers an unresolvable
+    // command: 2. On UserPromptSubmit that BLOCKS. 1 does not, on any stage.
+    const dir = installed();
+    const stale = join(dir, 'stale-asc');
+    writeStub(stale, '#!/bin/sh\necho "command hook not found" >&2\nexit 2\n');
+
+    const run = runStage(dir, { ...NO_NODE, ASCEND_BIN: stale });
+
+    expect(run.status).toBe(1);
+    expect(run.status).not.toBe(2);
+    expect(run.stderr).toContain('command hook not found');
+  });
+
+  it('reports a `.js` binary when there is no `node`, which used to be a second silent exit', () => {
+    // The interpreter selection runs before `run` is defined or called, so the pre-fix `|| exit 0`
+    // there was silent AND unreachable from the stage path's own status: two independent masks over
+    // one condition. ascend's own checkout takes this branch -- a relative install names
+    // `packages/cli/dist/bin.js`.
+    //
+    // The file has to EXIST for this to be about that branch at all: `$ASCEND_BIN` is gated on `-f`,
+    // so a name that is merely spelled `.js` does not resolve, the chain falls through to the shim,
+    // and the shim reaches this condition anyway -- passing for a reason the test does not state.
+    // Measured: that version of this test passed against the `.js` guard replaced by `exit 0`.
+    const dir = installed();
+    const js = join(dir, 'somewhere.js');
+    writeStub(js, '#!/usr/bin/env node\nprocess.exit(0);\n');
+
+    const run = runStage(dir, { ...NO_NODE, ASCEND_BIN: js });
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('needs node');
+  });
+
+  it('does not fall through to the ingest-and-brief tail after a stage call', () => {
+    // The stage path exits early so the SessionStart tail below it never runs, and that property is
+    // one line away from being deleted by anyone who reads the trailing `exit 0` as the old mask.
+    // Measured while writing this change: without it the hook's JSON was followed by
+    // `types brief`'s output on the same stream, and a hook that answers with two documents is one
+    // Claude Code can parse neither of.
+    const dir = installed();
+    const input = {
+      session_id: 's-1',
+      cwd: dir,
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Skill',
+      tool_input: { skill: 'bug-hunt' },
+      tool_response: { success: true },
+      tool_use_id: 'toolu_1',
+    };
+    const command = stageCommandIn(dir);
+    const run = spawnSync('sh', ['-c', command], {
+      cwd: dir,
+      encoding: 'utf8',
+      input: JSON.stringify(input),
+      env: {
+        HOME: dir,
+        CLAUDE_PROJECT_DIR: dir,
+        PATH: `/usr/bin:/bin:${dirname(process.execPath)}`,
+      },
+    });
+
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: 'Report each finding from bug-hunt with ReportFindings.',
+      },
+    });
+    expect(run.stderr).toBe('');
+  });
+
+  it('prints one refusal sentence from both generated scripts, so the two cannot drift', () => {
+    // The shim and the hook make the same claim about the same condition and are regenerated
+    // independently. Two copies of the sentence is how the next edit teaches one of them something
+    // else, and a reader who meets one from a typed command and one from a hook should be told the
+    // same thing. The `$bin` stays a shell variable in both.
+    const dir = installed();
+    const hook = readFileSync(scriptPath(dir), 'utf8');
+    const shim = readFileSync(join(dir, '.ascend', 'bin', 'asc'), 'utf8');
+
+    expect(hook).toContain(NEEDS_NODE_REFUSAL);
+    expect(shim).toContain(NEEDS_NODE_REFUSAL);
+    expect(hook.split(NEEDS_NODE_REFUSAL)).toHaveLength(2);
+    expect(shim.split(NEEDS_NODE_REFUSAL)).toHaveLength(2);
+  });
+
+  it('stays silent and exits 0 when the binary it resolved runs fine', () => {
+    // The other direction, and the one a fix that made everything loud would fail: the ordinary
+    // session. Empty stdin is a wrong-input warning on stderr, not a failure of the install.
+    const dir = installed();
+
+    const run = runStage(dir, { ...WITH_NODE, ASCEND_BIN: bin });
+
+    expect(run.status).toBe(0);
+  });
+
+  it('stays silent when nothing resolves, because there is nothing to run', () => {
+    // "Nothing to run" is not a breakage. Deleting the shim is how a fixture reaches this honestly --
+    // an unrunnable shim is a DIFFERENT case, asserted above, and the two must not be conflated.
+    const dir = installed();
+    rmSync(join(dir, '.ascend', 'bin'), { recursive: true, force: true });
+
+    const run = runStage(dir, NO_NODE);
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe('');
+    expect(run.stdout).toBe('');
+  });
+
+  it('stays silent when the project has no store, which is what every teammate clones into', () => {
+    // The store guard, and the one silence that is not a defect: `.ascend/` is gitignored, so a
+    // teammate inherits the hook and cannot inherit the store. Filing that as an error on every
+    // session is what this asserts against.
+    const dir = installed();
+    rmSync(join(dir, '.ascend'), { recursive: true, force: true });
+
+    const run = runStage(dir, NO_NODE);
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe('');
   });
 });
