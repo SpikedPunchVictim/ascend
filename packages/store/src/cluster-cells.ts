@@ -21,7 +21,7 @@
  * NULL. So a caller must branch on `state`, never on `value === null`, or that entry would be counted
  * into a state it is not in. This is the one place the collapse is not self-evident.
  *
- * Reads `entries`, never a generated view, for `profileType`'s own reason (`profile.ts:141-156`): a
+ * Reads `entries`, never a generated view, for `profileType`'s own reason (`profile.ts`): a
  * view may predate the current definition. That also makes the cell sums agree with the profile's
  * own `states` by construction -- and where they do not, `wilson` refuses the mismatched pair rather
  * than computing an interval at a denominator neither of them measured.

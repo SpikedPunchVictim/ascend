@@ -13,7 +13,7 @@
  * transcript record. Re-normalizing later would mean the log's meaning depends on the normalizer
  * that happens to be installed when it is read, which is the opposite of keeping a record. So the
  * envelope's `derive_version` is written with every line and **checked on read** -- a log from a
- * different derive version is refused rather than replayed, because `event.ts:45` says exactly what
+ * different derive version is refused rather than replayed, because `event.ts` says exactly what
  * it would otherwise do: "A count moves when this moves, with no handler changed."
  *
  * **NOT A STORE TYPE, ON PURPOSE.** `events/` is its own tree beside `entries/`. Handlers consume
@@ -47,7 +47,7 @@ export function eventLogRoot(tree: string): string {
 /**
  * A stream's directory, one per `(session_id, agent_id)` pair.
  *
- * Two levels rather than one flattened name: the pair IS the stream key (`event.ts:14`), and a
+ * Two levels rather than one flattened name: the pair IS the stream key (`event.ts`), and a
  * flattened `session-agent.jsonl` makes the split ambiguous the moment either id contains the
  * separator. A subagent's transcript carries its parent's session id, so `agent_id` is
  * load-bearing and must not be foldable into `session_id`.
@@ -92,7 +92,7 @@ export interface EventLogWriter {
  * A writer over `events/`, rolling to the next file when the current one is full.
  *
  * **NOTHING IS EVER DROPPED.** The two caps bound how many events share a file; reaching one opens
- * a higher-numbered file, exactly as the record tree does (`jsonl-files.ts:133`). `asc-8uzh`'s
+ * a higher-numbered file, exactly as the record tree does (`jsonl-files.ts`). `asc-8uzh`'s
  * drop-oldest was deliberately never built, and it is the wrong answer here for the reason the bead
  * gives: a log that silently discards its oldest events is a count that moves for a reason no
  * handler changed, which is the derive-version hazard wearing the other coat.
@@ -170,11 +170,11 @@ export function openEventLog(tree: string): EventLogWriter {
  * no log root at all, and a session directory listed a moment ago can be gone a moment later. Two
  * reads that race are not damage. A permission error or a path that is a file IS: nothing under it
  * was read and nothing is going to be, which is the difference between a log that is short and a
- * log this run could not finish reading. `typed-handlers.ts:106-112` draws the same line for a
+ * log this run could not finish reading. `typed-handlers.ts` draws the same line for a
  * missing `handlers/`.
  *
  * A non-ENOENT path is PUSHED, never thrown: one directory the user cannot read must not cost them
- * the rest of the log. That is `reader.ts:253-257`'s rule for the same situation, and this walk is
+ * the rest of the log. That is `reader.ts`'s rule for the same situation, and this walk is
  * the same shape of walk.
  */
 function listDir(dir: string, unreadable: string[]): string[] | undefined {
@@ -233,7 +233,7 @@ export interface EventLogRead {
  *
  * **A repeat of `(session_id, agent_id, seq)` is dropped, keeping the first.** Two ingests can read
  * the same transcript at once -- two sessions starting in one project both run the sweep -- and
- * neither is wrong to append. `seq` is total order within a stream (`event.ts:35`), so a repeat is
+ * neither is wrong to append. `seq` is total order within a stream (`event.ts`), so a repeat is
  * a duplicate of one event and not a second event, and replaying it twice would double every count
  * that keys on it. Deduplicating here rather than preventing it at the write is what keeps the
  * append lock-free, which is what keeps it one `write()` per line.
@@ -264,7 +264,7 @@ export function readEventLog(tree: string): EventLogRead {
           `${path}:${String(index + 1)} was derived at version ` +
             `${String(event.derive_version)}, and this build derives ${String(EVENT_DERIVE_VERSION)}. ` +
             `Refused rather than replayed: a count moves when the derive version moves, with no ` +
-            `handler changed (event.ts:45). Re-run \`asc ingest claude-code\` to rewrite the log.`,
+            `handler changed. Re-run \`asc ingest claude-code\` to rewrite the log.`,
         );
       }
       const key = `${event.session_id}\u0000${event.agent_id}\u0000${String(event.seq)}`;

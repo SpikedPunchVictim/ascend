@@ -2,7 +2,7 @@
  * `asc invalidate <entry-id...> --label <label> --reason <text>` -- strike entries the corpus
  * later learned measured the wrong thing.
  *
- * `ARCHITECTURE.md:219` and `:568`: entries are immutable by database trigger, so there is no edit
+ * `ARCHITECTURE.md` and `:568`: entries are immutable by database trigger, so there is no edit
  * or delete path for a row that turns out wrong. The only honest remedy is an annotation under the
  * reserved scheme `invalidation`, recording that the entry stopped counting and why. Generated
  * per-type views expose the latest label as an `invalidated` column, and analysis excludes struck

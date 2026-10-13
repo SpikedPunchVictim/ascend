@@ -82,7 +82,7 @@
  * periods names the `timestamp` properties the type does declare.
  *
  * **`--assoc` CARRIES TWO CONTROLS THE Q-VALUES CANNOT STAND IN FOR, AND BOTH ARE WHY THE RANKING IS
- * SHORTER THAN THE PAIR COUNT** (`asc-fwpe`; `docs/evidence/EV-patterns.md:126-138` named both as
+ * SHORTER THAN THE PAIR COUNT** (`asc-fwpe`; `docs/evidence/EV-patterns.md` named both as
  * required additions and neither existed). A pair whose two properties are the same fact twice --
  * `project x repo`, at determinism 0.828 on the real corpus -- survives every other control, because
  * shuffling destroys the identity and the result still looks significant. Such pairs are suppressed
@@ -103,7 +103,7 @@
  * control was designed to test. A derivation from a clock the type actually records is the missing
  * half, and it changes nothing about who decides: the caller names the clock and the bucket, the CLI
  * materialises the strings, and the layer receives a fully built column declared `temporal`
- * (`association.ts:183-222`).
+ * (`association.ts`).
  */
 
 import { Args, Flags } from '@oclif/core';
@@ -258,7 +258,7 @@ const SESSION_PROPERTY = 'session_id';
  * The property carrying when the EVENT happened, which is not when ascend ingested the entry.
  *
  * `recorded_at` is the ingest clock, and during a backfill of two years of transcripts it is
- * unrelated to the event's own time (`derived-types.ts:76-82`) -- so ordering runs by it would
+ * unrelated to the event's own time (`derived-types.ts`) -- so ordering runs by it would
  * invent adjacency between entries that were never adjacent. Measured on the live store 2026-10-07:
  * `skill` in `skill_activation` reads a runs/marginals ratio of 0.722 ordered by this column and
  * 0.980 ordered by the stored row, and `agent` reads 0.649 against 0.991. The stored order
@@ -603,8 +603,8 @@ export default class Stats extends BaseCommand {
    * A positive integer flag, or a usage error naming what arrived instead.
    *
    * **THE SYNTAX IS THE PARSER'S, NOT `Number`'S.** `--limit` is one flag name across this CLI and
-   * oclif's `Flags.integer` is what every sibling declares (`explore.ts:756`, `search.ts:87`,
-   * `types/show.ts:87`, `record.ts:456`, `handlers/check.ts:69`), so its accepted language is what
+   * oclif's `Flags.integer` is what every sibling declares (`explore.ts`, `search.ts`,
+   * `types/show.ts`, `record.ts`, `handlers/check.ts`), so its accepted language is what
    * `--limit` means. Measured against the built binary, `Flags.integer` takes a signed run of digits
    * and refuses everything else: `explore --limit -5` parses, while `0x10`, `1e3`, `5.0`, `+1`,
    * `1_000` and either kind of surrounding space are all `Parsing --limit` errors.
@@ -650,7 +650,7 @@ export default class Stats extends BaseCommand {
    * store that is the entire difference between the three: `branch` is populated on all 774
    * `tool_denial` entries, `cwd` on all 774, and `repo` on NONE. A family built from the envelope
    * unconditionally would hand every instrument two constant columns, and `chiSquare` already
-   * documents what that measures (`association.ts:442-449`): no uncertainty about a variable that
+   * documents what that measures (`association.ts`): no uncertainty about a variable that
    * does not vary. Two distinct levels is that same judgement, made once, where the data is rather
    * than as a list of names hardcoded to today's corpus -- so `cwd` and `branch` join on the real
    * store while `repo` stays out until something fills it.
@@ -659,7 +659,7 @@ export default class Stats extends BaseCommand {
    * honoured whether or not it varies; see `categoricalName`.
    *
    * These names cannot collide with a declared property, which is structural rather than lucky:
-   * `ENVELOPE_PROPERTY_NAMES` (`packages/core/src/spec.ts:148-165`) reserves every one of them, so
+   * `ENVELOPE_PROPERTY_NAMES` (`packages/core/src/spec.ts`) reserves every one of them, so
    * a spec cannot declare `branch` in the first place. Without that, this function would need a
    * precedence rule and `rankAssociations`' duplicate-name refusal would be reachable.
    */
@@ -706,7 +706,7 @@ export default class Stats extends BaseCommand {
    * **NO VARIANCE GATE HERE, and that asymmetry with `groupableNames` is the decision.** The gate
    * decides what the family adds BY ITSELF; a name on the command line is a request. A crosstab of a
    * constant column is degenerate -- `chiSquare` returns `p: 1, asymptoticValid: false` rather than
-   * throwing (`association.ts:442-469`) -- and that is a RESULT, worth printing. Refusing it would be
+   * throwing (`association.ts`) -- and that is a RESULT, worth printing. Refusing it would be
    * this command deciding the question was not worth asking, after the reader had asked it, and the
    * reader would have no way to see that the column is constant rather than absent.
    *
@@ -753,7 +753,7 @@ export default class Stats extends BaseCommand {
    *
    * The derivation itself lives here rather than in `packages/analysis` deliberately: `Date` is a
    * restricted global in that package (`eslint.config.js`), and the layer's contract is that the
-   * temporal decision is DECLARED BY THE CALLER and never sniffed (`association.ts:183-222`). The
+   * temporal decision is DECLARED BY THE CALLER and never sniffed (`association.ts`). The
    * layer still receives a fully materialised column and a `temporal: true` declaration; nothing
    * about who computed the strings changes what the layer does with them.
    */

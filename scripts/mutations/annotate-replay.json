@@ -1,0 +1,103 @@
+{
+  "_": "Kill-check for the replay `asc-cx9w` adds: `asc annotate --scheme <s> --replay` applies the rules a scheme already stores -- read from its LATEST registered version, inside the write's own transaction -- instead of the caller retyping them. Before this, `matchingEntryIds` had exactly two call sites and both were in `asc annotate`, which refuses a run carrying neither `--rule` nor `--ids`, so a scheme's stored rule was effectively write-only. The mutants are chosen around the four things the feature has to be: the rules are the SCHEME's, they are read at the LATEST version, they are applied in the stored ORDER, and a scheme that cannot be replayed is REFUSED rather than replayed as something else. M4 and M5 pin the two places a replay has to reach differently from a typed run -- the empty-run refusal and the no-match warning -- because both were keyed on `--rule` having been given, which a replay never gives. The killers were found empirically rather than guessed: each mutant was applied, `packages/cli/test/annotations.test.ts` was run with vitest's JSON reporter, and the failing test names were read off its assertionResults. M7 is an intended survivor -- it removes the paragraph recording that a replay is deliberately NOT applied at ingest. TWO CANDIDATE MUTANTS WERE DROPPED, AND THE REASON IS A FACT ABOUT THE CODE: disabling either refusal outright (`if (false)`) does not compile. Each guard's condition is what narrows `existing` from `SchemeSummary | undefined` to `SchemeSummary` for the lines beneath it, so a mutant that removes the condition fails `tsc -b` with TS18048 instead of failing a test -- which the tree's own beforeAll turns into a file-level error, not an assertion. A mutant has to be something the evaluator can RUN, so both guards are represented by mutants that keep them compiling: M2 checks the wrong field, M3 drops the half of the message that says what IS registered. M6 is the mutant that found a gap: `reverse()`ing the replayed rules killed NOTHING on the first pass, because the fixture's two rules are disjoint and the registered shape is read from the store by `nextSpec` rather than from the applied rules -- so the replay's order was unpinned. The test named as its killer was written in response to that measurement, and it is the only test that moves when the order does.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/commands/annotate.ts",
+      "find": "        const appliedRules = replay\n          ? replayedRules(schemeName, existing, registered)\n          : parsed.rules;",
+      "replace": "        const appliedRules = parsed.rules;",
+      "killers": [
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "re-applies the scheme's own stored rules, and records the pass like any other run"
+        },
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "replays the LATEST version rules, not the version the scheme started with"
+        },
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "applies the rules in the scheme's stored order"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/commands/annotate.ts",
+      "find": "  if (existing.spec.rules.length === 0) {",
+      "replace": "  if (existing.spec.labels.length === 0) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "refuses a scheme whose latest version has no rules, rather than writing a pass that labels nothing"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/commands/annotate.ts",
+      "find": "        `${registered.map((entry) => `'${entry.name}'`).join(', ') || '(none)'}. Give --rule to ` +",
+      "replace": "        `(none). Give --rule to ` +",
+      "killers": [
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "refuses a scheme that is not registered, naming the ones that are"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/commands/annotate.ts",
+      "find": "    if (rawRules.length === 0 && rawIds.length === 0 && !replay) {",
+      "replace": "    if (rawRules.length === 0 && rawIds.length === 0) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "re-applies the scheme's own stored rules, and records the pass like any other run"
+        },
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "refuses --replay together with --backtest"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/commands/annotate.ts",
+      "find": "        if (appliedRules.length > 0 && assigned.size === 0 && scopeIds.size > 0) {",
+      "replace": "        if (rawRules.length > 0 && assigned.size === 0 && scopeIds.size > 0) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "says so when a replayed rule matches nothing, the same warning a --rule run gets"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/commands/annotate.ts",
+      "find": "  return existing.spec.rules;",
+      "replace": "  return [...existing.spec.rules].reverse();",
+      "killers": [
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "applies the rules in the scheme's stored order"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/cli/src/commands/annotate.ts",
+      "find": " * **It is deliberately NOT applied at ingest.** An entry's labels would then depend on when it was\n * recorded -- the same entries labelled differently by two ingests a version apart -- which is what\n * the version-on-shape-change guarantee exists to keep stable. A replay is a pass a person asked for,\n * written when they ask.\n",
+      "replace": "",
+      "survivor": true,
+      "killers": [
+        {
+          "file": "packages/cli/test/annotations.test.ts",
+          "test": "re-applies the scheme's own stored rules, and records the pass like any other run"
+        }
+      ],
+      "why": "It is a docblock, and no assertion reads one. It is an intended survivor rather than a gap because of WHAT it records: the owner's decision that a stored rule is replayed when a person asks for it and never at ingest, so that an entry's labels do not depend on when it was recorded. There is nothing to assert it against -- no ingest path applies a scheme, by design -- so the alternative to prose would be code for a behaviour deliberately not built. The killer named here is the replay's own test, and it is named to be HELD rather than killed: that test still passes with the paragraph deleted, which is the concrete form of the claim that this decision is carried by the prose alone, and therefore that deleting the prose is the only way to lose it. Planting this mutant changes no byte the evaluator executes."
+    }
+  ]
+}

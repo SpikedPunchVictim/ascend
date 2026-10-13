@@ -247,7 +247,7 @@ function skillOf(properties: Readonly<Record<string, unknown>>): readonly string
  * A structural type rather than an import of `CorpusLine`, because the two callers this module
  * has do not share a concrete shape: `identityVocabulary` reads an EXPORTED `EntryLine`, and
  * `asc ingest claude-code`'s report reads a `DerivedEntry` (`packages/adapter-claude-code/src/
- * derive.ts:50`) -- a corpus that has not been written yet, and so has no `CorpusLine` to be.
+ * derive.ts`) -- a corpus that has not been written yet, and so has no `CorpusLine` to be.
  * Both carry `properties`; both carry a `cwd` and a free-text field under a different name
  * (`evidence_text` vs `evidenceText`), which is why `text` exists as this interface's own name
  * for it rather than committing to either caller's spelling. `null` is accepted alongside

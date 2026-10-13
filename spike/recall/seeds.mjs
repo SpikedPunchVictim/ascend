@@ -5,9 +5,9 @@
  * WHERE THE MUTANT LIVES. Never in this repository. Every seed is applied inside a tree built by
  * `trees.mjs` under the OS temp root, so the repo's `packages/core/dist` can never hold a mutant
  * build and restore is a string write of the original, verified by sha256 after every seed. That
- * sidesteps the stale-mutant-build hazard (`IMPLEMENTATION_PLAN.md:936-940`) rather than managing it.
+ * sidesteps the stale-mutant-build hazard (`IMPLEMENTATION_PLAN.md`) rather than managing it.
  *
- * THREE OUTCOMES, NOT TWO (`IMPLEMENTATION_PLAN.md:462-472`):
+ * THREE OUTCOMES, NOT TWO (`IMPLEMENTATION_PLAN.md`):
  *   - `true`  -- vitest ran tests and at least one NAMED assertion failed;
  *   - `false` -- vitest ran a nonzero number of tests and none failed;
  *   - `null`  -- unverified: the mutant did not compile, or zero tests ran. Never counted as caught.

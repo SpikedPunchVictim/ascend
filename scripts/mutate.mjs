@@ -163,6 +163,48 @@ export function literalPattern(test) {
 }
 
 /**
+ * WHY a killer run executed no test -- read off the run's own output rather than guessed.
+ *
+ * **`executed()` ANSWERS 0 FOR EVERY CAUSE, AND ALL OF THEM USED TO READ `matched no test`**
+ * (`dogfood/0080`). That sentence is false for one of the two causes, and it is the cause this was
+ * measured on, so it pointed the author at the one thing that was not wrong: a spec whose pattern is
+ * spelled exactly as the test is, next to a mutant that does not compile.
+ *
+ * The mechanism is a **skip**. `executed()` counts `passed` and `failed` off vitest's summary line,
+ * and a skipped test is neither -- so every cause that stops a file from running reads as zero, and
+ * the summary line cannot tell them apart on its own.
+ *
+ * The `Test Files` line can, and does, and there is no need for a second run or a `tsc` probe to ask
+ * it. Measured 2026-10-12 against `packages/cli/test/stats.test.ts` (70 tests), one mutant applied
+ * and reverted between the two runs:
+ *
+ * | cause | `Test Files` | `Tests` | exit |
+ * |---|---|---|---|
+ * | the `-t` pattern matches nothing | `1 skipped (1)` | `70 skipped (70)` | 0 |
+ * | the file's own setup throws (`beforeAll` runs `tsc -b`; the mutant does not compile) | `1 failed (1)`, with a `Failed Suites` block | `70 skipped (70)` | 1 |
+ *
+ * `suite-failed` carries the `Error:` line vitest printed, because that line is the whole diagnosis
+ * -- the bead that filed this records that working it out cost reading this file and running `tsc -b`
+ * by hand, and that is the cost this return value removes.
+ *
+ * **What the detail does NOT carry, stated rather than implied.** The `Error:` line names the command
+ * that failed (`tsc -b`), not the compiler's own diagnostic, because the killer's `beforeAll` captures
+ * tsc's stderr with `stdio: 'pipe'` and vitest never sees it. So this gets the author to the right
+ * thing being wrong, not to the line of it. Running `tsc -b` here to fetch the diagnostic was
+ * considered and rejected: on the baseline path no mutant is applied, so the same probe would report a
+ * build that SUCCEEDS over a killer that ran no test, and a probe that means one thing in one caller
+ * and the opposite in the other is worse than the step it saves.
+ *
+ * @param {string} output  A killer run's combined stdout and stderr.
+ * @returns {{ cause: 'no-match' | 'suite-failed', detail: string }}
+ */
+export function zeroCause(output) {
+  if (!/^\s*Test Files\s+\d+ failed\b/m.test(output)) return { cause: 'no-match', detail: '' };
+  const line = output.split('\n').find((candidate) => /^\s*Error:/.test(candidate));
+  return { cause: 'suite-failed', detail: line === undefined ? '' : line.trim() };
+}
+
+/**
  * Where a spec argument points. A bare name is a shorthand for `scripts/mutations/<name>.json`.
  *
  * @param {string} arg
@@ -259,7 +301,7 @@ export function applyMutant(text, mutant) {
  * The incremental project build the killer tests run in `beforeAll` -- and therefore the one artifact a
  * mutant is built INTO that this runner does not write.
  *
- * `packages/cli/test/cli.test.ts:35` is the shape: the CLI suites spawn `packages/cli/dist/bin.js`, so
+ * `packages/cli/test/cli.test.ts` is the shape: the CLI suites spawn `packages/cli/dist/bin.js`, so
  * their `beforeAll` runs `node node_modules/typescript/bin/tsc -b` from the repo root. A mutant planted
  * in a SOURCE file is thus also compiled into `dist/` before the killer ever sees it, and restoring the
  * source -- which is all `restoreAll` does -- leaves the build output holding the mutant. The run then
@@ -368,7 +410,25 @@ const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
  * @returns {Promise<{ code: number, out: string }>}
  */
 function runKiller(killer) {
-  return sh('npx', ['vitest', 'run', killer.file, '-t', literalPattern(killer.test)]);
+  return sh('npx', killerArgs(killer));
+}
+
+/**
+ * The `vitest` arguments one killer runs with.
+ *
+ * Extracted from `runKiller` for one reason: **the escape is only real at this line.** A spec can
+ * check `literalPattern` all day while the runner hands vitest the unescaped name, and that is not a
+ * hypothetical -- it is the half of `dogfood/0076` that was silent, where a `.` in a killer's name let
+ * a *different* test certify the mutant and the verdict came back green. `runKiller` itself is
+ * deliberately not exported (this file's tests take only pure decisions, and a test that spawned
+ * vitest would mutate the tree it runs in), but building the argv is a pure decision, and it is the
+ * decision the fix lives in. Exporting it is what gives the wiring a killer.
+ *
+ * @param {Killer} killer
+ * @returns {string[]}
+ */
+export function killerArgs(killer) {
+  return ['vitest', 'run', killer.file, '-t', literalPattern(killer.test)];
 }
 
 /**
@@ -478,6 +538,29 @@ function uniqueKillers(mutants) {
 }
 
 /**
+ * Say which zero this is, in the words an author can act on.
+ *
+ * The two causes need different actions, which is why one sentence for both was worse than unhelpful:
+ * a pattern that matches nothing is a spec to fix, and a file that ran no test is a mutant to fix.
+ *
+ * @param {Killer} killer
+ * @param {string} output
+ */
+function reportDeadKiller(killer, output) {
+  const { cause, detail } = zeroCause(output);
+  if (cause === 'suite-failed') {
+    console.log(
+      `DEAD KILLER  "${killer.test}" never ran: ${killer.file}'s own setup failed, so no test in it could execute`,
+    );
+    console.log(`  vitest: ${detail === '' ? 'printed no Error: line' : detail}`);
+    return;
+  }
+  console.log(
+    `DEAD KILLER  "${killer.test}" matched no test in ${killer.file}, so it is no one's evidence`,
+  );
+}
+
+/**
  * Every named killer must run AND pass on the unmutated tree before a single mutant is applied --
  * "a test that already fails kills nothing". Returns the count of problems, and a non-zero return
  * means no verdict is issued at all.
@@ -490,7 +573,7 @@ async function runBaselines(unique) {
   for (const killer of unique) {
     const { code, out } = await runKiller(killer);
     if (executed(out) === 0) {
-      console.log(`DEAD KILLER  "${killer.test}" matched no test, so it is no one's evidence`);
+      reportDeadKiller(killer, out);
       failed += 1;
     } else if (code !== 0) {
       console.log(`BASELINE  "${killer.test}" fails on the unmutated tree -- kills nothing`);
@@ -504,7 +587,7 @@ async function runBaselines(unique) {
  * One mutant: apply it, run every killer it names, restore the file, and judge the result.
  *
  * @param {Mutant} m
- * @returns {Promise<{ row: string[], failed: boolean }>}
+ * @returns {Promise<{ row: string[], failed: boolean, notes: string[] }>}
  */
 async function runMutant(m) {
   const path = join(repoRoot, m.file);
@@ -516,14 +599,27 @@ async function runMutant(m) {
 
   const survivors = [];
   const died = [];
+  /** @type {{ test: string, cause: 'no-match' | 'suite-failed' }[]} */
   const dead = [];
+  /** @type {string[]} */
+  const notes = [];
   inFlight.set(path, original);
   writeFileSync(path, applied.text);
   try {
     for (const killer of m.killers) {
       const { code, out } = await runKiller(killer);
-      if (executed(out) === 0) dead.push(killer.test);
-      else if (code !== 0) died.push(killer.test);
+      if (executed(out) === 0) {
+        const { cause, detail } = zeroCause(out);
+        dead.push({ test: killer.test, cause });
+        // Printed after the table rather than inside it: the row has to stay one line, and the whole
+        // cost this removes is the author having to reproduce the run by hand to read this line.
+        if (cause === 'suite-failed') {
+          notes.push(
+            `${m.id}  "${killer.test}" -- ${killer.file} ran no test: ` +
+              (detail === '' ? 'vitest printed no Error: line' : detail),
+          );
+        }
+      } else if (code !== 0) died.push(killer.test);
       else survivors.push(killer.test);
     }
   } finally {
@@ -532,7 +628,9 @@ async function runMutant(m) {
   }
 
   const verdict = dead.length
-    ? 'DEAD KILLER -- matched no test'
+    ? dead.some((d) => d.cause === 'suite-failed')
+      ? 'DEAD KILLER -- the file ran no test'
+      : 'DEAD KILLER -- matched no test'
     : m.survivor
       ? died.length
         ? 'intended survivor KILLED'
@@ -549,9 +647,10 @@ async function runMutant(m) {
       m.id,
       restored ? verdict : `RESTORE FAILED; ${verdict}`,
       died.length ? String(died.length) : '-',
-      [...survivors, ...dead].join(', ') || '-',
+      [...survivors, ...dead.map((d) => d.test)].join(', ') || '-',
     ],
     failed: (m.survivor ? died.length > 0 || dead.length > 0 : missed > 0) || !restored,
+    notes,
   };
 }
 
@@ -620,6 +719,8 @@ async function main(argv) {
   installSignalHandlers();
   /** @type {string[][]} */
   const rows = [];
+  /** @type {string[]} */
+  const notes = [];
   let failed = 0;
   let noVerdict = false;
   /**
@@ -640,6 +741,7 @@ async function main(argv) {
         if (interrupted) break;
         const result = await runMutant(m);
         rows.push(result.row);
+        notes.push(...result.notes);
         if (result.failed) failed += 1;
       }
     }
@@ -666,6 +768,13 @@ async function main(argv) {
   console.log('\n| id | verdict | killers that died | survivors |');
   console.log('|---|---|---|---|');
   for (const r of rows) console.log(`| ${r.join(' | ')} |`);
+  if (notes.length > 0) {
+    // The diagnosis for a killer that never ran, carrying vitest's own `Error:` line. It is printed
+    // here rather than in the row so the table stays a table -- and it is printed at all because the
+    // cost of not having it is reproducing the run by hand (`dogfood/0080`).
+    console.log('\nwhy a killer never ran:');
+    for (const note of notes) console.log(`  ${note}`);
+  }
   console.log(`\n${repair.line}`);
   console.log(
     `\n${String(rows.length)} mutant(s), ${String(failed)} problem(s). ` +

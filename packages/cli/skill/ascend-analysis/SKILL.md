@@ -89,15 +89,18 @@ has passed back-testing, to see what it would classify at full scale before comm
 
 ```bash
 asc annotate --scheme <s> --rule '...' [--scope '<sql predicate>'] [--actor <who>]
+asc annotate --scheme <s> --replay
 asc kappa --scheme a --scheme b
 asc kappa --scheme <s> --pass <t1> --pass <t2>
 ```
 
 Only after back-testing clears, commit the real pass. `--scope` narrows which entries this run
 considers (the reported unclassified remainder is a remainder of that scope, not the whole
-type). `--actor` records who or what produced the pass. Then run `asc kappa` -- across two
-schemes, or two passes of one scheme -- to measure whether the classification is reproducible or
-the model was guessing.
+type). `--actor` records who or what produced the pass. Once a scheme is committed, `--replay`
+applies the rules it already stores -- no rule retyped -- which is what you want after the corpus
+has moved under it: the pass is written under the same version, so `asc kappa` can measure this
+run against the last one. Then run `asc kappa` -- across two schemes, or two passes of one scheme
+-- to measure whether the classification is reproducible or the model was guessing.
 
 **Rule syntax**: `'<label>=<kind>:<query>'`, where `kind` is `sql` (a predicate over an entry) or
 `fts` (a text query over evidence text). Rules apply in the order given, and the **first match

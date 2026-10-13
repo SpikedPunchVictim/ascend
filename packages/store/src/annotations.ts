@@ -10,7 +10,7 @@
  * it. `matchingEntryIds` has exactly one caller, `asc annotate`, so a rule reaches new entries when
  * someone runs the command, not when an entry is written -- and a stored rule cannot even be replayed
  * from storage, because `asc annotate` refuses a run with neither `--rule` nor `--ids`
- * (`annotate.ts:266-271`), so re-applying a scheme means retyping its rule (asc-cx9w). This module is
+ * (`annotate.ts`), so re-applying a scheme means retyping its rule (asc-cx9w). This module is
  * the storage half; the proposal half is the model's, and the reporting half is `asc annotate`.
  *
  * A SCHEME STORES ITS RULE, NOT ONLY ITS LABELS. The vocabulary alone would record what was said
@@ -1267,7 +1267,7 @@ export function listInvalidations(db: SqlDatabase, entryId?: string): readonly I
 /**
  * Every version of a scheme, oldest first.
  *
- * Mirrors `typeVersions` (`registry.ts:676`), and for the reason `export.ts` already states for
+ * Mirrors `typeVersions` (`registry.ts`), and for the reason `export.ts` already states for
  * types: `registerScheme` MINTS the next version number from what is already registered, so a
  * stream replaying only the latest version would mint it as v1 on the way back in, and every
  * annotation claiming v2 would then disagree with the store it was restored into.

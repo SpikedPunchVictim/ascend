@@ -247,9 +247,9 @@ describe('review-finding-table', () => {
   it('declares no judged names, and carries the reason in its own header', () => {
     // It emits neither `failure_scenario` nor `catchable_by`, so declaring both under `judged` is
     // the obvious fix and the one it does not take. The reason is measured: core hashes the whole
-    // parsed document (packages/core/src/handler.ts:1148), so a key that emits nothing still moves
+    // parsed document (packages/core/src/handler.ts), so a key that emits nothing still moves
     // the handler's identity, and the entry key carries that hash
-    // (packages/cli/src/typed-handlers.ts:252). `asc ingest claude-code --dry-run` goes from
+    // (packages/cli/src/typed-handlers.ts). `asc ingest claude-code --dry-run` goes from
     // `entry review_finding none` to `65 new, 11 rejected`, doubling the parsed corpus until a
     // hand migration of the kind asc-w8tx documents -- and comparable counts are this type's whole
     // product. This assertion is the speed bump: it fails the moment someone adds the declaration,

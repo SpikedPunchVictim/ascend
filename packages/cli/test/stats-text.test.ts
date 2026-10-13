@@ -23,7 +23,7 @@ import {
  *
  * The second half tests `valueColumn`'s envelope branch on hand-built entries, which is the only
  * way to reach a varying locality without a transcript corpus: `asc record` deliberately does not
- * derive `branch` (`packages/cli/src/commands/record.ts:52-54`), so the binary can produce those
+ * derive `branch` (`packages/cli/src/commands/record.ts`), so the binary can produce those
  * rows only through `asc ingest claude-code`.
  */
 

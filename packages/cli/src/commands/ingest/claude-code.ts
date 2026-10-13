@@ -968,7 +968,7 @@ export default class IngestClaudeCode extends BaseCommand {
       );
     }
 
-    // `derive.ts`'s own rule (`derive.ts:30-31`): "A silently dropped record is the failure this
+    // `derive.ts`'s own rule (`derive.ts`): "A silently dropped record is the failure this
     // module is most able to cause." An ephemeral project is excluded on purpose, but "on
     // purpose" is not the same as "invisible" -- the count and the distinct labels are what make
     // this a decision a reader can see and reverse, rather than a filter nobody can see.

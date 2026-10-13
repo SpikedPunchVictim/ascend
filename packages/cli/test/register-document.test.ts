@@ -274,7 +274,20 @@ describe('asc-bli.2/.3 -- guidance on a document', () => {
   });
 });
 
-describe('asc-6jf -- a new version that omits the previous version’s guidance', () => {
+/**
+ * `asc-6jf` asked this question first and answered it with a warning; `asc-4f2w` (`dogfood/0075`)
+ * changed the answer, so these are that suite's cases re-asked of the new rule.
+ *
+ * A document is the thing that says what a version keeps, so a version that omitted a guidance
+ * field used to drop it -- silently, until `asc-6jf` made the drop audible. Audible was still
+ * wrong: the field was never meant to go anywhere, and `note` lost its own guidance that way when
+ * v1's `text` became v2's `body`, leaving the brief a recorder reads rendering the project's
+ * last-resort type exactly like the one type that is deliberately without guidance. The store now
+ * carries a superseded version's prose forward per field -- what a document declares wins, every
+ * field it does not mention is inherited, `updateTypeProse`'s rule for an edit -- so the drop this
+ * suite used to hear cannot happen, in whole or in part.
+ */
+describe('asc-6jf / asc-4f2w -- a new version against the guidance of the one it supersedes', () => {
   const bumped = (extra: Partial<TypeDocument> = {}): TypeDocument => ({
     name: 'widget_reviewed',
     properties: [
@@ -287,51 +300,58 @@ describe('asc-6jf -- a new version that omits the previous version’s guidance'
   const register = (store: Fixture, doc: TypeDocument, at: string, dryRun = false) =>
     registerDocument(store.root, store.indexFile, doc, { registeredAt: at, dryRun });
 
-  it('warns, naming the field, when the new version drops review_after', () => {
+  it('carries a field the new version omits forward, and says nothing about it', () => {
     withStore((store) => {
       register(store, document('k', { review_after: 30 }), AT);
       const bump = register(store, bumped(), LATER);
-      expect(bump.warnings).toEqual([
-        expect.stringMatching(
-          /version 2 of widget_reviewed declares no review_after; version 1 declared 30/,
-        ),
-      ]);
+
+      expect(findType(store.db, 'widget_reviewed', 2)?.guidance.review_after).toBe(30);
+      expect(bump.warnings).toEqual([]);
     });
   });
 
-  it('does not carry the dropped field forward', () => {
-    withStore((store) => {
-      register(store, document('k', { review_after: 30 }), AT);
-      register(store, bumped(), LATER);
-      expect(findType(store.db, 'widget_reviewed', 2)?.guidance.review_after).toBeUndefined();
-    });
-  });
-
-  it('warns once per dropped field', () => {
+  it('carries every field of the block forward, not only the first', () => {
     withStore((store) => {
       register(store, document('k', { review_after: 30, purpose: 'why' }), AT);
-      expect(register(store, bumped(), LATER).warnings).toHaveLength(2);
+      register(store, bumped(), LATER);
+
+      expect(findType(store.db, 'widget_reviewed', 2)?.guidance).toEqual({
+        purpose: 'why',
+        review_after: 30,
+      });
     });
   });
 
-  it('says nothing when the new version declares the field, whatever its value', () => {
+  it('takes the document literally when it declares the field, whatever the value', () => {
     withStore((store) => {
       register(store, document('k', { review_after: 30 }), AT);
-      expect(register(store, bumped({ review_after: 60 }), LATER).warnings).toEqual([]);
+      register(store, bumped({ review_after: 60 }), LATER);
+
+      expect(findType(store.db, 'widget_reviewed', 2)?.guidance.review_after).toBe(60);
     });
   });
 
-  it('says nothing when the previous version declared no guidance', () => {
+  it('says nothing and carries nothing when the previous version declared no guidance', () => {
     withStore((store) => {
       register(store, document('k'), AT);
-      expect(register(store, bumped(), LATER).warnings).toEqual([]);
+      const bump = register(store, bumped(), LATER);
+
+      expect(findType(store.db, 'widget_reviewed', 2)?.guidance).toEqual({});
+      expect(bump.warnings).toEqual([]);
     });
   });
 
-  it('warns on a dry run too, which is when the warning can still change the document', () => {
+  it('carries the block forward on a dry run too, so the preview is of the write that follows', () => {
     withStore((store) => {
       register(store, document('k', { review_after: 30 }), AT);
-      expect(register(store, bumped(), LATER, true).warnings).toHaveLength(1);
+      const preview = register(store, bumped(), LATER, true);
+
+      expect(preview.warnings).toEqual([]);
+      // The preview is a rollback, so nothing was written and the assertion is about the real run
+      // that follows it matching what was previewed.
+      expect(findType(store.db, 'widget_reviewed', 2)).toBeUndefined();
+      register(store, bumped(), LATER);
+      expect(findType(store.db, 'widget_reviewed', 2)?.guidance.review_after).toBe(30);
     });
   });
 });

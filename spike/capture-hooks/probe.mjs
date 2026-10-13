@@ -62,14 +62,28 @@ const skillCalls = lines.filter((e) => e?.type === 'assistant')
     .map((c) => ({ id: c.id, inSubagent: e.parent_tool_use_id != null, input: c.input })));
 
 const captured = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)) : [];
-const BASE = ['session_id', 'prompt_id', 'transcript_path', 'cwd', 'scratchpad_dir', 'permission_mode', 'effort', 'hook_event_name'];
+// The keys this probe ASSUMES every hook input carries (asc-s05g). They used to be SUBTRACTED from
+// each event's key list, so a key that was in fact sent could never appear in the output: the line
+// read as an enumeration of what arrives and was an enumeration of what arrives minus these eight,
+// which cannot tell "the harness sent transcript_path" from "nobody looked". Now the whole key list
+// is printed, and each assumed key is printed present or absent, so an assumption shows as satisfied
+// or violated rather than as silence. `spike/hook-input-keys/probe.mjs` is the run that settled
+// transcript_path; this instrument is the one that could not have.
+const ASSUMED = ['session_id', 'prompt_id', 'transcript_path', 'cwd', 'scratchpad_dir', 'permission_mode', 'effort', 'hook_event_name'];
 console.log(JSON.stringify({ model, exit: code, costUsd: result?.total_cost_usd, captured: captured.length, dir }));
 console.log('skill tool calls in stream:', JSON.stringify(skillCalls));
 for (const e of captured) {
-  const extra = Object.keys(e).filter((k) => !BASE.includes(k));
+  const keys = Object.keys(e).sort();
+  const absent = ASSUMED.filter((k) => !keys.includes(k));
   const peek = e.tool_name === 'Skill' ? ` tool_input=${JSON.stringify(e.tool_input)}` : '';
   const who = e.agent_id !== undefined ? ` agent_id=${String(e.agent_id).slice(0, 8)} agent_type=${e.agent_type}` : '';
-  console.log(`${e.hook_event_name.padEnd(17)} ${(e.tool_name ?? '').padEnd(6)} keys+=[${extra.join(',')}]${who}${peek}`);
+  console.log(`${e.hook_event_name.padEnd(17)} ${(e.tool_name ?? '').padEnd(6)} keys(${keys.length})=[${keys.join(',')}] assumed-absent=[${absent.join(',')}]${who}${peek}`);
+}
+// A per-event line cannot show a key that is absent on EVERY event, which is the one reading the old
+// line made impossible. This is the count, so an absence is a measurement rather than an omission.
+for (const k of ASSUMED) {
+  const seen = captured.filter((e) => k in e).length;
+  console.log(`assumed ${k.padEnd(16)} present on ${seen} of ${captured.length} captured events`);
 }
 console.log(`Q4 nonce reported by model: ${said.includes(nonce)}`);
 console.log('--- model said:\n' + said.slice(0, 600));

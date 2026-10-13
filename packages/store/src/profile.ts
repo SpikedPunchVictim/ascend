@@ -28,7 +28,7 @@
  *                      "ISO 8601 strings", and `schema.ts` accepted offsets, so a schema declaring
  *                      `2026-09-11T10:00:00+02:00` beside `2026-09-11T09:00:00Z` had this function
  *                      report a range whose ends were the wrong way round. It now refuses offsets --
- *                      the rule `recorder.ts:200` already applied to its own column -- so the claim
+ *                      the rule `recorder.ts` already applied to its own column -- so the claim
  *                      holds for the zone half.
  *
  *                      **It does NOT hold for precision, and that residue is deliberate.** A

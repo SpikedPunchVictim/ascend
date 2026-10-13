@@ -63,10 +63,12 @@ export function entryFromLine(line: EntryLine): {
 /**
  * One type line, as the options `registerType` takes.
  *
- * The prose fields are passed through one by one and omitted when the document omits them, which is
- * the only way a replayed document can DROP a prose field: a version keeps what its document says
- * and nothing else, so copying a field forward from the previous version would make "this version
- * needs no `review_after`" unsayable.
+ * The prose fields are passed through one by one and omitted when the document omits them, so a
+ * replayed line says exactly what the tree says and nothing more. What a *registration* does with
+ * an omitted column is `registerType`'s rule, not this function's: a bump merges the superseded
+ * version's prose into the new row field by field, which is why a line that declares no guidance
+ * still replays to a row that has it (`dogfood/0075`). This function's job is only to hand over what
+ * the line states.
  *
  * `registeredAt` is the caller's because a `TypeLine` carries no registration timestamp --
  * `documentFromRow` drops it -- so a replayed type is stamped with the moment of the replay. That is

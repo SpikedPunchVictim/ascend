@@ -21,7 +21,7 @@
  * `propertiesOf`/`valueExpr` for `crosstab.ts`).
  *
  * **The collision that would normally make this ambiguous cannot happen.** `ENVELOPE_PROPERTY_NAMES`
- * (`@ascend/core`'s `spec.ts:148`) reserves `id`, `type_name`, `recorded_at`, `cwd` and the rest,
+ * (`@ascend/core`'s `spec.ts`) reserves `id`, `type_name`, `recorded_at`, `cwd` and the rest,
  * and `reservedPropertyName` refuses a declared property under any of those names at registration
  * time -- so a property alias can never shadow an envelope column in the projection below. The two
  * column sets are disjoint by construction, not by luck.

@@ -107,7 +107,7 @@ const value = (stdout: string, signal: string, field: string): unknown =>
  *
  * Running as root the mode bits are advisory and the fixture would read straight through the
  * locked file, so the test would pass while exercising nothing -- worse than skipping. Same guard,
- * same reason, as `reader.test.ts:107`.
+ * same reason, as `reader.test.ts`.
  */
 const canVandalize = process.getuid === undefined || process.getuid() !== 0;
 
@@ -134,7 +134,7 @@ describe('asc types define: the capture line', () => {
     // `files` counts DISCOVERED transcripts, so the `files === 0` return does not fire over a
     // corpus nothing could be opened from -- and without this warning the verdict below would be
     // "nothing in this project's transcripts reads as incident yet" about files never read. `asc
-    // ingest` reports the same failures (`claude-code.ts:908`); two readers of one corpus must not
+    // ingest` reports the same failures (`claude-code.ts`); two readers of one corpus must not
     // disagree about whether anything was left out (asc-86a8).
     //
     // Titled distinctly from the `types capture` arm below on purpose: `-t` matches the test's own
@@ -231,10 +231,10 @@ describe('asc types capture', () => {
   });
 
   it('does not count a symlink as unreadable, because not following one is the decision made', () => {
-    // `reader.ts:263` skips a symlink deliberately -- following one could leave the root or loop
+    // `reader.ts` skips a symlink deliberately -- following one could leave the root or loop
     // forever -- so a corpus holding one is not a corpus that could not be read. Counting it would
     // put a permanent warning on a healthy project, which is the false report the same rule avoids
-    // in `handler-replay.ts:239-243`.
+    // in `handler-replay.ts`.
     const dir = project();
     asc(['types', 'define', 'incident.json', '--no-capture'], dir);
     symlinkSync(

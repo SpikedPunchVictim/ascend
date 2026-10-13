@@ -726,6 +726,188 @@ describe('asc annotate: refusals', () => {
   });
 });
 
+describe('asc annotate: --replay (asc-cx9w)', () => {
+  it("re-applies the scheme's own stored rules, and records the pass like any other run", () => {
+    const dir = seeded();
+    expect(reviewRun(dir, ['--json']).status).toBe(0);
+
+    const run = asc(['annotate', '--scheme', 'review', '--replay', '--json'], dir);
+
+    expect(run.status, run.stderr).toBe(0);
+    // The census the first run reported, reproduced without the rules being retyped -- which is the
+    // whole of what the flag is for.
+    expect(one(run.stdout)).toMatchObject({
+      scheme: 'review',
+      version: 1,
+      outcome: 'unchanged',
+      considered: 6,
+      labelled: 6,
+      unclassified: 0,
+      labels: [
+        { label: 'bug', count: 4 },
+        { label: 'docs', count: 2 },
+      ],
+    });
+    // A replay re-states the shape it read, so the version does not move -- and the pass it writes is
+    // filed under that same version.
+    expect(versionOf(dir, 'review')).toBe(1);
+    expect(annotations(dir)).toHaveLength(12);
+    expect(annotations(dir).every((row) => row[3] === 1)).toBe(true);
+    // TWO passes, not one pass of twelve rows. A pass IS its rows -- the table has no run column --
+    // so the distinct timestamps are what say the replay was recorded as its own pass.
+    expect(
+      column(dir, "SELECT count(DISTINCT created_at) FROM annotations WHERE scheme = 'review'"),
+    ).toStrictEqual([[2]]);
+  });
+
+  it('replays the LATEST version rules, not the version the scheme started with', () => {
+    const dir = seeded();
+    expect(reviewRun(dir).status).toBe(0);
+    // A rule edit replaces the rules and moves the version, so the shape a replay must read is the
+    // new one -- a replay that read a historical version would re-apply a taxonomy already retired.
+    expect(
+      asc(
+        [
+          'annotate',
+          '--scheme',
+          'review',
+          '--rule',
+          "chore=sql: evidence_text LIKE '%install%'",
+          '--json',
+        ],
+        dir,
+      ).status,
+    ).toBe(0);
+
+    const run = asc(['annotate', '--scheme', 'review', '--replay', '--json'], dir);
+
+    expect(run.status, run.stderr).toBe(0);
+    expect(one(run.stdout)).toMatchObject({
+      version: 2,
+      outcome: 'unchanged',
+      labelled: 2,
+      unclassified: 4,
+      labels: [{ label: 'chore', count: 2 }],
+    });
+    expect(rulesOf(dir, 'review')).toStrictEqual(["chore=sql: evidence_text LIKE '%install%'"]);
+  });
+
+  it("applies the rules in the scheme's stored order, so first-match-wins survives the replay", () => {
+    const dir = seeded();
+    // Two rules that OVERLAP: the second matches everything the first does and more, so which label an
+    // entry gets is decided entirely by the order. `normalizeSpec` hashes the rule list AS A LIST for
+    // exactly this reason, and a replay that reordered them would classify differently from the pass
+    // it is replaying -- silently, and with a census that looks like a rule change nobody made.
+    const narrow = "a=sql: evidence_text LIKE '%crash%'";
+    const broad = "b=sql: evidence_text LIKE '%the%'";
+    expect(
+      asc(['annotate', '--scheme', 'over', '--rule', narrow, '--rule', broad, '--json'], dir)
+        .status,
+    ).toBe(0);
+
+    const run = asc(['annotate', '--scheme', 'over', '--replay', '--json'], dir);
+
+    expect(run.status, run.stderr).toBe(0);
+    expect(one(run.stdout)).toMatchObject({
+      version: 1,
+      outcome: 'unchanged',
+      labelled: 6,
+      labels: [
+        { label: 'a', count: 4 },
+        { label: 'b', count: 2 },
+      ],
+    });
+  });
+
+  it('refuses a scheme that is not registered, naming the ones that are', () => {
+    const dir = seeded();
+    expect(reviewRun(dir).status).toBe(0);
+
+    const run = asc(['annotate', '--scheme', 'nope', '--replay'], dir);
+
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain("no annotation scheme named 'nope' to replay");
+    expect(flatten(run.stderr)).toContain("'review'");
+    // Nothing was registered under the name the run failed on.
+    expect(schemes(dir).map((row) => row[0])).toStrictEqual(['review']);
+  });
+
+  it('refuses a scheme whose latest version has no rules, rather than writing a pass that labels nothing', () => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+
+    const run = asc(['annotate', '--scheme', 'hand', '--replay'], dir);
+
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain("scheme 'hand' has no rules to replay");
+    // The five hand labels and their one pass are untouched: a refused replay writes no pass.
+    expect(annotations(dir)).toHaveLength(5);
+  });
+
+  it('refuses --replay together with --rule, which would say twice what the rules are', () => {
+    const dir = seeded();
+
+    const run = reviewRun(dir, ['--replay']);
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--replay and --rule cannot be combined');
+    expect(schemes(dir)).toStrictEqual([]);
+  });
+
+  it('refuses --replay together with --ids, the other way of writing a pass', () => {
+    const dir = seeded();
+
+    const run = asc(['annotate', '--scheme', 'hand', '--ids', 'bug=e1', '--replay'], dir);
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--replay and --ids cannot be combined');
+    expect(schemes(dir)).toStrictEqual([]);
+  });
+
+  it('refuses --replay together with --backtest, which grades a rule this run would not state', () => {
+    const dir = seeded();
+    expect(handRun(dir).status).toBe(0);
+    expect(reviewRun(dir).status).toBe(0);
+
+    const run = asc(['annotate', '--scheme', 'review', '--replay', '--backtest', 'hand'], dir);
+
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain('--replay and --backtest cannot be combined');
+  });
+
+  it('says so when a replayed rule matches nothing, the same warning a --rule run gets', () => {
+    const dir = seeded();
+    // A stored rule that matches nothing: the scheme carries a rule, and the replay's result is
+    // empty -- the pair the warning exists for, reached without --rule being typed a second time.
+    expect(
+      asc(['annotate', '--scheme', 'empty', '--rule', 'none=sql: 0 = 1', '--json'], dir).status,
+    ).toBe(0);
+
+    const run = asc(['annotate', '--scheme', 'empty', '--replay', '--json'], dir);
+
+    expect(run.status, run.stderr).toBe(0);
+    expect(one(run.stdout)).toMatchObject({ considered: 6, labelled: 0, unclassified: 6 });
+    expect(flatten(run.stderr)).toContain('no rule matched any of the 6 entries in scope');
+  });
+
+  it('previews the same census under --dry-run, and writes nothing', () => {
+    const dir = seeded();
+    expect(reviewRun(dir).status).toBe(0);
+
+    const run = asc(['annotate', '--scheme', 'review', '--replay', '--dry-run', '--json'], dir);
+
+    expect(run.status, run.stderr).toBe(0);
+    expect(one(run.stdout)).toMatchObject({
+      outcome: 'would-unchanged',
+      considered: 6,
+      labelled: 6,
+      unclassified: 0,
+      dry_run: true,
+    });
+    expect(annotations(dir)).toHaveLength(6);
+  });
+});
+
 describe('asc annotate: concurrent runs (asc-q4p)', () => {
   it("keeps both labels when two runs add to the same new scheme at once, rather than dropping the loser's", async () => {
     const dir = seeded();
@@ -1437,6 +1619,7 @@ describe('asc annotate and asc kappa: the surface', () => {
     expect(kappa.status, kappa.stderr).toBe(0);
     expect(annotate.stdout).toContain('--rule');
     expect(annotate.stdout).toContain('--scope');
+    expect(annotate.stdout).toContain('--replay');
     expect(kappa.stdout).toContain('--pass');
   });
 });

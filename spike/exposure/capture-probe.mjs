@@ -34,10 +34,20 @@ const transcriptToolIds = new Set(tlines.flatMap((r) => (r.type === 'assistant' 
   .filter((c) => c.type === 'tool_use').map((c) => c.id)));
 
 console.log(JSON.stringify({ costUsd: result?.total_cost_usd, captured: captured.length, dir }));
+// The same blind spot as spike/capture-hooks/probe.mjs, in this spike's own copy of the filter
+// (asc-s05g): a key listed in its own exclude list can never appear in the output, so the line
+// cannot tell "the harness sent transcript_path" from "nobody looked". Print the whole key list, and
+// each assumed key present or absent.
+const ASSUMED = ['session_id', 'prompt_id', 'transcript_path', 'cwd', 'scratchpad_dir', 'permission_mode', 'effort', 'hook_event_name'];
 for (const e of captured) {
-  const extra = Object.keys(e).filter((k) => !['session_id', 'prompt_id', 'transcript_path', 'cwd', 'scratchpad_dir', 'permission_mode', 'effort', 'hook_event_name'].includes(k));
+  const keys = Object.keys(e).sort();
+  const absent = ASSUMED.filter((k) => !keys.includes(k));
   const peek = e.tool_response !== undefined ? ` tool_response=${JSON.stringify(e.tool_response).slice(0, 90)}` : e.error !== undefined ? ` error=${JSON.stringify(e.error).slice(0, 90)}` : e.last_assistant_message !== undefined ? ` last_assistant_message=${JSON.stringify(e.last_assistant_message).slice(0, 90)}` : '';
-  console.log(`${e.hook_event_name.padEnd(18)} ${e.tool_use_id ?? ''} keys+=[${extra.join(',')}]${peek}`);
+  console.log(`${e.hook_event_name.padEnd(18)} ${e.tool_use_id ?? ''} keys(${keys.length})=[${keys.join(',')}] assumed-absent=[${absent.join(',')}]${peek}`);
+}
+for (const k of ASSUMED) {
+  const seen = captured.filter((e) => k in e).length;
+  console.log(`assumed ${k.padEnd(16)} present on ${seen} of ${captured.length} captured events`);
 }
 const capturedToolIds = new Set(captured.map((e) => e.tool_use_id).filter(Boolean));
 console.log('tool_use ids: transcript', transcriptToolIds.size, 'captured', capturedToolIds.size,

@@ -47,9 +47,9 @@
 # in ~/.claude/skills/bug-hunt/SKILL.md, the same provenance as FINDING_LENSES.
 # IT CARRIES NEITHER `failure_scenario` NOR `catchable_by`, and this comment is where that is said
 # rather than a `judged` line, for a MEASURED reason (asc-my84). Adding `judged:` to this file moves
-# its hash: core hashes the whole parsed document (packages/core/src/handler.ts:1148), so a key that
+# its hash: core hashes the whole parsed document (packages/core/src/handler.ts), so a key that
 # emits nothing still changes the handler's identity, and the entry key carries that hash
-# (packages/cli/src/typed-handlers.ts:252). A new identity means the next ingest re-runs this handler
+# (packages/cli/src/typed-handlers.ts). A new identity means the next ingest re-runs this handler
 # over the entire corpus and writes every row again. Measured 2026-09-28, `asc ingest claude-code
 # --dry-run`: with `judged: [failure_scenario, catchable_by]` present, `entry review_finding 65 new,
 # 11 rejected`; with the line absent, `entry review_finding none`. So declaring the absence

@@ -820,7 +820,7 @@ describe('model.context', () => {
       assistant([{ id: 't1', name: 'Read' }], 'm1', 'deepseek-v4.1-flash:cloud', '2.1.283'),
     ]);
     // `agent.spawn.model` spells this same model `deepseek-v4.1-flash`. Two fields spelling one
-    // model differently is why the field is a string and not an enum (derived-types.ts:153).
+    // model differently is why the field is a string and not an enum (derived-types.ts).
     expect(contexts(events)[0]?.['model']).toBe('deepseek-v4.1-flash:cloud');
   });
 

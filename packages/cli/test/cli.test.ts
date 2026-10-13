@@ -268,7 +268,7 @@ describe('a reader that closes the pipe early', () => {
  * **What this block does NOT prove, corrected 2026-09-14.** It used to end by saying that removing
  * `installPipeGuards()` from `src/bin.ts` (mutation M8) "now fails here". It does not, and the
  * reason is a fact about the dependency rather than about the test: **oclif installs its own EPIPE
- * handler on stdout** -- `@oclif/core/lib/command.js:57`, `process.stdout.on('error', err => { if
+ * handler on stdout** -- `@oclif/core/lib/command.js`, `process.stdout.on('error', err => { if
  * (err.code === 'EPIPE') return; throw err })`, registered when the `Command` class module loads.
  * That is the same decision `guardBrokenPipes` makes, reached independently of ascend. Measured
  * with a tap on the event: `TAP-stdout EPIPE` fires during `asc query ... | head -c 1`, and the

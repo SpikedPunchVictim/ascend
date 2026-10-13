@@ -39,7 +39,7 @@
  * resolution of a conflict the store refuses on purpose (`asc-4if`).
  */
 
-import { canonicalName, GUIDANCE_FIELDS, type Bump, type Rename } from '@ascend/core';
+import { canonicalName, type Bump, type Rename } from '@ascend/core';
 import {
   findType,
   listTypes,
@@ -92,10 +92,11 @@ export interface RegisterDocumentRunOptions extends RegisterDocumentOptions {
  * Register `document` inside the caller's own producing sequence, and report what it did.
  *
  * **`db` is the sequence's transaction handle, and it is needed rather than passed for symmetry.**
- * `droppedGuidance` below reads version N-1 to warn about a guidance field this version drops, and
- * after the flip the handle a command holds on the way in is read-only -- and would not see N-1
- * beside the N this call just minted even if it were not. So the read comes from the transaction
- * that is minting, which is what `writeProducedLines` hands its body (asc-q4p, closed by shape).
+ * `proseWrittenToAnOlderVersion` below reads the latest version to name a write that landed on one
+ * that is not it, and after the flip the handle a command holds on the way in is read-only -- and
+ * would not see the version this call just minted even if it were not. So the read comes from the
+ * transaction that is minting, which is what `writeProducedLines` hands its body (asc-q4p, closed
+ * by shape).
  *
  * **No `dryRun` is passed to the producer, and it could not be.** `registerType` refuses
  * `dryRun: true` inside a caller-managed transaction (`registry.ts`), and a suppressed INSERT would
@@ -144,12 +145,10 @@ export function registerDocumentVia(
     renames: result.renames,
     warnings: [
       ...result.warnings,
-      ...(result.outcome === 'created'
-        ? droppedGuidance(document, db, result.name, result.version)
-        : []),
-      // The mirror of the warning above, asked of the same write: `droppedGuidance` speaks when a
-      // NEW version lost something, this when an OLD one silently gained it. Only when prose was
-      // actually written -- an idempotent re-run changes nothing and stays quiet.
+      // The mirror of the version-bump rule (`dogfood/0075`): `registerType` carries a version's
+      // prose forward, so this speaks when an OLD version silently gained it -- prose written to a
+      // row no surface names. Only when prose was actually written; an idempotent re-run changes
+      // nothing and stays quiet.
       ...(result.proseUpdated ? proseWrittenToAnOlderVersion(db, result.name, result.version) : []),
       // Said out loud, because a document's `status` is easy not to notice: it usually arrives one
       // command earlier, through `asc types export` of a type someone retired, and the registration
@@ -189,38 +188,6 @@ export function registerDocument(
 }
 
 /**
- * One warning per guidance field version N-1 declared and this document, minting version N, does
- * not (asc-6jf).
- *
- * A warning, not a carry-forward. A new version takes only what its document says -- as
- * `description` and `record_when` always have -- and inheriting guidance alone would be a rule a
- * reader has to know. Omission is also the only way a document can DROP a field, so copying it
- * forward would make "this version needs no review_after" unsayable. What was wrong was the
- * silence: a shape bump from a hand-written document took `review_after` away, and with it the
- * readiness line in `asc types brief` and the `asc record` advisory, and nothing said so.
- *
- * Computed on a dry run too, because that is when the document can still be fixed.
- */
-function droppedGuidance(
-  document: TypeDocument,
-  db: SqlDatabase,
-  name: string,
-  version: number,
-): string[] {
-  if (version <= 1) return [];
-  const previous = findType(db, name, version - 1);
-  if (previous === undefined) return [];
-  return GUIDANCE_FIELDS.filter(
-    (field) => previous.guidance[field] !== undefined && document[field] === undefined,
-  ).map(
-    (field) =>
-      `version ${String(version)} of ${name} declares no ${field}; version ${String(version - 1)} ` +
-      `declared ${JSON.stringify(previous.guidance[field])}. A new version keeps only what its ` +
-      `document says, so it has none -- add ${field} to the document and define it again to keep it.`,
-  );
-}
-
-/**
  * One warning when this write replaced the prose of a version that is no longer the latest
  * (asc-w0b2).
  *
@@ -241,18 +208,16 @@ function droppedGuidance(
  * line for that case. A `created` registration is the latest version by construction and cannot
  * reach here either.
  *
- * Computed on a dry run too, because that is when the document can still be fixed -- the argument
- * `droppedGuidance` makes for itself, and why `asc types define --dry-run` reports the version it
- * WOULD write to rather than the latest.
+ * Computed on a dry run too, because that is when the document can still be fixed -- which is why
+ * `asc types define --dry-run` reports the version it WOULD write to rather than the latest.
  */
 function proseWrittenToAnOlderVersion(db: SqlDatabase, name: string, version: number): string[] {
-  // No version argument, so `findType` answers the latest row -- the same call `droppedGuidance`
-  // makes on the line above, one version up.
+  // No version argument, so `findType` answers the latest row.
   const latest = findType(db, name);
   // `findType` answers `undefined` rather than throwing when a name is not registered, so its type
   // requires the guard. It cannot fire here: `version` came out of the table this reads. Answering
-  // `[]` is what `droppedGuidance` does with its own, rather than inventing a second behaviour for
-  // a case neither can reach.
+  // `[]` is the store's own convention for an unreachable row rather than a second behaviour
+  // invented for a case this cannot reach.
   if (latest === undefined || latest.version === version) return [];
   return [
     `this document's shape is version ${String(version)} of ${name}, so that is where its prose ` +

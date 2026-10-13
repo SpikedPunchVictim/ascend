@@ -175,7 +175,7 @@ export function makeWritesSynchronous(streams: readonly unknown[]): number {
  * would lose the tail the same way.
  *
  * **On stdout the EPIPE half of this duplicates oclif, and that was measured rather than assumed.**
- * `@oclif/core/lib/command.js:57` registers `process.stdout.on('error', ...)` with exactly this
+ * `@oclif/core/lib/command.js` registers `process.stdout.on('error', ...)` with exactly this
  * decision -- return on `EPIPE`, rethrow anything else -- when the `Command` class module loads. So
  * the broken-pipe half of the guard is load-bearing on **stderr**, where a tap on the event showed no
  * other listener, and redundant on stdout, where ascend's exit status and stderr are identical with

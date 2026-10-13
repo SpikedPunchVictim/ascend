@@ -2,7 +2,7 @@
  * Spike asc-igg8 / (d) — how large is the largest single event the log would hold?
  *
  * (d) asks whether the log is a store type or its own file. asc-8uzh landed a per-record cap of
- * `MAX_BYTES_PER_RECORD = 1 MiB` that REFUSES rather than rolls (`jsonl-files.ts:152`), so if a single
+ * `MAX_BYTES_PER_RECORD = 1 MiB` that REFUSES rather than rolls (`jsonl-files.ts`), so if a single
  * normalized event can exceed 1 MiB, a store type cannot hold it without hitting a refusal -- and the
  * answer decides (d) rather than being an implementation detail of it.
  *
@@ -14,7 +14,7 @@ import { homedir } from 'node:os';
 
 const CUTOFF = Date.parse('2026-10-03T09:08:02Z');
 const DERIVE_VERSION = 11;
-const STORE_CAP = 1_048_576; // MAX_BYTES_PER_RECORD, packages/store/src/jsonl-files.ts:152
+const STORE_CAP = 1_048_576; // MAX_BYTES_PER_RECORD, packages/store/src/jsonl-files.ts
 const DIR = join(homedir(), '.claude', 'projects', '-Users-spikedpunchvictim-projects-ascend');
 
 const files = [];

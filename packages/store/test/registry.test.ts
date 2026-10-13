@@ -1387,6 +1387,124 @@ describe('guidance (asc-bli.3): stored beside the shape, never inside it', () =>
 });
 
 /**
+ * `asc-4f2w`: prose is stored per VERSION while every reader reads it off the LATEST one.
+ *
+ * A bump that carried nothing forward left the prose on the row it replaced -- not lost, not
+ * deleted, simply unreachable -- and the brief a recorder reads then rendered the type exactly like
+ * `hand_empty`, the one type that is deliberately without guidance. That is why nothing caught it:
+ * it is an absence, and an absence reads as design (`dogfood/0075`).
+ *
+ * **The carry-forward is per field, not per block**, and that is the difference between closing this
+ * and closing half of it. Carrying a column wholesale when the write declared nothing would still
+ * strand every field a *partial* write left out -- v2 declaring a new `purpose` and dropping the
+ * other three is `dogfood/0075` one field at a time rather than four at once. So a field the write
+ * names wins and a field it does not name is inherited, which is `updateTypeProse`'s rule for an
+ * edit (`null` clears, `undefined` keeps), stated once and applied on both paths.
+ */
+describe('a version bump carries the superseded prose forward (asc-4f2w)', () => {
+  const GUIDANCE = {
+    purpose: 'why reviews are recorded',
+    analysis_questions: ['which kinds of review find the most?'],
+    interpretation_notes: 'count is findings, not comments',
+    review_after: 20,
+  } as const;
+
+  /** The v1 shape with one more optional property, so the second registration is a minor bump. */
+  const bumped = (): TypeSpec => spec([{ name: 'reviewer', type: 'string' }]);
+
+  it("inherits the previous version's guidance when the new version declares none", () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT, guidance: GUIDANCE });
+      registerType(store.db, bumped(), { registeredAt: LATER });
+
+      expect(findType(store.db, 'review_completed', 2)?.guidance).toEqual(GUIDANCE);
+      // The superseded row is untouched: the carry-forward COPIES, it does not move.
+      expect(findType(store.db, 'review_completed', 1)?.guidance).toEqual(GUIDANCE);
+    });
+  });
+
+  it('merges field by field: a declared field wins and the fields it omits are kept', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT, guidance: GUIDANCE });
+      registerType(store.db, bumped(), {
+        registeredAt: LATER,
+        guidance: { purpose: 'why v2 exists', review_after: 5 },
+      });
+
+      // Two of five lines declared, the rest inherited. Had the block been replaced wholesale, the
+      // three lines this write did not mention would be sitting on version 1, unreadable -- which is
+      // the defect, not a smaller version of it.
+      expect(findType(store.db, 'review_completed', 2)?.guidance).toEqual({
+        ...GUIDANCE,
+        purpose: 'why v2 exists',
+        review_after: 5,
+      });
+    });
+  });
+
+  it('invents no guidance for a type that never declared any', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), { registeredAt: AT });
+      registerType(store.db, bumped(), { registeredAt: LATER });
+
+      expect(findType(store.db, 'review_completed', 2)?.guidance).toEqual({});
+      expect(
+        store.db.prepare('SELECT guidance_json FROM entry_types WHERE version = 2').get()?.[
+          'guidance_json'
+        ],
+      ).toBeNull();
+    });
+  });
+
+  it('carries description and record_when forward the same way they are read', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), {
+        registeredAt: AT,
+        description: 'why this type exists',
+        recordWhen: 'a review finishes',
+      });
+      registerType(store.db, bumped(), { registeredAt: LATER });
+
+      const v2 = findType(store.db, 'review_completed', 2);
+      expect(v2?.description).toBe('why this type exists');
+      expect(v2?.recordWhen).toBe('a review finishes');
+    });
+  });
+
+  it('carries per-property prose forward, except for a property the bump removed', () => {
+    withStore((store) => {
+      registerType(store.db, spec(), {
+        registeredAt: AT,
+        prose: { count: 'how many findings', summary: "the reviewer's own words" },
+      });
+
+      // A minor bump in the same write as a declared entry: the declared text wins for its own
+      // property and the entry it does not mention is inherited, the per-key rule the guidance block
+      // above follows.
+      registerType(store.db, bumped(), {
+        registeredAt: LATER,
+        prose: { count: 'how many findings, restated' },
+      });
+      expect(findType(store.db, 'review_completed', 2)?.prose).toEqual({
+        count: 'how many findings, restated',
+        summary: "the reviewer's own words",
+      });
+
+      // A further bump removing `summary`: prose keyed on a property that is gone cannot be carried,
+      // and the store refuses such a key at the door rather than storing prose nothing can show.
+      registerType(
+        store.db,
+        { name: 'review_completed', properties: [{ name: 'count', type: 'integer' }] },
+        { registeredAt: LATER },
+      );
+      expect(findType(store.db, 'review_completed', 3)?.prose).toEqual({
+        count: 'how many findings, restated',
+      });
+    });
+  });
+});
+
+/**
  * `asc-9xi0`: a struck entry stops being counted, and the struck count is shown beside.
  *
  * **The defect these tests close is that nothing read a strike.** `listInvalidations` had exactly

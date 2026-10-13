@@ -233,7 +233,7 @@ const REVIEW = {
  * states its primary path with that qualifier, and this line's first rendering had dropped it.
  *
  * **The command is the operand form, and that is the correction `asc-fkp1` made.** E12.13 rendered
- * `ARCHITECTURE.md:333`'s `--json -` spelling -- which `record.ts:15-26` records as a deviation the
+ * `ARCHITECTURE.md`'s `--json -` spelling -- which `record.ts` records as a deviation the
  * CLI had already abandoned, because `--json` is the versioned-output flag and cannot also mean
  * "read JSON here". `asc record --help` and both `README.md` examples teach `asc record <type> -`,
  * and this line now matches them.
@@ -647,7 +647,7 @@ describe('asc types brief', () => {
   });
 
   it('leaves --json a rows contract, with the command line out of it', () => {
-    // The asymmetry is deliberate and it is `output.ts`'s own reasoning (`output.ts:468`: "A
+    // The asymmetry is deliberate and it is `output.ts`'s own reasoning (`output.ts`: "A
     // consumer knows which command it ran"). A script that asked for `--json` already knows how to
     // invoke the tool; the reader who may not is the model reading the text payload, and it is the
     // only reader the extra line is for.

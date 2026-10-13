@@ -780,7 +780,7 @@ function nullFrom(stats: number[], iterations: number): PermutationNull {
  *
  * THE TWELVE NUMBERS IN THIS TABLE ARE CORRECTED (2026-10-05, asc-h7nq). This comment published a
  * provisional table -- 310.58 / 355.55 / 0.8594, 329.28 / 399.01 / 0.9078, 181.71 / 190.86 / 0.6053,
- * 85.34 / 75.19 / 0.2685 -- that `IMPLEMENTATION_PLAN.md:4377` records as WRONG and superseded,
+ * 85.34 / 75.19 / 0.2685 -- that `IMPLEMENTATION_PLAN.md` records as WRONG and superseded,
  * because none of those four observed statistics could be reproduced from `spike/corpus.db` by any
  * `weekday` derivation or column choice tried. Every value above is what
  * `node spike/spike-controls.mjs` prints today, and the four observed statistics agree exactly with

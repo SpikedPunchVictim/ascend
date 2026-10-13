@@ -390,7 +390,7 @@ export function refreshTypeViews(db: SqlDatabase, typeName: string): RefreshRepo
     // the ones `recordedAtClockWarning` names as this view's real event clocks (`asc-bn0`). A
     // property that is `timestamp` in one version of the family and something else in another
     // cannot arise without a major bump: `property_retyped` carries `bump: 'major'`
-    // (`packages/core/src/diff.ts:134`, whose own note is that the worst case is "not a failed
+    // (`packages/core/src/diff.ts`, whose own note is that the worst case is "not a failed
     // read but a successful wrong one"), and this loop is already scoped to one major family. So
     // checking "any version in the family" rather than "the newest one" answers the same question
     // either way and does not need to pick a version to trust.

@@ -10,7 +10,7 @@ import {
 } from '../src/index.js';
 
 /**
- * The two controls `docs/evidence/EV-patterns.md:126-138` names as required additions to E7.
+ * The two controls `docs/evidence/EV-patterns.md` names as required additions to E7.
  *
  * WHY THIS FILE EXISTS AT ALL, in EV-patterns' own words (`:151-153`): *"the two controls proposed
  * above are untested designs, not measured remedies."* A control nobody has measured is a claim, so
@@ -208,7 +208,7 @@ function blockedRows(cells: readonly (readonly [string, string, string, number])
  * the corpus actually looks like: `project x weekday` observes 327.60 against a null median of
  * 398.41. Mirroring that shape rather than contriving a high observed value is the difference between
  * testing the control and testing an arithmetic. (Corrected 2026-10-05, asc-h7nq: this line read
- * `310.58` / `355.55`, from the provisional table `IMPLEMENTATION_PLAN.md:4377` records as WRONG.
+ * `310.58` / `355.55`, from the provisional table `IMPLEMENTATION_PLAN.md` records as WRONG.
  * These are the values `node spike/spike-controls.mjs` prints. See `dogfood/0065`.)
  */
 const CONFOUND = blockedRows([

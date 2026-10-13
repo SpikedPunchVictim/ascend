@@ -587,7 +587,7 @@ describe('asc handlers check: handlers/review-finding.yaml', () => {
         }
       ).fields;
     // `line` comes back as TEXT, and that is the DSL's rule rather than this handler's choice:
-    // every reference is rendered through `String(raw)` (packages/core/src/handler.ts:566), so a
+    // every reference is rendered through `String(raw)` (packages/core/src/handler.ts), so a
     // numeric event field reaches a row as a string. The store keeps the number -- the deriver
     // reads it with `num` -- so the log and the entries disagree about the type of the same fact,
     // which is the same asymmetry `reviewer_model` has, one field over. Asserted as text so the
@@ -601,10 +601,10 @@ describe('asc handlers check: handlers/review-finding.yaml', () => {
       verdict: 'CONFIRMED',
       level: 'standard',
       // Carried since the header's claim that the log cannot hold it was corrected (bug-hunt #12).
-      // The event declares `reviewer_model` on the kind (packages/core/src/event.ts:167) and the
-      // normalizer sets it unconditionally (packages/adapter-claude-code/src/normalize.ts:409), so
+      // The event declares `reviewer_model` on the kind (packages/core/src/event.ts) and the
+      // normalizer sets it unconditionally (packages/adapter-claude-code/src/normalize.ts), so
       // it reaches every row; the store ENTRY is the side that omits it when a record has no model
-      // (packages/adapter-claude-code/src/derive.ts:1489).
+      // (packages/adapter-claude-code/src/derive.ts).
       reviewer_model: 'claude-sonnet-5',
     });
     // Absent, not zero and not empty: a finding is not always line-anchored, and an empty string

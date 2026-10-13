@@ -34,7 +34,7 @@ function redact(value) {
   return value;
 }
 
-/** `argv` cut to 4, the shape `asc-bolz`'s slim log actually kept (`replay.mjs:181-182`). */
+/** `argv` cut to 4, the shape `asc-bolz`'s slim log actually kept (`replay.mjs`). */
 function slim(input) {
   const out = { ...input };
   if (typeof out.command === 'string') {

@@ -115,7 +115,7 @@ describe('registering a scheme', () => {
     // `recordAnnotations`, `recordInvalidation`), so all three are checked here: the rule is one
     // rule, and a test that covered only the first would not have noticed two exemptions.
     // Measured 2026-10-07: all 3905 `created_at` values in the store's annotation files already
-    // carry `.mmmZ`, and every pass's timestamp arrives through `base.ts:273`'s `toISOString()`, so
+    // carry `.mmmZ`, and every pass's timestamp arrives through `base.ts`'s `toISOString()`, so
     // requiring the fixed form refuses nothing that exists.
     withStore((store) => {
       const ids = seed(store, 1);

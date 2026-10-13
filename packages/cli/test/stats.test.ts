@@ -853,9 +853,9 @@ describe('asc stats refuses a flag the running mode cannot reach', () => {
  * has the column, so the surface is what has to reach it.
  *
  * **THE FIXTURE VARIES `cwd` RATHER THAN `branch`, AND THAT IS THE ONLY LOCALITY THE BINARY CAN
- * WRITE.** `asc record` reads `cwd` from the process, project-relative (`record.ts:641-647`), so the
+ * WRITE.** `asc record` reads `cwd` from the process, project-relative (`record.ts`), so the
  * directory a batch is recorded FROM is the value that lands in the envelope -- `repo`, `git_sha`
- * and `branch` are deliberately not derived there at all (`record.ts:52-54`), and only
+ * and `branch` are deliberately not derived there at all (`record.ts`), and only
  * `asc ingest claude-code` fills those from a transcript. So the spawn directory is the lever, and
  * it exercises the same envelope branch of `valueColumn` that `branch` does on the real corpus.
  */

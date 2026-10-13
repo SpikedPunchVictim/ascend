@@ -290,3 +290,257 @@ describe('source hygiene: no tracked source file carries an invisible character'
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * A citation names a file AND a line, and the line is the part that goes stale.
+ *
+ * dogfood/0077 measured that rather than asserting it: of 7 citations followed by hand, 5 pointed
+ * at the wrong line. A stale citation and a fresh one look identical -- the file it names is real
+ * and only the number is wrong -- so a reader who follows one learns something false with nothing
+ * to signal it. The owner's standing rule says the same thing from the other end: no line numbers
+ * in a bead or in documentation.
+ *
+ * The sweep (asc-3sfk) removed 116 of them from comment lines across 57 tracked files. This
+ * asserts the class cannot return, because a sweep is a moment and a rule nothing checks is a rule
+ * that decays.
+ *
+ * WHERE A CITATION IS READ AS A CLAIM. Every line of a file whose text is all about this tree --
+ * shipped source, and markdown, which has no comment syntax at all -- and the comment text of
+ * everything else. Two channels are read as DATA rather than as claims, so only their comments are
+ * scanned: a test file, and a spike script. A fixture has to carry a path and a line number to be
+ * the fixture it is -- a review table, a stack frame, a tool's own output -- whether it sits in
+ * packages/core/test/handler-table.test.ts or in spike/ladder/probe.mjs (30 such lines today,
+ * every one a string). A rule over them would report 30 false positives and teach the next reader
+ * to ignore the rule.
+ *
+ * The STRING channel in shipped source is in scope because of what leaving it out cost. The
+ * derive-version refusal in packages/cli/src/event-log.ts held a citation in a user-facing error,
+ * saying the rule lived at a line of event.ts -- a claim about this tree that a user reads, that a
+ * comment-only rule cannot see, and the only one of its kind in the tree. A guard that misses the
+ * one live instance of the class it exists for is a guard with a hole it already knows about.
+ */
+
+/** Extensions a citation can name. Every one is checked, so widening this is a decision. */
+const CITED_EXTENSIONS = 'ts|tsx|js|mjs|cjs|yaml|yml|json|md';
+
+const CITATION = new RegExp(
+  `([A-Za-z0-9_./@-]+\\.(?:${CITED_EXTENSIONS})):\\d+(?:[-,]\\s*\\d+)*`,
+  'gu',
+);
+
+/**
+ * Paths where a citation is evidence rather than guidance.
+ *
+ * dogfood/ and docs/evidence/ are RECORDS: each says what was found on the day it was written and
+ * is immutable, so a citation inside one is part of the finding -- several of them are the wrong
+ * citations dogfood/0077 is about. Rewriting one would falsify the record. 61 tracked records hold
+ * a citation today, so this exclusion is load-bearing rather than decorative, and the control
+ * below asserts that rather than trusting it. A spike's FINDINGS.md is the same kind of artifact:
+ * spike/event-log/FINDINGS.md is what event-log.ts cites for its retention claim.
+ */
+const RECORD_PATH = /^(?:dogfood|docs\/evidence)\//u;
+const FINDINGS_PATH = /^spike\/[^/]+\/FINDINGS\.md$/u;
+
+/**
+ * A mutation spec: fixture text whose prose cannot be separated from it.
+ *
+ * A spec's `find` and `replace` ARE the text a mutant plants, so a spec that exercises THIS guard
+ * holds a citation by construction and cannot avoid it -- the spec that does is the reason this
+ * constant exists. It is excluded from the scan outright rather than read as a fixture channel,
+ * because a JSON file has no comment syntax: the comment-only rule cannot tell a spec's fixture
+ * strings from its prose, and it reads a line as comment text whenever a `//` appears anywhere in
+ * it -- which a planted `//` comment line does. Measured: that is what kept this check red on
+ * lines 8 and 20 of the spec after the first attempt at this carve-out, with line 20 being the
+ * mutant that plants a citation INTO a comment and line 8 the one that plants it into a string.
+ *
+ * The cost is stated rather than glossed: a spec's `_` note and its `why` entries are prose, and
+ * this exclusion stops them being scanned. Of 22 specs, exactly one holds a citation, both of its
+ * occurrences sit in `find` fields, and none holds one in its prose -- so nothing is hidden today.
+ * The control below is what keeps that a measurement rather than a hope.
+ */
+const SPEC_PATH = /^scripts\/mutations\//u;
+
+/**
+ * A file whose text reproduces other text: a test, or a spike script.
+ *
+ * Only its comments are read, because the rest of it is a fixture -- a review table, a stack
+ * frame, a tool's own output -- and a fixture is not a claim about this tree even when it names a
+ * path and a line.
+ */
+const FIXTURE_CHANNEL = /(?:^|\/)(?:tests?|__tests__)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|^spike\//u;
+
+/** Markdown has no comment syntax, so the whole file is prose. */
+const PROSE_FILE = /\.md$/u;
+
+/** Whether every line of `file` is a claim about the tree, rather than only its comment text. */
+const wholeFile = (file: string): boolean => PROSE_FILE.test(file) || !FIXTURE_CHANNEL.test(file);
+
+/**
+ * Whether `line` is comment text.
+ *
+ * A leading `//`, `/*` or `*` continuation is the obvious case, and `#` covers a YAML or shell
+ * comment. The trailing case is the one the first sweep missed: a constant followed by a comment
+ * naming jsonl-files.ts is a citation in a comment as much as a line that opens with one, and
+ * spike/event-log/record-size.mjs held one -- measured AFTER that sweep had reported the tree
+ * clean. `//` must follow whitespace or open the line, so a `https://` URL is not mistaken for a
+ * comment.
+ */
+const isComment = (line: string): boolean => {
+  if (/^\s*(?:\/\/|\/\*|\*|#)/u.test(line)) return true;
+  return /(?:^|\s)\/\//u.test(line);
+};
+
+/** Every citation `line` holds, as the text that matched. */
+const citationsIn = (line: string): readonly string[] => line.match(CITATION) ?? [];
+
+/**
+ * The citations in `source` that read as claims about this tree, each as `<label>:<line> cites
+ * <text>`.
+ *
+ * `whole` selects the whole-file rule (see `wholeFile`); otherwise only comment text is read.
+ * Returned as a list rather than a boolean so a failure names the file, the line and the citation
+ * -- the three things needed to act on it, the same shape `invisibleOffenders` returns.
+ */
+const citationOffendersIn = (source: string, label: string, whole: boolean): readonly string[] =>
+  source.split('\n').flatMap((line, index) => {
+    const found = whole || isComment(line) ? citationsIn(line) : [];
+    return found.length === 0 ? [] : [`${label}:${String(index + 1)} cites ${found.join(', ')}`];
+  });
+
+/** The tracked files whose citations would be claims about the current tree. */
+const citationScannedFiles = (): readonly string[] =>
+  trackedSourceFiles().filter(
+    (file) => !RECORD_PATH.test(file) && !FINDINGS_PATH.test(file) && !SPEC_PATH.test(file),
+  );
+
+/**
+ * A citation, built from parts rather than written out.
+ *
+ * Same reason as the invisible characters above: this file is scanned by the guard it defines, so
+ * a fixture spelling a citation in full would be one by the guard's own rule -- this file's
+ * comments are read -- and the check would be red on itself. Interpolating `CITE` keeps the
+ * literal out of every line here while the string a test builds still holds it.
+ */
+const CITE = 'event.ts:45';
+/** A comment marker, built for the same reason, and needed where one sits mid-string. */
+const MARKER = '//';
+
+describe('source hygiene: no tracked source file cites another by line', () => {
+  const files = citationScannedFiles();
+
+  it('reads a citation as a comment only where it is one', () => {
+    expect(isComment(`// a count moves when the version moves (${CITE})`)).toBe(true);
+    expect(isComment(`const CAP = 1_048_576; ${MARKER} a note`)).toBe(true);
+    expect(isComment(' * a docblock continuation')).toBe(true);
+    expect(isComment('# a handler comment')).toBe(true);
+    // A `//` inside a URL is not a comment marker, so the tail of one is not comment text.
+    expect(isComment("const url = 'https://host/x/a.ts:1';")).toBe(false);
+    // Nor is a plain code line.
+    expect(isComment(`throw new Error('the rule is at ${CITE}');`)).toBe(false);
+  });
+
+  it('reads a citation in a file whose text is a claim, and not one in a fixture', () => {
+    // The pinned case first, written out in full rather than derived from the constants above, for
+    // the reason the NUL control is: it names a shape that was MEASURED -- a leading `//` comment
+    // on a line about the derive version -- so narrowing the constants cannot leave this green
+    // while it detects nothing.
+    expect(
+      citationOffendersIn(`// a count moves when the version moves (${CITE})\n`, 'p.ts', false),
+    ).toEqual([`p.ts:1 cites ${CITE}`]);
+
+    // A trailing comment is comment text, and this is the case the first sweep missed.
+    expect(
+      citationOffendersIn(`const CAP = 1_048_576; ${MARKER} jsonl-files.ts:152\n`, 'p.ts', false),
+    ).toEqual(['p.ts:1 cites jsonl-files.ts:152']);
+
+    // A shipped source file's STRINGS are read too. This is the channel the one live error-string
+    // citation lived in; a comment-only rule cannot see it.
+    expect(
+      citationOffendersIn(`throw new Error('the rule is at ${CITE}');\n`, 'src/x.ts', true),
+    ).toEqual([`src/x.ts:1 cites ${CITE}`]);
+
+    // A test file's strings are NOT read: that channel is where the fixtures live.
+    expect(
+      citationOffendersIn(
+        "summary: 'src/state.ts:412 -- a separator is kept',\n",
+        'x.test.ts',
+        false,
+      ),
+    ).toEqual([]);
+
+    // Markdown is prose -- no comment syntax -- so every line is read, table row or not.
+    expect(citationOffendersIn('see `src/a.ts:3` for the check\n', 'README.md', true)).toEqual([
+      'README.md:1 cites src/a.ts:3',
+    ]);
+
+    // A range and a list are the same claim with more numbers in it -- the shape most of the 116
+    // removed sites had.
+    expect(citationOffendersIn('// pkg/a.ts:12-18 and pkg/b.ts:3, 9\n', 'p.ts', false)).toEqual([
+      'p.ts:1 cites pkg/a.ts:12-18, pkg/b.ts:3, 9',
+    ]);
+  });
+
+  it('names every extension a citation can carry, so the list cannot narrow unnoticed', () => {
+    // A pinned case first, and it is the shape a reviewer reaches for last: a citation naming a
+    // DOCUMENT rather than a source file, which is what dogfood/0028 holds. Narrowing the list by
+    // that one extension is a plausible edit, and it survived the first version of this suite.
+    expect(citationOffendersIn('// see ARCHITECTURE.md:333\n', 'p.ts', false)).toEqual([
+      'p.ts:1 cites ARCHITECTURE.md:333',
+    ]);
+
+    // Then the whole list walked. The pinned case cannot notice an extension ADDED to the list;
+    // the walk cannot notice the list emptied, which is why both are here -- the same pair, failing
+    // differently, that the invisible-character guard carries. Derived from `CITED_EXTENSIONS` on
+    // both sides is safe only because the pinned case above is not.
+    const extensions = CITED_EXTENSIONS.split('|');
+    const planted = extensions.map((extension) => `// see src/x.${extension}:7`);
+    const found = planted.flatMap((line) => citationOffendersIn(`${line}\n`, 'p.ts', false));
+    expect(found).toHaveLength(extensions.length);
+  });
+
+  it('scans a real number of files, so a broken enumerator cannot pass by scanning none', () => {
+    // The negative control for the check below, and the same one the invisible-character guard
+    // carries: `git ls-files` failing, the extension filter narrowing to the wrong thing, or the
+    // repo moving would all make the scan find nothing -- which is exactly what the check below
+    // calls success.
+    expect(files.length).toBeGreaterThan(150);
+  });
+
+  it('would fail on a record, so the exclusion is load-bearing rather than decorative', () => {
+    // Without the record exclusion this check is red the day it lands: 61 tracked records hold a
+    // citation, and dogfood/0028 holds the analysis proportion citation that dogfood/0077 measured
+    // wrong in all 28 of its occurrences. Asserted rather than left implicit, because an exclusion
+    // that never mattered is an exclusion nobody would notice removing.
+    const records = trackedSourceFiles().filter(
+      (file) => RECORD_PATH.test(file) || FINDINGS_PATH.test(file),
+    );
+    const wouldFail = records.filter(
+      (file) =>
+        citationOffendersIn(readFileSync(join(root, file), 'utf8'), file, wholeFile(file)).length >
+        0,
+    );
+    expect(wouldFail.length).toBeGreaterThan(10);
+  });
+
+  it('would fail on a mutation spec, so the spec exclusion is load-bearing', () => {
+    // Same shape as the record control above, and for the same reason: an exclusion that never
+    // mattered is an exclusion nobody would notice removing. It is not hypothetical here -- the
+    // spec that exercises this guard was tracked, the whole-file rule read its `find` as an
+    // offender, and this check went red on a tree that was otherwise clean. The reading below uses
+    // the whole-file rule deliberately: that is what the scan would apply if the spec were not
+    // excluded, which is the state this constant exists to keep it out of.
+    const specs = trackedSourceFiles().filter((file) => SPEC_PATH.test(file));
+    const wouldFail = specs.filter(
+      (file) => citationOffendersIn(readFileSync(join(root, file), 'utf8'), file, true).length > 0,
+    );
+    expect(wouldFail.length).toBeGreaterThan(0);
+  });
+
+  it('finds none of them in any tracked file', () => {
+    const offenders = files.flatMap((file) =>
+      citationOffendersIn(readFileSync(join(root, file), 'utf8'), file, wholeFile(file)),
+    );
+    // A list rather than a boolean, so a failure names the file, the line and the citation.
+    expect(offenders).toEqual([]);
+  });
+});

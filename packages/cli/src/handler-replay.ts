@@ -112,7 +112,7 @@ export interface LogHorizon {
    * A symlink is not counted: not following one is a decision the walk makes, not damage it
    * suffered, and a healthy corpus can hold one. `'ephemeral'` is a decision for the same reason
    * and is reported as its own fact (`ephemeral_skipped`). `'unchanged'` cannot arise on this path
-   * at all: the reader records it only against a `knownFiles` cursor (`reader.ts:480`), and a
+   * at all: the reader records it only against a `knownFiles` cursor (`reader.ts`), and a
    * replay passes none -- so it is named here as a reason this count excludes, not as a row.
    */
   readonly unreadable: number;
@@ -241,10 +241,10 @@ export async function replayHandlers(
     );
     files = totals.files;
     // Paths, not just files. `totals.failures` is per-FILE incomplete reads; a directory the walk
-    // may not enter is recorded by the reader instead (`reader.ts:253-257`, reason `'unreadable'`)
+    // may not enter is recorded by the reader instead (`reader.ts`, reason `'unreadable'`)
     // and was counted here by nothing -- so a replay could report a clean sweep over a corpus it
     // had not finished reading, while `asc ingest` over that same corpus reported the events
-    // (`claude-code.ts:933`). Two readers of one corpus disagreeing about whether anything was
+    // (`claude-code.ts`). Two readers of one corpus disagreeing about whether anything was
     // left out is the whole of this number's job.
     //
     // `'symlink'` is deliberately NOT counted. Not following one is a decision the walk makes --

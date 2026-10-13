@@ -95,7 +95,7 @@ export default class TypesCapture extends BaseCommand {
       // `scanned` is DISCOVERED transcripts, so it is non-zero over a corpus where nothing could
       // be opened -- and the warning below would then report "nothing reads as X yet" about files
       // that were never read. Said first, and separately, so that conclusion is never reached
-      // without this beside it. `asc ingest` reports the same failures (`claude-code.ts:908`).
+      // without this beside it. `asc ingest` reports the same failures (`claude-code.ts`).
       if (unreadable > 0) {
         this.warn(
           `${String(unreadable)} transcript path(s) could not be read, so this plan is over a ` +

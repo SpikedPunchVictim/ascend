@@ -21,7 +21,7 @@
 // did not reproduce the command's own output. A published p is reproducible only from (seed, row
 // order); see the same point made on `permutationNull` in `packages/analysis/src/association.ts`.
 //
-// The 400-iteration arm is the one that matters for reproduction: `spike/spike-patterns.mjs:86`
+// The 400-iteration arm is the one that matters for reproduction: `spike/spike-patterns.mjs`
 // produced every shuffled p in `docs/evidence/EV-patterns.md` at `{ iterations: 400, seed: 12345 }`,
 // which is why that table's floor is 0.0025 = 1/401 and not the 1/5001 the record's own Confidence
 // section states.

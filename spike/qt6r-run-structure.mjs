@@ -5,7 +5,7 @@
 //   Q1. Does ANY live column actually repeat in long consecutive runs within a session? The bead's
 //       anchor (6,395 `attributionSkill` lines collapsing to 87 activations) is a measurement of the
 //       TRANSCRIPT CORPUS, and the adapter already collapses that run at ingest (`flushRun`,
-//       derive.ts:1279; derived-types.ts:37 records the 87). So the anchor shows the mechanism is
+//       derive.ts; derived-types.ts records the 87). So the anchor shows the mechanism is
 //       real, not that the live store still contains the defect. If no live column has the structure,
 //       the check has no live case to fire on and the acceptance has to be anchored differently.
 //
@@ -23,7 +23,7 @@
 //
 //   Q3. Does the ORDER matter? `recorded_at` is when ascend INGESTED the entry; `occurred_at` is
 //       when the event happened, and during a backfill of two years of transcripts the two are
-//       wildly different (derived-types.ts:76-82). Runs are a property of an order, so if the two
+//       wildly different (derived-types.ts). Runs are a property of an order, so if the two
 //       orders disagree the detector must say which one it used.
 //
 // READ PATH: `openIndex` / `entryIds` / `findEntry`, the command's own path. Read-only.

@@ -1,7 +1,7 @@
 /**
  * Spike asc-igg8 / Q3 — do concurrent appends to one file interleave?
  *
- * The exposure addendum (`spike/exposure/FINDINGS.md:125`) declares this "Unmeasured", and it is the
+ * The exposure addendum (`spike/exposure/FINDINGS.md`) declares this "Unmeasured", and it is the
  * failure that makes a live log *quietly* wrong: two hook invocations appending at once, one line split
  * across two `write()` calls, and the result is JSONL that parses as garbage rather than failing loudly.
  *

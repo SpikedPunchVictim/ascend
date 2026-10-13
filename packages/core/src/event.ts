@@ -15,6 +15,15 @@
  * session id, so `session_id` alone merges two conversations. `seq` and `call` count within one
  * stream, and every window is defined over `call` within one stream -- never over file order or
  * timestamps (asc-6ola.5, requirement (b)).
+ *
+ * PER-RECORD FACTS ONLY, IN THE DOCBLOCKS BELOW (asc-mg1b). What is said of a field here is what
+ * is true of ONE record: what the field means, which record carries it, how the adapter sets it.
+ * A FREQUENCY claim about a population -- *always*, *never*, *every*, *most*, *usually*, *absent
+ * on* -- needs the sweep it came from named beside it, and a claim with no sweep is removed rather
+ * than softened. `dogfood/0079` is the reason this is written down: `hook.delivery`'s docblock
+ * stated three properties of the population it would fire on, from three records read only to work
+ * out the field's *type*, and all three were false the first time the corpus was counted. The type
+ * generalises from a handful of records; the values do not.
  */
 
 /** A field's value type, as the loader checks a handler's literal against it. */
@@ -58,7 +67,7 @@ export const ENVELOPE_FIELDS: Readonly<Record<string, EventFieldType>> = {
 export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventFieldType>>>> = {
   /** The user's own message. */
   'prompt.submit': { text: 'string' },
-  /** `skill` is the skill a skill-loading call names, and is absent on every other call. */
+  /** `skill` is the skill a skill-loading call names. */
   'tool.use.start': { tool: 'string', id: 'string', role: 'string', skill: 'string' },
   /** `is_error` is the harness's flag, kept under the harness's name. It is not an exit status. */
   'tool.use.end': { tool: 'string', id: 'string', role: 'string', is_error: 'boolean' },
@@ -117,8 +126,7 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
   },
   /**
    * The model and harness version serving this stream, emitted when either first appears or
-   * changes (asc-6ola.10). It is the stratification key for a holdout comparison, because
-   * compliance differed by model.
+   * changes (asc-6ola.10). It is the stratification key for a holdout comparison.
    *
    * Both are STRINGS, never enums -- the same `VOCABULARY_IS_NOT_OURS` argument as `agent_type`,
    * and with a measured instance of why: one model is spelled `deepseek-v4.1-flash` here and

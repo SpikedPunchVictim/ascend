@@ -56,7 +56,7 @@ export function propertySchema(spec: PropertySpec): z.ZodTypeAny {
       // ISO 8601, stored as a string so the JSON stays readable and sortable. UTC only.
       //
       // This read `{ offset: true }` and said "offsets are allowed so a recorder is not forced to
-      // normalize before writing" -- while `profile.ts` promised, and `store/recorder.ts:200`
+      // normalize before writing" -- while `profile.ts` promised, and `store/recorder.ts`
       // already refused offsets on its own column precisely because the promise would otherwise be
       // false. `recorded_at` is compared as text and so is a property's value, so the same rule
       // belongs in both places: `2026-09-11T10:00:00+02:00` is a LATER instant than

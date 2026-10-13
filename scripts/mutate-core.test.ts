@@ -3,11 +3,13 @@ import {
   applyMutant,
   asRecord,
   executed,
+  killerArgs,
   literalPattern,
   parseArgs,
   repairVerdict,
   resolveSpecPath,
   validateSpec,
+  zeroCause,
 } from './mutate.mjs';
 
 /**
@@ -102,6 +104,92 @@ describe('literalPattern()', () => {
     expect(literalPattern('writes the index LAST, so a failed write leaves nothing to read')).toBe(
       'writes the index LAST, so a failed write leaves nothing to read',
     );
+  });
+
+  it('escapes a backslash, so a name carrying one is matched as text and not swallowed', () => {
+    // The one member of the class nothing else here covers. A name with a `\` is read by the regex
+    // engine as the start of an escape, so `\ ` becomes a space and the pattern stops matching the
+    // name it was written from -- the too-narrow direction, arriving silently.
+    const name = 'leaves a \\ in the name';
+
+    expect(literalPattern(name)).toBe('leaves a \\\\ in the name');
+    expect(new RegExp(literalPattern(name)).test(name)).toBe(true);
+  });
+});
+
+describe('killerArgs()', () => {
+  /**
+   * **THE ONE LINE THE FIX LIVES ON.** `literalPattern` being correct buys nothing if the runner hands
+   * vitest the unescaped name, and that is the half of `dogfood/0076` that was silent: a `.` in a
+   * killer's name matched any character, so a *different* test could certify the mutant and the run
+   * came back green. This is that seam, reachable from a test precisely because the argv is a pure
+   * decision and `runKiller` is not.
+   */
+  it('hands vitest the escaped pattern, not the bare name', () => {
+    expect(killerArgs({ file: 'packages/x/test/a.test.ts', test: 'names settings.json' })).toEqual([
+      'vitest',
+      'run',
+      'packages/x/test/a.test.ts',
+      '-t',
+      'names settings\\.json',
+    ]);
+  });
+});
+
+describe('zeroCause()', () => {
+  /**
+   * `executed()` answers 0 for every cause of "nothing ran", and the runner reported all of them as
+   * `matched no test`. That is false for one of the two, and it is the one it was measured on: a
+   * mutant that does not type-check makes the killer file's own `beforeAll` throw, so the run blamed a
+   * pattern that DID match and named the one thing that was not wrong (`dogfood/0080`).
+   *
+   * **Both fixtures below are the exact output of the two runs**, measured 2026-10-12 against
+   * `packages/cli/test/stats.test.ts` -- one mutant applied by hand and reverted between them. The
+   * `Tests` line is IDENTICAL in both; only `Test Files` differs. That identity is the whole reason
+   * `executed()` cannot tell them apart: a skipped test is neither passed nor failed, so it is not
+   * counted, and every cause that stops a file from running reports its tests as skipped.
+   */
+  it('reads a pattern that matched nothing as no-match, since the file itself was fine', () => {
+    const out = [
+      ' ↓ packages/cli/test/stats.test.ts (70 tests | 70 skipped)',
+      '',
+      ' Test Files  1 skipped (1)',
+      '      Tests  70 skipped (70)',
+    ].join('\n');
+
+    expect(executed(out)).toBe(0);
+    expect(zeroCause(out)).toEqual({ cause: 'no-match', detail: '' });
+  });
+
+  it('reads a file whose own setup threw as suite-failed, and carries the Error line', () => {
+    const out = [
+      ' ❯ packages/cli/test/stats.test.ts (70 tests | 70 skipped) 1227ms',
+      '',
+      '⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯',
+      '',
+      ' FAIL  packages/cli/test/stats.test.ts [ packages/cli/test/stats.test.ts ]',
+      'Error: Command failed: /usr/bin/node /repo/node_modules/typescript/bin/tsc -b',
+      '',
+      ' Test Files  1 failed (1)',
+      '      Tests  70 skipped (70)',
+    ].join('\n');
+
+    expect(executed(out)).toBe(0);
+    expect(zeroCause(out)).toEqual({
+      cause: 'suite-failed',
+      detail: 'Error: Command failed: /usr/bin/node /repo/node_modules/typescript/bin/tsc -b',
+    });
+  });
+
+  it('reads a spec naming a file that does not exist as no-match, not as a broken build', () => {
+    expect(zeroCause('No test files found, exiting with code 0')).toEqual({
+      cause: 'no-match',
+      detail: '',
+    });
+  });
+
+  it('reads an empty output as no-match, so a missing summary cannot be read as a build failure', () => {
+    expect(zeroCause('').cause).toBe('no-match');
   });
 });
 

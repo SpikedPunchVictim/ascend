@@ -5259,3 +5259,305 @@ signal the system emits.
   often a handler is edited that way.
 - **`compare` is currently honest.** It says every result is observational. E30.4 can only make it
   *less* honest if the split is wrong, which is why the no-assignment path must stay byte-identical.
+
+---
+
+## Stage E31: seven beads from the citation, harness and instrument surveys — `asc-hs7p`, `asc-5sdw`, `asc-4f2w`, `asc-3sfk`, `asc-s05g`, `asc-mg1b`, `asc-cx9w`
+
+**Goal** — work the seven open beads the owner named on 2026-10-12. (`asc-73cb`, the eighth in that
+list, was already closed 2026-09-28.) Two of them are defects in `scripts/mutate.mjs` — the instrument
+this repo certifies every other fix with, so they are taken first, so that the specs written for the
+remaining five run against a harness whose failure messages are true. The rest are one guard, one
+sweep, one spike instrument, one docblock policy, and one replay gap.
+
+**Success Criteria** — every bead closed in `bd` with the measurement that closed it; every code change
+carried by a spec in `scripts/mutations/` whose killers were found empirically (apply the mutant, read
+the failing names off vitest's `assertionResults`), never guessed; `pnpm format:check && pnpm typecheck
+&& pnpm lint && pnpm test`, `scripts/test-baseline.mjs` and `align check` green.
+
+**Tests** — named per sub-stage. Every sub-stage that changes code ends with `pnpm mutate <spec>` green
+against the committed tree, reported beside the gate result.
+
+**Decisions taken by the owner (2026-10-12), recorded here because each ships.** Four were put as
+calls, with the measured state of each bead's code beside them.
+
+| | Decision |
+|---|---|
+| `asc-cx9w` | **Replay only** — a stored scheme's rule can be re-applied. **Not** applied at ingest, because that would make an entry's labels depend on when it was recorded, which is the thing the version-on-shape-change guarantee exists to keep stable. |
+| `asc-s05g` | **Fix the instrument and run a new live probe** — both spike scripts, one live run, and `spike/capture-hooks/FINDINGS.md` left immutable as a record of the run that happened. |
+| `asc-4f2w` | **Prevent at write** — a version bump carries the previous version's guidance forward or refuses. This repo's own rule is prevention at write time or an invalidation annotation; this is prevention. |
+| `asc-mg1b` | **Name no population** — a docblock may assert only per-record facts. A frequency claim that does not carry its measurement is removed, because an unmeasured "always" reads exactly like a measured one. |
+| `asc-3sfk` | Default taken, not asked: the citation embedded in a **user-visible error string** (`packages/cli/src/event-log.ts`) is **in the sweep**, since a wrong line number reads exactly like a right one and this is the one place a user sees it. One word, trivially revertible. |
+| Order | the two `mutate.mjs` beads first; `asc-cx9w` last, since it is the only one with a surface (a new flag) rather than a repair. |
+
+**E31.1 — the harness reports the cause it observed (`asc-hs7p`, `asc-5sdw`)**
+
+**Goal** — `scripts/mutate.mjs` must not name a cause it did not observe, and its one fix must carry
+the evidence this repo requires of every fix.
+
+`asc-hs7p` shipped its fix without its evidence. `literalPattern` is exported and applied in
+`runKiller`, with four tests in `scripts/mutate-core.test.ts`, and there is **no mutation spec** — so
+nothing has shown those four tests can fail, and the *wiring* (that `runKiller` applies the escape at
+all) has no killer, because `runKiller` is not reachable from a test. Both gaps close together: the
+argv construction comes out where a test can see it, and the escape gains the case its own test list
+omits (a name containing a backslash).
+
+`asc-5sdw` is the sentence that stayed wrong. `executed()` counts tests off vitest's summary line and
+returns 0 for **every** cause of "nothing ran"; all three call sites then print `matched no test`. The
+cause it was measured on was a mutant that does not type-check — the killer file's `beforeAll` runs
+`tsc -b`, tsc throws, no test executes — so the run blamed a pattern that *did* match, naming the one
+thing that was not wrong (`dogfood/0080`). A zero must be split into the causes that produce it before
+anything is printed.
+
+**Success Criteria** — a mutant whose killer file fails to compile is reported as a compile failure,
+naming the file and quoting tsc; a pattern that matches no test is still reported as `matched no test`,
+and the two are distinguishable in the output. `pnpm mutate mutate-literal-pattern` and
+`pnpm mutate mutate-zero-cause` both green.
+
+**Tests** — `scripts/mutate-core.test.ts`; specs `scripts/mutations/mutate-literal-pattern.json` and
+`scripts/mutations/mutate-zero-cause.json`.
+
+**Status: Complete** — `executed()` now returns the cause beside the count: it reads vitest's `Test
+Files` line to tell a pattern that matched nothing (`1 skipped (1)`) from a file whose own setup threw
+(`1 failed (1)`), and the three call sites print the cause they observed instead of `matched no test`
+for all three. A zero that cannot be attributed says so rather than guessing. The argv construction
+came out of `runKiller` into an exported function so the escape's *wiring* has a killer too, and the
+escape gained the case its test list omitted (a name containing a backslash — the one character a
+regex-escape can get wrong while every other test still passes). Two specs, both green under
+`--allow-dirty`: `mutate-literal-pattern` (6 mutants) and `mutate-zero-cause` (6). Every killer found
+empirically, by applying the mutant and reading the failing names off `assertionResults`. The measured
+skip mechanism, which is what made this fixable rather than guessable: `executed()` counts only
+`passed|failed`, so a skipped test is neither, which is why every cause of "nothing ran" reported 0.
+
+**E31.2 — guidance cannot be stranded by a version bump (`asc-4f2w`)**
+
+**Goal** — a type's prose (its guidance, its per-property text, its `description` and `record_when`) is
+stored per version and every reader reads it through the latest version, so a bump that does not carry
+it forward strands it where nothing looks. `note` did exactly that when it went v1 → v2
+(`dogfood/0075`); the data was repaired by hand, and the class has no guard. Guard it at the write:
+a new version of an existing type inherits the superseded version's prose, **field by field**, so the
+stranded state cannot be created.
+
+**Per field, not per block, and the difference is the whole fix.** Carrying a column wholesale when the
+write declares nothing would still strand every field a *partial* write left out — a v2 declaring a new
+`purpose` and saying nothing else is `dogfood/0075` one field at a time rather than four at once. So a
+field the write names wins and a field it does not name is inherited, which is `updateTypeProse`'s rule
+for an edit ("`null` clears, `undefined` keeps"), reused rather than restated so the two paths cannot
+disagree about a field nobody mentioned.
+
+**Success Criteria** — registering or defining a version of an existing type leaves no type whose prose
+sits only on a superseded version, in whole or in part; the rule is stated in the docblock the write
+path already carries; and the hand-repaired `note` stays repaired.
+
+**Tests** — `packages/store/test/registry.test.ts`; spec `scripts/mutations/guidance-carried-on-bump.json`.
+
+**Status: Complete** — `inheritProse` in `packages/store/src/registry.ts` merges the four prose columns
+field by field against the version being superseded, and the `latest` SELECT was widened to carry the
+columns it now reads (a named `LatestVersionShape` rather than a projection of `VersionRowShape`, so a
+widened SELECT without a widened type is a compile error rather than a silent `undefined` that reads as
+"the previous version declared none"). Guidance reuses `mergeGuidance`, the same call `updateTypeProse`
+makes. Per-property prose is keyed by property name, so an entry for a property the bump removed is
+dropped rather than carried — the second half of what `dogfood/0075` measured.
+
+**One existing warning was removed, and that is part of the fix.** `register-document.ts`'s
+`droppedGuidance` existed to make the old silent drop audible (`asc-6jf`). Under this rule a bump cannot
+clear a prose column at all — NULL already means "I did not say" — so the warning had nothing left to
+say; it was deleted rather than left to fire falsely. The drop moves to `updateTypeProse`, whose `null`
+per field clears one, and the docblocks on both paths say so.
+
+Spec `scripts/mutations/guidance-carried-on-bump.json`: **10 mutants, all killed**, each by a killer
+found empirically. The set is chosen so every part that can be got wrong independently has its own
+mutant — whether the guard runs (G1), the guidance column and its direction (G2, G3), the two scalar
+columns (G4, G5), the per-property column (G6, G7), its per-key precedence (G8), its filter (G9), and
+the per-field-versus-per-block shortcut itself (G10). The `SELECT` is deliberately not mutated, with
+both the reason and the cost stated on the spec's header: dropping a column leaves `latest.<column>`
+undefined and every registration in the file throws, which discriminates nothing.
+
+**E31.3 — the citation sweep (`asc-3sfk`)**
+
+**Goal** — strip `file.ts:<line>` citations from the live files that carry them, naming the construct
+instead. Renumbering is what produced the state the bead measured: every citation was correct when
+written and rotted on the next edit, and nothing detects a stale one because a wrong number reads
+exactly like a right one. `dogfood/`, `docs/evidence/` and `spike/*/FINDINGS.md` are immutable records
+of runs that happened and are left alone.
+
+The bead's own 7-site scope understated the inventory by roughly a factor of four, and this plan's
+count understated it again — both counted the files a grep had already named rather than the tree.
+Counted at `HEAD` with a `git ls-files` walk and a per-line classification: **142 matches** of
+`path.ext:<digits>`, about 28 of them fixture strings reproducing a review table, a stack frame or a
+tool's own output; the rest are **116 citations across 111 comment lines in 57 tracked files**, plus
+one in a user-visible error string.
+
+**Success Criteria** — no live file names a line number; the sweep adds no new staleness of its own;
+editing a YAML comment leaves its handler's hash unchanged (a comment is not parsed data, so the
+identity is untouched — asserted rather than assumed).
+
+**Tests** — a guard that fails if a live file reintroduces a `file.ext:<digits>` citation, so the
+class cannot recur; and a handler-hash case pinning that a comment cannot move a handler's identity,
+because a comment edit that re-minted entry keys would be a migration wearing a comment's clothes.
+
+**Status: Complete** — the sweep ran, plus two hand edits and one site the sweep missed.
+
+- **The sweep.** 116 citations across 111 comment lines in 57 files, each replaced by the path alone —
+  the part that cannot go stale. A line is comment text when its first non-whitespace is `//`, `/*`,
+  `*` or `#`; a citation inside a string is left alone, because a fixture reproducing a review table
+  or a stack frame has to carry `path.ext:<digits>` to be that fixture at all. `dogfood/`,
+  `docs/evidence/` and `spike/*/FINDINGS.md` are records of runs that happened and stay immutable: 61
+  of them hold a citation today, and rewriting one would falsify the finding.
+- **Two hand edits.** `handlers/review-finding.yaml`'s correction paragraph said "the cited range
+  pointed at", which stops parsing once the range is gone — now "the citation pointed at". And the
+  derive-version refusal in `packages/cli/src/event-log.ts` lost its parenthetical naming a line of
+  `event.ts`: a user-facing message naming a source line is not actionable for the reader, and the rule
+  it cited is already quoted verbatim in that file's own docblock. No test pins the string, so nothing
+  else moved.
+- **One the sweep missed, found by measuring rather than by re-reading.** The first pass classified a
+  line by its first non-whitespace character, so a **trailing** `//` comment read as code. Exactly one
+  live citation sat in that shape, in `spike/event-log/record-size.mjs`, and it was found *after* the
+  sweep had reported the tree clean. The guard's comment test covers the trailing case, and the spec's
+  M7 mutant is that arm removed — so the gap is closed by the same instrument that found it.
+- **The hash, measured on the two files the sweep edited and then asserted.** `loadHandler` hashes the
+  *parsed* document, so a comment cannot reach a handler's identity — which is the whole reason a
+  comment-only sweep is safe to run over `handlers/`. Measured rather than read: `loadHandler(text).hash`
+  over `handlers/review-finding.yaml` and `handlers/review-finding-table.yaml`, at `HEAD` and in the
+  working tree, gives `f0e7ee2081a7a4bdd9efeb4a06ad70f94d9436064efce2b46edee3f8839b6fd6` and
+  `32ed6b834377260acdf659fecde3bd76feb87e29db1bb9a4dfb080612edb9146` on both sides — byte-identical.
+  Then asserted, so it stays true: `handler-yaml.test.ts` gains an `it` that loads the spike handler with
+  one comment line added and pins the hash to the uncommented load. The pre-existing reformat case
+  already spans this axis, but changes the key order, the quoting and the whitespace at the same time;
+  the new case isolates the one axis this bead moves.
+
+**The guard, and what it deliberately reads.** `source hygiene: no tracked source file cites another
+by line`, in `packages/core/test/purity-enforcement.test.ts` beside the invisible-character guard and
+reusing its `git ls-files` enumeration. A citation is read as a CLAIM on every line of a shipped source
+file and of markdown, and in the comment text of everything else. The two channels read as DATA — a
+test file, and a spike script — are scanned for comments only, because that is where the fixtures live,
+and a rule over them would report 30 false positives. Shipped source's **strings** are in scope because
+of what leaving them out cost: the derive-version refusal was the one live citation in a user-facing
+string, and a comment-only rule cannot see the class's own instance.
+
+Three controls, failing differently, as this file's NUL control does: a pinned detection case; a walk of
+every extension in the list, because a pinned case cannot notice an extension *added* and a walk cannot
+notice the list *emptied*; and a "would fail on a record" control proving the record exclusion is
+load-bearing rather than decorative.
+
+**The spec.** `scripts/mutations/citation-hygiene.json` — nine mutants, every killer read off
+`assertionResults` and never guessed, plus one intended survivor (the `u` flag on the prose pattern is
+inert for a pattern with no unicode syntax, so no test can distinguish it). Two of the nine PLANT a
+citation — one in shipped source's user-facing string, one in a test file's comment — because the
+property is "a reintroduced citation turns the check red" and only a planted citation tests it; three
+more delete a carve-out (the spike channel, the record paths, trailing comments) so each carve-out has
+to earn its place. `pnpm mutate citation-hygiene` → **9 mutants, 0 problems, rebuild ok**.
+
+**M8 taught something, which is recorded rather than tidied away.** The first version of this suite
+SURVIVED M8 — dropping an extension from the citation list was invisible to every assertion, because
+the detector control names its labels rather than its extensions, so no test consulted the list at all.
+The extension control was written to close it and M8 is killed by it now. A guard that cannot fail is
+the thing it is meant to catch, one level down.
+
+**E31.4 — the probe that can show the key it assumes (`asc-s05g`)**
+
+**Goal** — `spike/capture-hooks/probe.mjs` prints `keys+=[…]` as `Object.keys(e).filter((k) =>
+!BASE.includes(k))` against a literal `BASE` that contains `transcript_path`. A key in its own exclude
+list can never print, so the line cannot tell *the harness sent it* from *nobody looked*, while reading
+as an enumeration of what arrives. The same filter is duplicated in `spike/exposure/capture-probe.mjs`.
+
+Print the full key set and mark each assumed key present or absent per event — an assumption shown
+satisfied or violated, never as silence. Both scripts. Then run the probe once so the corrected table
+comes from a run rather than from reasoning; `FINDINGS.md` is not rewritten.
+
+**Success Criteria** — no key is filtered out of the enumeration; every key the probe assumes is
+printed with a present/absent marker; a new run record carries the corrected table, with its cost and
+its exact output as the existing record does.
+
+**Tests** — no unit tests (spike harness is quarantined and outside lint and the build); the evidence
+is the run.
+
+**Status: Complete** — both instruments corrected, one live run, and the run is a NEW record rather
+than a revision of an immutable one.
+
+- **The instrument.** `spike/capture-hooks/probe.mjs` now prints the whole sorted key list per event,
+  each assumed key marked present or absent, and a per-key count over the captured events — the count
+  because a per-event line cannot show a key that is absent on *every* event, which is the one reading
+  the old line made impossible. `BASE` no longer exists in either file, so nothing is left that can
+  filter a key out of an enumeration. `spike/exposure/capture-probe.mjs` carried the same filter and
+  takes the same correction. The shape follows `spike/hook-input-keys/probe.mjs`, the probe that
+  settled the underlying fact from the other direction.
+- **The run.** One run, exit 0, **$0.236439**, 10 captured events, recorded at
+  `spike/capture-hooks/FINDINGS-2.md`; `FINDINGS.md` is untouched, being a record of a run that
+  happened. The corrected instrument showed immediately what the old one could not: **`scratchpad_dir`
+  is present on 0 of 10 events**, `effort` is absent from UserPromptSubmit and SubagentStart, and
+  `permission_mode` from SubagentStart. Three of the eight assumed keys are not on every event, and
+  under the old line all three absences printed as silence. `transcript_path` — the key whose
+  invisibility is the whole reason for this bead — is present on **10 of 10**.
+- **Q1–Q4 re-answered and agreeing with `FINDINGS.md`**: PostToolUse `Skill` fires and names the skill,
+  it fires inside a subagent with `agent_id` and `agent_type`, SubagentStop fires with 14 keys, and the
+  hook's JSON `additionalContext` reached the model (nonce repeated).
+- **The model, stated honestly.** The pinned id the earlier record used is refused by this account now
+  (exit 1, `costUsd 0`, one captured event and no tool stage), so the run passed the alias `haiku`; the
+  harness then logged `[claude-code:unrecognized_model]` naming `deepseek-v4.1-flash:cloud` as what the
+  alias resolved to. The record says so rather than claiming haiku answered.
+
+**E31.5 — a stated population, and a scheme that can be replayed (`asc-mg1b`, `asc-cx9w`)**
+
+**Goal** — two separate gaps, sharing only that both are claims the code made and did not hold up.
+
+`asc-mg1b`: the `hook.delivery` docblock stated three properties of a population it had inferred from
+three records, and all three died when the corpus was counted (`dogfood/0079`). The docblock is
+corrected; the policy is not. Applied across `EVENT_KINDS`: a docblock may assert per-record facts
+only, and a frequency claim without its measurement is removed.
+
+`asc-cx9w`: `annotations.ts` says *"A SCHEME STORES ITS RULE, NOT ONLY ITS LABELS"*, and the reason is
+that kappa would otherwise compare two sets of labels whose rules were forgotten. Storing the rule buys
+nothing while nothing can replay it: `matchingEntryIds` has exactly two call sites, both inside
+`asc annotate`, and the command refuses a run carrying neither `--rule` nor `--ids`, so re-applying a
+scheme means retyping its rule. Add the replay — the scheme's latest pass rules, read from storage and
+applied — and nothing else. **Not** at ingest: that would make an entry's labels depend on when it was
+recorded, which the version-on-shape-change guarantee exists to keep stable.
+
+**Success Criteria** — no EVENT_KINDS docblock states a population it did not measure; `asc annotate`
+can re-apply a stored scheme's rules without the rule being retyped, the applied pass is recorded like
+any other pass, and a scheme with no stored rules is refused naming that.
+
+**Tests** — `packages/store/test/annotations.test.ts`, `packages/cli/test/annotate*.test.ts`; specs
+per change. `--rule`, `--ids`, `--backtest` and the empty-run refusal keep their present behaviour.
+
+**Status: Complete**
+
+- **`asc-mg1b`** — the policy paragraph is in `packages/core/src/event.ts`'s header, and it is applied
+  as **two removals, not two measurements**: `tool.use.start`'s `skill` clause ("absent on every other
+  call") and `model.context`'s "compliance differed by model" are gone. Both were counts of a
+  population nobody had taken, and neither could be taken here: this repo's own event log is derived at
+  version 11 while the build derives 12, so `readEventLog` refuses it outright. That refusal is the
+  reader working as designed, and it is why the unmeasured claim is REMOVED rather than measured --
+  softening it would have left a claim a reader could still mistake for a count. `hook.delivery` and
+  `review.finding` keep their sentences, because both name the sweep they came from. **No guard is
+  added**, deliberately: a grep for frequency words cannot tell a measured claim from an unmeasured
+  one, and the same file's measured block says "is never absent and never empty" -- a grep would red
+  the one paragraph in the file that earned its claim.
+- **`asc-cx9w`** — `asc annotate --scheme <s> --replay` applies the rules the scheme already stores,
+  read from its **latest registered version inside the write's own transaction** (the same read that
+  decides what the run registers, for the `asc-q4p` reason every deciding read is there). Because the
+  run names no rules, `nextSpec` takes the stored ones through the fallback an `--ids` run already
+  uses, so a replay re-states the shape it read: `outcome: unchanged` and the pass is filed under the
+  version it read. No store function was added -- `SchemeSummary.spec.rules` already carried the rule,
+  which is the point the bead makes. A ruleless scheme (`--ids` builds one) is refused by name, since
+  a replay of it would write a pass that labels nothing and the report could not tell that apart from
+  a rule that matched nothing; an unregistered name is refused naming what IS registered.
+  **Not at ingest**, and the docblock records why.
+- **Measured end to end, not inferred from the suite**: a fresh project, six entries, one
+  `--rule` run then one `--replay` run -- `version: 1, outcome: unchanged, considered: 6, labelled: 6,
+  labels: [{bug,4},{docs,2}]` on both, 12 annotation rows across **2 distinct pass timestamps** under
+  one scheme version, and `asc kappa` between the two passes reports `compared: 6, kappa: 1`. The
+  refusals exit 1 (`refusal`) for the three store facts and 2 (`usageError`) for the three flag
+  contradictions, printed verbatim in the session.
+- **The mutation spec found a coverage gap rather than confirming one.**
+  `scripts/mutations/annotate-replay.json` carries seven mutants, all killers found empirically.
+  `M6` -- `reverse()`ing the replayed rules -- **killed nothing on the first pass**: the fixture's two
+  rules are disjoint, so the census is order-independent, and the registered shape is read from the
+  store by `nextSpec` rather than from the applied rules. So a replay's rule ORDER was unpinned, and a
+  test with two overlapping rules (first-match-wins decides every label) was written in response to
+  that measurement and is now `M6`'s only killer. **Two candidate mutants were dropped because they do
+  not compile**: disabling either refusal outright removes the condition whose narrowing makes the
+  lines beneath it type-check, so `tsc -b` fails with TS18048 and the tree's `beforeAll` turns that
+  into a file-level error rather than a failing assertion. The spec says so, and represents both
+  guards with mutants that keep them compiling.

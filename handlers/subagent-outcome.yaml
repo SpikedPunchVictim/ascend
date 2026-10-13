@@ -25,7 +25,7 @@
 #
 # A spawn whose return never came is UNCLOSED, never a row with empty costs. That is the launch
 # failure case: with no toolUseResult the spawn carries no child_agent_id at all, `eq` needs both
-# sides present (handler.ts:302), so nothing can match it. Every spawn in this project's corpus
+# sides present (handler.ts), so nothing can match it. Every spawn in this project's corpus
 # is async (`async_launched`, 1,041 of 1,041 carrying a tool result), so a return arrives by
 # notification or not at all -- the synchronous branch in normalize.ts is unobserved.
 on: agent.spawn

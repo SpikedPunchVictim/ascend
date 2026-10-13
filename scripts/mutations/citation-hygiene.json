@@ -1,0 +1,119 @@
+{
+  "_": "Kill-check for the citation guard E31.3 adds (asc-3sfk). `dogfood/0077` measured 5 of 7 followed citations pointing at the wrong line, the sweep removed 116 from comment lines across 57 files, and the guard in packages/core/test/purity-enforcement.test.ts is what stops the class returning -- a sweep is a moment, and a rule nothing checks is a rule that decays. Two mutants PLANT the defect rather than break the detector, because the property under test is 'a reintroduced citation turns the check red' and only a planted citation tests it: M1 puts one in a user-facing STRING in shipped source (the one live site of its kind, and the reason the rule reads a shipped file whole rather than only its comments), and M2 puts one in the comment of a TEST file (a fixture channel, where only comments are read). M3, M6 and M7 each delete a carve-out the check depends on -- the spike-script channel, the record paths, and trailing `//` comments -- and each is killed by a named test, which is the evidence that the carve-out is load-bearing rather than decorative. A fourth carve-out has no mutant here, and the reason is worth its line: mutation specs are excluded from the scan when THIS spec's own `find` strings make the check red on a tracked tree -- a spec that plants a citation cannot avoid holding one, and a JSON file has no comment channel that could tell its fixture strings from its prose. A mutant there would mutate the spec rather than the guard, so that carve-out is held by the check's own control instead. M4 narrows reading back to comments-only and M8 narrows the extension list, both killed by a CONTROL rather than by the scan, because a narrowed rule over a tree holding no instance of the narrowed case cannot be noticed any other way. M5 breaks the range/list arm of the citation pattern. The killers were found empirically rather than guessed: each mutant was applied, the owning file was run with vitest's JSON reporter, and the failing test names were read off its assertionResults. M8 is the one that taught something -- the first version of this suite SURVIVED it, because the detector control names its labels rather than its extensions, so an extension dropped from the list was invisible to every assertion; the extension control was written to close that, and M8 is killed by it now. M9 is an intended survivor: the `u` flag on PROSE_FILE is inert for a pattern with no unicode syntax and no surrogate pairs, so no test can distinguish it, and it names the scan's own test as the killer it must HOLD through -- a survivor naming no killer would be a mutant the run never exercised, which the runner refuses.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/event-log.ts",
+      "find": "`handler changed. Re-run \\`asc ingest claude-code\\` to rewrite the log.`,",
+      "replace": "`handler changed (event.ts:45). Re-run \\`asc ingest claude-code\\` to rewrite the log.`,",
+      "killers": [
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "finds none of them in any tracked file"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/test/event-log.test.ts",
+      "find": "    // changed, and a log is the one thing that cannot be re-derived to fix it.",
+      "replace": "    // changed (event.ts:45), and a log is the one thing that cannot be re-derived to fix it.",
+      "killers": [
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "finds none of them in any tracked file"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/core/test/purity-enforcement.test.ts",
+      "find": "|^spike\\//u",
+      "replace": "/u",
+      "killers": [
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "finds none of them in any tracked file"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/core/test/purity-enforcement.test.ts",
+      "find": "    const found = whole || isComment(line) ? citationsIn(line) : [];",
+      "replace": "    const found = isComment(line) ? citationsIn(line) : [];",
+      "killers": [
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "reads a citation in a file whose text is a claim, and not one in a fixture"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/core/test/purity-enforcement.test.ts",
+      "find": "`([A-Za-z0-9_./@-]+\\\\.(?:${CITED_EXTENSIONS})):\\\\d+(?:[-,]\\\\s*\\\\d+)*`",
+      "replace": "`([A-Za-z0-9_./@-]+\\\\.(?:${CITED_EXTENSIONS})):\\\\d+`",
+      "killers": [
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "reads a citation in a file whose text is a claim, and not one in a fixture"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/core/test/purity-enforcement.test.ts",
+      "find": "  trackedSourceFiles().filter(\n    (file) => !RECORD_PATH.test(file) && !FINDINGS_PATH.test(file) && !SPEC_PATH.test(file),\n  );",
+      "replace": "  trackedSourceFiles().filter(\n    (file) => !FINDINGS_PATH.test(file) && !SPEC_PATH.test(file),\n  );",
+      "killers": [
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "finds none of them in any tracked file"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/core/test/purity-enforcement.test.ts",
+      "find": "  return /(?:^|\\s)\\/\\//u.test(line);",
+      "replace": "  return false;",
+      "killers": [
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "reads a citation as a comment only where it is one"
+        },
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "reads a citation in a file whose text is a claim, and not one in a fixture"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/core/test/purity-enforcement.test.ts",
+      "find": "const CITED_EXTENSIONS = 'ts|tsx|js|mjs|cjs|yaml|yml|json|md';",
+      "replace": "const CITED_EXTENSIONS = 'ts|tsx|js|mjs|cjs|yaml|yml|json';",
+      "killers": [
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "names every extension a citation can carry, so the list cannot narrow unnoticed"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "packages/core/test/purity-enforcement.test.ts",
+      "find": "const PROSE_FILE = /\\.md$/u;",
+      "replace": "const PROSE_FILE = /\\.md$/;",
+      "survivor": true,
+      "why": "The `u` flag is inert for this pattern: `\\.md$` uses no `\\p{...}`, no surrogate pair and no astral character, so it matches exactly the same filenames with it and without it. Nothing the guard does can tell the two apart, which is the definition of an equivalent mutant -- as opposed to a coverage gap, which is what M8 was before the extension control was written. It names the scan's own test as the killer it must hold through, so the mutant is still exercised rather than skipped.",
+      "killers": [
+        {
+          "file": "packages/core/test/purity-enforcement.test.ts",
+          "test": "finds none of them in any tracked file"
+        }
+      ]
+    }
+  ]
+}

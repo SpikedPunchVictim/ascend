@@ -1,0 +1,117 @@
+{
+  "_": "Kill-check for `literalPattern` and the one line that applies it (`asc-hs7p`, `dogfood/0076`). The defect: `vitest -t` is a REGEX, while the `Killer` typedef calls `test` 'the one test name that must notice this mutant' -- so every spec author wrote a name and what ran was a pattern, and nothing reconciled the two. The two directions fail differently and only one is loud. TOO NARROW: `$` is an end-of-string anchor, so a killer named 'resolves a $ reference in saw.where against the TRIGGER' matched no test, vitest exited 0 with everything skipped, and the run stopped with 'matched no test' -- blaming the spec for a pattern its author never wrote, which is how this was found. TOO WIDE, AND SILENT: `.` matches any character, so a killer naming 'settings.json' was also satisfied by any name differing at that dot -- a mutant certified by a test that is not the one named, arriving as a green verdict. That second half is the false green the whole runner exists to catch, one level down, and nothing would have reported it. The mutants are chosen around the three places the escape can be lost: the class (L1 drops `.`, L2 drops `$`, L3 drops the backslash), the escape itself (L4 returns the name unchanged, L5 escapes every character instead of the metacharacters), and the WIRING (L6 hands vitest the bare name). L6 is the one that reproduces the silent half exactly, and it has a killer only because `killerArgs` was extracted out of `runKiller` for it: `runKiller` is deliberately not exported -- this file's tests take pure decisions only, since a test that spawned vitest would mutate the tree it runs in -- so before the extraction the wiring could not be killed by anything. The killers were read off `assertionResults` from a real run of each mutant, never guessed, which is why L1 and L5 carry four and five names while L2 and L3 carry one.",
+  "mutants": [
+    {
+      "id": "L1",
+      "file": "scripts/mutate.mjs",
+      "find": "return test.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');",
+      "replace": "return test.replace(/[*+?^${}()|[\\]\\\\]/g, '\\\\$&');",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "killer cannot be satisfied by a different test than the one it names"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "matched as text rather than as an end-of-string anchor"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "hands vitest the escaped pattern, not the bare name"
+        }
+      ]
+    },
+    {
+      "id": "L2",
+      "file": "scripts/mutate.mjs",
+      "find": "return test.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');",
+      "replace": "return test.replace(/[.*+?^{}()|[\\]\\\\]/g, '\\\\$&');",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "matched as text rather than as an end-of-string anchor"
+        }
+      ]
+    },
+    {
+      "id": "L3",
+      "file": "scripts/mutate.mjs",
+      "find": "return test.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');",
+      "replace": "return test.replace(/[.*+?^${}()|[\\]]/g, '\\\\$&');",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "a name carrying one is matched as text and not swallowed"
+        }
+      ]
+    },
+    {
+      "id": "L4",
+      "file": "scripts/mutate.mjs",
+      "find": "return test.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');",
+      "replace": "return test;",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "matched as text rather than as an end-of-string anchor"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "makes the pattern match its own name and nothing else"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "killer cannot be satisfied by a different test than the one it names"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "a name carrying one is matched as text and not swallowed"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "hands vitest the escaped pattern, not the bare name"
+        }
+      ]
+    },
+    {
+      "id": "L5",
+      "file": "scripts/mutate.mjs",
+      "find": "return test.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');",
+      "replace": "return test.replace(/./g, '\\\\$&');",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "leaves an ordinary name exactly as it was"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "matched as text rather than as an end-of-string anchor"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "makes the pattern match its own name and nothing else"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "a name carrying one is matched as text and not swallowed"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "hands vitest the escaped pattern, not the bare name"
+        }
+      ]
+    },
+    {
+      "id": "L6",
+      "file": "scripts/mutate.mjs",
+      "find": "'-t', literalPattern(killer.test)];",
+      "replace": "'-t', killer.test];",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "hands vitest the escaped pattern, not the bare name"
+        }
+      ]
+    }
+  ]
+}

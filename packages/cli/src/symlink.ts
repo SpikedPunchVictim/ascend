@@ -77,7 +77,7 @@ export function symlinkTarget(path: string): string | null | undefined {
  *
  * `asc init` deliberately does NOT call this and handles the same `null` itself, as a skipped row
  * naming what the user must add by hand: init's whole output is a report of what it did and did not
- * do, where a refusal would abandon the rows for its other targets (init.ts:465-479).
+ * do, where a refusal would abandon the rows for its other targets (init.ts).
  */
 export function writablePath(requested: string): string {
   const link = symlinkTarget(requested);

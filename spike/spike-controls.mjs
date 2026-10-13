@@ -1,4 +1,4 @@
-// asc-fwpe: the two controls `docs/evidence/EV-patterns.md:126-138` names as
+// asc-fwpe: the two controls `docs/evidence/EV-patterns.md` names as
 // required additions to E7, measured against the real corpus. THROWAWAY: this
 // reproduces the numbers the re-issued record cites, so they are regenerable
 // rather than transcribed. It is not the implementation -- that is

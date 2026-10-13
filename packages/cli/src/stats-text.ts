@@ -152,7 +152,7 @@ export function categoricalItems(entry: RecordedEntry, names: readonly string[])
  * The envelope columns that say WHERE an entry happened, readable by name like a categorical
  * property.
  *
- * `Locality { cwd, branch }` (`packages/adapter-claude-code/src/derive.ts:361`) is the store's own
+ * `Locality { cwd, branch }` (`packages/adapter-claude-code/src/derive.ts`) is the store's own
  * name for the two fields the adapter fills from a transcript, and this list is those two plus
  * `repo`. `repo` is KEPT rather than dropped even though nothing writes it: it is the column
  * `docs/evidence/EV-patterns.md` builds its headline tautology on, and MEASURED 2026-10-05 it is
@@ -167,7 +167,7 @@ export function categoricalItems(entry: RecordedEntry, names: readonly string[])
  * nothing.
  *
  * These names cannot collide with a declared property, and that is structural rather than
- * conventional: `ENVELOPE_PROPERTY_NAMES` (`packages/core/src/spec.ts:148-165`) reserves every one
+ * conventional: `ENVELOPE_PROPERTY_NAMES` (`packages/core/src/spec.ts`) reserves every one
  * of them against declaration, so a spec defining `branch` is refused at define time instead of
  * being resolved by a precedence rule here.
  */

@@ -727,7 +727,7 @@ describe('judged declares a field the handler deliberately does not measure', ()
 
   it('rides on a window row, which is the shape asc-6ola.9 uses', () => {
     // `until: session.end`, NOT `until: agent.return`. An until equal to the kind the window
-    // watches closes it on the very event it waits for and emits nothing (handler.ts:808-815),
+    // watches closes it on the very event it waits for and emits nothing (handler.ts),
     // so this test fails with an empty `rows` under that shape -- which is the defect that was
     // in the first draft of this plan, pinned here so it cannot come back.
     const { rows, unclosed } = run(
@@ -757,7 +757,7 @@ describe('judged declares a field the handler deliberately does not measure', ()
 
   it('counts a spawn whose return never came as unclosed, not as a row', () => {
     // The absent-trigger-field case: `child_agent_id` is absent on a launch failure, `eq` needs
-    // both sides present (handler.ts:302), so nothing can match. The window must end up unclosed
+    // both sides present (handler.ts), so nothing can match. The window must end up unclosed
     // rather than emitting a row claiming a return that never happened.
     const { rows, unclosed } = run(
       {

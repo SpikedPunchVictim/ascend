@@ -415,7 +415,7 @@ const PATH_BREAKERS: readonly {
  * nobody looked at** (`asc-bcv.22`). `ident()` escapes `"` and nothing else, so a type name holding
  * a NUL truncates the generated DDL exactly as a property name does: measured,
  * `unrecognized token: ""idx_entries_nultype"` from `refreshTypeViews`. It is unguarded for two
- * reasons. No caller can supply one -- the only real caller is `registry.ts:589` passing
+ * reasons. No caller can supply one -- the only real caller is `registry.ts` passing
  * `shape.name`, which `canonicalizeTypeSpec` has already folded to `[a-z0-9_]` -- and the string the
  * DDL interpolates is the `typeName` ARGUMENT, which `assertProjectable` never receives, so the
  * guard's shape would have to change to check the right string. It also fails cleanly where the

@@ -816,7 +816,7 @@ export default class RecordEntry extends BaseCommand {
       // Every document was written or the transaction threw, so the post-write count is
       // arithmetic -- one COUNT on this path, not two. Stderr, like every advisory here
       // (`init.ts`'s offerRecall, `stats.ts`): stdout stays the data a script reads. It reports and
-      // never gates -- `stats.ts:51`'s rule, which a threshold nobody measured must not overturn.
+      // never gates -- `stats.ts`'s rule, which a threshold nobody measured must not overturn.
       const countAfter = countBefore + rows.length;
       if (reviewAfter !== undefined && reviewAfterCrossed(countBefore, countAfter, reviewAfter)) {
         const name = rows[0]?.type ?? args.type;

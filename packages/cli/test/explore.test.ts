@@ -458,7 +458,7 @@ describe('asc explore: the map', () => {
  *
  * **WHERE THESE ANCHORS COME FROM, exactly.** They were derived independently, by implementing the
  * published Wilson formula separately and evaluating it at the published two-sided normal quantile
- * z(0.95) = 1.959963984540054 (`proportion.ts:64` -- that constant is in the module's own table and
+ * z(0.95) = 1.959963984540054 (`proportion.ts` -- that constant is in the module's own table and
  * nowhere else in the repository; `ARCHITECTURE.md` does not carry it). They are NOT produced by
  * calling `wilson()`, which is the house rule this suite follows throughout: an expectation taken
  * from the module under test asserts only that the module agrees with itself.
@@ -1301,7 +1301,7 @@ describe('asc explore --struck: profile the rows that have stopped counting (asc
   it('leaves the map without the flag profiling everything, struck rows included', () => {
     // The control arm, and the decision this flag is the OTHER half of: explore does not move, and
     // the struck rows are still in the population it profiles (the recorded decision at
-    // `profile.test.ts:910`, asc-88m).
+    // `profile.test.ts`, asc-88m).
     const dir = emptyProject();
     for (const id of ['e1', 'e2', 'e3', 'e4']) record(dir, id);
     invalidate(dir, 'e1');

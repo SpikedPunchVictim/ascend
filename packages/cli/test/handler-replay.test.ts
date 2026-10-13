@@ -12,9 +12,9 @@ import { encodeProjectDir, replayHandlers } from '../src/handler-replay.js';
  * which needs a corpus the binary's own flags cannot produce -- one directory the walk may not
  * descend into.
  *
- * `SkipReason`'s contract is the thing under test (`reader.ts:86-90`): "A path the sweep
+ * `SkipReason`'s contract is the thing under test (`reader.ts`): "A path the sweep
  * deliberately did not read. **Never silent -- always reported.**" The reader records it and
- * `asc ingest` reports it (`claude-code.ts:933`); the horizon is the third reader, and it is the
+ * `asc ingest` reports it (`claude-code.ts`); the horizon is the third reader, and it is the
  * one that could report a clean sweep over a corpus it did not finish reading.
  */
 

@@ -24,7 +24,7 @@
  *
  * **What requiring it costs.** Measured 2026-10-07 against this project's own ledgers: 7248 of 7248
  * `recorded_at` values in the entry files carry `.mmmZ`, and so do 3905 of 3905 `created_at` values
- * in the annotation files. `packages/cli/src/base.ts:273` produces the former from `toISOString()`,
+ * in the annotation files. `packages/cli/src/base.ts` produces the former from `toISOString()`,
  * which cannot produce any other width. So the fixed form refuses nothing that exists and nothing a
  * caller can reach -- the two columns this rule guards are written by this store, unlike the
  * property below.

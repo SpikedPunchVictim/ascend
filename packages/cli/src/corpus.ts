@@ -65,7 +65,7 @@
  *
  * **An annotation line restores as part of a PASS, not as an independent row.**
  * `recordAnnotations` stamps `created_at` and `created_by` onto every row of one call
- * (`annotations.ts:655-669`), and `RecordedAnnotations`'s own doc calls `(scheme, schemeVersion,
+ * (`annotations.ts`), and `RecordedAnnotations`'s own doc calls `(scheme, schemeVersion,
  * createdAt)` the pass identity that `asc kappa` compares. So `import` groups the stream's
  * annotation lines by that identity (`created_by` travels with it, since two passes can share a
  * timestamp only in theory and never in the same group) and issues one `recordAnnotations` call

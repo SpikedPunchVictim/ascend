@@ -483,7 +483,7 @@ describe('the envelope refuses what the schema would only fail on', () => {
     // Within one second a bare `10:00:00Z` sorts AFTER `10:00:00.500Z` ('.' is 0x2E, 'Z' is 0x5A)
     // while being an EARLIER instant, so a ledger holding both has a non-chronological page walk
     // and an inverted envelope min/max. Measured 2026-10-07: 7248 of 7248 rows in this project's
-    // record files already carry `.mmmZ`, and `base.ts:273` produces them from `toISOString()`, so
+    // record files already carry `.mmmZ`, and `base.ts` produces them from `toISOString()`, so
     // requiring the fixed form refuses nothing that exists and nothing a caller can reach.
     withStore((store) => {
       for (const recordedAt of [
@@ -884,12 +884,12 @@ describe('exactly one write path, and no ambient clock', () => {
     // `UPDATE entries` and `DELETE FROM entries` are NOT in the list above, and deliberately:
     // both are writes, and the reason this guard does not cover them is not that they are
     // harmless. They are refused by the store's own immutability triggers --
-    // `entries_are_immutable` (schema.ts:170-174) and `entries_cannot_be_deleted`
-    // (schema.ts:176-180) -- so a module containing one is a runtime failure in the module
+    // `entries_are_immutable` (schema.ts) and `entries_cannot_be_deleted`
+    // (schema.ts) -- so a module containing one is a runtime failure in the module
     // that added it, not a SILENT second write path, which is the failure this scan exists to
     // catch. Measured, against a schema carrying those two triggers verbatim: both statements
     // raise ('entries are immutable: ...') and the row survives. That guard is itself pinned
-    // by schema.test.ts:205-225. Recorded here so the omission reads as a decision.
+    // by schema.test.ts. Recorded here so the omission reads as a decision.
     expect(scan('UPDATE entries SET source = ? WHERE id = ?;', WRITE)).toEqual([]);
     expect(scan('DELETE FROM entries WHERE id = ?;', WRITE)).toEqual([]);
   });

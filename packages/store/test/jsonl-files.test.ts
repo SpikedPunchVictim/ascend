@@ -214,7 +214,7 @@ function fileShape(path: string): string {
  * A type line states its own version (`asc-i5tj.6`).
  *
  * A type's version used to be read from LINE ORDER alone -- `registerType` mints `latest + 1`
- * (`registry.ts:584`) -- while `.ascend/.gitattributes` sets `merge=union`, which reorders lines.
+ * (`registry.ts`) -- while `.ascend/.gitattributes` sets `merge=union`, which reorders lines.
  * So two clones could merge the same line SET in different ORDER and number the same content
  * differently, silently, wherever no entry referenced the moved version to catch it.
  *

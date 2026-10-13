@@ -44,7 +44,7 @@
  * the index entirely and comes back a singleton, and `emptyDocuments` says how many there were. The
  * convention is an arbitrary tie-break over an empty intersection, not evidence -- and this corpus
  * makes the difference expensive, because most entries carry no `evidence_text` by design
- * (`derive.ts:92-95`). Taking the convention at face value would collapse the majority of a store
+ * (`derive.ts`). Taking the convention at face value would collapse the majority of a store
  * into one enormous group that says nothing, and report it as the largest finding in the data. A
  * caller who wants empty documents grouped can group them; a caller who does not would never have
  * seen it coming.

@@ -100,7 +100,7 @@ describe('propertySchema specifics', () => {
   });
 
   it('refuses a timestamp with an offset', () => {
-    // The rule `store/recorder.ts:200-217` already applies to `recorded_at`, applied to the one
+    // The rule `store/recorder.ts` already applies to `recorded_at`, applied to the one
     // column that was exempt from it. It refuses offsets there because the column is compared as
     // text: `2026-09-11T10:00:00+02:00` is a LATER instant than `2026-09-11T09:00:00Z` and sorts
     // BEFORE it. A `timestamp` property is compared the same way -- `profile.ts` reads MIN/MAX

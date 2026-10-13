@@ -14,7 +14,7 @@
  * machine's environment would make two machines ingesting the SAME corpus disagree about what is
  * in it -- the same determinism argument that governs the generated views in
  * `packages/store/src/views.ts`, whose own rule is that two stores with the same types get
- * byte-identical views (`views.ts:386`). A label is a fact recorded in 2026; the machine reading
+ * byte-identical views (`views.ts`). A label is a fact recorded in 2026; the machine reading
  * it today has its own, unrelated `os.tmpdir()`, and letting that machine's answer decide what a
  * PAST session's directory was would make "is this project ephemeral" a question whose answer
  * depends on where you ask it from.
@@ -50,7 +50,7 @@
  * transcript, so there is no observed label shape to anchor a Windows temp root against.
  * Inventing one (`%TEMP%`, `C:\Windows\Temp`, or any encoding of either) would be fabricating a
  * pattern from nothing, which `TASKS.md` rule #7 forbids: "Omitted, never fabricated. When a
- * value does not exist, omit it." (`TASKS.md:27`).
+ * value does not exist, omit it." (`TASKS.md`).
  */
 
 /**

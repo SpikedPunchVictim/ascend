@@ -22,6 +22,30 @@
  * idempotent against the scheme: an unchanged shape registers as `unchanged` and writes only a new
  * pass.
  *
+ * **`--replay` applies the rules the scheme already has, so a taxonomy can be re-run without its rule
+ * being retyped.** The rules are read from the scheme's LATEST registered version, inside the write's
+ * own transaction -- the same read that decides what this run registers, for the same asc-q4p reason
+ * every deciding read is there. Because the run names no rules, `nextSpec` takes the stored ones
+ * through the same fallback an `--ids` run takes them through, so a replay re-states the shape it
+ * read: the version does not move, and the pass it writes is filed under it.
+ *
+ * That is the difference between a replay and a version bump, and it is the point. `annotations.ts`
+ * says a scheme stores its rule, not only its labels, so that a taxonomy can be re-applied after the
+ * entries under it change -- and storing a rule buys nothing while nothing can apply it again.
+ * `matchingEntryIds` has exactly two call sites, both in this command, and this one refuses a run
+ * carrying neither `--rule` nor `--ids`, so before this flag existed re-applying a scheme meant
+ * retyping its rule, and the stored rule was effectively write-only.
+ *
+ * A scheme with no stored rules is REFUSED rather than replayed as an empty one. A scheme built by
+ * `--ids` records hand labels and assigns them with no rule at all, so replaying it would write a
+ * pass that labels nothing -- which the report cannot tell apart from a rule that matched nothing,
+ * and the two want different fixes. Naming the distinction is what the refusal is for.
+ *
+ * **It is deliberately NOT applied at ingest.** An entry's labels would then depend on when it was
+ * recorded -- the same entries labelled differently by two ingests a version apart -- which is what
+ * the version-on-shape-change guarantee exists to keep stable. A replay is a pass a person asked for,
+ * written when they ask.
+ *
  * **`--scope` narrows what the run considers, and it is not optional decoration.** The remainder is
  * only a signal about the body of entries it was computed over: rules applied to a corpus-wide scope
  * while you are thinking about one type produce a remainder that is mostly "other types", which reads
@@ -102,6 +126,7 @@ import {
   type Producers,
   type RegisteredScheme,
   type SchemeCensus,
+  type SchemeRule,
   type SchemeSpec,
   type SchemeSummary,
   type SqlDatabase,
@@ -137,6 +162,47 @@ function censusOf(assigned: ReadonlyMap<string, string>, considered: number): Sc
       .map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count || (a.label < b.label ? -1 : 1)),
   };
+}
+
+/**
+ * The rules a `--replay` run applies: the scheme's own, from its latest registered version.
+ *
+ * Both refusals here are about a run that would report something other than what it did. An
+ * unregistered name is the ordinary "no such scheme" case, and it lists what there is -- the same
+ * shape the `--backtest` refusal uses, so the two read alike. A scheme that IS registered with no
+ * rules is the case this flag has to separate: `--ids` mints a scheme whose vocabulary is real and
+ * whose rules are empty, so a replay of it would write a pass that labels nothing -- and a report of
+ * "0 labelled, everything unclassified" is exactly what a rule which matched nothing also reports.
+ * The two are fixed differently (label by hand again, or write a rule), so they are told apart here.
+ *
+ * `registered` is passed in rather than read again, because the caller already has the list: it is
+ * the same read that produced `existing`, and a second one could disagree with it.
+ */
+function replayedRules(
+  schemeName: string,
+  existing: SchemeSummary | undefined,
+  registered: readonly SchemeSummary[],
+): readonly SchemeRule[] {
+  if (existing === undefined) {
+    throw refusal(
+      `there is no annotation scheme named '${schemeName}' to replay. Registered schemes: ` +
+        `${registered.map((entry) => `'${entry.name}'`).join(', ') || '(none)'}. Give --rule to ` +
+        `apply rules this run states, or name a scheme that already has rules stored.`,
+    );
+  }
+
+  if (existing.spec.rules.length === 0) {
+    throw refusal(
+      `scheme '${schemeName}' has no rules to replay: its latest version ` +
+        `(${String(existing.version)}) declares the label(s) ` +
+        `${existing.spec.labels.map((label) => `'${label}'`).join(', ') || '(none)'} and assigns ` +
+        `them with no rule at all, so a replay would write a pass that labels nothing. A scheme ` +
+        `built by --ids records hand labels only -- that is what \`asc kappa\` reads -- so either ` +
+        `hand-label again with --ids, or give --rule to classify the corpus under this name.`,
+    );
+  }
+
+  return existing.spec.rules;
 }
 
 /** What this run's single body produced, beyond what it wrote to the store. */
@@ -204,6 +270,11 @@ export default class Annotate extends BaseCommand {
         "Annotate named entries as '<label>=<id>,<id>', instead of --rule. Repeatable, and one " +
         'pass may carry several labels this way.',
     }),
+    replay: Flags.boolean({
+      description:
+        'Apply the rules the scheme already has, read from its latest registered version, instead ' +
+        'of --rule. Writes an ordinary pass under the same version.',
+    }),
     scope: Flags.string({
       description:
         'A SQL predicate over entries, narrowing what this run considers. The unclassified ' +
@@ -242,6 +313,7 @@ export default class Annotate extends BaseCommand {
     const rawRules = flags.rule ?? [];
     const rawIds = flags.ids ?? [];
     const declared = flags.label ?? [];
+    const replay = this.flagValue(flags.replay);
     const scope = this.optionalFlag(flags.scope);
     const backtestScheme = this.optionalFlag(flags.backtest);
     const rawHoldout = this.optionalFlag(flags.holdout);
@@ -263,10 +335,38 @@ export default class Annotate extends BaseCommand {
           'comparable with `asc kappa`.',
       );
     }
-    if (rawRules.length === 0 && rawIds.length === 0) {
+    if (rawRules.length === 0 && rawIds.length === 0 && !replay) {
       throw usageError(
-        'nothing to do: give --rule to apply rules, or --ids "<label>=<id>,<id>" to annotate named ' +
-          'entries. An empty run would register a scheme and write no pass.',
+        'nothing to do: give --rule to apply rules, --replay to apply the rules the scheme already ' +
+          'has, or --ids "<label>=<id>,<id>" to annotate named entries. An empty run would register ' +
+          'a scheme and write no pass.',
+      );
+    }
+    // `--replay` is a third way of saying what the rules are, and it cannot be said alongside the
+    // other two: next to `--rule` it is the same sentence written twice, and next to `--ids` it is not
+    // a statement about rules at all -- `--ids` is the other way of writing a pass. All three are
+    // `usageError`, because each is a contradiction in the flags rather than a fact about the store;
+    // the two refusals `replayedRules` raises are the other kind and are `refusal`s.
+    if (replay && rawRules.length > 0) {
+      throw usageError(
+        '--replay and --rule cannot be combined: --replay applies the rules the scheme already has, ' +
+          'and --rule is what would replace them. Retyping the rule is exactly the work --replay ' +
+          'exists to save. Drop one of them.',
+      );
+    }
+    if (replay && rawIds.length > 0) {
+      throw usageError(
+        "--replay and --ids cannot be combined. --replay re-applies a scheme's stored rules; --ids " +
+          'annotates named entries by hand, which is its own kind of pass. Run them separately -- ' +
+          'each is its own pass, which is also what makes the two comparable with `asc kappa`.',
+      );
+    }
+    if (replay && backtestScheme !== undefined) {
+      throw usageError(
+        '--replay and --backtest cannot be combined. --backtest grades a proposed --rule against a ' +
+          "hand-labelled scheme, and the rule --replay applies IS a scheme's own -- so the predictor " +
+          'and the ground truth would be the same object, which is not a back-test. Drop --backtest, ' +
+          'or state the rule with --rule and grade that.',
       );
     }
     // `--ids` IS a hand label -- there is nothing for --backtest to grade it against, since grading
@@ -301,6 +401,10 @@ export default class Annotate extends BaseCommand {
     // the rules are what this run says they are. Takes `existing` as a parameter rather than
     // reading it itself, because WHERE that read happens is the whole fix for asc-q4p -- see the
     // real write below.
+    //
+    // The fallback is what makes `--replay` a replay rather than a version bump: a replay states no
+    // rules, so it lands here and the spec it hands `registerScheme` carries the rules it just read,
+    // hashes the same, and registers as `unchanged`.
     const nextSpec = (existing: SchemeSummary | undefined): SchemeSpec => ({
       labels: [...new Set([...(existing?.spec.labels ?? []), ...added])].sort(),
       rules: parsed.rules.length > 0 ? parsed.rules : (existing?.spec.rules ?? []),
@@ -516,10 +620,25 @@ export default class Annotate extends BaseCommand {
 
         const assigned = new Map<string, string>();
 
+        // What the scheme is NOW, read through the lock because it decides what this run writes in
+        // three ways: the vocabulary the spec unions with, the rules `--replay` applies, and whether
+        // the shape is new. Hoisted above the assignment loop rather than below it for the third of
+        // those -- a replay cannot run a rule it has not read yet.
+        const registered = listSchemes(db);
+        const existing = registered.find((scheme) => scheme.name === schemeName);
+
+        // The rules this run applies: the ones it was given, or -- under `--replay` -- the scheme's
+        // own, from its latest version. `parsed.rules` is empty under `--replay`, so `nextSpec` below
+        // takes the stored rules through the same fallback an `--ids` run takes them through, and the
+        // shape this run registers is the one it just read.
+        const appliedRules = replay
+          ? replayedRules(schemeName, existing, registered)
+          : parsed.rules;
+
         if (rawIds.length === 0) {
           // Rules in order, first match wins -- the order is the scheme's shape and is why
           // `normalizeSpec` hashes the rule list as a list.
-          for (const rule of parsed.rules) {
+          for (const rule of appliedRules) {
             for (const entryId of matchingEntryIds(db, rule)) {
               if (scopeIds.has(entryId) && !assigned.has(entryId))
                 assigned.set(entryId, rule.label);
@@ -563,16 +682,22 @@ export default class Annotate extends BaseCommand {
           }
         }
 
-        if (rawRules.length > 0 && assigned.size === 0 && scopeIds.size > 0) {
+        // "This run applied rules and none of them matched" -- so it is keyed on the rules the run
+        // APPLIED, not on `--rule` having been typed. A replay reached through the flag hits this
+        // warning exactly as a retyped rule does, which is the reading a caller wants: the rule that
+        // matched nothing is the scheme's, and the fix is the scheme's too.
+        if (appliedRules.length > 0 && assigned.size === 0 && scopeIds.size > 0) {
           this.warn(
             `no rule matched any of the ${String(scopeIds.size)} entries in scope, so the whole ` +
               `scope is unclassified. That remainder is the signal a taxonomy is incomplete, not a ` +
-              `failure -- but an empty pass is not written, so the scheme's next version is all this ` +
-              `run changed.`,
+              `failure -- but an empty pass is not written, so ${
+                replay
+                  ? 'a replayed run changes nothing at all: the shape it applied is the shape it read'
+                  : "the scheme's next version is all this run changed"
+              }.`,
           );
         }
 
-        const existing = listSchemes(db).find((scheme) => scheme.name === schemeName);
         const spec = nextSpec(existing);
 
         // The two writers, in order: the scheme's version exists before the pass that names it.

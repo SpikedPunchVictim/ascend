@@ -81,16 +81,16 @@ export function briefLine(summary: TypeSummary): string {
  * is stopped rather than the instance. The `--prop=` flags are the convenience path, and
  * `asc record --help` is where a reader finds those.
  *
- * **E12.13 rendered `ARCHITECTURE.md:333`'s spelling -- `asc record <type> --json -` -- and that
+ * **E12.13 rendered `ARCHITECTURE.md`'s spelling -- `asc record <type> --json -` -- and that
  * was one artifact teaching what three others had moved away from** (`asc-fkp1`, finding 1 of this
  * change's adversarial review). `--json` is already the versioned-**output** contract on every
  * command, so a `--json` that also meant "read JSON here" would be two meanings for one flag on one
- * command; `record.ts:15-26` records the deviation in full and implements the operand instead
+ * command; `record.ts` records the deviation in full and implements the operand instead
  * (*"There is no spelling that keeps both"*). `asc record --help` documents it -- `[DOCUMENT]  Path
  * to an entry document, or \`-\` for standard input` -- and both of `README.md`'s examples are of the
  * form `cat reviews.json | asc record review_completed -`. This line is the spelling those three
  * teach; `--json` is a flag a caller adds for the envelope, not part of the path a reader is handed.
- * `ARCHITECTURE.md:333` itself still names the old spelling and is the document to reconcile -- the
+ * `ARCHITECTURE.md` itself still names the old spelling and is the document to reconcile -- the
  * brief is deliberately not the artifact carrying that.
  */
 export const RECORD_COMMAND = 'asc record TYPE -';
@@ -117,7 +117,7 @@ export const RECORD_COMMAND = 'asc record TYPE -';
  * exit=1
  * ```
  *
- * `ARCHITECTURE.md:333` states its own spelling *with* this qualifier -- *"**`asc record <type>
+ * `ARCHITECTURE.md` states its own spelling *with* this qualifier -- *"**`asc record <type>
  * --json -`** (stdin) is the primary path"* -- and the first rendering of this line dropped it. The
  * failure that left is the one `dogfood/0028` is about, one step further on: a session that has just
  * been told the verb runs it, gets an error about a document it never intended to write, and has to

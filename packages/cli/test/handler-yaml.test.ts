@@ -107,6 +107,18 @@ on: "command.run"
     expect(reformatted.hash).toBe(original.hash);
     expect(changed.hash).not.toBe(original.hash);
   });
+
+  it('leaves the hash unmoved by a comment, which is not parsed data', () => {
+    // The citation sweep (asc-3sfk) edits comments in handler files, and a comment that moved the
+    // hash would re-mint every entry key the handler ever wrote -- a documentation fix that
+    // silently splits that handler's history in two, which is a migration wearing a comment's
+    // clothes. The identity is over the parsed document, so a comment cannot reach it. The case
+    // above already drops BEAD_CLOSE's own leading comment, but changes the key order, the quoting
+    // and the whitespace at the same time; this isolates the one axis this bead moves.
+    expect(loadHandler(`${BEAD_CLOSE}# read by the next person, not by the compiler\n`).hash).toBe(
+      loadHandler(BEAD_CLOSE).hash,
+    );
+  });
 });
 
 /**

@@ -224,6 +224,25 @@ interface VersionRowShape {
 }
 
 /**
+ * The version a new one would supersede: its identity, and every prose column the new row inherits.
+ *
+ * A named shape rather than a projection of `VersionRowShape`, because the point is exactly which
+ * columns are read: a SELECT that widened without this type widening would leave the carry-forward
+ * below reading `undefined` for a column it is supposed to copy, and an inherited `undefined` is
+ * indistinguishable from "the previous version declared none".
+ */
+interface LatestVersionShape {
+  version: number;
+  major: number;
+  spec_json: string;
+  status: string;
+  description: string | null;
+  record_when: string | null;
+  prose_json: string | null;
+  guidance_json: string | null;
+}
+
+/**
  * The stored shape of a spec: prose stripped, prose columns kept.
  *
  * This is the single place the split between identity and prose is applied to STORAGE,
@@ -296,6 +315,105 @@ function guidanceJson(guidance: TypeGuidance): string | null {
     (field) => [field, guidance[field]] as const,
   );
   return ordered.length === 0 ? null : JSON.stringify(Object.fromEntries(ordered));
+}
+
+/** Every prose column of one version row, as the INSERT writes them. */
+interface StoredProse {
+  readonly description: string | null;
+  readonly recordWhen: string | null;
+  readonly proseJson: string | null;
+  readonly guidanceJson: string | null;
+}
+
+/**
+ * What the new version row keeps: what this write declared, written over what the version it
+ * supersedes said.
+ *
+ * **NULL is the declaration of silence, not a value.** Prose is stored per version and every reader
+ * reads it off the latest one, so a bump that wrote NULL over a column the previous version had
+ * filled would leave the prose on the row it replaced -- unreachable, and rendered exactly like a
+ * type that never had any. `note` did that when v1's `text` became v2's `body`, and the brief a
+ * recorder reads turned the project's own last-resort type into `hand_empty`, the one type that is
+ * deliberately without guidance (`dogfood/0075`).
+ *
+ * **The merge is per field, and that is what makes the fix complete rather than half of it.**
+ * Carrying a prose column wholesale when the write declared nothing still strands every field a
+ * PARTIAL write left out: a v2 that declares a new `purpose` and says nothing else would put the
+ * other three lines out of reach, which is `dogfood/0075` one field at a time instead of four at
+ * once. Field by field, what this write names wins and what it does not name is inherited -- which is
+ * the rule `updateTypeProse` already applies to an edit, so a partial write and a prose edit cannot
+ * come to disagree about what an unmentioned field means.
+ *
+ * **The boundary, stated rather than implied: a version bump cannot clear a prose column.** Under
+ * this rule there is no value a caller can pass that means "drop it", because NULL already means
+ * "I did not say". That is not a lost capability -- it moves the drop to the operation that owns
+ * prose edits, `updateTypeProse`, whose `null` per field clears one and which is the writer a caller
+ * reaches for when the shape did not change. `register-document.ts`'s `droppedGuidance` warning,
+ * which existed to make the old silent drop audible, had nothing left to say once omission stopped
+ * dropping, and is gone with it.
+ */
+function inheritProse(
+  latest: LatestVersionShape | undefined,
+  shape: TypeSpec,
+  declared: StoredProse,
+): StoredProse {
+  if (latest === undefined) return declared;
+  return {
+    description: declared.description ?? latest.description,
+    recordWhen: declared.recordWhen ?? latest.record_when,
+    proseJson: mergeProse(latest.prose_json, declared.proseJson, shape),
+    guidanceJson: inheritedGuidance(latest.guidance_json, declared.guidanceJson),
+  };
+}
+
+/**
+ * The superseded version's guidance, with every field this write declared written over it.
+ *
+ * The merge itself is `mergeGuidance` -- the same call `updateTypeProse` makes -- so the two paths
+ * cannot drift about a field the caller did not mention. Both ends are JSON as `guidanceJson` wrote
+ * it and the result goes back through `guidanceJson`, which keeps `GUIDANCE_FIELDS`' order fixed and
+ * so keeps two stores holding the same guidance holding the same bytes.
+ */
+function inheritedGuidance(
+  previousJson: string | null,
+  declaredJson: string | null,
+): string | null {
+  const previous = previousJson === null ? {} : (JSON.parse(previousJson) as TypeGuidance);
+  const declared = declaredJson === null ? {} : (JSON.parse(declaredJson) as TypeGuidance);
+  return guidanceJson(mergeGuidance(previous, declared));
+}
+
+/**
+ * The superseded version's per-property prose, with this write's entries written over it and every
+ * entry keyed on a property this shape does not declare dropped.
+ *
+ * Keyed rather than carried wholesale because a prose key IS a property name: `canonicalProseKeys`
+ * refuses a key that names nothing so the store cannot hold prose no reader can show (asc-bcv.15),
+ * and a bump that retypes or removes a property would otherwise carry exactly such a key in from the
+ * row behind it -- the second half of what `dogfood/0075` measured, where the stranded guidance was
+ * also keyed on the property v2 had replaced. Entries dropped here are the ones `droppedGuidance`
+ * used to warn about; nothing warns now because nothing is left behind -- prose for a property a type
+ * no longer declares has no surface on which to appear either way.
+ *
+ * Iterating `shape.properties` rather than the merged map also fixes the stored order to the shape's
+ * own, so the bytes do not depend on which entries were inherited and which were declared.
+ */
+function mergeProse(
+  previousJson: string | null,
+  declaredJson: string | null,
+  shape: TypeSpec,
+): string | null {
+  const previous =
+    previousJson === null ? {} : (JSON.parse(previousJson) as Record<string, string>);
+  const declared =
+    declaredJson === null ? {} : (JSON.parse(declaredJson) as Record<string, string>);
+  const written = { ...previous, ...declared };
+  const merged: Record<string, string> = {};
+  for (const property of shape.properties) {
+    const text = written[property.name];
+    if (text !== undefined) merged[property.name] = text;
+  }
+  return Object.keys(merged).length === 0 ? null : JSON.stringify(merged);
 }
 
 /**
@@ -551,10 +669,10 @@ export function registerType(
 
     const latest = db
       .prepare(
-        'SELECT version, major, spec_json, status FROM entry_types WHERE name = ? ORDER BY version DESC LIMIT 1',
+        'SELECT version, major, spec_json, status, description, record_when, prose_json, ' +
+          'guidance_json FROM entry_types WHERE name = ? ORDER BY version DESC LIMIT 1',
       )
-      .get(shape.name) as
-      { version: number; major: number; spec_json: string; status: string } | undefined;
+      .get(shape.name) as LatestVersionShape | undefined;
 
     let version = 1;
     let major = 1;
@@ -607,6 +725,21 @@ export function registerType(
     // the registry hold when this definition was proposed?
     const notes = vocabularyNotes(db, shape);
 
+    // What each prose column holds on the row about to be written. Prose is stored per version
+    // while every reader reads it off the LATEST one, so a bump that carried none of it forward
+    // would leave it on the row it replaced -- not lost, not deleted, simply unreachable, and
+    // rendered exactly like a type that never had any (asc-4f2w, `dogfood/0075`). What the write
+    // declares is taken literally, and every field it does not name inherits what the version being
+    // superseded already said. That is the same rule `status` follows immediately above
+    // (asc-9bd): a version row is a fact about a SHAPE, and the prose the shape happens to
+    // accompany has no reason to be re-litigated by a change to the shape.
+    const inherited = inheritProse(latest, shape, {
+      description: options.description ?? null,
+      recordWhen: options.recordWhen ?? null,
+      proseJson,
+      guidanceJson: storedGuidance,
+    });
+
     // Told, not left to be discovered later in `asc types list`: a caller who just changed the
     // shape of a deprecated type is about to see `created`, and without this the only signal
     // that nothing reactivated is the status column they did not ask to look at.
@@ -629,10 +762,10 @@ export function registerType(
       major,
       hash,
       JSON.stringify(shape),
-      options.description ?? null,
-      options.recordWhen ?? null,
-      proseJson,
-      storedGuidance,
+      inherited.description,
+      inherited.recordWhen,
+      inherited.proseJson,
+      inherited.guidanceJson,
       status,
       options.registeredAt,
     );

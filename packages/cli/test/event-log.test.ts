@@ -48,7 +48,7 @@ afterAll(() => {
  *
  * Running as root, the mode bits are advisory and the fixture would read straight through the
  * locked directory -- so the test would pass while exercising nothing, which is worse than
- * skipping. Same guard, same reason, as `reader.test.ts:107`.
+ * skipping. Same guard, same reason, as `reader.test.ts`.
  */
 const canVandalize = process.getuid === undefined || process.getuid() !== 0;
 
@@ -148,8 +148,8 @@ describe('the event log: writing', () => {
 describe('the event log: reading', () => {
   it('reads nothing from a tree with no log', () => {
     // `unreadable: []` and not a failure. `asc init` does not create `events/` -- `openEventLog`
-    // does, on the first append (`event-log.ts:156`) -- so a root that is not there is the ordinary
-    // state of a project that never ran an ingest. `typed-handlers.ts:106-112` draws the same line
+    // does, on the first append (`event-log.ts`) -- so a root that is not there is the ordinary
+    // state of a project that never ran an ingest. `typed-handlers.ts` draws the same line
     // for a missing handlers directory, and counting this one as damage would print
     // `unreadable: 1` on every fresh project: a false report of exactly the class that jumps the
     // queue.
@@ -160,7 +160,7 @@ describe('the event log: reading', () => {
     // The defect this replaces: an EACCES on one session directory was indistinguishable from a
     // session that wrote nothing, so a replay silently reported a smaller handler count and no
     // part of the report said so. `scanTranscripts` records the same situation and continues the
-    // walk (`reader.ts:253-257`); this is the log's walk holding to that, which is why the
+    // walk (`reader.ts`); this is the log's walk holding to that, which is why the
     // readable stream below is still read.
     if (!canVandalize) return;
     const dir = tree();

@@ -269,7 +269,7 @@ export const STARTER_TYPES: readonly TypeSpec[] = [
  *
  * **Why the write command and not the validation funnel.** `recordEntry` -> `validateEntry` is
  * shared by `asc record`, `asc import`, `asc ingest` and `asc index build`'s replay
- * (`jsonl-index.ts:969`), so a refusal raised there would make `asc index build` throw on a tree that
+ * (`jsonl-index.ts`), so a refusal raised there would make `asc index build` throw on a tree that
  * already holds a no-op. This repository's tree holds **four**, two of them deliberate -- measured
  * before choosing, and the reason the `asc-4wx6` precedent (whose pre-flight measured zero) does not
  * transfer. Applied where a NEW entry is written and nowhere else, an existing tree stays

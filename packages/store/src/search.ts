@@ -50,9 +50,9 @@
  * still wrapped in `"` with `"` doubled. `C++ templates` still reduces to `"templates"`, `*` still
  * reduces to null, and the hostile-input table below is unchanged by this.
  *
- * **Three sibling regexes are ASCII-only and stay that way** (`core/src/spec.ts:93,97` and
- * `cli/src/commands/query.ts:124`). All three derive SQL *identifiers*, where ASCII is a contract
- * the rest of the system relies on (`union.ts:556` depends on it). This one tokenises user
+ * **Three sibling regexes are ASCII-only and stay that way** (`core/src/spec.ts` and
+ * `cli/src/commands/query.ts`). All three derive SQL *identifiers*, where ASCII is a contract
+ * the rest of the system relies on (`union.ts` depends on it). This one tokenises user
  * *prose*, where ASCII was never a contract -- only an accident of the first draft.
  */
 

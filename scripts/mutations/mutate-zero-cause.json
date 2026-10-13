@@ -1,0 +1,85 @@
+{
+  "_": "Kill-check for `zeroCause` (`asc-5sdw`, `dogfood/0080`). The defect was one sentence: `executed()` answers 0 for EVERY cause of 'nothing ran', and all three call sites printed `matched no test` -- which is false for one of the two causes, and it was the cause this was measured on. A mutant that does not type-check makes the killer file's own `beforeAll` throw (it runs `tsc -b`), the run blamed a pattern that DID match, and the author was pointed at the one thing that was not wrong; working it out cost reading `scripts/mutate.mjs` and running `tsc -b` by hand. THE MECHANISM IS A SKIP, and that is why the summary line cannot answer it: `executed()` counts `passed` and `failed`, a skipped test is neither, and every cause that stops a file from running reports its tests as skipped. The two `Tests` lines are byte-identical; the `Test Files` line is the discriminator, so no second run and no `tsc` probe is needed. Measured 2026-10-12 against `packages/cli/test/stats.test.ts` (70 tests), one mutant applied by hand and reverted between the runs: the pattern matching nothing prints `Test Files  1 skipped (1)` and exits 0, while a file whose own setup throws prints `Test Files  1 failed (1)` with a `Failed Suites` block and exits 1. The mutants are chosen around that discriminator (Z1 reads the wrong verb, Z3 matches any `Test Files` line at all, Z5 drops the `m` flag so `^` anchors to the whole output and the line is missed), around the two branch returns (Z2 and Z6 swap which cause each branch claims), and around the detail (Z4 drops the quoted `Error:` line). NOT MUTATED, and said rather than left as an implied gap: the verdict text `runMutant` builds from these causes is shell, and shell is deliberately unreachable from a test in this repo, so no mutant there could name a killer -- the decision that text encodes is `zeroCause`'s, and that is what these six hold. Every killer below was read off `assertionResults` from a real run of each mutant.",
+  "mutants": [
+    {
+      "id": "Z1",
+      "file": "scripts/mutate.mjs",
+      "find": "if (!/^\\s*Test Files\\s+\\d+ failed\\b/m.test(output)) return { cause: 'no-match', detail: '' };",
+      "replace": "if (!/^\\s*Test Files\\s+\\d+ passed\\b/m.test(output)) return { cause: 'no-match', detail: '' };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "reads a file whose own setup threw as suite-failed"
+        }
+      ]
+    },
+    {
+      "id": "Z2",
+      "file": "scripts/mutate.mjs",
+      "find": "if (!/^\\s*Test Files\\s+\\d+ failed\\b/m.test(output)) return { cause: 'no-match', detail: '' };",
+      "replace": "if (!/^\\s*Test Files\\s+\\d+ failed\\b/m.test(output)) return { cause: 'suite-failed', detail: '' };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "reads a pattern that matched nothing as no-match"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "reads a spec naming a file that does not exist as no-match"
+        },
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "reads an empty output as no-match"
+        }
+      ]
+    },
+    {
+      "id": "Z3",
+      "file": "scripts/mutate.mjs",
+      "find": "if (!/^\\s*Test Files\\s+\\d+ failed\\b/m.test(output)) return { cause: 'no-match', detail: '' };",
+      "replace": "if (!/^\\s*Test Files/m.test(output)) return { cause: 'no-match', detail: '' };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "reads a pattern that matched nothing as no-match"
+        }
+      ]
+    },
+    {
+      "id": "Z4",
+      "file": "scripts/mutate.mjs",
+      "find": "return { cause: 'suite-failed', detail: line === undefined ? '' : line.trim() };",
+      "replace": "return { cause: 'suite-failed', detail: '' };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "reads a file whose own setup threw as suite-failed"
+        }
+      ]
+    },
+    {
+      "id": "Z5",
+      "file": "scripts/mutate.mjs",
+      "find": "if (!/^\\s*Test Files\\s+\\d+ failed\\b/m.test(output)) return { cause: 'no-match', detail: '' };",
+      "replace": "if (!/^\\s*Test Files\\s+\\d+ failed\\b/.test(output)) return { cause: 'no-match', detail: '' };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "reads a file whose own setup threw as suite-failed"
+        }
+      ]
+    },
+    {
+      "id": "Z6",
+      "file": "scripts/mutate.mjs",
+      "find": "return { cause: 'suite-failed', detail: line === undefined ? '' : line.trim() };",
+      "replace": "return { cause: 'no-match', detail: line === undefined ? '' : line.trim() };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "reads a file whose own setup threw as suite-failed"
+        }
+      ]
+    }
+  ]
+}
