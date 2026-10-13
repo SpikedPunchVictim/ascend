@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "bd prime --hook-json",
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/.claude/bd-prime-hook.mjs\" ] || node \"$CLAUDE_PROJECT_DIR/.claude/bd-prime-hook.mjs\"",
             "type": "command"
           }
         ],
