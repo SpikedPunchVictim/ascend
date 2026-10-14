@@ -5561,3 +5561,578 @@ per change. `--rule`, `--ids`, `--backtest` and the empty-run refusal keep their
   lines beneath it type-check, so `tsc -b` fails with TS18048 and the tree's `beforeAll` turns that
   into a file-level error rather than a failing assertion. The spec says so, and represents both
   guards with mutants that keep them compiling.
+
+## Stage E32: wave 5, the open items, and two capabilities
+
+**Goal**: clear the eight open beads named at the end of the last session plus wave 5
+(`asc-zimu`, `asc-n168`, `asc-pcu`, `asc-pi5a`), with two of them — `asc-tuur.10`'s DSL capability
+build and `asc-hllr`'s live 40-session run — taken as their own programs.
+
+**Owner decisions (2026-10-13), each shipping**: build both `asc-tuur.10` capabilities then the port;
+run `asc-hllr`'s ~40 sessions with `node_modules` installed in the n8n clone first; keep the
+live-corpus checks on the commit-blocking path (`asc-pi5a` option (a)); leave the rtk stale-result
+store `note` as it stands. Full detail in the session plan.
+
+**Sub-stages** (status flips get a `stage_transition` entry; no line numbers anywhere):
+
+| | sub-stage | bead | Status |
+|---|---|---|---|
+| E32.1 | the mutate runner refuses instead of crashing | `asc-38ss` | **Complete** |
+| E32.2 | an event-time order mode for paging | `asc-pcu` | **Complete** |
+| E32.3 | characterize the `query.test.ts` flake | `asc-zimu` | **Complete** |
+| E32.4 | clustering corrections on the `asc stats` surfaces | `asc-n168` | **Complete** |
+| E32.5 | record the gate-composition decision, change no code | `asc-pi5a` | **Complete** |
+| E32.6 | carry record-level facts onto the event stream | `asc-tuur.10.2` | Not Started |
+| E32.7 | cross-record mutable state in the handler DSL | `asc-tuur.10.1` | Not Started |
+| E32.8 | the port, and the three gaps 10.1+10.2 do not close | `asc-tuur.10` | Not Started |
+| E32.9 | the compare split and the power refusal | `asc-xn4g` E30.4/E30.5 | Not Started |
+| E32.10 | the live 40-session run in the n8n copy | `asc-hllr` | Not Started |
+
+**E32.1**: `runMutant`'s not-applied branch returned a result without the `notes` key its docblock
+declares, and `main` spreads `result.notes` unconditionally, so a stale `find` anchor crashed the
+runner before it printed the verdict table (`dogfood/0084`). The shape moved into a pure exported
+`notApplied(id, why)`; the missing assertion ("carries notes, the key a refusal without a killer used
+to drop") is written one level up from the always-correct `applyMutant`. `scripts/mutations/mutate-not-applied.json`:
+two mutants deleting the two fields `main` reads, both killed by that named test — `2 mutant(s), 0
+problem(s)`. End to end, the stale-anchor run now prints its table and exits 1 instead of throwing.
+
+**E32.5**: `asc-pi5a` closes as a **decision**, not a remedy. The owner chose option (a) — the
+live-corpus checks stay on the commit-blocking path — with every in-repo lever already refuted by
+`EV-46`. No source, hook, or bound changed; `EV-46`'s closing question gained a dated addendum.
+
+**E32.3**: reproduced and characterized, and the characterization is *not* "a flake" — **the property
+the test asserted was false**. `guardBrokenPipes` (`packages/cli/src/streams.ts`) acts on `EPIPE`
+alone, on the stated reasoning that *"`EPIPE` is the only shape this acts on"*. Measured through the
+real binary on a 5,000-row query: the test's exact spawn (reader destroyed on the first chunk) exits
+1 with a Node crash dump in **3 of 300** runs, carrying `Error: write ENOTCONN` (`errno -57`) and a
+path-first stderr whose origin is `@oclif/core/lib/command.js`; the control that DRAINS the reader is
+**0 of 150**; the real pipeline `asc query ... | head -1` is **0 of 150**, because a graceful close
+sends a FIN while `destroy()` sends an RST. The signature is what identified it: **only an uncaught
+exception prints a bare absolute path**, and every ascend writer goes through `renderForStderr`,
+which always prefixes a label.
+
+**The errno was half the fix and the other half was invisible in the diff.** `@oclif/core` installs
+its own EPIPE-or-rethrow handler on `process.stdout` at `Command`-module load — before ascend's entry
+point — and EventEmitter stops at the first listener that throws, so oclif answered first and
+rethrew. Accepting `ENOTCONN` while leaving the registration as `on` still measured **2 of 300**;
+`prependListener` took it to **0 of 600**. `ErrorEmitting` consequently declares both methods, though
+only one is called, so that the mutation swapping them still *compiles* — `scripts/mutate.mjs`
+classifies an un-compiling mutant as `suite-failed` and refuses to read that as a kill. Two
+deterministic arms were added (`ENOTCONN` exits 0; a real `EventEmitter` with an oclif-shaped handler
+registered first proves the guard answers ahead of it), and `streams.test.ts` gained the `beforeAll`
+build every other CLI test file has, without which it would have tested stale `dist/` and reported a
+false survivor as a mutation killer.
+
+**What made this cost a year of green is stated in the record rather than smoothed over.** The gate
+logged it once on 2026-09-30 among 2,433 entries, and a 1% failure is indistinguishable from a pass
+in any single run. The first hypothesis — a `tsc -b` race leaving `dist/bin.js` half-written — was
+killed by measurement (180,752 reads across two forced rebuilds, never a short read), and one
+instrument in the record was itself wrong and is recorded as such: `PIPESTATUS` under zsh read back
+empty, reporting 150 of 150 anomalous for a pipeline that was in fact 150 of 150 clean. The recorded
+rate (1 in 2,433) and the measured one (1 in 100) differ by 17x and the gap is left unresolved rather
+than fitted. Details: `dogfood/0086`, `scripts/mutations/pipe-guard-errno.json` (2 mutants, both
+killed, rebuild green), decision `dfb7fcb2`.
+
+**E32.2**: `asc explore --page` and `--dump` take `--order <stored|event>`, and a cursor is refused
+when it is replayed against the order it was not issued under. The groundwork held as predicted —
+`CursorScope.order` already existed and `scopeFingerprint` already hashed it — so the work was the
+keyset and the wiring: `packages/core/src/cursor.ts` gains `CURSOR_ORDER_EVENT`, a `CURSOR_ORDERS`
+vocabulary and the `CURSOR_ORDER_TOKENS` table; `packages/store/src/pages.ts` turns the module-private
+order constant into a descriptor (`{key, token, holds, property}`) so the keyset column, both
+fingerprints and the error wording come from one place, and `entryIds` takes the mode too so a dump
+and the pages a caller resumes stay one answer.
+
+**Three things were added beyond the plan, each because the plan's version was wrong in a way a test
+would not have caught.** (1) **The absent-clock key is `'!'`, not `''`.** The plan followed
+`stats.ts`'s "an absent clock sorts first" precedent into a `COALESCE(..., '')`, and that version
+stops a walk one page in: `''` is a position the cursor has to CARRY, and `decodeCursor` refuses an
+empty field as a corrupt token — correctly, since a truncated payload and an absent clock would
+otherwise be one value. Measured, not reasoned: `CursorError: cursor is missing its recorded_at`. The
+sentinel is a character below every digit and no `timestamp` value can hold (both validators require
+a leading digit), so an absent clock still sorts first among the rows it ties with, in a spelling a
+cursor can carry. (2) **`--order event` is REFUSED for a type that declares no `occurred_at`.** A
+bare `json_extract` ordering over such a type does not error; it degenerates to the id order while the
+cursor's scope, the dump manifest and the command's own flag description all say `occurred_at,id` —
+a durable false claim, which is the class this project treats as severity-zero. `PageOrderError` +
+`assertOrderIsDeclared` refuse it from the store, one place, so the page and the dump cannot diverge.
+It exits **1**, not 2, on the precedent `--group-by`'s `UngroupablePropertyError` sets: the type's own
+definition is what says no. (3) **`--order` on a mode that has no order is a usage error** (exit 2),
+matching the house style `--seed` uses — the map, a crosstab and a sample order their own output, so
+a caller who typed it there would be reading an order they did not ask for while believing otherwise.
+
+**Tests** — four new scenarios in `packages/store/test/pages.test.ts` (the event walk over a
+hand-derived order; the cross-order refusal in both directions; a clockless row reached rather than
+dropped past the first page; the refusal for a type with no `occurred_at`) and six at the CLI, one of
+which is the discriminating one: its fixture declares `at` as a `timestamp`, so an implementation that
+sorted by "the type's timestamp property, whatever it is called" passes every other test and fails
+there.
+
+**Mutation spec** — `scripts/mutations/event-order-page.json`, five mutants, all killers found
+empirically by applying each and reading the failing names off vitest's JSON reporter: the keyset
+column, the scope's order token, the absent-clock key, the declaration refusal, and one in the CLI
+where the order has to reach the dump's own chunking. `5 mutant(s), 0 problem(s). Every named killer
+killed its mutant.` Two candidates were dropped and the spec says why: the core token table is
+killable only from a CLI file (the store suites read `@ascend/core` from `dist/` and never build it)
+and restates the store mutant one layer down; and `if (false)` in place of the inverted refusal does
+not compile, because the condition is what narrows `declared` for the branch beneath it.
+
+**Measured end to end, on the real binary rather than inferred from the suite**: a fresh project with
+one type and four entries recorded under explicit ids, so both orders are known and different. Stored
+order returned `a, b, c` against an event order of `b, c, a`; the stored cursor replayed against
+`--order event` exited 2 naming the stored clock, and the event cursor replayed against the default
+exited 2 naming event time; the dump written under `--order event` stated `"order": "occurred_at,id"`
+in its manifest and chunked its file in event order (default: `"order": "recorded_at,id"`, the
+manifest's three existing assertions unchanged).
+
+**The gate, and the red it handed over that had nothing to do with this stage.** The first full
+`pnpm test` behind this stage came back `1 failed | 3404 passed` on an unrelated file:
+`packages/adapter-claude-code/test/derive-real-corpus.test.ts` timed out at `120033` ms under
+`loadavg 37.59`, in a run whose own summed test time was 4,499,823 ms. It was not dismissed as a
+flake and it was not this stage's diff (that file imports only `validateEntry` from `@ascend/core`,
+and this stage's two index changes are re-exports). The mechanism, measured rather than guessed: the
+file memoized ONE shared sweep into whichever test ran first — `shared ??= sweep()` — and bounded
+that test at 120 s while bounding the identical independent sweep in the SAME FILE at 180 s, so the
+next test silently inherited 48,743 ms of the first one's still-in-flight promise and reported it as
+its own. Solo the same file passed, the payer at 69,451 ms. Filed as `asc-9pto`, recorded as
+`dogfood/0085` (the fourth occurrence of the corpus-bound class: `dogfood/0007` → `0063` →
+`asc-pcaw`/`EV-46` → here). The owner chose the **hoist** over the cheaper bound bump on 2026-10-13:
+the shared sweep now runs in a `beforeAll` under a named `SWEEP_BUDGET_MS`, so no test body is
+charged for it at all and a slow sweep names the FILE rather than an innocent test. Re-run verbatim:
+`Test Files 144 passed (144)` / `Tests 3405 passed | 2 skipped (3407)` in `558.13s`, the previously
+red file at `177423ms` with its only long body the deliberate second walk at `84890ms`, and
+`test-baseline.mjs` at `3407 collected / 3405 passed ... 358 above baseline`. This stage's
+`stage_transition` entry omits `tests_passing` — it was recorded while the gate was red, and it is
+left as recorded; `asc ingest`'s `note` entry carries the green re-run as the annotation.
+
+**E32.4**: `asc stats --cluster-by <property>` corrects for clustering, and **the correction is not
+one mechanism** — which is the finding that reshaped the stage. The bead named Rao–Scott for every
+surface; that formula was implemented, came out **negative** on a two-cluster 2×2 (`D = -20`), and was
+abandoned rather than fitted (`dogfood/0087`, `stuck_event d978ac9a`). What shipped is three
+mechanisms chosen by what each surface can actually do:
+
+- **`--rules` recomputes each interval at the design effect of its own antecedent population** — the
+  same `ClusterDesign` object `asc explore --cluster` already corrects — by passing it into the
+  existing `wilson(...)`, which was built to take one and refuses a mismatched `n`. Rows gain
+  `design_effect` and `effective_n` (omitted, never zero), and the warning says in as many words that
+  `confidence`, `antecedent_support` and `support` are still the **observed counts** while the
+  interval is what moved.
+- **`--assoc` and `--correlate` install a cluster-preserving permutation null**
+  (`clusterPermutationNull`, `packages/analysis/src/association.ts`). It pools each cluster's `b`
+  values contiguously in first-appearance order and deals the pool out in a **shuffled donor order**
+  to destination clusters in **fixed order**, so the `b` marginal is preserved exactly. That is the
+  deliberate opposite choice from `blockPermutationNull`, and clusters of unequal size are **dealt,
+  not swapped** — the module says so where it does it. Singleton clusters reproduce `permutationNull`
+  exactly, which is the control arm the tests use.
+- **`--changepoints` and `--distinctive` REFUSE the flag** (exit 1) rather than print an uncorrected
+  p. Neither has a cluster-preserving null to hold whole clusters together, and Pettitt's and the
+  normal-tail p have no deff to divide by.
+
+**Two things the bead had wrong, corrected rather than carried.** `--distinctive` is **not** a
+permutation test: `distinctiveTerms` computes a closed-form normal tail via `chiSquarePValue(z*z, 1)`
+and `--permutations` is gated away from it in `FLAG_MODES`, so the block-permutation route the bead
+proposes does not exist to take. And the flag is declared with a **quoted kebab key** (`'cluster-by'`)
+so `flags['cluster-by']` reaches `FLAG_MODES`'s uniform `flags[flag]` lookup — the convention
+`'min-support'` already sets in that same table.
+
+**The corrected p is order-dependent, and that is measured rather than reasoned.** The null's block
+order is first-appearance in the store's own `(recorded_at, id)` order, so two corpora with
+**identical content** built separately gave `0.2874251497005988` and `0.32335329341317365`. This was
+caught as a latent flake: `--correlate`'s test had pinned a literal, and the literal had already
+passed once. It now asserts a range (0.25 < p < 0.5) derived from the enumeration with a comment
+saying the digits are deliberately not pinned. The enumeration on the fixture: three clusters of ten
+are three blocks (two 5a/5b, one all-`a`); 3! = 6 deals; two put the all-`a` block back on the
+`kind`-`x` session and reproduce the observed crosstab exactly, the other four give
+`(y,a)=15,(y,b)=5,(x,a)=5,(x,b)=5`, chi-square `0.208 + 0.417 + 0.417 + 0.833 = 1.875` — so about a
+third of the null reaches the observation, which is what the measured ~0.3 is. A missing cluster is
+refused, not imputed or dropped: `2 of 8 entries have no 'session_id'`, exit 1.
+
+**Measured through the real binary**, on the three-session fixture the CLI tests build:
+row-counted `p = 0.0061698993205439034`; the shuffled control at 500 iterations
+`0.011976047904191617`; the cluster-preserving correction near a third. `--rules`:
+`design_effect 7.5`, `effective_n 2.6666666666666665` where the untouched arm reports `1` and `20`.
+`--correlate --json` emits only crosstab rows, so its p is asserted from stderr.
+
+**Tests** — `packages/cli/test/stats.test.ts`'s new describe is a **sibling** of the
+pseudoreplication one (an earlier edit had lost the closing `});` and nested it) and holds **eight**
+tests: the corrected p beside the row-counted one and only when asked; the correction found where the
+shuffled control does not; `--correlate` naming its own p and what it held; `--rules` widening each
+interval to its own antecedent population's design effect; the reader who already gave the flag being
+told which column is corrected; both refusals; the flag on a mode that could never read it refused
+**as a flag, not as a capability** (exit 2); and the missing-cluster refusal.
+
+**Mutation spec** — `scripts/mutations/stats-cluster.json`, **six** mutants across two lives: the
+null itself (the shuffle loop disabled; the dealing loop reading `pool[k]` instead of
+`pool[start + k]`) and what the command does with it (both refusals downgraded from `refusal(` to
+`usageError(`; the modes list truncated to three; the `design_effect`/`effective_n` spread removed).
+`6 mutant(s), 0 problem(s). Every named killer killed its mutant.` and `rebuild: tsc -b ok`. A
+pre-run prediction that M1's named killer would **not** kill its mutant was wrong and the empirical
+run is the authority. All six `find` anchors were re-checked to occur exactly once **after** prettier
+reformatted the tree, since a reflowed anchor is a `NOT APPLIED`, not a kill.
+
+**At the gate**: `format:check` wanted four files (all this stage's), and `eslint` found one real
+error the tests could not — a raw `string | undefined` interpolated into the `--correlate` line's
+template literal, now `String(rawClusterBy)`.
+
+**This stage is `Complete` in the tree and its bead is `CLOSED`, and those are not in conflict once
+the two artifacts are read together.** While this stage was being built, the owner closed
+`asc-n168` **not built**, redirecting the work "from the store and asc stats toward event-stream
+detectors and an intervention ledger (`asc-eali`, `asc-0439`; `EV-53`, `EV-54`)" — records written
+after this plan was approved. Asked directly whether to keep the change, the owner chose **keep it
+and leave the bead closed**. So the capability exists and is verified, and no bead claims it: a
+reader who finds `--cluster-by` should not expect `asc-n168` to explain it. The bead stays closed
+rather than reopened because what it specified (Rao–Scott on every surface) is the thing this stage
+*abandoned*, and reopening it would re-open that specification. What the redirection says about the
+remaining stages is the subject of the re-plan, not of this line.
+
+---
+
+## Stage G — `asc-09wx.14`, cutting the pre-commit gate's cost
+
+The full plan is `/Users/spikedpunchvictim/.claude/plans/staged-marinating-bengio.md`. The gate was
+measured at **226–672 s**, moving with machine load rather than with the diff, and a commit of ten
+markdown files and one hook script was still inside it after **24 min 42 s** on 2026-10-13. Nothing
+in the hook measured itself, so no cut could be shown to have helped. The owner chose **all five
+steps** and **related-tests-on-commit**.
+
+Two things reconnaissance settled, both refutations of the obvious design: **a `.md`-only change is
+not inert** (`derived-types.test.ts` reads the repo's `CLAUDE.md` off disk), and **neither is a
+`dogfood/` or `docs/evidence/` change** (`purity-enforcement.test.ts`'s invisible-character sweep reads
+every tracked file matching `SOURCE_EXTENSIONS`, which includes `.md`, over `git ls-files`). Note which
+of that file's two rules applies: the *citation* rule deliberately **excludes** records
+(`RECORD_PATH` — a citation inside an immutable record is evidence, not guidance), so a record is read
+for invisible characters and not for citations. Either way it is read. So the skip rule cannot
+be a file-kind allow-list; it has to be a derived, completeness-checked mapping that fails closed.
+
+### Stage G1: instrument the gate, and make it testable
+
+**Goal** — Every gate run records per-step durations, the kinds of files staged and the outcome, so
+there is a before-number for every later cut. The gate's observable output is unchanged.
+
+**Success Criteria** — `scripts/gate.mjs` runs the steps; `.githooks/pre-commit` is a shim that
+preserves the splice invariants; one JSONL row per run lands in the gitignored
+`.ascend/gate-runs.jsonl`; `pnpm hook:install` verifies the splice; a real run produces a row.
+
+**Tests** — `scripts/gate.test.ts`, 12 tests: the fast-path order as literal strings; `align check`
+only under `ASCEND_PRECOMMIT_FULL`; stop-at-first-failure; one timed row per step with
+`total_ms` equal to the sum; the failing step's own status (`2` stays `2`); a blocked run is
+recorded; a step that cannot be started is `127`, not a skip; a log-write failure leaves the verdict
+alone; and the kinds of files staged, driven through a real throwaway git repo.
+
+**Status: Complete.** Runner, log writer, shim, ignore rule and tests are in the tree; eslint,
+prettier and `tsc -p tsconfig.eslint.json` are clean. `pnpm hook:install`
+verified the splice (`ok .beads/hooks/pre-commit contains ascend's gate above beads' block`).
+`scripts/gate.test.ts` is 14 tests, green. `scripts/mutations/gate-runner.json` — 7 mutants, every
+killer found by planting the mutant and reading the failing name off vitest's JSON reporter, and
+`pnpm mutate gate-runner` reports *"7 mutant(s), 0 problem(s). Every named killer killed its
+mutant."* with the rebuild clean.
+
+**The before-number, from one real run at `loadavg 27.04 25.61 26.57` on 12 cores** — the whole
+reason the run was worth recording at all:
+
+| step | ms |
+|---|---|
+| `format:check` | 32,556 |
+| `typecheck` | 18,883 |
+| `store verify --staged` | 6,024 |
+| `lint` | 136,424 |
+| `test` | 1,427,295 |
+| `test count` | *never ran — the run blocked at `test`* |
+| **total** | **1,621,182** (27 min 1 s) |
+
+That run **blocked**: two tests in `packages/store/test/busy.test.ts` failed, both recorded in
+`test-failures.log` at the same `loadavg 26.96`, one of them a wall-clock bound reading
+`expected 1746 to be less than 1000`. This is the load-induced class `dogfood/0063` and `asc-pcaw`
+name, not this work — the diff touches no store code. It is also why the row carries `loadavg`.
+
+**One defect was found and fixed at this stage** rather than deferred: `dev-hooks.test.ts` drives
+the real hook with `cwd` set to the real repository, so the new record gave a passing, unmodified
+test a side effect — six junk rows per `pnpm test` in the log G6 grades from. Fixed with an explicit
+`ASCEND_GATE_NO_RECORD` the caller sets, because inferring "not a real run" from a row's shape would
+be a guard that reads as a guard and is not one. Recorded as `dogfood/0088`.
+
+### Stage G2: cut 1 — the veto scan, and the finding that it is narrow
+
+**Goal** — A commit that cannot affect any test does not run the suite. Derived and fail-closed:
+anything not positively mapped to "no test reads this" runs everything.
+
+**The veto scan ran, and it refuted the bead's own framing.** `purity-enforcement.test.ts`
+enumerates every tracked file through `git ls-files -z`, keeps those matching
+`SOURCE_EXTENSIONS = /\.(?:ts|tsx|js|mjs|cjs|json|md|ya?ml|sql|sh|css|html)$/`, and reads each one
+looking for an invisible character; separately it applies a whole-file citation rule to every
+tracked `.md`. So **no source, test, config or markdown file is skippable** — the bead's "no code,
+test or config file is staged" is not the boundary, because a `.md` commit can break this suite and
+so can a `.json` one. What survives as genuinely inert is narrow: `.jsonl` is outside that
+extension list, and no test reads the record tree, so `.ascend/entries/**/*.jsonl` is inert, as is
+`.beads/*.jsonl`. Real, and not where the 24 minutes went.
+
+**Owner decision, 2026-10-13: Cut 1 is folded into Cut 3.** The related-tests mechanism (G4) does
+both jobs with one derived mapping, and it lands on the commit that actually hurt — ten markdown
+files, 24 min 42 s, whose readers are a handful of tests rather than 300. The inert class comes
+along inside it. G2 therefore ships nothing on its own, and its mapping is built once in G4.
+
+**Status: Decided — superseded by G4.**
+
+### Stage G3: cut 2 — one gate at a time across sessions
+
+**Goal** — Two sessions do not run two suites at once. A second gate waits and says whose run it is
+waiting on; a stale lock is broken; the wait is recorded in its own field and never inside a step.
+
+**What shipped.** `scripts/gate-lock.mjs` — an atomic `mkdir` lock at `.ascend/gate.lock`, beside the
+gate's other machine-local files and gitignored individually, holding the holder's pid and a
+timestamp. A second gate **waits** rather than failing the commit: a lock that refuses a commit
+because another session is gating makes one session's work the reason another's cannot land, and the
+person hitting it can do nothing but wait anyway. The wait sleeps synchronously (`Atomics.wait`), so
+a queued gate burns none of the core the suite it is waiting for needs, and it prints whose run it is
+waiting on. A lock is broken two ways: a **dead pid** — `process.kill(pid, 0)`, with `EPERM` read as
+alive, because "something is there" is the safe reading when the question is whether to start a
+second suite — and, as the backstop for a pid the OS has since handed to another process, **age**.
+`scripts/gate.mjs` takes the lock around the step loop inside a `try/finally`, so it is released on
+the failure path too, and puts `waited_ms` and `broke_lock` in the row. The lock is a **cost device,
+not a correctness device**: if it cannot be created at all the gate says so and runs anyway, because
+a gate failing for a reason unrelated to the code is the class of defect the gate exists to catch.
+
+**One deviation from the plan's wording, stated.** The plan says "older than the longest recorded
+gate run". Shipped instead: `max(30 min, longest recorded run × 4)`. The reason is the direction the
+error costs. This bead exists *because* runs keep getting longer, so a ceiling pinned tight to the
+longest recorded run breaks a live lock exactly when a run is unusually slow — two suites at once,
+the condition this cut removes. The multiplier is deliberately generous and is **not** a budget:
+nothing is graded against it and no run is expected to approach it. Rule 1 recovers every ordinary
+stale lock; the ceiling exists only for the pid-reuse case rule 1 structurally cannot see.
+
+**One naming debt, stated.** The fixture opt-out is `ASCEND_GATE_NO_RECORD`, introduced in G1 for
+the record and now also meaning "take no lock". It is named for the narrower job and reads correctly
+only because a fixture run is exactly the run that should do neither. A second flag would be a second
+thing to keep in step; the comment at the call site names the debt.
+
+**Tests.** `scripts/gate-lock.test.ts`, 8 tests, green: the uncontended take reports a wait of
+exactly zero; a live holder is waited on, named, and timed; a dead pid is broken with the reason
+recorded; a four-hour-old lock is broken as aged-out without waiting on the pid; a fifteen-minute-old
+lock with a *live* holder is **not** broken, which is the direction that matters more; a release does
+nothing to a lock that is no longer the releaser's; the lock is handed back on release; and a path
+that cannot be locked at all runs the gate anyway. `scripts/gate.test.ts` is 18 tests, four of them
+new at this stage: a lock whose holder never released it is broken and the run says so; two
+contended sessions wait and the wait is not inside any step's duration; the lock is handed back when
+a step blocks; and no lock is taken at all when the caller says this is not a real run.
+
+**The killer that moved with the machine.** The first version of the contended test held the lock
+for one poll interval (1 s) and asserted `waited_ms + total_ms <= elapsed`. That assertion fails a
+folded-in wait only when the wait exceeds everything between the test's clock starting and the
+gate's first step — node boot, two `git` spawns, teardown. Measured: **860 ms** of that overhead
+against a 1009 ms wait, a 15% margin, and the spec run reported the mutant as `SURVIVED` while the
+same mutant planted by hand **failed** the named killer. Raising the hold to four seconds made the
+hand-run fail by 1290 ms, which was taken as the repair — and **the next spec run disproved it**:
+L4 survived again, because the overhead has no ceiling. It is a process spawn, and a process spawn
+here measured **2785 ms** for a two-line shell script.
+
+Three attempts at one killer, and the third changed the kind of witness rather than the number.
+`scripts/gate.mjs` now records **`wall_ms`** — its own `hrtime` across the step loop and the lock
+release, holding every step's measured span inside it and node's boot, the two `git` calls and
+teardown outside it — and the assertion became `total_ms <= wall_ms + 50`. The hand-planted mutant
+then failed by **1974 ms** (`expected 2738 to be less than or equal to 764`) against a slack that is
+not a function of load at all, since nothing is spawned inside the window. The hold went back to one
+poll interval and the contended test went from 12.2 s to 3.5 s. Recorded as **`dogfood/0089`**, with
+the runner-side gap filed as **`asc-9lfs`** — a verdict reported without the conditions it was
+reached under cannot be told apart from a flaky one, and `scripts/mutate.mjs` records no load.
+
+**Mutation spec.** `scripts/mutations/gate-lock.json`, 7 mutants: never release on the failure path;
+treat a dead pid as live; disable the age ceiling; fold the wait into the first step's duration;
+return `ok: false` on any contention (so the gate runs beside a live holder); release a lock the run
+no longer holds; and take a lock even for a fixture run. Every killer was found by planting the
+mutant and reading the failing name off vitest's JSON reporter, never guessed. The spec's own `_`
+field carries the warning that `acquire` blocks and the runner has no timeout, so every test of an
+unblocking rule releases the lock from a helper process as an escape hatch. Verdict:
+*"7 mutant(s), 0 problem(s). Every named killer killed its mutant."*, rebuild clean.
+
+**Status: Complete** — mechanism, tests and spec are in the tree; `scripts/gate-lock.test.ts` and
+`scripts/gate.test.ts` are 26 tests green, the spec is green above, and eslint, prettier and
+`tsc -p tsconfig.eslint.json` are clean on every touched file. The one thing this stage did *not*
+do is drive a real commit against the real hook with a live contended lock: the contended path is
+covered end-to-end by `scripts/gate.test.ts` against real throwaway git repositories, and a real
+committed drive is the whole-work verification in `Verification` below. No cut in this stage
+changes what a commit proves, and `.githooks/pre-commit` was not edited, so the installer did not
+need re-running; the splice was re-read and is current.
+
+### Stage G4: cut 3 — related tests on commit, the full suite at pre-push
+
+**Goal** — A commit runs the tests its staged paths can reach; the full suite moves to pre-push.
+**This stage now also carries Cut 1** (see G2): `scripts/gate-scope.mjs` returns `inert` / `tests` /
+`full`, and the `inert` case is the narrow one the veto scan left standing.
+
+**The interaction that has to be fixed first** — `vitest.test-count.ts` rewrites `.testcount/scan.json`
+on every run, so a subset run would make `scripts/test-baseline.mjs` report a breach on every commit.
+The scope is threaded to the reporter, a subset run does not overwrite the scan, and the baseline
+check runs only on a full one, with the skip recorded.
+
+**What shipped.** `scripts/gate-scope.mjs` is the one derived mapping both cuts need.
+
+- `TOP_LEVEL` classifies every tracked top-level entry as `tests` (per-package, `packages/`),
+  `partial` (the two record trees, where `isInert` decides per path) or `full`. **The table is the
+  rule, not documentation**: `scopeOf` reads it, so an unclassified entry has no class and falls into
+  the `full` branch. That was a real repair at this stage — the first version consulted `TOP_LEVEL`
+  only from the completeness test and re-derived the classification independently, which made the
+  completeness test a guard on a comment. A class with no instance (`inert` as a whole tree) was
+  removed at the same time rather than left as an unreachable branch.
+- `isInert` is the single way to be skippable: `.ascend/` holding a `.jsonl`, or `.beads/<one
+  segment>.jsonl`. Anchored at the top level for `.beads/` on purpose — `.beads/hooks/pre-commit` is
+  the spliced gate, and a commit that changes it must run everything.
+- `reaches(name)` is the closure `name` ∪ its transitive dependents ∪ `PACKAGE_SCANNERS`, and the
+  dependents graph is read from the `packages/*/package.json` files, so an edge added there is picked
+  up without editing the module. `recordsWholeSuite(env)` is the one predicate the gate and the
+  reporter share — they cannot both import each other, so it lives here.
+
+`vitest.test-count.ts` asks that predicate before writing, and says why in the suite's own output when
+it declines. `scripts/gate.mjs` derives the scope from the staged paths, swaps the suite for
+`pnpm exec vitest run packages/<name>/test …` with `ASCEND_TEST_SCOPE=subset`, records the scope and
+the skipped steps in the row, and takes an `ASCEND_GATE_HOOK` prefix so the same step list reads
+`[pre-push]` on a push. `.githooks/pre-push` is a new source running the whole thing under
+`ASCEND_PRECOMMIT_FULL=1`; `scripts/install-hooks.mjs` now splices **both** hooks from one table, with
+the same three invariants checked per hook, and ran green.
+
+**Five deviations from the plan, each stated.**
+
+1. **The `analysis` set is wider than the plan predicted.** The plan says a `packages/analysis` change
+   selects `analysis` + `cli`. Measured, it selects `analysis`, `cli`, `core` and `store` — because
+   `PACKAGE_SCANNERS` adds `core`, `store` and `cli` to *every* package's reachable set. The honest
+   consequence, and it is narrower than the plan implies: a change under `packages/core` or
+   `packages/adapter-claude-code` selects every package, so **there is no cut for those two**. What
+   the cut buys is that a `store`, `analysis` or `cli` change does not pay for the adapter's corpus
+   sweep.
+2. **`ASCEND_GATE_SCOPE` is separate from `ASCEND_PRECOMMIT_FULL`.** The umbrella means "no cuts *and*
+   run `align check`", and the gate's own control-flow tests need the first without the second — they
+   drive the real hook with stubbed steps and would otherwise reach the real, unstubbed `align`
+   binary (~10 s per arm, and its verdict would decide the test). `dev-hooks.test.ts` pins
+   `ASCEND_GATE_SCOPE=full` so its assertions stay deterministic whatever the working tree holds.
+   Verified cheaply: `node_modules/.bin/align` is an `sh` wrapper that `exec node
+   ../@spikedpunch/align-cli/dist/index.js`, so the stub `node` first on `PATH` intercepts it.
+3. **`ASCEND_TEST_SCAN` is a new test seam** on the reporter's output path. The mutation requirement
+   is that a check be *shown* to fail, and observing this reporter otherwise means writing the real
+   `.testcount/scan.json` and restoring it — asserting into a file another session's suite may be
+   writing. `scripts/test-baseline.mjs` already takes `--scan` for exactly this reason, so the seam
+   follows the repo's own precedent rather than inventing one.
+4. **The plan's two mutation specs are one** (`gate-scope.json`), because the dependents closure and
+   the scan guard are the same feature's two ends and one file reads better than two that must be run
+   together.
+5. **`packages/cli/test/test-baseline.test.ts` needed no change.** The plan listed it. The reporter
+   half is covered more strongly by a temp-path fixture (`scripts/test-count-reporter.test.ts`), and
+   the plan's stated intent — "a subset run leaves `.testcount/scan.json` byte-identical" — is what
+   that fixture asserts without touching the real file.
+
+**Tests.** `scripts/gate-scope.test.ts` is 28 tests: the three classes, the fail-closed directions
+(`CLAUDE.md`, a `dogfood/` record and an `evidence` record are each *not* inert, pinned as the
+refutations they are), the completeness enumeration in both directions, the reporter contract, and a
+path under `packages/` that names no package. `scripts/gate.test.ts` is 31, ten of them the scope a
+run takes and four an end-to-end drive against a real throwaway repository. `packages/cli/test/
+dev-hooks.test.ts` is 10 across both hooks. `scripts/test-count-reporter.test.ts` is 3, and it is the
+only test that can tell a guard that is *asserted* from a guard that is *wired*.
+
+**Mutation spec.** `scripts/mutations/gate-scope.json`, 12 mutants across the two halves of
+`gate-scope.mjs` and the wire in `gate.mjs` and `vitest.test-count.ts`. Most push the rule toward
+**skipping** — unmapped entries, the whole `.ascend` tree, an empty staged set, all of `packages/` —
+because that is the direction that produces a green verdict nobody earned. Every killer was found
+empirically, by planting the mutant and reading the failing names off vitest's JSON reporter, never
+guessed. Verdict: *"12 mutant(s), 0 problem(s). Every named killer killed its mutant."*, rebuild
+clean, run with `--allow-dirty` because the three target files are themselves uncommitted work.
+
+**The end-to-end drive, and the defect it found.** G1's verification section asks for a real commit
+against the real hook, and this is where that paid. Staging one `packages/store` source file routes
+`packages/cli/test/dev-hooks.test.ts` — which drives the real hooks — into the `cli` subset, so the
+drive nested a gate inside a gate, which no unit test does. The nested *full* run inherited
+`ASCEND_TEST_SCOPE=subset` from the subset step's environment, and the reporter's rule — *absent
+means full* — is a rule about absence a nested run cannot satisfy. The pre-push arm failed
+(`expected '[pre-push] scope: everything (no cuts…' to contain 'pnpm-stub: test [ASCEND_TEST_SCOPE=]'`),
+which is how it was caught: **the unit tests pass in every environment except the one the gate
+creates**, because everywhere else the variable is unset. The repair states the scope *on the step*
+(`env: { [TEST_SCOPE_ENV]: '' }` — the full spelling) so a step says which run it is whatever it
+inherited, and `dev-hooks.test.ts` now sets the hostile `subset` value in its own fixture
+environment so the condition is permanent rather than drive-only. Filed as `asc-qa44`, recorded as
+`dogfood/0090`, pinned by **M12**. Re-driven afterwards: the arm no longer appears among the
+failures.
+
+**Status: Complete** — mechanism, hooks, tests and spec are in the tree; both hooks are spliced and
+verified by `node scripts/install-hooks.mjs`; both drives ran; the stage gates, the drive rows and
+the spec verdict are recorded in `docs/evidence/EV-70.md`, which is where G6 grades every cut.
+(This plan's G6 section names `EV-64`; `EV-64` through `EV-69` were all taken on 2026-10-13 by other
+`asc-09wx.*` work, so the gate record is `EV-70`.)
+
+### Stage G5: cut 4 — a passed tree is not re-gated
+
+**Goal** — An amend with a byte-identical index is not re-gated. The index is hashed with
+`git write-tree`, so the same diff on a different base is a different tree; any doubt is a miss.
+
+**Status: Complete** — `scripts/gate-memo.mjs`, `scripts/gate-memo.test.ts` (18 tests) and
+`scripts/mutations/gate-memo.json` (7 mutants, killers found empirically, `7 mutant(s), 0 problem(s)`)
+are in the tree. `memoAllowed` lives in `scripts/gate.mjs` and is the only place the memo may be
+consulted from, so a run that asked for everything (`ASCEND_PRECOMMIT_FULL`), a run whose scope is
+`full`, and a fixture are all refused a hit. Driven end to end through the real spliced hook against
+the real index: 299,578 ms for the pass that wrote the memo, then `total_ms` 0 on the amend of the
+same tree. The design changed once on measurement — the coverage rule (a hit must cover every step
+this run would take) was built, tried against the real amend, and removed, because after `git commit`
+the index equals `HEAD`, so `scopeOf([])` answers `full` and the rule vetoed exactly the case the cut
+exists for. The measurement is in the module's own docblock and in `EV-70`.
+
+### Stage G6: grade each cut against the recorded timings
+
+**Goal** — The bead's last instruction. Per-step before/after from `.ascend/gate-runs.jsonl` with the
+rows pasted rather than summarised, the number of runs behind each figure and the load at the time.
+A cut that did not pay is reported as not paying.
+
+**What shipped.** `docs/evidence/EV-70.md`, grading all four cuts. Six gate rows are pasted verbatim
+and were diffed back against `.ascend/gate-runs.jsonl` — byte-identical — rather than transcribed.
+The result, in one line each:
+
+- **Cut 1 (inert skip) pays**: the run is four check steps and nothing else, `total_ms` 38,540,
+  2.4% of the before-number's 1,621,182, at *higher* load.
+- **Cut 3 (related tests) pays**: the subset's `test` step is 344,992 ms against the before-number's
+  1,427,295 ms — 24.2%, a 75.8% cut — at a comparable first-loadavg (30.77 against 27.04). Against
+  the same day's standalone full suite (620,420 ms) it is 55.6%, and that ratio is offered as a
+  bound because its load was not recorded.
+- **Cut 2 (the lock) has no before/after**: the drives each carried `waited_ms: 0` and
+  `broke_lock: null`, because each was the only gate running. What the record has instead is one
+  contended run — `waited_ms` 196,321 ms, `broke_lock: null`, blocked at `store verify --staged`,
+  with the wait outside every step (that run's own `wall_ms` 12,663 against a longest step of 5,586)
+  — so what the lock buys is throughput under load, not a shorter run. Reported as measured rather
+  than as a win.
+- **Cut 4 (a passed tree is not re-gated) pays on the case it was built for**: the pass that wrote
+  the memo's tree cost 299,578 ms, and the same tree re-run through the same hook cost `total_ms` 0
+  with `wall_ms` 1, `scope: "full"` and six `skipped` entries. One pair, one checkout, so it is that
+  case's number and not a rate — and the bound is pinned by a test: the key is the INDEX, so a hit
+  says the commit being judged is byte-identical to one that passed, not that the working tree is.
+
+**P2 of the registered predictions was refuted**, and EV-70 says so: an `analysis` change selects
+`analysis`, `cli`, `core` and `store`, not `analysis` + `cli`, because `PACKAGE_SCANNERS` widens every
+package's closure. The consequence — no cut exists for a `core` or `adapter-claude-code` change — is
+stated in G4 above.
+
+### Findings surfaced on the way
+
+Per the repo convention these are `dogfood/` records, one each, with their metric and how it was
+obtained. Written:
+
+- **A full gate nested in a subset read its scope from what it inherited** — `dogfood/0090`, bead
+  `asc-qa44`, fixed in this work and pinned by mutant M12. Found by the end-to-end drive, not by a test.
+- **A seeded permutation control compared against a bound the seed does not fix** — `dogfood/0091`,
+  bead `asc-407m`, open. Blocks commits at roughly 1 in 20.
+- **The reporter treats every non-gate run as the full suite** — `dogfood/0092`, bead `asc-19x2`,
+  open. Found by running one test file, then reading what it left in `.testcount/`.
+- **`decision` has no field for the question it answers** — `dogfood/0093`, bead `asc-f3at`, open.
+  The entry `309281f4-0802-47ba-bc9a-25df022d3e34` stores four properties, `question` absent; an
+  undeclared property is *dropped with a warning* rather than refused (`packages/core/src/state.ts`,
+  *"Stripped rather than rejected: a stripped key is recoverable and visible, a rejected entry is
+  lost work"*), so the caller who tried to state it is told to remove it. Same shape as
+  `dogfood/0060`, one type over.
+- **Cut 1's veto scan** — recorded in G2 above, and it is a finding about the bead's own framing.
+- **A fixture wrote to the measurement** — `dogfood/0088`, written earlier.
+- **The killer-finding method reads an unloadable mutant as a survivor** — `dogfood/0094`, bead
+  `asc-funq`, open. Measured by re-planting the spelling twice: vitest reports `numFailedTests: 0` with
+  `assertionResults` empty and the parse error only in the file's `message`, so the documented method
+  (*read the failing names off `assertionResults`*) sees no killer, while `scripts/mutate.mjs` reports
+  `DEAD KILLER -- the file ran no test` because it reads vitest's summary line instead. The runner was
+  never the problem; the prose was. The spec header's first version of that note blamed the runner and
+  was corrected against this measurement, as was `EV-70`'s paragraph.
+
+**Status: Complete** — `EV-70.md` grades all four cuts, with its stage gates, the drive rows and both
+mutation verdicts pasted in, and states plainly where a cut has no before/after (cut 2) or where a
+number is a single case rather than a rate (cut 4). Three of the four cuts changed shape on
+measurement rather than on argument: cut 1's veto scan narrowed to what the tests actually read, cut
+3's scope had to be threaded to the reporter before it could exist at all, and cut 4's coverage rule
+was built, measured and removed. Cut 4 landed last and its grade is the pair above.
