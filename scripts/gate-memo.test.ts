@@ -14,7 +14,15 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { stepEnv } from './gate-env.mjs';
 import { MEMO_PATH, MEMO_VERSION, check, readMemo, remember, treeOf } from './gate-memo.mjs';
-import { memoAllowed, scopeFor, skippedFor, skippedWhenAlreadyPassed, stepsFor } from './gate.mjs';
+import {
+  ALIGN_STEP,
+  memoAllowed,
+  requiredOf,
+  scopeFor,
+  skippedFor,
+  skippedWhenAlreadyPassed,
+  stepsFor,
+} from './gate.mjs';
 
 /**
  * `asc-09wx.14`'s fourth cut: a tree that passed is not gated again.
@@ -153,6 +161,19 @@ function binDir(pnpmExit: number): string {
   );
   chmodSync(fakeNode, 0o755);
   return bin;
+}
+
+/**
+ * `align` stubbed inside the repository the run gates, which is where the hook looks for it. Only the
+ * tests that need a run with `align check` in its plan to COMPLETE use this; the rest leave it
+ * unstubbed and treat "it blocked on `align check`" as the assertion. Untracked, so staging is
+ * unaffected and the tree hash does not move.
+ */
+function stubAlign(dir: string): void {
+  const at = join(dir, 'node_modules', '.bin', 'align');
+  mkdirSync(dirname(at), { recursive: true });
+  writeFileSync(at, '#!/bin/sh\nexit 0\n', 'utf8');
+  chmodSync(at, 0o755);
 }
 
 function readLog(dir: string): readonly RunRow[] {
@@ -394,16 +415,21 @@ describe('a failed tree is never memoised', () => {
 });
 
 describe('who may consult it', () => {
-  it('takes no memo for a fixture, and none under the umbrella', () => {
+  it('takes no memo for a fixture, and none from a run that turned every cut off', () => {
     // One condition governs both directions: a run that may not ask may not leave a record either, so
     // a fixture cannot seed one. Equalities, not truthiness tests -- `ASCEND_PRECOMMIT_FULL=0` is the
     // documented way to say "fast".
     expect(memoAllowed({})).toBe(true);
     expect(memoAllowed({ ASCEND_GATE_NO_RECORD: '1' })).toBe(false);
-    expect(memoAllowed({ ASCEND_PRECOMMIT_FULL: '1' })).toBe(false);
-    expect(memoAllowed({ ASCEND_GATE_SCOPE: 'full' })).toBe(false);
     expect(memoAllowed({ ASCEND_PRECOMMIT_FULL: '0' })).toBe(true);
+    expect(memoAllowed({ ASCEND_GATE_SCOPE: 'full' })).toBe(false);
     expect(memoAllowed({ ASCEND_GATE_SCOPE: 'FULL' })).toBe(true);
+    // THE UMBRELLA IS NO LONGER ONE OF THEM, and this line is the change. A push may ask, because
+    // what made asking unsafe was never the memo -- it was a record from a commit's run answering a
+    // push, which is now `requiredOf`'s bar. While this answered `false`, `git` ran this gate once per
+    // push COMMAND and GitButler pushes a stack one branch at a time, so one `but push` of a two-branch
+    // stack paid the whole gate twice on one index (`dogfood/0099`).
+    expect(memoAllowed({ ASCEND_PRECOMMIT_FULL: '1' })).toBe(true);
   });
 
   it('writes no record when the caller says this is not a real run', () => {
@@ -429,16 +455,18 @@ describe('who may consult it', () => {
     expect(full.last?.scope).toBe('full');
   });
 
-  it('pays for everything at pre-push, which is the hook that sets the umbrella', () => {
-    // THE LOAD-BEARING GUARD FOR THE WHOLE CUT. A hit is keyed on the tree alone, so nothing inside
-    // `scripts/gate-memo.mjs` stops a record from a subset run answering a run that wants the full
-    // suite. This is what does. `.githooks/pre-push` runs this runner with `ASCEND_PRECOMMIT_FULL=1`
-    // and its whole job is to run what the commit's cut deferred, so a hit here would skip the full
-    // suite at the one moment it is the point.
+  it('does not answer a push from a record a commit left', () => {
+    // THE LOAD-BEARING GUARD FOR THE WHOLE CUT, in the form the measurement left it. A hit is keyed on
+    // the tree alone, so nothing inside `scripts/gate-memo.mjs` stops a record from a commit's scoped
+    // run answering a push that wants everything the commit cut. `requiredOf` is what stops it: a push
+    // plans `align check` and no commit-level run ever plans it, so no commit's record clears the bar.
+    // `.githooks/pre-push` runs this runner with `ASCEND_PRECOMMIT_FULL=1` and its job is to run what
+    // the commit's cut deferred -- a hit from a commit's record would skip the suite at the one moment
+    // it is the point.
     //
     // `align check` is unstubbed, so it cannot be started in a throwaway directory and the run blocks
     // on it -- which is itself the assertion that the run reached it instead of answering from the
-    // record.
+    // record. The other half, a push answered by a push, is the test below.
     const dir = repo();
     expect(gate(dir).status).toBe(0);
 
@@ -446,6 +474,101 @@ describe('who may consult it', () => {
     expect(push.output).not.toContain('already passed the gate');
     expect(push.last?.steps.map((step) => step.label)).toEqual([...WHOLE_RUN, 'align check']);
     expect(push.status).not.toBe(0);
+  });
+
+  it('answers a second push on the same tree from the first push record', () => {
+    // THE MEASURED CASE, 2026-10-14. `git` runs the pre-push hook once per push command it is handed,
+    // and `but push` pushes a stack one branch at a time -- so a two-branch stack runs this gate twice
+    // against ONE index, with the same plan and the same tree. The second has nothing left to learn
+    // and is answered by the first.
+    //
+    // Neither run moves the index, so the tree the second computes is the one the first recorded. That
+    // is the same property the amend case turns on, one push apart instead of one amend apart.
+    const dir = repo();
+    stubAlign(dir);
+
+    const first = gate(dir, { env: { ASCEND_PRECOMMIT_FULL: '1' } });
+    expect(first.status).toBe(0);
+    expect(first.output).not.toContain('already passed the gate');
+    expect(first.last?.steps.map((step) => step.label)).toEqual([...WHOLE_RUN, 'align check']);
+    // The record of a push is a record like any other, and it holds the step a push took.
+    expect(readMemo(dir)?.steps).toHaveLength(WHOLE_RUN.length + 1);
+
+    const second = gate(dir, { env: { ASCEND_PRECOMMIT_FULL: '1' } });
+    expect(second.status).toBe(0);
+    expect(second.output).toContain('already passed the gate');
+    expect(second.last?.steps).toEqual([]);
+    expect(second.last?.skipped?.map((entry) => entry.step)).toEqual([...WHOLE_RUN, 'align check']);
+    expect(second.last?.outcome).toBe('ok');
+  });
+
+  it('lets a push record answer the commit that follows it, because the bar is a floor', () => {
+    // `required` names what a record must have run, not everything it did, so a record that ran more
+    // answers a run that asks for less. Pinned because the alternative -- requiring equality -- would
+    // put a commit back to paying for the whole suite whenever a push had just run, and because this is
+    // the direction that makes the bar a narrowing of the tree-keyed rule rather than a second rule.
+    const dir = repo();
+    stubAlign(dir);
+    expect(gate(dir, { env: { ASCEND_PRECOMMIT_FULL: '1' } }).status).toBe(0);
+
+    const commit = gate(dir);
+    expect(commit.status).toBe(0);
+    expect(commit.output).toContain('already passed the gate');
+    expect(commit.last?.steps).toEqual([]);
+    expect(commit.last?.skipped?.map((entry) => entry.step)).toEqual(WHOLE_RUN);
+  });
+});
+
+describe('the bar a caller may set', () => {
+  /** The step a push plans and a commit never does. */
+  const ALIGN: MemoStep = { command: ALIGN_STEP.command, args: ALIGN_STEP.args };
+
+  it('refuses a record that did not run what the caller requires, and says what was missing', () => {
+    // The narrow half of "a hit does not require coverage". `required` is what the commit path leaves
+    // empty and the push path does not, and the miss names the step rather than only saying no: a
+    // reader is owed the reason a record that exists does not apply here.
+    const dir = repo();
+    const tree = treeOf(dir);
+    expect(remember({ root: dir, tree, steps: memoSteps(), outcome: 'ok' }).written).toBe(true);
+
+    const commitLevel = check({ root: dir, tree, required: [ALIGN] });
+    expect(commitLevel.hit).toBe(false);
+    expect(commitLevel.why).toBe('this tree passed without ./node_modules/.bin/align check');
+    expect(commitLevel.memo).toBeNull();
+
+    // The same record, from a run that took that step. `memoSteps` is a commit's plan; a push's is that
+    // plus `align check`.
+    expect(
+      remember({ root: dir, tree, steps: [...memoSteps(), ALIGN], outcome: 'ok' }).written,
+    ).toBe(true);
+    const pushLevel = check({ root: dir, tree, required: [ALIGN] });
+    expect(pushLevel.hit).toBe(true);
+    expect(pushLevel.why).toBe('this tree already passed the gate');
+  });
+
+  it('asks a record for nothing unless the caller says otherwise', () => {
+    // The commit path, which is the whole of the cut as it shipped: an amend plans the full commit list
+    // while a scoped record covers a subset of it, so `required` defaults to empty and always will.
+    const dir = repo();
+    const tree = treeOf(dir);
+    expect(remember({ root: dir, tree, steps: memoSteps(), outcome: 'ok' }).written).toBe(true);
+    expect(check({ root: dir, tree }).hit).toBe(true);
+
+    expect(requiredOf(plannedFor([STAGED]))).toStrictEqual([]);
+    expect(requiredOf(plannedFor(['.ascend/entries/note-1a2b/0001.jsonl']))).toStrictEqual([]);
+  });
+
+  it('requires the one step only a run with no cuts plans', () => {
+    // Derived from the plan rather than from the umbrella flag, so the bar and the step list cannot
+    // drift apart: the step that is required is the step that is planned, or nothing is.
+    const push = stepsFor(
+      { ASCEND_PRECOMMIT_FULL: '1' },
+      scopeFor({ ASCEND_PRECOMMIT_FULL: '1' }, [STAGED]),
+    );
+    expect(push.map((step) => step.label)).toEqual([...WHOLE_RUN, 'align check']);
+    expect(requiredOf(push).map((step) => `${step.command} ${step.args.join(' ')}`)).toStrictEqual([
+      './node_modules/.bin/align check',
+    ]);
   });
 });
 

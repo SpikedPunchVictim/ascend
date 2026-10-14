@@ -38,7 +38,7 @@ import { loadavg } from 'node:os';
 import { stepEnv } from './gate-env.mjs';
 import { acquire } from './gate-lock.mjs';
 import { appendRun, ROW_VERSION } from './gate-log.mjs';
-import { check as checkMemo, remember as rememberMemo, treeOf } from './gate-memo.mjs';
+import { check as checkMemo, remember as rememberMemo, sameStep, treeOf } from './gate-memo.mjs';
 import { SUBSET_SCOPE, TEST_SCOPE_ENV, scopeOf } from './gate-scope.mjs';
 
 /**
@@ -299,26 +299,53 @@ export function skippedWhenAlreadyPassed(scope, planned, why) {
  * Whether this run may consult the memo, and therefore whether it may leave one behind -- one
  * condition, both directions.
  *
- * Three kinds of run do not ask, and each has its own reason rather than sharing one flag:
+ * Two kinds of run do not ask, and each has its own reason rather than sharing one flag:
  *
  *   - `ASCEND_GATE_NO_RECORD` says this is a FIXTURE, the same flag that stops it taking the real
  *     lock and appending to the real log. A fixture that skipped its own steps would not be driving
  *     the gate at all.
- *   - `ASCEND_PRECOMMIT_FULL` is what `.githooks/pre-push` sets, and that hook's entire job is to run
- *     what the commit's cut deferred. A hit there would skip the full suite at the one moment the
- *     full suite is the point.
- *   - `ASCEND_GATE_SCOPE=full` is the narrow spelling of the same request, set by fixtures that need
- *     today's control flow without reaching the real `align` binary.
+ *   - `ASCEND_GATE_SCOPE=full` asks for every cut to be off, and a run that asked for everything must
+ *     not be answered with "already done".
+ *
+ * `ASCEND_PRECOMMIT_FULL` is deliberately NOT one of them, and it was. It is what `.githooks/pre-push`
+ * sets, and refusing the memo under it made that hook pay the whole gate once per `git push`
+ * COMMAND rather than once per push: git runs `pre-push` once per push it is handed, and GitButler
+ * pushes a stack one branch at a time. Measured 2026-10-14 -- a `but push` of a two-branch stack ran
+ * this runner twice, 302.4 s and 259.0 s, 561 of the 568 s the push took (`dogfood/0099`). What a push
+ * must not do is accept a COMMIT's record, and that is `requiredOf` below rather than this function.
  *
  * @param {Record<string, string | undefined>} env
  * @returns {boolean}
  */
 export function memoAllowed(env) {
-  return (
-    !isSet(env.ASCEND_GATE_NO_RECORD) &&
-    !isSet(env.ASCEND_PRECOMMIT_FULL) &&
-    env[SCOPE_ENV] !== 'full'
-  );
+  const fixture = isSet(env.ASCEND_GATE_NO_RECORD);
+  const everyCutOff = env[SCOPE_ENV] === 'full';
+  return !fixture && !everyCutOff;
+}
+
+/**
+ * What a record must have run before it may answer THIS run -- the bar `scripts/gate-memo.mjs` is
+ * handed as `required`.
+ *
+ * EMPTY FOR A COMMIT, and that is the whole of Cut 4 as it shipped: an amend plans the full commit
+ * list while a scoped record covers a subset of it, so a commit asks nothing of a record beyond the
+ * tree being the one that passed. That rule and the measurement behind it are the memo module's, and
+ * it is not relaxed here -- it is narrowed to the run that cannot afford to be wrong.
+ *
+ * `align check` FOR A PUSH, and that one step is the entire bar. It is planned only when the run took
+ * no cut, and no commit-level run ever plans it -- so requiring it is exactly "a push is not answered
+ * by a commit's record", while a push is still answered by another push on the same tree. That second
+ * half is what the measurement above cost: the first push of a stack leaves the record the second
+ * push needs, and without it the second push pays everything again for the same bytes.
+ *
+ * Compared by command and arguments rather than by label, because the label is what a reader sees and
+ * may be reworded (`scripts/gate-memo.mjs`).
+ *
+ * @param {readonly Step[]} planned
+ * @returns {readonly import('./gate-memo.mjs').MemoStep[]}
+ */
+export function requiredOf(planned) {
+  return planned.some((step) => sameStep(step, ALIGN_STEP)) ? [ALIGN_STEP] : [];
 }
 
 /**
@@ -436,10 +463,13 @@ function main() {
   // Cut 4 (`asc-09wx.14`): a tree the gate has already judged is not judged again. The amend case is
   // the whole of it -- `git commit --amend` re-runs every step on an index byte-identical to one that
   // passed a minute ago, and on this machine that is minutes of `pnpm test` re-proving a fact the log
-  // already holds. `scripts/gate-memo.mjs` owns the rules; what lives here is which runs may ask.
+  // already holds. `scripts/gate-memo.mjs` owns the rules; what lives here is which runs may ask
+  // (`memoAllowed`) and what a record must have run before it may answer this one (`requiredOf`).
   const memoOff = !memoAllowed(process.env);
   const tree = memoOff ? null : treeOf(root);
-  const verdict = memoOff ? { hit: false, why: '', memo: null } : checkMemo({ root, tree });
+  const verdict = memoOff
+    ? { hit: false, why: '', memo: null }
+    : checkMemo({ root, tree, required: requiredOf(planned) });
   // `judged` runs nothing and still exits 0. What it must NOT do is record a run that happened --
   // hence `skipped` below, which names every step the run would have taken and why it did not.
   const judged = verdict.hit;
@@ -499,6 +529,12 @@ function main() {
   // remembered a red tree would turn the next amend green, which is the false-green class this repo
   // treats as severity-zero. `planned` rather than `rows` because the two agree exactly where it
   // matters: a run that passed ran every planned step, and a run that blocked is refused anyway.
+  //
+  // A PUSH WRITES ONE TOO, and that is the point of removing the umbrella above: the record a push
+  // leaves is the only thing that can answer the next push of the same stack, and because it ran the
+  // step a commit's record never runs, it answers a commit as well (`required` is a bar, not an
+  // equality). The tree is unchanged between the pushes of one `but push` -- neither of them touches
+  // the index -- so the second is answered by the first.
   if (!memoOff && !judged) {
     const remembered = rememberMemo({
       root,

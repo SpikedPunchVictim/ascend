@@ -32,8 +32,18 @@
 # and a suite that is red at push time is a suite the commit's cut did not run. The remedy is to fix
 # the tree, not to bypass the hook.
 #
-# COST. This is the expensive path, and it is on purpose: the whole suite plus a repo scan. It is paid
-# once per push rather than once per commit, which is the trade the cut is made of.
+# COST. This is the expensive path, and it is on purpose: the whole suite plus a repo scan. What it is
+# NOT is once per push, and this paragraph said exactly that until it was measured. Git runs this hook
+# once per `git push` COMMAND it is handed -- one push carrying two refs is still one run, and two
+# pushes are two -- and `but push` pushes a stack one branch at a time. So a stack is gated once per
+# BRANCH, on an index that does not move between them: measured 2026-10-14, one `but push` of a
+# two-branch stack ran this gate twice, 302.4 s and 259.0 s of the 568 s the push took (`dogfood/0099`).
+#
+# What makes the repeats affordable is Cut 4. The second run computes the same tree, and
+# `ASCEND_PRECOMMIT_FULL` no longer puts `scripts/gate-memo.mjs` out of reach -- a PUSH's record clears
+# a push's bar (`requiredOf` in `scripts/gate.mjs`), so the second is answered rather than paid for. A
+# record a COMMIT left still cannot answer here, and that is the bar: it is the one step only a run
+# with no cuts plans, and no commit-level run ever takes `align check`.
 
 (
   set -eu

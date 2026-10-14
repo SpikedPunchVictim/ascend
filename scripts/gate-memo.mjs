@@ -22,20 +22,23 @@
  *   - the record names a different checkout;
  *   - a different tree.
  *
- * WHAT IS DELIBERATELY NOT REQUIRED, and this was measured rather than reasoned about: a hit does not
- * ask whether the recorded run took every step THIS run would take. The first draft did, and the rule
+ * WHAT A HIT DOES NOT ASK, and this was measured rather than reasoned about: a hit does not ask
+ * whether the recorded run took every step THIS run would take. The first draft did, and the rule
  * refused exactly the case the cut exists for. After `git commit`, the index equals `HEAD`, so
  * `git diff --cached` is empty and `scopeOf([])` answers `full` -- deliberately, because "nothing
- * staged is not nothing reachable" (`scripts/gate-scope.mjs`). The amend therefore wants six steps
- * while a subset run's record covers five, and a coverage requirement vetoes every amend there is.
- * The record still NAMES the steps that ran, so a reader can see what "passed" meant for that tree;
- * it is evidence rather than a gate.
+ * staged is not nothing reachable" (`scripts/gate-scope.mjs`). An amend therefore plans the whole
+ * commit list while a scoped commit's record covers a subset of it, and a coverage requirement vetoes
+ * every amend there is. The record still NAMES the steps that ran, so a reader can see what "passed"
+ * meant for that tree; it is evidence rather than a gate.
  *
- * The direction that leaves open is a record from a narrower run answering a run that wants more, and
- * that is closed above this module rather than in it: `memoAllowed` in `scripts/gate.mjs` stops the
- * memo from being consulted at all under `ASCEND_PRECOMMIT_FULL`, which is what `.githooks/pre-push`
- * sets. A scope-derived step list is a function of the tree for every run that IS allowed to ask, so
- * the two agree there by construction.
+ * WHAT THE CALLER MAY REQUIRE, and this is the narrow half of that same question. The caller passes
+ * `required`: the steps a record must have run before it may answer this run. The commit path passes
+ * nothing, which is the paragraph above. One caller passes something, and it is `requiredOf` in
+ * `scripts/gate.mjs`: a run that took no cut plans `align check`, no commit-level record ever ran it,
+ * and requiring it is how `ASCEND_PRECOMMIT_FULL` -- which `.githooks/pre-push` sets -- stops being
+ * answered by a commit's record while a push is still answered by a push's own. Measured 2026-10-14:
+ * without that requirement a two-branch stack paid this gate twice for one push, 302.4 s and 259.0 s
+ * of a 568 s push (`dogfood/0099`).
  *
  * A FAILED TREE IS NEVER MEMOISED, and the module enforces that rather than trusting its caller:
  * `remember` is handed the run's outcome and writes nothing unless it is `ok`. The defect class is
@@ -50,10 +53,11 @@
  * possible (hash the unstaged diff, and the content of every untracked file) and is deliberately not
  * built: nothing has measured that the amend case is not the whole of the value here.
  *
- * NOT TAKEN BY A FIXTURE, and not under the umbrella. `ASCEND_GATE_NO_RECORD` -- the flag that
- * already stops a fixture taking the real lock and appending to the real log -- suppresses this too,
- * and `ASCEND_PRECOMMIT_FULL` / `ASCEND_GATE_SCOPE=full` suppress it because a run that asked for
- * every check must not be answered with "already done".
+ * NOT TAKEN BY A FIXTURE, and not by a run that asked for everything. `ASCEND_GATE_NO_RECORD` -- the
+ * flag that already stops a fixture taking the real lock and appending to the real log -- suppresses
+ * this too, and `ASCEND_GATE_SCOPE=full` suppresses it because a run that asked for every cut to be
+ * off must not be answered with "already done". `ASCEND_PRECOMMIT_FULL` no longer does: it asks for
+ * one more step (`align check`) rather than a different standard, and that is `required` above.
  *
  * A COST DEVICE, NOT A CORRECTNESS DEVICE. A memo that cannot be written is reported and ignored: a
  * gate that refused a commit because it could not write a cache file would be failing for a reason
@@ -202,15 +206,44 @@ export function readMemo(root, { memoPath = MEMO_PATH } = {}) {
 }
 
 /**
+ * Whether two of these are the same step: the command, and every argument in order, because those are
+ * what ran. The label is what a reader sees and is free to be reworded, so it is not what this
+ * compares -- which is why the caller can name a required step by holding the step itself.
+ *
+ * @param {MemoStep} one
+ * @param {MemoStep} other
+ * @returns {boolean}
+ */
+export function sameStep(one, other) {
+  return (
+    one.command === other.command &&
+    one.args.length === other.args.length &&
+    one.args.every((arg, index) => arg === other.args[index])
+  );
+}
+
+/**
+ * A step as one line, for a message about it. Spelled the way the hook would run it.
+ *
+ * @param {MemoStep} step
+ * @returns {string}
+ */
+function commandLine(step) {
+  return [step.command, ...step.args].join(' ');
+}
+
+/**
  * Whether this tree has already been judged.
  *
  * @param {object} options
  * @param {string} [options.root]
  * @param {string | null} options.tree The `treeOf(root)` the caller already computed, or `null`.
+ * @param {readonly MemoStep[]} [options.required] Steps the recorded run must have taken. Empty --
+ *   the commit path -- asks only what the whole module asks: that the tree is the one that passed.
  * @param {string} [options.memoPath]
  * @returns {{ hit: boolean, why: string, memo: Memo | null }}
  */
-export function check({ root = process.cwd(), tree, memoPath = MEMO_PATH }) {
+export function check({ root = process.cwd(), tree, required = [], memoPath = MEMO_PATH }) {
   /**
    * @param {string} why
    * @returns {{ hit: false, why: string, memo: null }}
@@ -224,6 +257,12 @@ export function check({ root = process.cwd(), tree, memoPath = MEMO_PATH }) {
     return miss('the record was written by a different checkout');
   }
   if (memo.tree !== tree) return miss('this tree has not passed the gate');
+  // The bar the caller set, and the miss says what was missing rather than only that something was:
+  // "already passed" is a claim, and a reader is owed the reason it does not apply here.
+  const missing = required.filter((want) => !memo.steps.some((ran) => sameStep(ran, want)));
+  if (missing.length > 0) {
+    return miss(`this tree passed without ${missing.map(commandLine).join(', ')}`);
+  }
   return { hit: true, why: 'this tree already passed the gate', memo };
 }
 

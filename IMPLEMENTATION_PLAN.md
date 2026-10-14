@@ -6059,16 +6059,27 @@ the spec verdict are recorded in `docs/evidence/EV-70.md`, which is where G6 gra
 **Goal** — An amend with a byte-identical index is not re-gated. The index is hashed with
 `git write-tree`, so the same diff on a different base is a different tree; any doubt is a miss.
 
-**Status: Complete** — `scripts/gate-memo.mjs`, `scripts/gate-memo.test.ts` (18 tests) and
-`scripts/mutations/gate-memo.json` (7 mutants, killers found empirically, `7 mutant(s), 0 problem(s)`)
-are in the tree. `memoAllowed` lives in `scripts/gate.mjs` and is the only place the memo may be
-consulted from, so a run that asked for everything (`ASCEND_PRECOMMIT_FULL`), a run whose scope is
-`full`, and a fixture are all refused a hit. Driven end to end through the real spliced hook against
+**Status: Complete** — `scripts/gate-memo.mjs`, `scripts/gate-memo.test.ts` (23 tests) and
+`scripts/mutations/gate-memo.json` (9 mutants, killers found empirically, `9 mutant(s), 0 problem(s)`,
+respelled 2026-10-14 — see the correction below) are in the tree. `memoAllowed` lives in
+`scripts/gate.mjs` and is the only place the memo may be consulted from, so a run whose scope is
+`full` and a fixture are refused a hit. Driven end to end through the real spliced hook against
 the real index: 299,578 ms for the pass that wrote the memo, then `total_ms` 0 on the amend of the
 same tree. The design changed once on measurement — the coverage rule (a hit must cover every step
 this run would take) was built, tried against the real amend, and removed, because after `git commit`
 the index equals `HEAD`, so `scopeOf([])` answers `full` and the rule vetoed exactly the case the cut
 exists for. The measurement is in the module's own docblock and in `EV-70`.
+
+**Corrected 2026-10-14** (`dogfood/0099`, `asc-bo87`) — this guard no longer refuses a run that asked
+for everything. It did, and the reason it was withdrawn is measured: git runs a pre-push hook once per
+`git push` COMMAND it is handed, and `but push` pushes a stack one branch at a time, so
+`ASCEND_PRECOMMIT_FULL` — which `.githooks/pre-push` sets for the whole of a push — took the push
+path's own record down with the commit's, and a two-branch stack paid the full gate twice over one
+index, 302.4 s and 259.0 s of a 568 s push. The bar is now the caller's to set: `requiredOf` requires
+`align check` of a run that took no cut (only such a run plans it) and nothing of a commit, so a
+push's record answers a push and a commit's record cannot. M6 and M7 of the spec were respelled against
+the new lines and M8/M9 added as the two directions of that bar; `scripts/gate-memo.test.ts` grew the
+four tests that name it.
 
 ### Stage G6: grade each cut against the recorded timings
 
