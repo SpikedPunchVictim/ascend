@@ -514,6 +514,24 @@ describe('a build is published whole, or not at all', () => {
     ).toEqual({ value: treeFingerprint(root) });
   });
 
+  it('builds a tree holding one entry id twice with only recorded_at differing (asc-jijx)', () => {
+    // The tree two branch lines' ingests leave after a rebase: the same derived id appended twice,
+    // 70 times over on the project's own store, and `asc index build` refused all of it. The index
+    // must build and hold the one record, stamped with the earlier clock.
+    const root = tree([NOTE]);
+    const first: EntryLine = { ...entry(1), id: 'derived:claude-code:note:session-1:event-1' };
+    const second: EntryLine = { ...first, recorded_at: at(500) };
+    const partition = openRecordWriter(root).append(second);
+    appendFileSync(join(root, partition), `${serializeCorpus([first])}\n`);
+
+    build(root);
+
+    const store = openIndex(root, join(root, INDEX_FILE));
+    expect(store.db.prepare('SELECT id, recorded_at FROM entries').all()).toEqual([
+      { id: first.id, recorded_at: first.recorded_at },
+    ]);
+  });
+
   it('leaves the previous index untouched when the tree cannot be read', () => {
     const root = tree(WHOLE_CORPUS);
     build(root);

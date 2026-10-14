@@ -1,0 +1,69 @@
+{
+  "_": "Kill-check for the clock-only collapse in `onePerIdentity` (asc-jijx): one ENTRY id present twice with only `recorded_at` differing reads as one record, the earlier. Killers were found empirically (mutant planted, test files run with --reporter=json, failing names read off). No mutant for the annotation guard in `differOnlyInWriteClock`: removing it was tried (M5) and SURVIVED the annotation control test, because the guard is a type narrowing and an annotation pair differing only in created_at still serializes differently (only recorded_at is blanked), so it is refused either way. The control test stays as a pin on the behaviour, not as a killer.",
+  "mutants": [
+    {
+      "id": "M1-never-refuse",
+      "file": "packages/store/src/jsonl-files.ts",
+      "find": "if (!differOnlyInWriteClock(earlier.line, item.line)) {",
+      "replace": "if (false) {",
+      "killers": [
+        {
+          "file": "packages/store/test/jsonl-files.test.ts",
+          "test": "S3: one id with two distinct contents is refused, naming the id and both coordinates"
+        },
+        {
+          "file": "packages/store/test/jsonl-files.test.ts",
+          "test": "refuses the same contradiction across two files, naming both of them"
+        },
+        {
+          "file": "packages/store/test/jsonl-files.test.ts",
+          "test": "as well as recorded_at"
+        }
+      ]
+    },
+    {
+      "id": "M2-keep-later",
+      "file": "packages/store/src/jsonl-files.ts",
+      "find": "if (item.line.recorded_at < earlier.line.recorded_at) byId.set(item.line.id, item);",
+      "replace": "if (item.line.recorded_at > earlier.line.recorded_at) byId.set(item.line.id, item);",
+      "killers": [
+        {
+          "file": "packages/store/test/jsonl-files.test.ts",
+          "test": "reads one entry id twice with only recorded_at differing as one record, the earlier one"
+        },
+        {
+          "file": "packages/store/test/jsonl-files.test.ts",
+          "test": "keeps the earlier recorded_at whichever order the pair sits in the file"
+        }
+      ]
+    },
+    {
+      "id": "M3-keep-first-seen",
+      "file": "packages/store/src/jsonl-files.ts",
+      "find": "if (item.line.recorded_at < earlier.line.recorded_at) byId.set(item.line.id, item);",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/store/test/jsonl-files.test.ts",
+          "test": "keeps the earlier recorded_at whichever order the pair sits in the file"
+        }
+      ]
+    },
+    {
+      "id": "M4-compare-clock",
+      "file": "packages/store/src/jsonl-files.ts",
+      "find": "serializeCorpus([{ ...a, recorded_at: '' }]) === serializeCorpus([{ ...b, recorded_at: '' }])",
+      "replace": "serializeCorpus([{ ...a }]) === serializeCorpus([{ ...b }])",
+      "killers": [
+        {
+          "file": "packages/store/test/jsonl-files.test.ts",
+          "test": "reads one entry id twice with only recorded_at differing as one record, the earlier one"
+        },
+        {
+          "file": "packages/store/test/jsonl-index.test.ts",
+          "test": "builds a tree holding one entry id twice with only recorded_at differing"
+        }
+      ]
+    }
+  ]
+}
