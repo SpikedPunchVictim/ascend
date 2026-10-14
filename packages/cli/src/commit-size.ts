@@ -13,10 +13,12 @@
  * which commits are eligible, and how a threshold is taken are the definitions `EV-61` and `EV-63`
  * measured with. A recorder that used a near copy would be recording a signal nobody tested.
  *
- * Everything here is a pure function over text and plain values. The one `git` call lives in the
+ * Everything here is a pure function over text and plain values, or a constant. The one `git` call lives in the
  * command, and `COMMIT_LOG_ARGS` is exported so the text this module parses and the command that
  * produces it cannot drift apart.
  */
+
+import type { TypeSpec } from '@ascend/core';
 
 /** Eligible commits in the window a threshold is taken over (`EV-61`). */
 export const SIZE_WINDOW_DAYS = 180;
@@ -206,4 +208,88 @@ export function measureCommits(stats: readonly CommitStat[]): CommitSize[] {
       sizeTopDecile: one.added > p90,
     };
   });
+}
+
+/** The type every `asc ingest git` entry is recorded as. */
+export const COMMIT_SIZE_TYPE: TypeSpec = {
+  name: 'commit_size',
+  description:
+    'The size of one non-merge commit, and whether it sits in the top tenth of its repository’s ' +
+    'recent commits. The commit itself is the entry’s git_sha.',
+  record_when: 'Never by hand -- asc ingest git derives one from each commit.',
+  properties: [
+    { name: 'committed_at', type: 'timestamp', required: true, description: 'Committer time.' },
+    {
+      name: 'files',
+      type: 'integer',
+      required: true,
+      description: 'Every file the commit changed, source or not, binary or not.',
+    },
+    {
+      name: 'source_files',
+      type: 'integer',
+      required: true,
+      description:
+        'Changed files that count toward size: text files that are not lockfiles, ' +
+        'manifests, changelogs, docs, data, images, or under .ascend/ or .beads/ (EV-63).',
+    },
+    { name: 'added_source_lines', type: 'integer', required: true, unit: 'lines' },
+    {
+      name: 'removed_source_lines',
+      type: 'integer',
+      required: true,
+      unit: 'lines',
+      description:
+        'Measured and stored; nothing flags on it, because it predicted nothing in ' +
+        'our own repositories (EV-67).',
+    },
+    {
+      name: 'eligible',
+      type: 'boolean',
+      required: true,
+      description:
+        `At least one added source line, and no more than ${String(SIZE_MAX_FILES)} ` +
+        'files. Only eligible commits are graded or count toward a threshold.',
+    },
+    {
+      name: 'p90_added_source_lines',
+      type: 'integer',
+      unit: 'lines',
+      description:
+        `The 90th percentile of added source lines over the eligible commits of the ` +
+        `${String(SIZE_WINDOW_DAYS)} days before this one. Absent when the commit is not ` +
+        `eligible or fewer than ${String(SIZE_MIN_COMMITS)} eligible commits precede it.`,
+    },
+    {
+      name: 'threshold_commits',
+      type: 'integer',
+      description: 'How many eligible commits the threshold was taken over. Absent with it.',
+    },
+    {
+      name: 'size_top_decile',
+      type: 'boolean',
+      description:
+        'Added source lines strictly above the threshold. Absent with it: an ' +
+        'ungraded commit is not a small one.',
+    },
+  ],
+};
+
+/** The properties of the `commit_size` entry for one measured commit. */
+export function commitSizeProperties(size: CommitSize): Record<string, unknown> {
+  return {
+    committed_at: new Date(size.committedAt * 1000).toISOString(),
+    files: size.files,
+    source_files: size.sourceFiles,
+    added_source_lines: size.addedSourceLines,
+    removed_source_lines: size.removedSourceLines,
+    eligible: size.eligible,
+    ...(size.threshold === undefined
+      ? {}
+      : {
+          p90_added_source_lines: size.threshold.p90AddedSourceLines,
+          threshold_commits: size.threshold.commits,
+          size_top_decile: size.sizeTopDecile,
+        }),
+  };
 }

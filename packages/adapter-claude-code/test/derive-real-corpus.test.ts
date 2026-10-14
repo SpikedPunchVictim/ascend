@@ -334,7 +334,7 @@ describe.skipIf(!available)('the deriver against the real corpus', () => {
     // What is asserted instead is the adapter's SIDE of that join: the constant the
     // deriver writes must be the literal the store's CHECK constraint admits. The
     // check is
-    //     packages/store/src/schema.ts  CHECK (source IN ('self', 'derived:claude-code'))
+    //     packages/store/src/schema.ts  CHECK (source IN ('self', 'derived:claude-code', 'derived:git'))
     // and the store exports the same list as `ENTRY_SOURCES`. Neither package can
     // see the other here -- store depends on no adapter, and the adapter does not
     // depend on store -- so the two halves are pinned separately and joined where
