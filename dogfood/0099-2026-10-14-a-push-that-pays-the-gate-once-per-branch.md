@@ -7,7 +7,7 @@
 | **Surfaced by** | reading `.ascend/gate-runs.jsonl` after a `but push` of a two-branch stack, to ask what that push cost |
 | **Entry type(s)** | none — this is about the gate's own cost, not the store |
 | **Severity** | P2 |
-| **Status** | fixed in `working tree` |
+| **Status** | fixed in `619f568` |
 
 ## What was found
 
