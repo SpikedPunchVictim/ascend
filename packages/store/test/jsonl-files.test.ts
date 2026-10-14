@@ -955,6 +955,68 @@ describe("the spike's S1-S4 shapes round-trip", () => {
     expect(read).toHaveLength(1);
   });
 
+  it('reads one entry id twice with only recorded_at differing as one record, the earlier one', () => {
+    // The shape asc-jijx measured on 2026-10-14: two `asc ingest claude-code` runs on two branch
+    // lines derived the same events, neither index held the other's lines, and a rebase combined the
+    // two appends -- 70 ids, each twice, every pair differing in `recorded_at` and nothing else.
+    // `recorded_at` is the write clock (when asc wrote the row), so the pair is one event written on
+    // two days, not two contradicting accounts of it.
+    const root = scratch();
+    const id = 'derived:claude-code:context_compaction:session-1:event-1';
+    const first = entry(1, { id, seconds: 10 });
+    const second = { ...first, recorded_at: at(500) };
+    write(root, [first, second]);
+
+    const read = readRecordTree(root);
+    expect(read).toHaveLength(1);
+    expect(read[0]).toMatchObject({ id, recorded_at: at(10) });
+  });
+
+  it('keeps the earlier recorded_at whichever order the pair sits in the file', () => {
+    // A rebase puts the second run's lines beside the first's in either order, so which line is
+    // kept must be a function of the clocks and not of the file.
+    const root = scratch();
+    const id = 'derived:claude-code:context_compaction:session-1:event-2';
+    const earlier = entry(1, { id, seconds: 10 });
+    const later = { ...earlier, recorded_at: at(500) };
+    write(root, [later, earlier]);
+
+    const read = readRecordTree(root);
+    expect(read).toHaveLength(1);
+    expect(read[0]).toMatchObject({ id, recorded_at: at(10) });
+  });
+
+  it('collapses a clock-only pair across two files, with other records either side', () => {
+    const root = scratch();
+    const id = 'derived:claude-code:verification_run:session-1:event-3';
+    const earlier = entry(1, { id, seconds: 10 });
+    const later = { ...earlier, recorded_at: at(500) };
+    write(root, [entry(2), later, entry(3), earlier], { maxRecordsPerFile: 2 });
+
+    const ids = readRecordTree(root).map((line) => line.kind === 'entry' && line.id);
+    expect(ids.filter((found) => found === id)).toHaveLength(1);
+    expect(ids).toHaveLength(3);
+  });
+
+  it.each([
+    ['a property', (line: EntryLine): EntryLine => ({ ...line, properties: { body: 'other' } })],
+    ['evidence_text', (line: EntryLine): EntryLine => ({ ...line, evidence_text: 'other' })],
+    ['branch', (line: EntryLine): EntryLine => ({ ...line, branch: 'other' })],
+    ['git_sha', (line: EntryLine): EntryLine => ({ ...line, git_sha: 'b'.repeat(40) })],
+  ])('still refuses a pair that differs in %s as well as recorded_at', (_name, change) => {
+    // The rule is "the clock is the ONLY difference". A pair that also disagrees about what the
+    // record says is the contradiction the refusal exists for, whatever the clocks read.
+    const root = scratch();
+    const id = 'derived:claude-code:context_compaction:session-1:event-4';
+    const first = entry(1, { id, seconds: 10 });
+    const second = change({ ...first, recorded_at: at(500) });
+    // Appended by hand: the writer would run the same refusal on the way in, and this tests the reader.
+    const path = openRecordWriter(root).append(first);
+    appendFileSync(join(root, path), `${serializeCorpus([second])}\n`);
+
+    expect(refusal(() => readRecordTree(root))).toContain(id);
+  });
+
   it('keeps two lines with different ids and the same content', () => {
     // The control against over-refusing: the rule is one ID with two contents, not duplicate
     // content. Two hand entries that happen to say the same thing are two records.
@@ -981,6 +1043,17 @@ describe("the spike's S1-S4 shapes round-trip", () => {
     expect(message).toContain(mine.id);
     expect(message).toContain('0001.jsonl line 1');
     expect(message).toContain('0002.jsonl line 1');
+  });
+
+  it('still refuses an annotation pair differing only in created_at, which is not a write clock', () => {
+    // The clock-only collapse is for entries. An annotation's `created_at` says when someone
+    // judged, so two judgements of one id on different days are an assertion, not a double write.
+    const root = scratch();
+    const mine = annotation(1);
+    const theirs = { ...mine, created_at: at(500) };
+    write(root, [mine, theirs], { maxRecordsPerFile: 1 });
+
+    expect(refusal(() => readRecordTree(root))).toContain(mine.id);
   });
 
   it('S4: a backdated record reads in timestamp order, not where it was written', () => {

@@ -83,7 +83,9 @@
  *   makes a re-ingest of an unchanged transcript a no-op rather than an error; what survives to
  *   `onePerIdentity` is two lines that claim the same identity and disagree. There is no tiebreak
  *   that is not a guess -- neither line is newer, and nothing in the tree says which is right -- so
- *   the reader names both coordinates and stops. `asc store rewrite` cannot repair this either (it
+ *   the reader names both coordinates and stops. The one exception is an ENTRY pair
+ *   that differs only in `recorded_at`: that is the write clock, so the pair is one event appended
+ *   twice, and the earlier line is kept (`asc-jijx`, `differOnlyInWriteClock`). `asc store rewrite` cannot repair this either (it
  *   cannot choose between the contents), so the message names the hand-edit.
  *
  * Reading returns one flat array: type lines, then scheme lines, then entries, then annotations.
@@ -313,7 +315,8 @@ interface Filed {
  *    that ingest the same transcript derive the same id and write the same line. Every count this
  *    store produces is a count of records, so a duplicated line is a wrong answer downstream.
  * 2. **What survives may still share an id, and then the two lines disagree about what that record
- *    SAYS.** That cannot be collapsed -- collapsing loses a record -- and it cannot be resolved,
+ *    SAYS** -- unless the only disagreement is `recorded_at` on an entry, which is one event written
+ *    twice and reads as the earlier line (`differOnlyInWriteClock`). That cannot be collapsed -- collapsing loses a record -- and it cannot be resolved,
  *    because neither line is newer than the other and nothing in the tree says which branch was
  *    right. So it is refused, naming the id and BOTH coordinates: the repair is a hand-edit.
  *    `asc store rewrite` exists to relax the rules a rewrite can repair by rewriting, and this is
@@ -336,25 +339,58 @@ interface Filed {
 function onePerIdentity(filed: readonly Filed[]): readonly OrderableLine[] {
   const seen = new Set<string>();
   const byId = new Map<string, Filed>();
-  const kept: OrderableLine[] = [];
   for (const item of filed) {
     const identity = serializeCorpus([item.line]);
     if (seen.has(identity)) continue;
     seen.add(identity);
     const earlier = byId.get(item.line.id);
     if (earlier !== undefined) {
-      throw new Error(
-        `${item.where}: the id '${item.line.id}' already appears at ${earlier.where} with ` +
-          `different contents, so this tree records one thing as two and no reader can choose ` +
-          `between them. Neither line is newer and nothing in the tree says which is right, so ` +
-          `this is refused rather than resolved. Edit the file by hand to keep the line that is ` +
-          `correct and delete the other one.`,
-      );
+      if (!differOnlyInWriteClock(earlier.line, item.line)) {
+        throw new Error(
+          `${item.where}: the id '${item.line.id}' already appears at ${earlier.where} with ` +
+            `different contents, so this tree records one thing as two and no reader can choose ` +
+            `between them. Neither line is newer and nothing in the tree says which is right, so ` +
+            `this is refused rather than resolved. Edit the file by hand to keep the line that is ` +
+            `correct and delete the other one.`,
+        );
+      }
+      // The same record written twice: keep the earlier clock, whichever line came first. The
+      // result is a function of the two clocks, not of the file, so a rebase that puts the pair in
+      // either order reads the same.
+      if (item.line.kind === 'entry' && earlier.line.kind === 'entry') {
+        if (item.line.recorded_at < earlier.line.recorded_at) byId.set(item.line.id, item);
+      }
+      continue;
     }
     byId.set(item.line.id, item);
-    kept.push(item.line);
   }
-  return kept;
+  // Insertion order is irrelevant: the caller sorts by `(time, id)`.
+  return [...byId.values()].map((item) => item.line);
+}
+
+/**
+ * Whether two lines are one ENTRY that was written twice: same id, and `recorded_at` is the only
+ * thing that differs.
+ *
+ * `recorded_at` is the write clock -- when `asc` wrote the row, not when the event happened
+ * (`views.ts` warns every reader of it) -- so two lines that agree on everything else describe one
+ * event and disagree only about which day a run happened to append it. Measured 2026-10-14
+ * (`asc-jijx`): 70 ids each present twice after a rebase combined two `asc ingest claude-code`
+ * appends from two branch lines, every pair differing in `recorded_at` and nothing else (36
+ * `verification_run`, 33 `context_compaction`, 1 `tool_denial`). Neither run's index held the
+ * other's lines, so `DuplicateEntryError` could not fire, and refusing the pair here blocked every
+ * write in the project. This is the write-time prevention the project asks for, moved to the one
+ * place that sees both branches' lines.
+ *
+ * It is narrow on purpose. ANY other field differing -- a property, `evidence_text`, `branch`,
+ * `git_sha`, the type's hash -- is still the contradiction the refusal exists for, and annotations
+ * are not covered: their `created_at` is an assertion about when someone judged, not a write clock.
+ */
+function differOnlyInWriteClock(a: OrderableLine, b: OrderableLine): boolean {
+  if (a.kind !== 'entry' || b.kind !== 'entry') return false;
+  return (
+    serializeCorpus([{ ...a, recorded_at: '' }]) === serializeCorpus([{ ...b, recorded_at: '' }])
+  );
 }
 
 /** A registration line: the two kinds whose version numbers this file is about. */
