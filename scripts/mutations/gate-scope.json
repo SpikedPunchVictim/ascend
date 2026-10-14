@@ -1,0 +1,189 @@
+{
+  "_": "Kill-check for the skip rule and the related-tests cut (`asc-09wx.14`, cuts 1 and 3), the two halves of `scripts/gate-scope.mjs` and the one seam it opens into `vitest.test-count.ts` and `scripts/gate.mjs`. The direction that matters here is the one that FAILS OPEN: a rule that decides a commit cannot reach a test, and is wrong, produces a green verdict nobody earned -- `dogfood/0061`'s shape, and the reason this repo treats a false green as the worst class of defect. So most mutants push the rule toward SKIPPING (M1 unmapped entries, M2 the whole `.ascend` tree, M7 an empty staged set, M8 all of `packages/`) rather than toward running too much, which is merely expensive. The other four are the cut's two ends: M3 and M4 remove the closure and the cross-package scanners from the reachable set, so a change stops running the tests that read it; M5 and M6 are the interaction the plan had to settle before the cut could exist at all -- a subset run that overwrites `.testcount/scan.json` makes `scripts/test-baseline.mjs` report a breach on EVERY commit, a false red blamed on the tests rather than on the cut. M9 through M12 sit in `scripts/gate.mjs` and cover the wire: the scope variable that has to arrive at the reporter, the skip that has to be recorded rather than left absent, the step list that has to actually be narrowed, and -- M12, added after the end-to-end drive found it -- the full run having to SAY it is full rather than letting the reporter infer it from a variable it inherited. M5 and M6 are deliberately a pair -- M5 breaks the predicate, M6 removes the reporter's use of it -- because a guard that is asserted and a guard that is unwired are the same green, and only the second mutant distinguishes them. The killers were found empirically rather than guessed: each mutant was applied, the owning files were run with vitest's JSON reporter, and the failing test names were read off its assertionResults. Every mutant below was killed; there are no intended survivors.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "scripts/gate-scope.mjs",
+      "find": "    if (kind !== 'tests') {\n      // Either the entry is `full`, or nobody has classified it. Both run everything, which is the\n      // safe direction and the reason an unmapped directory cannot silently become skippable.\n      return { kind: 'full', why: path };\n    }",
+      "replace": "    if (kind !== 'tests') {\n      inert.push(path);\n      continue;\n    }",
+      "killers": [
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "runs everything for a top-level tree it has never seen"
+        },
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "runs everything for a root manifest"
+        },
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "does not treat CLAUDE.md as inert"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "scripts/gate-scope.mjs",
+      "find": "  if (path.startsWith('.ascend/') && path.endsWith('.jsonl')) return true;",
+      "replace": "  if (path.startsWith('.ascend/')) return true;",
+      "killers": [
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "does not treat .ascend/.gitattributes as inert"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "scripts/gate-scope.mjs",
+      "find": "  const seen = new Set([name, ...PACKAGE_SCANNERS]);\n  const queue = [name];\n  while (queue.length > 0) {\n    const current = queue.pop();\n    if (current === undefined) break;\n    for (const dependent of DEPENDENTS.get(current) ?? []) {\n      if (seen.has(dependent)) continue;\n      seen.add(dependent);\n      queue.push(dependent);\n    }\n  }",
+      "replace": "  const seen = new Set([name, ...PACKAGE_SCANNERS]);",
+      "killers": [
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "selects a core change to every package"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "scripts/gate-scope.mjs",
+      "find": "  const seen = new Set([name, ...PACKAGE_SCANNERS]);\n  const queue = [name];",
+      "replace": "  const seen = new Set([name]);\n  const queue = [name];",
+      "killers": [
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "selects an analysis change to analysis"
+        },
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "selects a cli change to core, store and cli"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "scripts/gate-scope.mjs",
+      "find": "  return env[TEST_SCOPE_ENV] !== SUBSET_SCOPE;",
+      "replace": "  return true;",
+      "killers": [
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "does not record a narrowed run"
+        },
+        {
+          "file": "scripts/test-count-reporter.test.ts",
+          "test": "writes nothing when the run was narrowed"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "vitest.test-count.ts",
+      "find": "    if (!recordsWholeSuite(process.env)) {\n      console.log(\n        '[test-count] this run was narrowed to the packages the commit reaches, so it did not ' +\n          'collect the suite -- the scan is left as the last full run wrote it',\n      );\n      return;\n    }\n\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "scripts/test-count-reporter.test.ts",
+          "test": "writes nothing when the run was narrowed"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "scripts/gate-scope.mjs",
+      "find": "  if (paths.length === 0) return { kind: 'full', why: 'nothing staged' };",
+      "replace": "  if (paths.length === 0) return { kind: 'inert', paths: [] };",
+      "killers": [
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "runs everything for an empty staged set"
+        },
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "derives the scope from the paths it is handed"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "scripts/gate-scope.mjs",
+      "find": "  'packages/': 'tests',",
+      "replace": "  'packages/': 'full',",
+      "killers": [
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "is exhaustive: only packages/"
+        },
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "runs the packages a code change reaches"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "scripts/gate.mjs",
+      "find": "    args: ['exec', 'vitest', 'run', ...scope.files],\n    env: { [TEST_SCOPE_ENV]: SUBSET_SCOPE },",
+      "replace": "    args: ['exec', 'vitest', 'run', ...scope.files],",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "swaps the suite for the packages the staged paths reach"
+        },
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "runs the packages a code change reaches"
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "file": "scripts/gate.mjs",
+      "find": "  if (scope.kind === 'tests') {\n    return [{ step: COUNT_STEP.label, why: 'a subset run cannot move the full-suite baseline' }];\n  }\n  return [];",
+      "replace": "  return [];",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "names what the run did not do, per scope"
+        },
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "runs the packages a code change reaches"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "file": "scripts/gate.mjs",
+      "find": "      : scope.kind === 'tests'\n        ? [...CHECK_STEPS, subsetStep(scope)]\n        : STEPS;",
+      "replace": "      : STEPS;",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "swaps the suite for the packages the staged paths reach"
+        },
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "prints the subset under the label the full suite uses"
+        }
+      ]
+    },
+    {
+      "id": "M12",
+      "file": "scripts/gate.mjs",
+      "find": "  args: ['test'],\n  env: { [TEST_SCOPE_ENV]: '' },\n};",
+      "replace": "  args: ['test'],\n};",
+      "killers": [
+        {
+          "file": "packages/cli/test/dev-hooks.test.ts",
+          "test": "runs the whole suite, not a narrowed one"
+        },
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "states the full scope on the suite step"
+        }
+      ]
+    }
+  ]
+}

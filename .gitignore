@@ -39,6 +39,25 @@ node_modules/
 # thing; this is machinery that rebuilds itself.
 .ascend/bin/
 
+# The pre-commit gate's run record (asc-09wx.14): one append-only JSONL row per gate run, written
+# by `scripts/gate.mjs`. Machine-local for the reason the mutation lock above is -- it is evidence
+# about THIS checkout's runs on THIS machine, and its whole value is that it accumulates without
+# anyone deciding to commit it. The reading of it is `docs/evidence/EV-70.md`, which IS tracked.
+.ascend/gate-runs.jsonl
+
+# The pre-commit gate's memo of the last tree that passed (asc-09wx.14's fourth cut, G5), written by
+# `scripts/gate-memo.mjs`. Machine-local for the reason the run record above is, and more sharply so:
+# it names a tree by hash and the absolute path of the checkout that hashed it, so it is a statement
+# about THIS checkout's index and nothing a second checkout could use.
+.ascend/gate-memo.json
+
+# The pre-commit gate's cross-session lock (asc-09wx.14), named individually for the reason
+# `.align/.lock` and `scripts/mutations/.lock` above are: it says which process is mid-run on THIS
+# checkout, so it is local state rather than evidence. It matters more here than for either of
+# those, because a lock survives a SIGKILLed run and would otherwise appear in `git status` as an
+# untracked file -- the noise that makes a real untracked file easy to skim past.
+.ascend/gate.lock/
+
 # align machine-local files — telemetry (opt-in: ALIGN_TELEMETRY=1 / --telemetry / align.config.ts telemetry:true)
 # and the scan-observation record, which is evidence about THIS checkout only (ADR 029).
 .align/telemetry.jsonl

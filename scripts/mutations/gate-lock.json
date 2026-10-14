@@ -1,0 +1,89 @@
+{
+  "_": "Kill-check for asc-09wx.14 stage G3: one gate at a time across sessions. A lock that is broken too eagerly puts two suites back on one machine -- the load the cut exists to remove -- and one that is broken too rarely turns a stale lock into a commit that never happens, so the mutants below are one per direction plus the two bookkeeping rules. Every killer was FOUND, not guessed: each mutant was planted in the working tree and its killing test file run with --reporter=json, and the failing names were read off assertionResults. Measured 2026-10-13. L4 and L5 share a killer deliberately -- the wait being recorded at all, and the gate not running while another session holds the lock, are the two halves of the same assertion. NOTE for anyone adding a mutant here: `acquire` BLOCKS, so a mutant that disables an unblocking rule makes its killer wait rather than fail -- no timeout exists in scripts/mutate.mjs. Every test of an unblocking rule therefore releases the lock from a helper process as an escape hatch, and any new killer of that kind needs one too, or the mutation run hangs instead of going red.",
+  "mutants": [
+    {
+      "id": "L1",
+      "file": "scripts/gate.mjs",
+      "find": "    lock.release();\n  }",
+      "replace": "    if (status === 0) lock.release();\n  }",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "hands the lock back when a step blocks, so the next commit is not stalled by it"
+        }
+      ]
+    },
+    {
+      "id": "L2",
+      "file": "scripts/gate-lock.mjs",
+      "find": "    return codeOf(error) !== 'ESRCH';",
+      "replace": "    return true;",
+      "killers": [
+        {
+          "file": "scripts/gate-lock.test.ts",
+          "test": "breaks a lock whose holder is gone, and says so"
+        }
+      ]
+    },
+    {
+      "id": "L3",
+      "file": "scripts/gate-lock.mjs",
+      "find": "    else if (existing.ageMs > staleCeilingMs(root, staleFloorMs, staleMargin)) reason = 'aged-out';",
+      "replace": "    else if (false) reason = 'aged-out';",
+      "killers": [
+        {
+          "file": "scripts/gate-lock.test.ts",
+          "test": "breaks a lock held far longer than any run it has seen, without waiting for the pid"
+        }
+      ]
+    },
+    {
+      "id": "L4",
+      "file": "scripts/gate.mjs",
+      "find": "      const row = runStep(step, root);\n",
+      "replace": "      const row = runStep(step, root);\n      if (rows.length === 0) row.ms += lock.waitedMs;\n",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "waits for another session's gate, and the wait is not inside a step's duration"
+        }
+      ]
+    },
+    {
+      "id": "L5",
+      "file": "scripts/gate-lock.mjs",
+      "find": "      if (codeOf(error) !== 'EEXIST') {\n        return {\n          ok: false,\n          waitedMs: 0,\n          holder,\n          broke,\n          error: messageOf(error),\n          release: () => undefined,\n        };\n      }",
+      "replace": "      return {\n        ok: false,\n        waitedMs: 0,\n        holder,\n        broke,\n        error: messageOf(error),\n        release: () => undefined,\n      };",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "waits for another session's gate, and the wait is not inside a step's duration"
+        }
+      ]
+    },
+    {
+      "id": "L6",
+      "file": "scripts/gate-lock.mjs",
+      "find": "  if (current === null || current.pid !== process.pid) {",
+      "replace": "  if (current === null) {",
+      "killers": [
+        {
+          "file": "scripts/gate-lock.test.ts",
+          "test": "releases only a lock it still holds"
+        }
+      ]
+    },
+    {
+      "id": "L7",
+      "file": "scripts/gate.mjs",
+      "find": "  const lock = isSet(process.env.ASCEND_GATE_NO_RECORD) ? NO_LOCK : acquire({ root, report: say });",
+      "replace": "  const lock = acquire({ root, report: say });",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "takes no lock at all when the caller says this is not a real run"
+        }
+      ]
+    }
+  ]
+}

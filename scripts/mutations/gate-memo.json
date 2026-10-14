@@ -1,0 +1,101 @@
+{
+  "_": "Kill-check for asc-09wx.14 stage G5: a tree that passed the gate is not gated again. This module exists to answer 'already passed', and the severity-zero defect is answering it for a tree that did not pass -- a green verdict nobody earned destroys the value of every other green verdict. So the mutants are one per way the module could answer wrongly: remembering a FAILED run (M1, the plan's own mutant), keying on something that collapses the amend case (M2, the plan's other), and then one per fail-closed rule -- the checkout, the schema version, the step list, and the two env guards that keep a run which asked for everything from being answered out of a record (M6, M7). Every killer was FOUND, not guessed: each mutant was planted in the working tree and scripts/gate-memo.test.ts run with --reporter=json, and the failing names were read off assertionResults. Measured 2026-10-13. NOTE for anyone adding a mutant here, and it was MEASURED rather than reasoned about: a find/replace that leaves the module with a SYNTAX ERROR makes vitest fail the whole file at COLLECTION, so `assertionResults` is EMPTY and `numFailedTests` is 0 while the parse error sits in `testResults[].message`. An author finding killers by hand -- the documented method is to apply the mutant, run the owning test file with --reporter=json and read the failing names off assertionResults -- therefore sees NO failing test and reads a mutant that cannot load as a survivor. Check that the mutant PARSES (`node --check <file>`) before believing any survivor. THIS RUNNER DOES NOT HAVE THAT GAP: it reads vitest's summary line (executed()), so the same mutant reports `DEAD KILLER -- the file ran no test`, quotes the parse error, and counts as a problem. M7's first spelling deleted the guarded line outright, which left `&&` before the closing paren and produced exactly this; it was respelled to `true` for that reason. Measured 2026-10-13 (dogfood/0094, asc-funq).",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "scripts/gate-memo.mjs",
+      "find": "  if (outcome !== 'ok') {",
+      "replace": "  if (outcome !== 'ok' && false) {",
+      "killers": [
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "writes nothing when the run was handed an outcome that is not ok"
+        },
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "leaves a blocked run out of the record, so the next amend runs the gate"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "scripts/gate-memo.mjs",
+      "find": "return git(root, ['write-tree']);",
+      "replace": "return git(root, ['diff', '--cached']);",
+      "killers": [
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "does not re-gate an amend whose index is the tree that passed"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "scripts/gate-memo.mjs",
+      "find": "  if (checkout === null || checkout !== memo.checkout) {",
+      "replace": "  if (checkout === null) {",
+      "killers": [
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "runs the gate for a record written by a different checkout"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "scripts/gate-memo.mjs",
+      "find": "  if (v !== MEMO_VERSION) return null;",
+      "replace": "  if (false) return null;",
+      "killers": [
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "runs the gate for a record whose schema version it does not know"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "scripts/gate-memo.mjs",
+      "find": "    if (step === null) return null;",
+      "replace": "    if (step === null) continue;",
+      "killers": [
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "runs the gate for a record whose step list cannot be believed"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "scripts/gate.mjs",
+      "find": "    !isSet(env.ASCEND_PRECOMMIT_FULL) &&\n",
+      "replace": "    true &&\n",
+      "killers": [
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "takes no memo for a fixture, and none under the umbrella"
+        },
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "pays for everything at pre-push, which is the hook that sets the umbrella"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "scripts/gate.mjs",
+      "find": "    env[SCOPE_ENV] !== 'full'\n",
+      "replace": "    true\n",
+      "killers": [
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "takes no memo for a fixture, and none under the umbrella"
+        },
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "pays for everything when the environment asks for the whole thing"
+        }
+      ]
+    }
+  ]
+}

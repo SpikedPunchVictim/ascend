@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunnerTask as Task, RunnerTestFile as File } from 'vitest';
 import type { Reporter } from 'vitest/reporters';
+import { recordsWholeSuite } from './scripts/gate-scope.mjs';
 
 /**
  * Writes what the run COLLECTED into `.testcount/scan.json`, so a later step can compare it
@@ -25,11 +26,31 @@ import type { Reporter } from 'vitest/reporters';
  * `scripts/test-baseline.mjs`, which the gate runs *after* the suite, because only the gate knows
  * the run it just watched was the full one.
  *
- * Written on every run, red or green: collection is unaffected by failures, so a red run's count is
- * still a true count. `.testcount/scan.json` is gitignored -- evidence about one machine's run, the
- * same reason `.align/last-scan.json` is.
+ * WHICH IS WHY IT ASKS. The gate narrows the suite to the packages a commit's staged paths can
+ * reach (`scripts/gate-scope.mjs`, `asc-09wx.14`), and it sets `ASCEND_TEST_SCOPE=subset` on the
+ * step it narrows. A subset run writes NO scan: its count is a true count of the files it
+ * collected and a lie about the suite, and `scripts/test-baseline.mjs` would read the difference as
+ * a breach and red every commit. The variable is absent for a person's own `pnpm test`, so an
+ * ordinary run still records.
+ *
+ * Written on every FULL run, red or green: collection is unaffected by failures, so a red run's
+ * count is still a true count. `.testcount/scan.json` is gitignored -- evidence about one machine's
+ * run, the same reason `.align/last-scan.json` is.
+ *
+ * WHERE IT WRITES. `ASCEND_TEST_SCAN` names the file, and its absence means `.testcount/scan.json`
+ * beside this module. The override is a TEST seam, and it follows `scripts/test-baseline.mjs`, which
+ * takes `--scan` for exactly this reason: a test that had to write the real artifact in order to
+ * observe this reporter would be asserting into -- and then restoring -- a file another session's
+ * run may be writing at the same moment. It is read inside `onFinished` rather than at import, so a
+ * test can set it.
  */
-const SCAN = new URL('./.testcount/scan.json', import.meta.url);
+const DEFAULT_SCAN = fileURLToPath(new URL('./.testcount/scan.json', import.meta.url));
+
+/** The file this run's counts go to: `ASCEND_TEST_SCAN`, or the default above. */
+function scanPath(): string {
+  const override = process.env['ASCEND_TEST_SCAN'];
+  return override === undefined || override === '' ? DEFAULT_SCAN : override;
+}
 
 /** Depth-first collection: every task of type `test`, at any nesting. */
 function tests(tasks: readonly Task[]): Task[] {
@@ -40,6 +61,17 @@ function tests(tasks: readonly Task[]): Task[] {
 
 export default class TestCount implements Reporter {
   onFinished(files: File[] = []): void {
+    // The narrowed run, which must not leave a scan behind. Said out loud rather than done
+    // silently: a reader who wonders why the baseline check was skipped should find the skip in the
+    // suite's own output, not have to infer it from a file's timestamp.
+    if (!recordsWholeSuite(process.env)) {
+      console.log(
+        '[test-count] this run was narrowed to the packages the commit reaches, so it did not ' +
+          'collect the suite -- the scan is left as the last full run wrote it',
+      );
+      return;
+    }
+
     const byFile: Record<string, number> = {};
     let collected = 0;
     let passed = 0;
@@ -59,7 +91,7 @@ export default class TestCount implements Reporter {
       byFile,
     };
 
-    const path = fileURLToPath(SCAN);
+    const path = scanPath();
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, `${JSON.stringify(scan, null, 2)}\n`, 'utf8');
   }

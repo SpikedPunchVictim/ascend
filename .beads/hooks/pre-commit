@@ -1,139 +1,43 @@
-#!/usr/bin/env sh
-# ascend's pre-commit quality gate.
-#
-# This file is the SOURCE of the gate. It is not the file git runs.
-#
-# `core.hooksPath` is a single value and beads already claims it, so ascend does not
-# set it: it splices this gate ABOVE beads' managed block in `.beads/hooks/pre-commit`
-# (see scripts/install-hooks.mjs). Beads' shims are git-tracked and portable, and
-# bd's own `bd hooks list` health check only tells the truth when bd's markers are
-# where bd expects them.
-#
-# THREE INVARIANTS, all measured in docs/evidence/EV-hooks.md:
-#
-#   1. This gate must never terminate the shell above beads' block. A bare `exit 0`
-#      there makes beads' entire block unreachable while the installer still reports
-#      success (EV-hooks Q2b, reproduced). Control falls through on success; only a
-#      failure exits, and that exit is `exit 1`, which is meant to block the commit.
-#
-#   2. The work runs in a SUBSHELL. Splicing shares one shell, so a bare `set -eu`
-#      or `cd` here would leak into beads' block and change its behaviour.
-#
-#   3. The subshell is a STANDALONE command whose status is captured -- it is NOT
-#      the condition of an `if`. This is not style. POSIX suppresses `set -e`
-#      inside any command that forms an `if` condition, so the obvious
-#         if ! ( set -eu; ...; pnpm test ); then ...fail...; fi
-#      SILENTLY IGNORES `set -eu`: the subshell keeps going after a failing check and
-#      exits 0, and the gate prints "gate ok" while the suite is red. That exact
-#      false green was written, measured (`pnpm test` -> 1, gate -> 0), and fixed
-#      here. A gate that cannot fail is worse than no gate, because it is believed.
-#
-# Never bypassed: TASKS.md non-negotiable #5 forbids --no-verify and disabled tests.
-#
-#   fast  (default)  format check + typecheck + store verify + lint + test   (minutes)
-#   full             everything above + `align check`                        (adds a repo scan)
-#
-# `minutes`, not a number, because this cost moves with the MACHINE and not with the diff.
-# Measured 2026-10-05, `time sh .githooks/pre-commit`: 229 s on a quiet machine and 672 s
-# under load, dominated in both cases by `pnpm test` (full-suite runs that day: 207.48,
-# 207.50, 247.87, 229, 442.69, 672.53 s). This header read `~10s` until this edit. That was
-# never a measurement of this step list, and a stale claim printed over a moving cost is the
-# shape `dogfood/0063` records costing a real commit: the red run there was captured at
-# `loadavg: 95.34 63.96 40.16` on 12 cores, against 2.8-4.0 on a quiet one. Read this as
-# cost, not as a bound -- there is no budget on `pnpm test` anywhere in this repo.
-#
-# `align check` is not in the fast path because it re-scans the whole repo; it is
-# run by the `quality-gate` script and in CI. It is still part of the definition of
-# done (KICKOFF.md) -- it is just too slow to sit in every commit.
+#!/bin/sh
+# GITBUTLER_MANAGED_HOOK_V1
+# This hook is managed by GitButler to prevent accidental commits on the workspace branch.
+# Your original pre-commit hook has been preserved as 'pre-commit-user'.
 
-(
-  set -eu
-  ROOT="$(git rev-parse --show-toplevel)"
-  cd "$ROOT"
+HOOKS_DIR=$(dirname "$0")
 
-  echo "[pre-commit] format:check"
-  pnpm format:check
-
-  echo "[pre-commit] typecheck"
-  pnpm typecheck
-
-  # The store guard -- `asc store verify` (asc-98e1). It sits AFTER typecheck and not first,
-  # because `pnpm typecheck` runs `tsc -b`, which IS this repo's build, so the binary below has
-  # just been rebuilt from this working tree. Both claims here are measured (EV-hooks Q4):
-  #
-  #   * `asc store verify --staged` against this store: exit 0, ~1.0s, 22 record files / 10,810
-  #     ids. It reads git objects only, so the cost is node's startup, not the store's size.
-  #   * dist is still not GUARANTEED fresh. `.tsbuildinfo` records an input list and no output
-  #     list, so `tsc -b` cannot notice a deleted output -- measured by deleting dist/budget.js
-  #     and re-running both `pnpm typecheck` and `pnpm build`: each exited 0 with the file still
-  #     gone, and `tsc -b --force` was what restored it. In that state this step exits 2
-  #     (`command store:verify not found`, measured) and blocks the commit. That is the direction
-  #     it has to fail in: a guard that cannot find its own binary must not read like a guard that
-  #     looked and found nothing.
-  echo "[pre-commit] store verify --staged"
-  node packages/cli/dist/bin.js store verify --staged
-
-  echo "[pre-commit] lint"
-  pnpm lint
-
-  echo "[pre-commit] test"
-  pnpm test
-
-  # The test-count baseline (asc-049w). `dogfood/0061` is a green gate over a file whose 55 tests had
-  # become 5: the suite printed a pass count, and nothing compared that count to anything, so a
-  # deleted test and a passing test were the same word here. The run just above wrote what it
-  # collected to `.testcount/scan.json` (through `vitest.test-count.ts`), and this compares it
-  # against the baseline the repo carries.
-  #
-  # Its exit codes are deliberately distinct: 1 is a breached floor, 2 is "an input was missing, so
-  # nothing was compared". A guard that cannot find its own input must not read like a guard that
-  # looked and found nothing -- the same reason the store guard's missing binary exits 2 (Q4).
-  echo "[pre-commit] test count"
-  node scripts/test-baseline.mjs
-
-  if [ "${ASCEND_PRECOMMIT_FULL:-0}" = "1" ]; then
-    echo "[pre-commit] align check"
-    ./node_modules/.bin/align check
-  fi
-)
-status=$?
-
-if [ "$status" -ne 0 ]; then
-  echo "[pre-commit] ascend gate FAILED (exit $status) -- commit blocked" >&2
-  exit 1
+# Run user's hook first if it exists - if it fails, stop here
+if [ -x "$HOOKS_DIR/pre-commit-user" ]; then
+    "$HOOKS_DIR/pre-commit-user" "$@" || exit $?
 fi
 
-echo "[pre-commit] ascend gate ok"
+# Get the current branch name
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
 
-# --- BEGIN BEADS INTEGRATION v1.2.2 ---
-# This section is managed by beads. Do not remove these markers.
-if command -v bd >/dev/null 2>&1; then
-  export BD_GIT_HOOK=1
-  _bd_timeout=${BEADS_HOOK_TIMEOUT:-300}
-  _bd_used_perl=0
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$_bd_timeout" bd hooks run pre-commit "$@"
-    _bd_exit=$?
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$_bd_timeout" bd hooks run pre-commit "$@"
-    _bd_exit=$?
-  elif command -v perl >/dev/null 2>&1; then
-    _bd_used_perl=1
-    perl -e 'alarm shift; exec @ARGV' "$_bd_timeout" bd hooks run pre-commit "$@"
-    _bd_exit=$?
-  else
-    echo >&2 "beads: hook 'pre-commit' running without timeout; install coreutils or perl to enable BEADS_HOOK_TIMEOUT"
-    bd hooks run pre-commit "$@"
-    _bd_exit=$?
-  fi
-  if [ $_bd_exit -eq 124 ] || { [ $_bd_used_perl -eq 1 ] && [ $_bd_exit -eq 142 ]; }; then
-    echo >&2 "beads: hook 'pre-commit' timed out after ${_bd_timeout}s — continuing without beads"
-    _bd_exit=0
-  fi
-  if [ $_bd_exit -eq 3 ]; then
-    echo >&2 "beads: database not initialized — skipping hook 'pre-commit'"
-    _bd_exit=0
-  fi
-  if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
+if [ "$BRANCH" = "gitbutler/workspace" ]; then
+    echo ""
+    echo "GITBUTLER_ERROR: Cannot commit directly to gitbutler/workspace branch."
+    echo ""
+    echo "GitButler manages commits on this branch. Please use GitButler to commit your changes:"
+    echo "  - Use the GitButler app to create commits"
+    echo "  - Or run 'but commit' from the command line"
+    echo ""
+    echo "If you want to exit GitButler mode and use normal git:"
+    echo "  - Run 'but teardown' to switch to a regular branch"
+    echo "  - Or directly checkout another branch: git checkout <branch>"
+    echo ""
+    echo "If you no longer have the GitButler CLI installed, you can simply remove this hook and checkout another branch:"
+    printf '  rm "%s/pre-commit"\n' "$HOOKS_DIR"
+    echo ""
+    exit 1
 fi
-# --- END BEADS INTEGRATION v1.2.2 ---
+
+# Not on workspace branch - run user's original hook if it exists
+if [ -x "$HOOKS_DIR/pre-commit-user" ]; then
+    echo ""
+    echo "WARNING: GitButler's pre-commit hook is still installed but you're not on gitbutler/workspace."
+    echo "If you're no longer using GitButler, you can restore your original hook:"
+    printf '  mv "%s/pre-commit-user" "%s/pre-commit"\n' "$HOOKS_DIR" "$HOOKS_DIR"
+    echo ""
+fi
+
+exit 0

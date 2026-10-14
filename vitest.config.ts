@@ -49,6 +49,22 @@ export default defineConfig({
      * 9,422 ms, 7.9% of budget, against 80,919 ms (67.4%) that day. A bigger corpus ran ~8.6x
      * faster, so the 2026-09-20 erosion was load, not growth; the budget stays at 120,000 ms.
      *
+     * SUPERSEDED IN PART, 2026-10-13 (asc-9pto / `dogfood/0085`), and written here rather than
+     * edited into the entries above, which are measurements of their own dates. Two of the numbers
+     * this rationale was priced against have moved:
+     *
+     *   - the corpus is **3.8 GiB** (`du -sh ~/.claude/projects`), not the 1.887 GiB measured here on
+     *     2026-09-28 and not the ~1.4 GiB the line above still reads as "today";
+     *   - `derive-real-corpus.test.ts` no longer has a 120,000 ms budget at all. The sweep is paid
+     *     once in `beforeAll` under `SWEEP_BUDGET_MS = 300_000`, so no test body is charged for it.
+     *
+     * That does not reopen the forks decision, which is what this block is FOR: six workers was
+     * chosen for contention between real child processes and corpus readers, and that argument is
+     * unchanged by either number. What it does mean is that the "of budget" column above is no
+     * longer a column anyone can read off the current tree -- the bound those fractions were of is
+     * gone, and the last measurement of the sweep on the current one is 69,451 ms solo against
+     * ~169 s under the gate.
+     *
      * Not a fitted constant: 12 cores, and a worker with one live `asc` child is two processes,
      * so six workers is the hardware. The measurement agrees with the arithmetic.
      */

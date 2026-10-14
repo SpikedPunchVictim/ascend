@@ -1,0 +1,51 @@
+#!/bin/sh
+# ascend's pre-push gate -- the shim.
+#
+# This file is the SOURCE of the hook. It is not the file git runs.
+#
+# WHY THERE IS A SECOND HOOK AT ALL. `asc-09wx.14`'s third cut lets a commit run only the tests its
+# staged paths can reach (`scripts/gate-scope.mjs`), because most commits change one package and the
+# whole suite is minutes of the gate's cost. That cut is paid for HERE: a push runs the gate with
+# every cut disabled, so the full suite and `align check` are in the loop before the work leaves this
+# machine. A commit proves what it touched; a push proves the repository.
+#
+# WHAT IS DELIBERATELY NOT DUPLICATED. There is no second step list. This hook runs the same
+# `scripts/gate.mjs` the commit runs, with `ASCEND_PRECOMMIT_FULL=1` -- the escape hatch that already
+# meant "run everything, and also `align check`". One runner, one definition of the steps, and a cut
+# can never leave a check unwired at push time, because the push path does not know about cuts.
+#
+# `ASCEND_GATE_HOOK` is what the runner prints in front of each line. Without it a push would talk
+# about pre-commit, and the reader would be told the wrong moment is failing.
+#
+# THE THREE INVARIANTS ARE THE SAME ONES, and they are not restated here in weaker words -- see
+# `.githooks/pre-commit`, where each was measured:
+#
+#   1. Never terminate the shell above beads' block. This hook has one too: `.beads/hooks/pre-push`
+#      exists today as beads' own template, and the installer splices this above it. A bare `exit 0`
+#      would make that block unreachable while `bd hooks list` still reported health.
+#   2. The work runs in a SUBSHELL, so `set -eu` and `cd` cannot leak into beads' block.
+#   3. The subshell is a STANDALONE command whose status is captured, never the condition of an `if`
+#      -- POSIX suppresses `set -e` inside an `if` condition, which is the false green measured in
+#      `.githooks/pre-commit` (suite red, gate green) and the reason the capture is written this way.
+#
+# A FAILING PUSH IS BLOCKED, and that is the point: TASKS.md non-negotiable #5 forbids `--no-verify`,
+# and a suite that is red at push time is a suite the commit's cut did not run. The remedy is to fix
+# the tree, not to bypass the hook.
+#
+# COST. This is the expensive path, and it is on purpose: the whole suite plus a repo scan. It is paid
+# once per push rather than once per commit, which is the trade the cut is made of.
+
+(
+  set -eu
+  ROOT="$(git rev-parse --show-toplevel)"
+  cd "$ROOT"
+  ASCEND_GATE_HOOK=pre-push ASCEND_PRECOMMIT_FULL=1 node scripts/gate.mjs
+)
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo "[pre-push] ascend gate FAILED (exit $status) -- push blocked" >&2
+  exit 1
+fi
+
+echo "[pre-push] ascend gate ok"

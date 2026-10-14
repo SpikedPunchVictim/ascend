@@ -1,0 +1,89 @@
+{
+  "_": "Kill-check for asc-09wx.14 stage G1: the gate runner. scripts/gate.mjs is what decides whether a commit is allowed, and the four cuts that follow turn it into something that also decides what it may SKIP -- so the ways it could report a green it did not earn are worth a mutant each. Seven, in the order the file executes: the stop-at-first-failure, the per-step clock, a spawn error, a log write that fails, the flag that says a caller is a fixture, and the ASCEND_PRECOMMIT_FULL test. Every killer below was FOUND, not guessed: each mutant was planted in the working tree and scripts/gate.test.ts run with --reporter=json, and the failing names were read off assertionResults. Measured 2026-10-13 at loadavg 25-27 on 12 cores, one mutant per run. M2 and M3 are killed by the same test deliberately -- a duration that is not the step's own and a duration that is always zero are the two directions the same assertion catches.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "scripts/gate.mjs",
+      "find": "      status = row.status;\n      break;",
+      "replace": "      status = row.status;",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "stops at the first failing step, and does not run the ones after it"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "scripts/gate.mjs",
+      "find": "  return { label: step.label, ms: Math.round(ms), status };",
+      "replace": "  return { label: step.label, ms: 0, status };",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "times each step on its own, so a duration cannot be a total wearing a step name"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "scripts/gate.mjs",
+      "find": "  const started = process.hrtime.bigint();",
+      "replace": "  const started = BigInt(0);",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "times each step on its own, so a duration cannot be a total wearing a step name"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "scripts/gate.mjs",
+      "find": "  if (result.error) return 127;",
+      "replace": "  if (result.error) return 0;",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "fails the gate when a step cannot be started at all"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "scripts/gate.mjs",
+      "find": "    if (!record.ok) {",
+      "replace": "    if (!record.ok) {\n      status = 1;",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "does not change its verdict when the run record cannot be written"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "scripts/gate.mjs",
+      "find": "  if (!isSet(process.env.ASCEND_GATE_NO_RECORD)) {",
+      "replace": "  if (true) {",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "writes nothing when the caller says this is not a real run"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "scripts/gate.mjs",
+      "find": "const isSet = (value) => value === '1';",
+      "replace": "const isSet = (value) => value !== undefined;",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "does not treat any other value of ASCEND_PRECOMMIT_FULL as full"
+        }
+      ]
+    }
+  ]
+}
