@@ -1,0 +1,109 @@
+{
+  "_": "Kill-check for the pre-commit refusal of an entry id that appears more than once in the tree a commit would hold (asc-jijx). Six mutants: the threshold, the entry-kind guard, the two exit codes, the line number, and the stage-0 filter. Every killer was FOUND, not guessed: each mutant was planted and scripts/gate-duplicate-ids.test.ts run with --reporter=json, and the failing names read off assertionResults. Measured 2026-10-14, one mutant per run, source restored by cmp.",
+  "mutants": [
+    {
+      "id": "D1-threshold",
+      "file": "scripts/gate-duplicate-ids.mjs",
+      "find": "places.length > 1",
+      "replace": "places.length > 2",
+      "killers": [
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "refuses one id on two lines of one file, naming both lines"
+        },
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "refuses one id across two files, naming both files"
+        },
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "refuses a pair that differs only in recorded_at, the shape a rebase of two ingests leaves"
+        },
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "refuses a byte-identical pair too, since the index counts a record once and the file twice"
+        },
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "reads the index, not the working directory"
+        },
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "reads a committed tree by revision"
+        },
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "exits 1 and prints the id and both locations for a staged duplicate"
+        }
+      ]
+    },
+    {
+      "id": "D2-count-any-kind",
+      "file": "scripts/gate-duplicate-ids.mjs",
+      "find": "kind === 'entry' && typeof id",
+      "replace": "typeof id",
+      "killers": [
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "does not count an annotation line that shares an entry id"
+        }
+      ]
+    },
+    {
+      "id": "D3-exit-found",
+      "file": "scripts/gate-duplicate-ids.mjs",
+      "find": "process.exitCode = 1;",
+      "replace": "process.exitCode = 0;",
+      "killers": [
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "exits 1 and prints the id and both locations for a staged duplicate"
+        }
+      ]
+    },
+    {
+      "id": "D4-exit-unreadable",
+      "file": "scripts/gate-duplicate-ids.mjs",
+      "find": "process.exitCode = 2;",
+      "replace": "process.exitCode = 0;",
+      "killers": [
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "exits 2, not 0, when asked about a revision that does not exist"
+        }
+      ]
+    },
+    {
+      "id": "D5-line-number",
+      "file": "scripts/gate-duplicate-ids.mjs",
+      "find": "line: index + 1",
+      "replace": "line: index",
+      "killers": [
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "refuses one id on two lines of one file, naming both lines"
+        },
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "refuses one id across two files, naming both files"
+        },
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "exits 1 and prints the id and both locations for a staged duplicate"
+        }
+      ]
+    },
+    {
+      "id": "D6-conflict-stages",
+      "file": "scripts/gate-duplicate-ids.mjs",
+      "find": "merged: stage === '0'",
+      "replace": "merged: true",
+      "killers": [
+        {
+          "file": "scripts/gate-duplicate-ids.test.ts",
+          "test": "ignores the sides of an unresolved conflict, which a commit cannot hold"
+        }
+      ]
+    }
+  ]
+}

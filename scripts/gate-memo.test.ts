@@ -47,7 +47,7 @@ import {
 const GATE = fileURLToPath(new URL('./gate.mjs', import.meta.url));
 
 /**
- * The six labels a person sees today, in order. Literal rather than read off `STEPS`, for the reason
+ * The seven labels a person sees today, in order. Literal rather than read off `STEPS`, for the reason
  * `scripts/gate.test.ts` gives: these strings are a contract, and an assertion against the same array
  * could not catch a reorder or a rename.
  */
@@ -55,6 +55,7 @@ const WHOLE_RUN = [
   'format:check',
   'typecheck',
   'store verify --staged',
+  'duplicate entry ids',
   'lint',
   'test',
   'test count',
@@ -155,6 +156,7 @@ function binDir(pnpmExit: number): string {
       'case "$*" in\n' +
       '  *packages/cli/dist/bin.js*) exit 0 ;;\n' +
       '  *scripts/test-baseline.mjs*) exit 0 ;;\n' +
+      '  *scripts/gate-duplicate-ids.mjs*) exit 0 ;;\n' +
       'esac\n' +
       `exec ${JSON.stringify(process.execPath)} "$@"\n`,
     'utf8',
@@ -248,10 +250,10 @@ describe('the tree, not the diff', () => {
     expect(second.last?.steps).toEqual([]);
     // THE AMEND IS A `full`-SCOPE RUN and still hits. Nothing is staged, `scopeOf([])` says `full`
     // because "nothing staged is not nothing reachable" (`scripts/gate-scope.mjs`), and this run
-    // therefore wants six steps while the record's subset run took five. That is why a hit does not
+    // therefore wants seven steps while the record's subset run took six. That is why a hit does not
     // require coverage -- the requirement was in the first draft and refused every amend there is.
     expect(second.last?.scope).toBe('full');
-    expect(remembered?.steps).toHaveLength(5);
+    expect(remembered?.steps).toHaveLength(6);
     // EVERY STEP, in the order a reader sees them. A hit that recorded nothing would be
     // indistinguishable from a run whose checks were never wired -- the shape `dogfood/0061` records.
     expect(second.last?.skipped?.map((entry) => entry.step)).toEqual(WHOLE_RUN);
@@ -276,7 +278,7 @@ describe('the tree, not the diff', () => {
 
     const second = gate(dir);
     expect(second.output).not.toContain('already passed the gate');
-    expect(second.last?.steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 5));
+    expect(second.last?.steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 6));
   });
 
   it('misses for a tree nobody has judged, on a record that exists', () => {
@@ -410,7 +412,7 @@ describe('a failed tree is never memoised', () => {
     const next = gate(dir);
     expect(next.status).toBe(0);
     expect(next.output).not.toContain('already passed the gate');
-    expect(next.last?.steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 5));
+    expect(next.last?.steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 6));
   });
 });
 

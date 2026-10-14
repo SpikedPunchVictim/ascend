@@ -84,6 +84,7 @@ const CHECK_STEPS = [
     command: 'node',
     args: ['packages/cli/dist/bin.js', 'store', 'verify', '--staged'],
   },
+  { label: 'duplicate entry ids', command: 'node', args: ['scripts/gate-duplicate-ids.mjs'] },
   { label: 'lint', command: 'pnpm', args: ['lint'] },
 ];
 

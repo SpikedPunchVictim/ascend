@@ -35,6 +35,7 @@ import { ALIGN_STEP, STEPS, scopeFor, skippedFor, stepsFor } from './gate.mjs';
  */
 
 const GATE = fileURLToPath(new URL('./gate.mjs', import.meta.url));
+const DUPLICATE_IDS = fileURLToPath(new URL('./gate-duplicate-ids.mjs', import.meta.url));
 
 /** One step's outcome inside a run's row. */
 interface StepRow {
@@ -127,15 +128,15 @@ const STALE_RELEASE_MS = POLL_MS + 1000;
 
 /**
  * The slack allowed between the gate's summed step durations and its own clock across the loop.
- * It is not a load allowance and does not grow with the machine: the six step durations are each
- * rounded to a millisecond, worth at most 3 ms in total, and everything else inside the window
+ * It is not a load allowance and does not grow with the machine: the seven step durations are each
+ * rounded to a millisecond, worth at most 3.5 ms in total, and everything else inside the window
  * (each step's `[pre-commit] …` line, the lock release) is inside `wall_ms` and outside `total_ms`,
  * which leans the difference the safe way.
  */
 const LOOP_SLACK_MS = 50;
 
 /**
- * The six labels a person sees today, in order. Literal, not `STEPS.map(…)`: these strings are a
+ * The seven labels a person sees today, in order. Literal, not `STEPS.map(…)`: these strings are a
  * contract asserted by `packages/cli/test/dev-hooks.test.ts`, so writing them out catches a reorder
  * or a rename that an assertion against the same array could not. The tests below then slice it,
  * which is how "the cut removed exactly this much" is stated without a second copy of the list.
@@ -144,6 +145,7 @@ const WHOLE_RUN = [
   'format:check',
   'typecheck',
   'store verify --staged',
+  'duplicate entry ids',
   'lint',
   'test',
   'test count',
@@ -228,10 +230,23 @@ function deadPid(): number {
  * `node` is stubbed for the same reason `pnpm` is: left real, the store guard would run against
  * THIS checkout's index and the run's control flow would become a test of whatever happens to be
  * staged today.
+ *
+ * The duplicate-id check is the one `node` invocation that is NOT answered by a stub: it is run for
+ * real, by absolute path, because the fixture has no `scripts/` of its own and a stubbed answer
+ * would make the step a label with nothing behind it. It reads the index of the repository it is run
+ * in. A run directory that a test has staged into is one, and is read; any other is not, and the check
+ * is pointed at an empty repository instead (with no repository it exits 2, "nothing was compared").
+ * The run directory is not made a repository for every test: a repository there switches on the
+ * gate's tree memo, which is a different control flow from the one most of these tests are about.
  */
 function sandbox(stubs: Stubs): { dir: string; bin: string } {
   const dir = tempDir('asc-gate-unit-');
   const bin = tempDir('asc-gate-bin-');
+  // A repository with nothing staged, for the duplicate-id check to read when the run directory is not
+  // one. See the note on `sandbox` for why the run directory is not simply made a repository.
+  const emptyRepo = join(bin, 'empty-repo');
+  mkdirSync(emptyRepo);
+  execFileSync('git', ['init', '-q'], { cwd: emptyRepo, stdio: 'ignore' });
 
   if (!stubs.noPnpm) {
     const fakePnpm = join(bin, 'pnpm');
@@ -255,6 +270,9 @@ function sandbox(stubs: Stubs): { dir: string; bin: string } {
       'case "$*" in\n' +
       `  *packages/cli/dist/bin.js*) exit ${String(stubs.storeExit ?? 0)} ;;\n` +
       `  *scripts/test-baseline.mjs*) exit ${String(stubs.countExit ?? 0)} ;;\n` +
+      `  *scripts/gate-duplicate-ids.mjs*)\n` +
+      `    git rev-parse --git-dir >/dev/null 2>&1 || cd ${JSON.stringify(emptyRepo)}\n` +
+      `    exec ${JSON.stringify(process.execPath)} ${JSON.stringify(DUPLICATE_IDS)} ;;\n` +
       'esac\n' +
       `exec ${JSON.stringify(process.execPath)} "$@"\n`,
     'utf8',
@@ -273,7 +291,11 @@ function runEnv(bin: string, noPnpm: boolean, extra: Record<string, string> = {}
   // problem: an ambient `ASCEND_GATE_HOOK` or `ASCEND_PRECOMMIT_FULL` reaching a gate that nobody told
   // to be in that mode. Measured 2026-10-14, with the two variables the pre-push hook exports exported
   // by hand, this file's own suite went 14 red out of 32 -- a false red with nothing wrong in the tree.
-  return stepEnv(process.env, { ...extra, PATH: prelude });
+  //
+  // `ASCEND_TEST_SCOPE` is cleared for the same reason, and it is not in the control list because a step
+  // states its own: a suite started with `ASCEND_TEST_SCOPE=subset` (as the owner runs this file) would
+  // otherwise hand `subset` to every stubbed check and fail the wire test that asserts they got nothing.
+  return stepEnv(process.env, { ASCEND_TEST_SCOPE: '', ...extra, PATH: prelude });
 }
 
 /**
@@ -354,8 +376,8 @@ describe('the shape of a run', () => {
   it('does not treat any other value of ASCEND_PRECOMMIT_FULL as full', () => {
     // `isSet` is an equality test, not a truthiness test. `ASCEND_PRECOMMIT_FULL=0` is the
     // documented way to say "fast", and a truthiness bug would read it as "full".
-    expect(stepsFor({ ASCEND_PRECOMMIT_FULL: '0' })).toHaveLength(6);
-    expect(stepsFor({ ASCEND_PRECOMMIT_FULL: '' })).toHaveLength(6);
+    expect(stepsFor({ ASCEND_PRECOMMIT_FULL: '0' })).toHaveLength(7);
+    expect(stepsFor({ ASCEND_PRECOMMIT_FULL: '' })).toHaveLength(7);
   });
 
   it('names every step command, so none is a label with nothing behind it', () => {
@@ -368,18 +390,18 @@ describe('the shape of a run', () => {
 
 describe('the scope a run takes', () => {
   it('runs the checks but not the suite when nothing staged is read by a test', () => {
-    // The four checks stay, and that is not an oversight: `store verify --staged` validates exactly
+    // The five checks stay, and that is not an oversight: `store verify --staged` validates exactly
     // the staged JSONL this case is about, and it is cheap next to the suite it replaces.
     const scope = scopeFor({}, ['.ascend/entries/note-1a2b/0001.jsonl']);
     expect(scope.kind).toBe('inert');
-    expect(stepsFor({}, scope).map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 4));
+    expect(stepsFor({}, scope).map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 5));
   });
 
   it('swaps the suite for the packages the staged paths reach, and drops the baseline check', () => {
     const steps = stepsFor({}, scopeFor({}, ['packages/store/src/pages.ts']));
     const subset = steps.at(-1);
 
-    expect(steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 5));
+    expect(steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 6));
     expect(subset?.command).toBe('pnpm');
     expect(subset?.args).toEqual([
       'exec',
@@ -417,7 +439,7 @@ describe('the scope a run takes', () => {
   });
 
   it('does not narrow the check steps, which take no scope', () => {
-    for (const step of stepsFor({}, scopeFor({}, ['packages/store/src/pages.ts'])).slice(0, 4)) {
+    for (const step of stepsFor({}, scopeFor({}, ['packages/store/src/pages.ts'])).slice(0, 5)) {
       expect(step.env).toBeUndefined();
     }
   });
@@ -520,6 +542,42 @@ describe('driving the real gate', () => {
     expect(log[0]?.outcome).toBe('blocked');
   });
 
+  it('blocks on a staged record tree that holds one entry id twice, and passes a clean one', () => {
+    const entry = (recordedAt: string): string =>
+      `${JSON.stringify({ kind: 'entry', id: 'dup-1', recorded_at: recordedAt })}\n`;
+    const stageRecords = (dir: string, text: string): void => {
+      mkdirSync(join(dir, '.ascend', 'entries'), { recursive: true });
+      writeFileSync(join(dir, '.ascend', 'entries', 'note.jsonl'), text, 'utf8');
+      execFileSync('git', ['add', '.ascend/entries/note.jsonl'], { cwd: dir, stdio: 'ignore' });
+    };
+
+    // `[]` stages nothing of its own and makes the run directory a repository, which `prepare` then
+    // stages the records into.
+    const clean = runGate(
+      {
+        prepare: (dir) => {
+          stageRecords(dir, entry('2026-10-14T00:00:00Z'));
+        },
+      },
+      [],
+    );
+    expect(clean.status).toBe(0);
+    expect(clean.log[0]?.blocked_at).toBeNull();
+
+    const duplicated = runGate(
+      {
+        prepare: (dir) => {
+          stageRecords(dir, entry('2026-10-14T00:00:00Z') + entry('2026-10-14T00:00:01Z'));
+        },
+      },
+      [],
+    );
+    expect(duplicated.status).toBe(1);
+    expect(duplicated.log[0]?.blocked_at).toBe('duplicate entry ids');
+    expect(duplicated.log[0]?.steps.at(-1)?.status).toBe(1);
+    expect(duplicated.output).toContain('dup-1');
+  });
+
   it('records a blocked run, so the log is not only a log of successes', () => {
     const { log } = runGate({ countExit: 1 });
 
@@ -574,9 +632,9 @@ describe('driving the real gate', () => {
     // is the running total credits every step with everything before it.
     //
     // The slow stub is what makes this assertable without a threshold picked by eye: `sleep`
-    // cannot return early, so the four `pnpm` steps are each at least 200 ms, and the two
-    // `node` steps -- which the stub answers and returns from without exec'ing anything -- are
-    // each far below that. A test that guessed at "fast" would be the flaky one.
+    // cannot return early, so the four `pnpm` steps are each at least 200 ms, and the three
+    // `node` steps -- two the stub answers without exec'ing anything, one the real duplicate-id check
+    // on an empty index -- are each far below that. A test that guessed at "fast" would be the flaky one.
     const { log, elapsed } = runGate({ pnpmSleep: '0.2' });
 
     const row = log[0];
@@ -587,7 +645,7 @@ describe('driving the real gate', () => {
     const ms = (label: string): number => steps.find((step) => step.label === label)?.ms ?? 0;
 
     // `sleep` cannot return early, so these four are at least 200 ms. An upper bound on the
-    // other two is deliberately NOT asserted: measured 2026-10-13 at loadavg 25, a stub that
+    // other three is deliberately NOT asserted: measured 2026-10-13 at loadavg 25, a stub that
     // spawns a shell and exits took 227 ms, so "fast" is not a property this machine has.
     for (const label of ['format:check', 'typecheck', 'lint', 'test']) {
       expect(ms(label)).toBeGreaterThan(200);
@@ -736,7 +794,7 @@ describe('cutting the suite on a real commit', () => {
     expect(output).toContain('[pre-commit] scope: nothing staged that any test reads');
     const row = log[0];
     expect(row?.scope).toBe('inert');
-    expect(row?.steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 4));
+    expect(row?.steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 5));
     // THE RECORDED SKIP, which is what an absent row cannot say. Both halves are named: the suite did
     // not run, and therefore the baseline check had nothing to compare.
     expect(row?.skipped?.map((entry) => entry.step)).toEqual(['test', 'test count']);
@@ -753,7 +811,7 @@ describe('cutting the suite on a real commit', () => {
     expect(status).toBe(0);
     const row = log[0];
     expect(row?.scope).toBe('tests');
-    expect(row?.steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 5));
+    expect(row?.steps.map((step) => step.label)).toEqual(WHOLE_RUN.slice(0, 6));
     expect(row?.skipped?.map((entry) => entry.step)).toEqual(['test count']);
     expect(output).toContain(
       'pnpm-stub: exec vitest run packages/cli/test packages/core/test packages/store/test ' +
