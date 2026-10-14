@@ -5,6 +5,7 @@ import {
   executed,
   killerArgs,
   literalPattern,
+  notApplied,
   parseArgs,
   repairVerdict,
   resolveSpecPath,
@@ -388,6 +389,23 @@ describe('applyMutant()', () => {
     });
 
     expect(result).toEqual({ ok: true, text: 'const changed = $& || true;\n' });
+  });
+});
+
+describe('notApplied()', () => {
+  it('carries notes, the key a refusal without a killer used to drop', () => {
+    // THE REGRESSION THIS FUNCTION EXISTS FOR. `main` spreads `result.notes` on every result
+    // unconditionally, so `runMutant`'s not-applied branch omitting the key was not a missing field --
+    // it was an uncaught `TypeError` that discarded the whole verdict table, so a run in which fifteen
+    // mutants were measured and one anchor had drifted reported nothing at all (`dogfood/0084`). The
+    // assertion is that the KEY is present, not what it holds: a refusal that ran no killer has no
+    // note, and an empty array is the honest value. It is asserted here, one level up from where the
+    // refusal is produced, because that is the level whose contract broke.
+    const result = notApplied({ id: 'M1' }, '`find` occurs 0 times');
+
+    expect(result.notes).toEqual([]);
+    expect(result.failed).toBe(true);
+    expect(result.row).toEqual(['M1', 'NOT APPLIED -- `find` occurs 0 times', '-', '-']);
   });
 });
 

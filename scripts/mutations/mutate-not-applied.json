@@ -1,0 +1,29 @@
+{
+  "_": "Kill-check for the refusal shape asc-38ss fixes. `dogfood/0084` measured the defect: `runMutant`'s not-applied branch returned a result without the `notes` key its own docblock declares, and `main` spreads `result.notes` unconditionally, so a stale `find` anchor (`prettier --write` rewrapping the anchored line is the ordinary way to get one) crashed the runner with an uncaught TypeError BEFORE the verdict table printed -- a run in which fifteen mutants were measured and one anchor drifted reported nothing at all. The zero of 149 anchors measured stale across the repo's 22 specs is why no test had ever constructed this path. The defect is the SHAPE of the refusal, so both mutants delete a field `main` reads from it and both are killed by the one assertion the suite was missing -- one level up from `applyMutant`, which was always correct. M1 removes `notes`, which is the exact key the contract broke on and the one `main` spreads. M2 removes `failed`, the other field `main` reads (`if (result.failed) failed += 1;`), so the mutant cannot be told apart from M1 by reading the code -- they are the same defect on a different key, and testing one key only would leave the other free to drift. The killers were found empirically rather than guessed: each mutant was applied, `scripts/mutate-core.test.ts` was run with vitest's JSON reporter, and the failing test name was read off its assertionResults.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "scripts/mutate.mjs",
+      "find": "  return { row: [m.id, `NOT APPLIED -- ${why}`, '-', '-'], failed: true, notes: [] };",
+      "replace": "  return { row: [m.id, `NOT APPLIED -- ${why}`, '-', '-'], failed: true };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "carries notes, the key a refusal without a killer used to drop"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "scripts/mutate.mjs",
+      "find": "  return { row: [m.id, `NOT APPLIED -- ${why}`, '-', '-'], failed: true, notes: [] };",
+      "replace": "  return { row: [m.id, `NOT APPLIED -- ${why}`, '-', '-'], notes: [] };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "carries notes, the key a refusal without a killer used to drop"
+        }
+      ]
+    }
+  ]
+}

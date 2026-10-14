@@ -7,7 +7,7 @@
 | **Surfaced by** | `node scripts/mutate.mjs annotate-replay` after `prettier --write` rewrapped the anchored line |
 | **Entry type(s)** | none — the instrument is not an event source |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | fixed in the working tree (uncommitted at the time of writing) |
 
 ## What was found
 
@@ -144,3 +144,20 @@ verdict table a person is waiting on.
   (`asc-e9zm`)
 - The spec whose anchor drifted: `scripts/mutations/annotate-replay.json` (`asc-cx9w`)
 - Reproduce: `/tmp/asc-cx9w-stale-find.json`
+
+## Resolution
+
+The refusal's shape moved into a pure, exported `notApplied(id, why)`, which is where the contract
+broke and where it can now be asserted without spawning a killer. `runMutant`'s not-applied branch
+calls it; the result carries all three fields `main` reads. The assertion the record asked for is
+written one level up from `applyMutant`, where the record said it belonged: *"carries notes, the key a
+refusal without a killer used to drop"*.
+
+Shown to fail before trusted to pass: `scripts/mutations/mutate-not-applied.json` deletes each of the
+two fields `main` reads from the refusal (`notes`, then `failed`), and both mutants are killed by that
+one named test. Run: `pnpm mutate mutate-not-applied` → `2 mutant(s), 0 problem(s). Every named killer
+killed its mutant.`
+
+End to end, the crash is gone: a one-mutant spec whose `find` occurs zero times now prints its verdict
+table with `M1 | NOT APPLIED -- \`find\` occurs 0 times` and exits **1**, where before the fix it threw
+`TypeError: result.notes is not iterable` before printing anything.

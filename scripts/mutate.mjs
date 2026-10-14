@@ -584,6 +584,24 @@ async function runBaselines(unique) {
 }
 
 /**
+ * The result for a mutant whose anchor does not apply.
+ *
+ * Extracted from `runMutant` because this is where the contract broke: `runMutant`'s docblock
+ * declares that every result carries `notes` and `main` spreads it unconditionally, but this branch --
+ * the only one that returns *without running a killer* -- omitted the key, so a stale `find` anchor
+ * crashed the runner with a `TypeError` before it printed the verdict table, losing every verdict in
+ * the run (`dogfood/0084`). A refusal that ran nothing has no note to add, but the key must be present
+ * because the shape IS the contract. It is pure so the shape can be asserted without spawning a test.
+ *
+ * @param {{ id: string }} m
+ * @param {string} why
+ * @returns {{ row: string[], failed: boolean, notes: string[] }}
+ */
+export function notApplied(m, why) {
+  return { row: [m.id, `NOT APPLIED -- ${why}`, '-', '-'], failed: true, notes: [] };
+}
+
+/**
  * One mutant: apply it, run every killer it names, restore the file, and judge the result.
  *
  * @param {Mutant} m
@@ -594,7 +612,7 @@ async function runMutant(m) {
   const original = readFileSync(path);
   const applied = applyMutant(original.toString('utf8'), m);
   if (!applied.ok) {
-    return { row: [m.id, `NOT APPLIED -- ${applied.why}`, '-', '-'], failed: true };
+    return notApplied(m, applied.why);
   }
 
   const survivors = [];
