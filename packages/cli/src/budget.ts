@@ -340,8 +340,9 @@ function settle<T>(
  *
  * **ROWS ARE DROPPED FROM THE END, AND THAT IS A CHOICE WITH A REASON.** A suffix is the only
  * truncation whose loss is describable in one number, and it composes with the orderings the rest of
- * this CLI already commits to: a page is ordered by `(recorded_at, id)`, so its suffix is "the most
- * recent entries, which the cursor resumes", and the map's rows are ordered so that the header facts
+ * this CLI already commits to: a page is ordered by a clock -- `(recorded_at, id)` by default,
+ * `(occurred_at, id)` under `--order event` -- so its suffix is the latest entries on that clock,
+ * which the cursor resumes, and the map's rows are ordered so that the header facts
  * come first and the property rows -- the ones a reader can most cheaply re-ask for -- come last.
  *
  * **A TRIMMED PAGE RE-QUERIES RATHER THAN SLICING, AND THIS IS THE PART THAT COULD GO WRONG
@@ -355,7 +356,7 @@ function settle<T>(
  * **Monotonicity is assumed by the binary search and verified at the end.** Text grows with rows, so
  * "does `keep` fit" is false above some threshold -- the search relies on that to be a search at
  * all. The verification is not paranoia about arithmetic: for a page the rendered length includes
- * the cursor, whose payload is one row's `(recorded_at, id)`, and a corpus where those differ in
+ * the cursor, whose payload is one row's position, and a corpus where those differ in
  * length between rows makes the function wobble by a character or two. Rather than trust the
  * assumption to be exact, the chosen `keep` is re-checked and the fit fails loudly if it does not
  * fit -- a fit that returned an over-budget output while reporting that it fit is the

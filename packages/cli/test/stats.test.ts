@@ -275,20 +275,31 @@ describe('asc stats: one mode per run', () => {
   });
 
   /**
-   * The help has to say these p-values are uncorrected, and a sentence in help text that nothing
-   * checks is exactly the kind of claim that drifts away from the behaviour it describes.
+   * The help has to say, in the same breath, which p-values a clustering correction reaches and
+   * which it does not, and a sentence in help text that nothing checks is exactly the kind of claim
+   * that drifts away from the behaviour it describes.
    *
-   * `asc-0hys` shipped a design-effect correction on `asc explore <type> --cluster`'s Wilson rows
-   * and deliberately did NOT reach the chi-square and permutation p-values here: those need a
-   * Rao-Scott correction, which adjusts the test statistic and its degrees of freedom rather than
-   * scaling N. Correcting one surface and staying silent on the other would leave a reader to assume
-   * the flag reached both, so the description names the corrected surface by name.
+   * `asc-0hys` shipped a design-effect correction on `asc explore <type> --cluster`'s Wilson rows and
+   * deliberately did NOT reach the p-values here. `asc-n168` then reached three of them -- `--assoc`,
+   * `--correlate` and `--rules` -- through `--cluster-by`, and refused the other two, because
+   * neither `--changepoints` nor `--distinctive` has a cluster-preserving null to draw. Both halves
+   * of that have to be in the help: a reader who saw only "corrected" would expect it everywhere,
+   * and one who saw only "not corrected" would never find the flag.
    */
-  it('says in its help that its p-values are not corrected for clustering', () => {
+  it('says in its help which p-values a clustering correction reaches, and which it does not', () => {
     const run = asc(['stats', '--help'], project());
     expect(run.status).toBe(0);
-    expect(flatten(run.stdout)).toContain('NOT corrected for clustering');
-    expect(flatten(run.stdout)).toContain('asc explore <type> --cluster');
+    const said = flatten(run.stdout);
+
+    // The description's own phrasing, not a flag name: `--assoc` appears in the flag list whatever
+    // the description says, so asserting on the bare name would pass with the sentence deleted.
+    expect(said).toContain('corrected for clustering only where');
+    expect(said).toContain('`--assoc`, `--correlate` and `--rules` can do');
+    expect(said).toContain('asc explore <type> --cluster');
+
+    // And the other half: the flag's own help has to name the two modes that refuse it, so a reader
+    // who finds `--cluster-by` does not have to discover the refusal by typing it.
+    expect(said).toContain('--changepoints and --distinctive REFUSE it');
   });
 });
 
@@ -1640,5 +1651,336 @@ describe('asc stats --assoc, and the pseudoreplication check', () => {
     expect(said).toContain('does not apply');
     expect(said).toContain('session_id');
     expect(said).not.toContain('STATE-LIKE');
+  });
+});
+
+/**
+ * `asc stats --cluster-by` -- the pseudoreplication correction, on the command surface (asc-n168).
+ *
+ * The correction is NOT one mechanism, and this block tests the split rather than a flag. `--assoc`
+ * and `--correlate` install a cluster-preserving permutation null, so whole clusters' blocks of the
+ * second column's values move together and each column's marginal is held exactly; `--rules`
+ * recomputes each confidence interval at the design effect of its own antecedent population. The
+ * other two modes that could carry a p-value -- `--changepoints` and `--distinctive` -- have no
+ * cluster-preserving null to draw, and REFUSE the flag rather than print an uncorrected p under it.
+ *
+ * The deep arithmetic of the null lives in `packages/analysis/test/association.test.ts`, including
+ * the control arm proving that a corpus of singleton clusters reproduces the shuffled control
+ * exactly. What is tested here is what only the command can get wrong: that the corrected number
+ * reaches the row it belongs to, that it does NOT appear unless the caller asked for it, and that
+ * the refusal is a refusal with a reason rather than an uncorrected number.
+ */
+describe('asc stats --cluster-by, the clustering correction', () => {
+  /**
+   * Three sessions of ten, built so both the crosstab and the null can be worked out on paper.
+   *
+   * `kind` is CONSTANT within a session -- S1 and S2 are all `y`, S3 is all `x` -- and `state` is a
+   * plain multiset: five `a` and five `b` in each of the first two, ten `a` in the third. That is a
+   * deliberate choice and the whole reason this fixture is usable. When a column is constant within
+   * a cluster, a whole-block deal lands the same MULTISET on its destination whichever cluster it
+   * came from, so every quantity below is a function of which block went where and not of the order
+   * the store happened to hand the rows over in -- which no test may depend on.
+   *
+   * The pooled crosstab, counted directly:
+   *
+   *    kind\state   a    b
+   *    y           10   10
+   *    x           10    0
+   *
+   * Row totals 20 and 10, column totals 20 and 10, so the expected cells are 13.333, 6.667, 6.667
+   * and 3.333, and chi-square is 0.833 + 1.667 + 1.667 + 3.333 = 7.5 exactly at one degree of
+   * freedom. Both numbers are arithmetic on the fixture, not read back off the command.
+   *
+   * The null is small enough to enumerate. Three clusters of ten are three blocks -- two of
+   * `state` five `a` and five `b`, one of ten `a` -- dealt back onto the three sessions, so there
+   * are 3! = 6 deals and each session receives each block twice. Two of the six put the all-`a`
+   * block back on the `kind`-`x` session and reproduce the observed crosstab exactly. The other
+   * four put it on a `kind`-`y` session, giving (y,a)=15, (y,b)=5, (x,a)=5, (x,b)=5 -- the same
+   * margins, so the same expected cells -- and a chi-square of 0.208 + 0.417 + 0.417 + 0.833 =
+   * 1.875, well under 7.5. Two of six deals therefore reach the observed value, and the corrected
+   * p belongs near a third rather than near the row-counted 0.006.
+   */
+  function blocks(dir: string): void {
+    const entries: Record<string, unknown>[] = [];
+    const plan: readonly (readonly [string, string, number, number])[] = [
+      ['S1', 'y', 5, 5],
+      ['S2', 'y', 5, 5],
+      ['S3', 'x', 10, 0],
+    ];
+    for (const [session, kind, as, bs] of plan) {
+      for (let i = 0; i < as; i += 1) entries.push({ session_id: session, state: 'a', kind });
+      for (let i = 0; i < bs; i += 1) entries.push({ session_id: session, state: 'b', kind });
+    }
+    record(dir, 'sessions', entries);
+  }
+
+  /**
+   * The `state`/`kind` row of an `--assoc` run, whichever rank it landed at.
+   *
+   * Matched as an unordered pair: `--assoc` names a pairing's two columns in sorted order, not in
+   * the order the type declared them, so looking for `a === 'state'` would find nothing and fail
+   * for a reason with nothing to do with the correction.
+   */
+  function pair(run: Run): Row {
+    const found = rows(run).find(
+      (row) =>
+        (row['a'] === 'state' && row['b'] === 'kind') ||
+        (row['a'] === 'kind' && row['b'] === 'state'),
+    );
+    expect(found).toBeDefined();
+    return found as Row;
+  }
+
+  const UNCORRECTED_P = 0.0061698993205439034;
+
+  it('reports a cluster-corrected p beside the row-counted one, and only when asked', () => {
+    const dir = project();
+    blocks(dir);
+
+    const plain = pair(asc(['stats', 'sessions', '--assoc', '--json'], dir));
+    expect(plain['n']).toBe(30);
+    expect(plain['chi2']).toBeCloseTo(7.5, 12);
+    expect(plain['df']).toBe(1);
+    // NOTHING IS CORRECTED UNLESS THE CALLER SAYS WHAT THE ROWS ARE ECHOES OF. A correction that
+    // ran by default would move every existing p-value under a reader who changed nothing.
+    expect('p_clustered' in plain).toBe(false);
+
+    const corrected = pair(
+      asc(['stats', 'sessions', '--assoc', '--cluster-by', 'session_id', '--json'], dir),
+    );
+
+    // THE COUNTS DO NOT MOVE. chi-square and n are the observed ones; the correction is to what the
+    // p is worth, and a corrected p that also restated n would leave a reader unable to see what
+    // was counted.
+    expect(corrected['chi2']).toBe(plain['chi2']);
+    expect(corrected['n']).toBe(plain['n']);
+    expect(corrected['p']).toBe(plain['p']);
+
+    // MEASURED on this fixture: the row-counted p is 0.0061698993205439034, and the corrected p sits
+    // near a third -- 0.2874251497005988 and 0.32335329341317365 on two corpora with IDENTICAL
+    // content built separately. That spread is not noise and must not be pinned away: the null's
+    // block order is first-appearance in the store's own `(recorded_at, id)` order, and this fixture
+    // does not control that order, so a corpus that reads the same can shuffle the same six deals in
+    // a different sequence and land on a different point in the same tail. What the fixture DOES fix
+    // is which deals reach the observation, and that is what is asserted.
+    expect(corrected['p'] as number).toBeCloseTo(UNCORRECTED_P, 12);
+    expect(corrected['p_clustered'] as number).toBeGreaterThan(corrected['p'] as number);
+    expect(corrected['p_clustered'] as number).toBeGreaterThan(0.25);
+    expect(corrected['p_clustered'] as number).toBeLessThan(0.5);
+  });
+
+  it('finds the correction where the shuffled control does not, because only one of them holds the blocks', () => {
+    const dir = project();
+    blocks(dir);
+
+    const plain = pair(asc(['stats', 'sessions', '--assoc', '--json'], dir));
+    const shuffled = pair(
+      asc(['stats', 'sessions', '--assoc', '--permutations', '500', '--json'], dir),
+    );
+    const corrected = pair(
+      asc(['stats', 'sessions', '--assoc', '--cluster-by', 'session_id', '--json'], dir),
+    );
+
+    // This is the reason the state-likeness warning sends a reader here rather than to
+    // `--permutations`. That control shuffles the second column ROW BY ROW, so it destroys the
+    // within-session pairing and with it the very thing that makes the rows dependent -- it answers
+    // a question about the marginals, and the marginals are what the session structure made them.
+    // MEASURED here: 0.0061698993205439034 row-counted, 0.011976047904191617 shuffled at 500
+    // iterations, and roughly 0.3 clustered. The shuffled control moves the number by a factor of
+    // two; the cluster correction moves it by a factor of fifty.
+    expect(shuffled['p_permuted'] as number).toBeGreaterThan(plain['p'] as number);
+    expect('p_clustered' in shuffled).toBe(false);
+    expect(corrected['p_clustered'] as number).toBeGreaterThan(shuffled['p_permuted'] as number);
+  });
+
+  it("names the corrected p on --correlate's own line, and what it held", () => {
+    const dir = project();
+    blocks(dir);
+
+    const plain = flatten(
+      asc(['stats', 'sessions', '--correlate', 'state', '--correlate', 'kind'], dir).stderr,
+    );
+    expect(plain).toContain(`p=${String(UNCORRECTED_P)}`);
+    expect(plain).not.toContain('cluster-corrected');
+
+    const corrected = flatten(
+      asc(
+        [
+          'stats',
+          'sessions',
+          '--correlate',
+          'state',
+          '--correlate',
+          'kind',
+          '--cluster-by',
+          'session_id',
+        ],
+        dir,
+      ).stderr,
+    );
+    // The row-counted p is still printed, and the corrected one is printed BESIDE it rather than in
+    // place of it: replacing it would hide the number the corpus was actually of.
+    expect(corrected).toContain(`p=${String(UNCORRECTED_P)}`);
+
+    // The corrected value is NOT pinned to its digits, and that is a measurement rather than a
+    // convenience: it is order-dependent (0.2874251497005988 and 0.32335329341317365 were measured
+    // on two identically-contented corpora), because the null's block order is first-appearance in
+    // the store's order and the fixture does not control that. What is fixed is that the corrected p
+    // is a THIRD -- the two deals of six that reach the observation -- so it is read as a range and
+    // the reading is checked against the enumeration rather than against a recorded run.
+    const shown = /cluster-corrected p (\d\.\d+)/.exec(corrected)?.[1];
+    expect(shown).toBeDefined();
+    expect(Number(shown)).toBeGreaterThan(0.25);
+    expect(Number(shown)).toBeLessThan(0.5);
+
+    // What was held, how many times, and over how many clusters -- a null a reader cannot
+    // reconstruct is a number they have to take on faith.
+    expect(corrected).toContain('500 iterations');
+    expect(corrected).toContain('3 clusters');
+    expect(corrected).toContain("'session_id'");
+    expect(corrected).toContain('floor 0.001996');
+  });
+
+  it('widens each --rules interval to the design effect of its own antecedent population', () => {
+    const dir = project();
+    blocks(dir);
+
+    const find = (run: Run, antecedent: string, consequent: string) =>
+      rows(run).find((row) => row['antecedent'] === antecedent && row['consequent'] === consequent);
+
+    const plain = asc(['stats', 'sessions', '--rules', '--min-support', '5', '--json'], dir);
+    const corrected = asc(
+      [
+        'stats',
+        'sessions',
+        '--rules',
+        '--min-support',
+        '5',
+        '--cluster-by',
+        'session_id',
+        '--json',
+      ],
+      dir,
+    );
+
+    // `state=a => kind=x` is the case worth reading. Its antecedent population is the twenty rows
+    // where `state` is `a` -- five in S1, five in S2, ten in S3 -- and its OUTCOME is constant within
+    // every cluster: S1 and S2 are `y` throughout, S3 is `x` throughout. An outcome constant within
+    // every cluster has an intraclass correlation of exactly 1, so the design effect is
+    // `sum(m_i^2) / N = (25 + 25 + 100) / 20 = 7.5` and the effective N is 20 / 7.5 = 8/3. Every one
+    // of those numbers is arithmetic on the fixture.
+    const uncorrected = find(plain, 'state=a', 'kind=x') as Row;
+    const fixed = find(corrected, 'state=a', 'kind=x') as Row;
+
+    expect(uncorrected['design_effect']).toBeUndefined();
+    expect(uncorrected['effective_n']).toBeUndefined();
+    expect(fixed['design_effect']).toBeCloseTo(7.5, 12);
+    expect(fixed['effective_n']).toBeCloseTo(2.6666666666666665, 12);
+
+    // The counts are the observed counts in both, and only the interval moves.
+    expect(fixed['confidence']).toBe(uncorrected['confidence']);
+    expect(fixed['antecedent_support']).toBe(uncorrected['antecedent_support']);
+    expect(fixed['ci_lower'] as number).toBeLessThan(uncorrected['ci_lower'] as number);
+    expect(fixed['ci_upper'] as number).toBeGreaterThan(uncorrected['ci_upper'] as number);
+
+    // AND THE CORRECTION IS PER RULE, not per report. `kind=y => state=a` rests on the twenty rows
+    // where `kind` is `y` -- S1 and S2, ten each -- but its outcome is `a` in five of each, so the
+    // cluster proportions are equal, the intraclass correlation is at or below zero, and it is left
+    // exactly where it was. One design effect applied to the whole table would have widened it too.
+    const untouched = find(corrected, 'kind=y', 'state=a') as Row;
+    expect(untouched['design_effect']).toBeCloseTo(1, 12);
+    expect(untouched['effective_n']).toBeCloseTo(20, 12);
+    expect(untouched['ci_lower']).toBe((find(plain, 'kind=y', 'state=a') as Row)['ci_lower']);
+
+    const said = flatten(
+      asc(['stats', 'sessions', '--rules', '--min-support', '5', '--cluster-by', 'session_id'], dir)
+        .stderr,
+    );
+    expect(said).toContain('ANTECEDENT');
+    expect(said).toContain('effective');
+    // The warning sends the reader to two columns, so the columns have to be there.
+    expect(said).toContain('`design_effect` and `effective_n`');
+  });
+
+  it('tells a reader who already gave the flag which column is the corrected one', () => {
+    const dir = project();
+    // `state` runs in two blocks inside each session, so it is state-like and the warning fires --
+    // on the corrected run as well as the plain one.
+    blocks(dir);
+
+    const plain = flatten(asc(['stats', 'sessions', '--assoc'], dir).stderr);
+    expect(plain).toContain('STATE-LIKE');
+    expect(plain).toContain('`--cluster-by session_id`');
+
+    const corrected = flatten(
+      asc(['stats', 'sessions', '--assoc', '--cluster-by', 'session_id'], dir).stderr,
+    );
+    // The same warning, and it must NOT send a caller who just gave `--cluster-by` to go and give
+    // `--cluster-by`. What still needs saying is which column is the corrected one: `p` in the
+    // table is still row-counted and only `p_clustered` rests on the clusters.
+    expect(corrected).toContain('STATE-LIKE');
+    expect(corrected).toContain('`--cluster-by` is in force for this run');
+    expect(corrected).toContain('`p_clustered`');
+    expect(corrected).not.toContain('`--cluster-by session_id` corrects');
+  });
+
+  it('refuses --changepoints and --distinctive rather than print an uncorrected p', () => {
+    const dir = project();
+    blocks(dir);
+
+    // Exit 1 and not 2: the flag is one these modes are allowed to PARSE, and what went wrong is
+    // that the tool cannot answer the question, not that the caller typed it at the wrong mode.
+    const change = asc(['stats', 'sessions', '--changepoints', '--cluster-by', 'session_id'], dir);
+    expect(change.status).toBe(1);
+    expect(flatten(change.stderr)).toContain('--changepoints cannot be corrected for clustering');
+    expect(flatten(change.stderr)).toContain('whole clusters');
+    expect(change.stdout).toBe('');
+
+    const distinctive = asc(
+      ['stats', 'sessions', '--distinctive', '--by', 'state', '--cluster-by', 'session_id'],
+      dir,
+    );
+    expect(distinctive.status).toBe(1);
+    expect(flatten(distinctive.stderr)).toContain(
+      '--distinctive cannot be corrected for clustering',
+    );
+    expect(flatten(distinctive.stderr)).toContain('normal tail');
+    expect(distinctive.stdout).toBe('');
+  });
+
+  it('refuses the flag on a mode that could never read it, as a flag, not as a capability', () => {
+    const dir = project();
+    blocks(dir);
+
+    // `--cluster` is a MODE here -- lexical clustering -- and `--cluster-by` is not a flag it reads.
+    // That is a different fact from the two refusals above, and it exits 2: the caller pointed a
+    // flag at the wrong mode rather than asked for a correction that does not exist.
+    const run = asc(
+      ['stats', 'sessions', '--cluster', '--threshold', '0.9', '--cluster-by', 'session_id'],
+      dir,
+    );
+    expect(run.status).toBe(2);
+    expect(flatten(run.stderr)).toContain(
+      '`--cluster-by` configures the pseudoreplication correction',
+    );
+  });
+
+  it('refuses a corpus where some entries have no cluster at all', () => {
+    const dir = project();
+    // Two sessions of three, plus two entries recorded with no `session_id` -- the hand-recorded
+    // rows in a derived corpus. Dropping them would change the corpus being tested, and giving them
+    // another row's values would invent a cluster, so neither is done.
+    const entries: Record<string, unknown>[] = [];
+    for (const session of ['S1', 'S2'])
+      for (let i = 0; i < 3; i += 1)
+        entries.push({ session_id: session, state: i < 2 ? 'a' : 'b', kind: i === 0 ? 'x' : 'y' });
+    entries.push({ state: 'a', kind: 'y' });
+    entries.push({ state: 'b', kind: 'x' });
+    record(dir, 'sessions', entries);
+
+    const run = asc(['stats', 'sessions', '--assoc', '--cluster-by', 'session_id'], dir);
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain("2 of 8 entries have no 'session_id'");
+    expect(flatten(run.stderr)).toContain('Every entry has to be in a cluster');
   });
 });

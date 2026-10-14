@@ -51,6 +51,7 @@
  * `purity-enforcement.test.ts`). Nothing here draws a random number, so there is no seed.
  */
 
+import { clusterDesign, type ClusterDesign } from './design-effect.js';
 import { MIN_N, wilson, type Proportion } from './proportion.js';
 
 /** A caller handed this module something it will not mine. */
@@ -114,6 +115,21 @@ export interface RuleOptions {
   readonly minN?: number;
   /** Confidence level for the interval on every rule's confidence. Default 0.95. */
   readonly confidence?: 0.9 | 0.95 | 0.99;
+  /**
+   * One cluster id per TRANSACTION, in the same order -- the session each transaction came from.
+   *
+   * Supplying it makes every rule's interval a CLUSTER-CORRECTED Wilson interval, the same object
+   * `clusterDesign` produces for `asc explore --cluster` and the same one `--assoc`'s cluster control
+   * is the permutation counterpart of. `antecedentSupport` is the denominator the interval is built
+   * on, and on a corpus derived per session it is not a sample size: one session contributes dozens
+   * of near-identical transactions, each of which counts as independent evidence it is not.
+   *
+   * THE DENOMINATOR DOES NOT MOVE; THE INTERVAL DOES. `successes`, `n` and `p` stay the observed
+   * counts and the design travels beside them in `Proportion.design`, exactly as `wilson` already
+   * documents. Nothing here collapses the corpus, because collapsing it would be a different
+   * measurement rather than a correction to this one.
+   */
+  readonly clusters?: readonly string[];
 }
 
 /** The rules, with what they were mined from. */
@@ -258,6 +274,39 @@ function mine(
 }
 
 /**
+ * The design effect over ONE rule's antecedent population -- the denominator `wilson` is given.
+ *
+ * ONE PASS PER RULE, and the cost is stated rather than hidden: FP-growth already walks the corpus
+ * once to mine, and this walks it once more for each rule the caller asked to be corrected. It is
+ * paid only when `clusters` is supplied, and the alternative -- threading transaction id lists
+ * through `mine`'s recursion -- would put a second responsibility inside the one function in this
+ * module whose correctness is hardest to see.
+ *
+ * The outcome is "this antecedent-carrying transaction ALSO carries the consequent", which is
+ * exactly the ratio `wilson` is asked for. It is read back off the rows rather than taken from
+ * `itemset.support`, so a design whose `n` disagrees with `antecedentSupport` cannot be built in the
+ * first place -- and `wilson` refuses one that does, which is the same check arriving twice.
+ */
+function antecedentDesign(
+  rows: readonly (readonly string[])[],
+  antecedent: readonly string[],
+  consequent: string,
+  clusters: readonly string[],
+): ClusterDesign {
+  const outcomes: number[] = [];
+  const keys: string[] = [];
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index] as readonly string[];
+    if (!antecedent.every((item) => row.includes(item))) continue;
+    outcomes.push(row.includes(consequent) ? 1 : 0);
+    keys.push(clusters[index] as string);
+  }
+
+  return clusterDesign(outcomes, keys);
+}
+
+/**
  * Frequent itemsets and the rules over them.
  *
  * `minSupport` defaults to `MIN_N` rather than to a fraction of the corpus, and that is a judgement
@@ -275,6 +324,16 @@ export function associationRules(
   const minImprovement = options.minImprovement ?? 0;
   const minN = options.minN ?? MIN_N;
   const level = options.confidence ?? 0.95;
+  const clusters = options.clusters;
+
+  // Length is a property of the WHOLE request, so it is refused once here rather than degrading every
+  // rule's interval one at a time -- the same reason `rankAssociations` validates its blocks up front.
+  if (clusters !== undefined && clusters.length !== transactions.length) {
+    throw new RuleError(
+      `associationRules: clusters has ${String(clusters.length)} entries, expected ` +
+        `${String(transactions.length)} -- one per transaction, in the same order`,
+    );
+  }
 
   if (minSupport < 1) throw new RuleError('associationRules: minSupport must be at least 1');
   if (maxItemsetSize < 2)
@@ -301,6 +360,10 @@ export function associationRules(
   const counts = new Map<string, number>();
   for (const [items] of deduplicated)
     for (const item of items) counts.set(item, (counts.get(item) ?? 0) + 1);
+
+  // The rows alone, for `antecedentDesign` below: the `1` beside each in `deduplicated` is FP-growth's
+  // internal count and means nothing to a design effect.
+  const itemRows = deduplicated.map(([items]) => items);
 
   const supports = new Map<string, number>();
   const { header, order } = build(deduplicated, counts, minSupport);
@@ -354,7 +417,13 @@ export function associationRules(
       }
 
       const baseRate = total === 0 ? 0 : (counts.get(consequent) ?? 0) / total;
-      const proportion = wilson(itemset.support, antecedentSupport, level);
+      // `exactOptionalPropertyTypes`: the design is omitted rather than set to `undefined`, so an
+      // uncorrected interval and a corrected one cannot serialise alike.
+      const design =
+        clusters === undefined
+          ? undefined
+          : antecedentDesign(itemRows, antecedent, consequent, clusters);
+      const proportion = wilson(itemset.support, antecedentSupport, level, design);
 
       rules.push({
         antecedent,

@@ -252,3 +252,84 @@ describe('associationRules', () => {
     expect(() => associationRules(CORPUS, { minConfidence: Number.NaN })).toThrow(/got NaN/);
   });
 });
+
+describe('associationRules, corrected for clustering (asc-n168)', () => {
+  /**
+   * Two sessions of twenty transactions each, with `a -> b` holding 16 times in the first and 8 in
+   * the second. The corpus's shape on purpose: a rule's antecedent support counts TRANSACTIONS, and
+   * a session that contributes twenty near-identical ones has contributed one observation's worth
+   * of evidence counted twenty times.
+   *
+   * The within-session proportions differ (0.8 against 0.4), so the intraclass correlation is a
+   * MEASUREMENT rather than the assumed bound a constant outcome would force -- which is what makes
+   * the correction below a number worth reading rather than the corpus size restated.
+   */
+  const session: string[] = [];
+  const transactions: string[][] = [];
+  for (let i = 0; i < 40; i += 1) {
+    const first = i < 20;
+    session.push(first ? 'S1' : 'S2');
+    const holdsB = i % 20 < (first ? 16 : 8);
+    transactions.push(holdsB ? ['a', 'b'] : ['a']);
+  }
+  const rule = (options: Parameters<typeof associationRules>[1] = {}) =>
+    associationRules(transactions, { minSupport: 20, minConfidence: 0, ...options }).rules.find(
+      (entry) => entry.antecedent.join('') === 'a' && entry.consequent === 'b',
+    );
+
+  it('widens the interval to the cluster count, and leaves the observed counts alone', () => {
+    const uncorrected = rule();
+    const corrected = rule({ clusters: session });
+
+    // MEASURED on this fixture. Uncorrected `a -> b`: 0.6 over [0.44595893660346186,
+    // 0.7365167431570808]. Corrected: rho 0.24812030075187966 estimated from 2 clusters (largest 20),
+    // design effect 5.7142857142857135, effective N 7.000000000000001, and the interval
+    // [0.2708071822080311, 0.8583267307786313]. Forty transactions worth 0.6 are seven
+    // observations' worth of evidence, and the interval says so.
+    expect(uncorrected?.confidence?.lower).toBeCloseTo(0.44595893660346186, 12);
+    expect(corrected?.confidence?.lower).toBeCloseTo(0.2708071822080311, 12);
+    expect(uncorrected?.confidence?.n).toBe(40);
+    expect(uncorrected?.confidence?.successes).toBe(24);
+    expect('design' in (uncorrected?.confidence as object)).toBe(false);
+
+    // THE COUNTS DO NOT MOVE. The correction is to what they are WORTH, and a corrected interval that
+    // also restated `n` would leave a reader unable to see what was counted.
+    expect(corrected?.confidence?.n).toBe(40);
+    expect(corrected?.confidence?.successes).toBe(24);
+    expect(corrected?.confidence?.p).toBe(uncorrected?.confidence?.p);
+
+    const design = corrected?.confidence?.design;
+    expect(design?.n).toBe(40);
+    expect(design?.clusters).toBe(2);
+    expect(design?.rhoSource).toBe('estimated');
+    expect(design?.effectiveN).toBeLessThan(design?.n as number);
+    expect(design?.designEffect).toBeGreaterThan(1);
+
+    // Wider on both sides: the point estimate sits inside a strictly larger interval, which is the
+    // whole of what a pseudoreplication correction does to a proportion.
+    expect(corrected?.confidence?.lower).toBeLessThan(uncorrected?.confidence?.lower as number);
+    expect(corrected?.confidence?.upper).toBeGreaterThan(uncorrected?.confidence?.upper as number);
+
+    // And the qualification travels with it. `smallGroup` is judged on the EFFECTIVE n, so this rule
+    // crosses from unqualified to qualified on the same counts -- which is the correction reaching
+    // the reader rather than stopping at the arithmetic.
+    expect(uncorrected?.confidence?.smallGroup).toBe(false);
+    expect(corrected?.confidence?.smallGroup).toBe(true);
+  });
+
+  it('corrects every rule in the report, not only the ones that look clustered', () => {
+    const report = associationRules(transactions, {
+      minSupport: 20,
+      minConfidence: 0,
+      clusters: session,
+    });
+    expect(report.rules.length).toBeGreaterThan(0);
+    for (const entry of report.rules) expect(entry.confidence?.design?.n).toBe(entry.confidence?.n);
+  });
+
+  it('refuses a clusters vector that does not describe these transactions', () => {
+    expect(() => associationRules(transactions, { clusters: session.slice(0, 10) })).toThrow(
+      /clusters has 10 entries, expected 40/,
+    );
+  });
+});

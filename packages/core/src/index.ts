@@ -75,6 +75,9 @@ export { canonicalJson, nonJsonReason, sha256Hex, typeHash, type Json } from './
 export {
   assertCursorScope,
   CURSOR_ORDER,
+  CURSOR_ORDER_EVENT,
+  CURSOR_ORDERS,
+  CURSOR_ORDER_TOKENS,
   CURSOR_PREFIX,
   CursorError,
   DEFAULT_PAGE_SIZE,
@@ -83,6 +86,7 @@ export {
   PageSizeError,
   scopeFingerprint,
   type Cursor,
+  type CursorOrderName,
   type CursorPosition,
   type CursorScope,
 } from './cursor.js';

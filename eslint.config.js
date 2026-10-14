@@ -14,6 +14,12 @@ export default defineConfig(
       'spike/**',
       '.beads/**',
       '.mast/**',
+      // Agent/tool configuration, like `.beads` and `.mast` above: not ascend's
+      // source and not in `tsconfig.eslint.json`, so linting it is a parsing
+      // error rather than a finding. `.claude/bd-prime-hook.mjs` is installed by
+      // bd and is untracked, so without this the whole gate reds on a file that
+      // no commit here contains.
+      '.claude/**',
     ],
   },
   js.configs.recommended,

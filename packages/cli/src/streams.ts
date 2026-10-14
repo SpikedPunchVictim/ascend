@@ -71,29 +71,75 @@
  * with streams.
  */
 
-/** The minimum surface this needs from a stream. Narrow so a test can supply a fake. */
+/**
+ * The minimum surface this needs from a stream. Narrow so a test can supply a fake.
+ *
+ * **Both methods, though only one is ever called, and that is a decision about the mutation spec
+ * rather than about streams.** A real stream has both; the guard must use `prependListener` (see
+ * `guardBrokenPipes` for why), and `on` is declared beside it so that the mutation which swaps one
+ * for the other still COMPILES. A mutant that fails to typecheck makes its killer fail as
+ * `suite-failed` rather than as a failing assertion, and `scripts/mutate.mjs` refuses to read that as
+ * a kill -- so declaring only `prependListener` would turn the precedence hazard into a check the
+ * harness cannot exercise, which is the same as not checking it.
+ */
 export interface ErrorEmitting {
   on(event: 'error', listener: (error: unknown) => void): unknown;
+  prependListener(event: 'error', listener: (error: unknown) => void): unknown;
 }
+
+/**
+ * The codes that mean "the reader went away", which is the one condition this exits 0 on.
+ *
+ * **Two codes rather than one, and the second was measured rather than reasoned.** This guard used
+ * to act on `EPIPE` alone, on the stated reasoning that `EPIPE` is the only shape a broken pipe
+ * takes. Driven through the real binary on macOS (Darwin 25.3.0, Node v24.18.0), that is false, and
+ * the two closures differ in kind:
+ *
+ * - A reader that closes GRACEFULLY -- `asc query ... | head -1`, 150 runs of a 5,000-row query --
+ *   never produces an error at all, or produces `EPIPE`, and the guard handles it: 150 clean.
+ * - A reader that `destroy()`s the read end while the child is mid-write produces **`ENOTCONN`**
+ *   (errno -57, "socket is not connected") in 3 of 300 runs of the same query.
+ *
+ * Exiting sends a FIN; `destroy()` sends an RST, and a write on the far side of an RST is reported
+ * as a socket that is no longer connected. So `EPIPE` alone encodes a Unix assumption that holds
+ * for the pipeline and not for the abrupt reader -- and a process whose reader crashed or was
+ * killed is exactly the abrupt case.
+ *
+ * Both codes mean the same thing to a command: nobody is reading, so the output was not consumed,
+ * but the command itself did not fail. Both therefore exit 0, and every other code still rethrows.
+ */
+const READER_GONE: ReadonlySet<string> = new Set(['EPIPE', 'ENOTCONN']);
 
 export interface PipeGuardDeps {
   readonly exit: (code: number) => void;
 }
 
 /**
- * Exit 0 on a broken pipe; let every other stream error through.
+ * Exit 0 when the reader went away; let every other stream error through.
  *
- * Swallowing a non-EPIPE error would be the worst outcome available: an output stream that
- * failed for a real reason (ENOSPC, EIO) would then look exactly like a command that
- * succeeded, which is the false-green class this project treats as severity-zero.
+ * Swallowing an error that is not the reader going away would be the worst outcome available: an
+ * output stream that failed for a real reason (ENOSPC, EIO) would then look exactly like a command
+ * that succeeded, which is the false-green class this project treats as severity-zero. What is
+ * swallowed is the `READER_GONE` set and nothing else -- the rethrow is on the error's CODE, not on
+ * "not EPIPE", which is the distinction that changed when `ENOTCONN` was measured.
+ *
+ * **`prependListener`, not `on`, and that is load-bearing rather than stylistic.** EventEmitter
+ * calls listeners in registration order and stops at the first that throws. `@oclif/core` installs
+ * its own `process.stdout.on('error', ...)` handler -- the same decision, `EPIPE` or rethrow -- when
+ * the `Command` class module LOADS, which is before ascend's entry point runs. Measured on the
+ * build: broadening this guard to accept `ENOTCONN` while leaving the registration as `on` left the
+ * crash at 2 of 300 runs, because oclif's listener ran first and rethrew. Prepending puts ascend's
+ * decision ahead of it, and the same run measured 0 of 600. The duplication is deliberate: ascend's
+ * handler is the one that knows both codes, so ascend's handler has to answer first.
  */
 export function guardBrokenPipes(streams: readonly ErrorEmitting[], deps: PipeGuardDeps): void {
   for (const stream of streams) {
-    stream.on('error', (error: unknown) => {
+    stream.prependListener('error', (error: unknown) => {
       // `unknown` before it is read, and a cast rather than a `try`/`catch`: anything at
-      // all can be thrown or emitted in JS, and `EPIPE` is the only shape this acts on.
+      // all can be thrown or emitted in JS, and a string `code` on the reader-gone set is
+      // the only shape this acts on.
       const code = (error as { code?: unknown } | null)?.code;
-      if (code === 'EPIPE') {
+      if (typeof code === 'string' && READER_GONE.has(code)) {
         deps.exit(0);
         return;
       }
@@ -174,14 +220,15 @@ export function makeWritesSynchronous(streams: readonly unknown[]): number {
  * to stderr and never flushes stdout. A command that printed more than a pipe holds and then threw
  * would lose the tail the same way.
  *
- * **On stdout the EPIPE half of this duplicates oclif, and that was measured rather than assumed.**
- * `@oclif/core/lib/command.js` registers `process.stdout.on('error', ...)` with exactly this
- * decision -- return on `EPIPE`, rethrow anything else -- when the `Command` class module loads. So
- * the broken-pipe half of the guard is load-bearing on **stderr**, where a tap on the event showed no
- * other listener, and redundant on stdout, where ascend's exit status and stderr are identical with
- * the handler installed and without it. It stays on both anyway: the duplication costs one listener,
- * the handler is not something ascend controls the lifetime of, and a guard that covers the stream the
- * bug was *not* measured on is the wrong half to drop.
+ * **On stdout this used to be called a duplicate of oclif, and that has since been measured false.**
+ * `@oclif/core/lib/command.js` registers `process.stdout.on('error', ...)` with an EPIPE-or-rethrow
+ * decision when the `Command` class module loads -- which is before this function runs. The earlier
+ * text here read that as making ascend's handler redundant on stdout. It does not: oclif's handler
+ * knows `EPIPE` and ascend's knows `EPIPE` **and** `ENOTCONN`, and oclif's is registered first, so on
+ * the abrupt-reader path it rethrows before ascend's can answer. Re-measured 2026-10-13 -- `asc query`
+ * of a 5,000-row result, reader destroyed on the first chunk: 3 of 300 runs exited 1 with a Node crash
+ * dump when ascend's handler used `on`; **0 of 600** once it used `prependListener`. So the handler is
+ * load-bearing on **both** streams, and on stdout the registration ORDER is load-bearing too.
  *
  * **That was reasoned once and has since been measured, which is the version to trust.** The same
  * one-write-then-`process.exit(2)` payload sent to STDOUT -- 400,001 bytes, attentive reader --

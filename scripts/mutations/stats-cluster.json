@@ -1,0 +1,83 @@
+{
+  "_": "Kill-check for asc-n168 (E32.4): the clustering correction on the `asc stats` surfaces. The correction is not one mechanism and the mutants are one per decision the feature made. TWO LIVES: the cluster-preserving null itself (M1, M2, in packages/analysis, whose killers are fast), and what the COMMAND does with it -- which modes correct, which refuse, and which columns the corrected numbers land in (M3-M6, in packages/cli). Measured through the real binary on the three-session fixture the CLI tests build (2026-10-13): the row-counted p is 0.0061698993205439034, the shuffled control at 500 iterations is 0.011976047904191617, and the cluster-preserving correction lands near a third -- 0.2874251497005988 and 0.32335329341317365 on two corpora with identical content, the spread being the store's (recorded_at, id) order deciding the null's block order.",
+  "mutants": [
+    {
+      "id": "M1",
+      "why": "The null never reshuffles the donor order, so every iteration deals the blocks back exactly where they came from and the 'null' is the observed statistic 500 times over. p is then 1 for every corpus, which is a number no reader could tell from a real invariant.",
+      "file": "packages/analysis/src/association.ts",
+      "find": "for (let j = shuffledOrder.length - 1; j > 0; j -= 1) {",
+      "replace": "for (let j = 0; j < 0; j += 1) {",
+      "killers": [
+        {
+          "file": "packages/analysis/test/association.test.ts",
+          "test": "widens the null a cluster structure manufactures, and the control does not"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "why": "The dealing loop reads the POOL from index k instead of from the donor block's own start. Every destination then takes the first cluster's values rather than its donor's, so the blocks stop being blocks. With singleton clusters -- where the two spellings coincide -- nothing moves, which is exactly what the control arm would have caught.",
+      "file": "packages/analysis/src/association.ts",
+      "find": "dealt[cursor++] = pool[start + k] as string;",
+      "replace": "dealt[cursor++] = pool[k] as string;",
+      "killers": [
+        {
+          "file": "packages/analysis/test/association.test.ts",
+          "test": "widens the null a cluster structure manufactures, and the control does not"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "why": "`--changepoints --cluster-by` prints its Pettitt p under a flag whose whole purpose is to prevent an uncorrected one. Downgrading the refusal to a usage error changes the exit code from 'the tool cannot answer this' to 'you typed it at the wrong mode' -- two different facts stated to the caller.",
+      "file": "packages/cli/src/commands/stats.ts",
+      "find": "      throw refusal(\n        `--changepoints cannot be corrected for clustering, so --cluster-by has nothing to do ` +",
+      "replace": "      throw usageError(\n        `--changepoints cannot be corrected for clustering, so --cluster-by has nothing to do ` +",
+      "killers": [
+        {
+          "file": "packages/cli/test/stats.test.ts",
+          "test": "refuses --changepoints and --distinctive rather than print an uncorrected p"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "why": "The same refusal on `--distinctive`, whose normal-tail p has no permutation behind it to hold whole clusters together. Same downgrade, same wrong fact: a caller who typed the flag at the right mode is told they typed it at the wrong one.",
+      "file": "packages/cli/src/commands/stats.ts",
+      "find": "      throw refusal(\n        `--distinctive cannot be corrected for clustering, so --cluster-by has nothing to do ` +",
+      "replace": "      throw usageError(\n        `--distinctive cannot be corrected for clustering, so --cluster-by has nothing to do ` +",
+      "killers": [
+        {
+          "file": "packages/cli/test/stats.test.ts",
+          "test": "refuses --changepoints and --distinctive rather than print an uncorrected p"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "why": "`--changepoints` and `--distinctive` are dropped from the mode list the flag table declares. The two modes then refuse the flag as unknown-to-them, BEFORE the refusal with a reason runs -- so the caller gets 'the flag was given to the wrong mode' for a flag the flag table's own comment says these modes accept in order to refuse it.",
+      "file": "packages/cli/src/commands/stats.ts",
+      "find": "    modes: ['assoc', 'correlate', 'rules', 'changepoints', 'distinctive'],",
+      "replace": "    modes: ['assoc', 'correlate', 'rules'],",
+      "killers": [
+        {
+          "file": "packages/cli/test/stats.test.ts",
+          "test": "refuses --changepoints and --distinctive rather than print an uncorrected p"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "why": "The two numbers the `--rules` correction IS are dropped from every row, while the warning above the table goes on telling the reader to read them. The intervals would still be corrected and the report would still say so, so nothing else in the suite notices -- the caller is simply told to go and look at a column that is not there.",
+      "file": "packages/cli/src/commands/stats.ts",
+      "find": "              ...(rule.confidence.design === undefined\n                ? {}\n                : {\n                    design_effect: rule.confidence.design.designEffect,\n                    effective_n: rule.confidence.design.effectiveN,\n                  }),\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/stats.test.ts",
+          "test": "widens each --rules interval to the design effect of its own antecedent population"
+        }
+      ]
+    }
+  ]
+}

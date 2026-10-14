@@ -3,7 +3,7 @@ import {
   cluster,
   ClusterError,
   cosine,
-  clusterPermutationNull as permutationNull,
+  silhouettePermutationNull as permutationNull,
   sweepThreshold,
   tfidf,
   type ClusterDocument,

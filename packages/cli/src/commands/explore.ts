@@ -232,7 +232,12 @@
 import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Args, Flags } from '@oclif/core';
-import { CURSOR_ORDER, DEFAULT_PAGE_SIZE } from '@ascend/core';
+import {
+  CURSOR_ORDERS,
+  CURSOR_ORDER_TOKENS,
+  DEFAULT_PAGE_SIZE,
+  type CursorOrderName,
+} from '@ascend/core';
 import { wilson, type Proportion } from '@ascend/analysis';
 import {
   clusterCells,
@@ -302,6 +307,24 @@ function sampleMode(typed: string | undefined): SampleMode | undefined {
   const mode = SAMPLE_MODES.find((candidate) => candidate === typed);
   if (mode === undefined) throw usageError(`--sample must be one of: ${SAMPLE_MODES.join(', ')}`);
   return mode;
+}
+
+/**
+ * The order the caller asked for, as a member of the vocabulary (`asc-pcu`).
+ *
+ * The same shape as `sampleMode` for the same reason: oclif has already refused anything outside
+ * `CURSOR_ORDERS`, so the search cannot fail, and the throw is what makes that a check rather than
+ * an assumption on the one boundary where a string becomes a decision.
+ *
+ * `undefined` is passed through rather than defaulted to `'stored'` here, because the caller has two
+ * questions to answer with it -- which order to use, and whether the flag was given at all (an
+ * `--order` on a mode that has no order is refused, and a default would erase the evidence).
+ */
+function orderMode(typed: string | undefined): CursorOrderName | undefined {
+  if (typed === undefined) return undefined;
+  const order = CURSOR_ORDERS.find((candidate) => candidate === typed);
+  if (order === undefined) throw usageError(`--order must be one of: ${CURSOR_ORDERS.join(', ')}`);
+  return order;
 }
 
 /**
@@ -760,6 +783,18 @@ export default class Explore extends BaseCommand {
       description: 'Draw a sample instead of a page, to show spread rather than order.',
       options: [...SAMPLE_MODES],
     }),
+    order: Flags.string({
+      description:
+        'Which clock --page and --dump are ordered by (asc-pcu). stored, the default, is ' +
+        'recorded_at -- when asc wrote the row. event is the occurred_at property -- when the ' +
+        'event happened. They differ by as much as a backfill was long: a bulk ingest stamps every ' +
+        'entry of one run with a single recorded_at, so the stored order of a derived type is ' +
+        'really its id order, and every `range` this command prints about recorded_at is a range ' +
+        'over the ingest. An entry with no occurred_at has no event clock, so it sorts first. A ' +
+        'cursor carries the order it was issued under, and replaying it under the other is refused ' +
+        'rather than served.',
+      options: [...CURSOR_ORDERS],
+    }),
     by: Flags.string({
       description: 'The categorical property to sample by. Required by --sample stratified.',
     }),
@@ -1035,6 +1070,25 @@ export default class Explore extends BaseCommand {
 
     const sample = sampleMode(flags.sample);
 
+    // The order is resolved once, here, for the same reason `--limit` is read above `paging`: the
+    // flag's two readers want different things from it. Everything below wants the chosen order;
+    // the refusal just below wants to know whether it was given at all.
+    const orderFlag = orderMode(flags.order);
+    const order = orderFlag ?? 'stored';
+
+    // Named rather than ignored, for the reason `--seed` is below. The two modes it reaches are the
+    // two that print entries; everything else either profiles them or collapses them into counts,
+    // and `--group-by` and `--sample` each order their own output by a rule of their own -- so a
+    // caller who typed `--order` there would be reading rows in an order they did not ask for while
+    // believing they had.
+    if (orderFlag !== undefined && !paging && !dumping) {
+      throw usageError(
+        '--order only applies to --page and --dump: they are the two modes that print the entries ' +
+          'in the order asked for, and every other mode orders its own output. Add --page or ' +
+          '--dump, or drop --order.',
+      );
+    }
+
     // A sample and a page are two different answers to "which entries", and honouring one silently
     // would produce the plausible-wrong-answer class: rows a caller reads as the window they asked
     // for. So the combination is refused rather than resolved, and it cannot be expressed by
@@ -1165,7 +1219,7 @@ export default class Explore extends BaseCommand {
         // The ids first, in the page order, then hydrated a chunk at a time. Hydrating all of them
         // up front would pull every `evidence_text` of the type into memory at once, which is what
         // `entryIds` returns ids rather than entries to avoid.
-        const ids = entryIds(store.db, args.type);
+        const ids = entryIds(store.db, args.type, order);
         const chunks: DumpChunk[] = [];
         for (let start = 0; start < ids.length; start += perFile) {
           const entries: RecordedEntry[] = [];
@@ -1189,7 +1243,7 @@ export default class Explore extends BaseCommand {
         // dump report the same numbers, and a failure to plan cannot leave a half-written directory.
         const plan = planDump(
           chunks,
-          { type: args.type, order: CURSOR_ORDER },
+          { type: args.type, order: CURSOR_ORDER_TOKENS[order] },
           // The same ratio the fit below uses, so `chars_per_token` on the manifest describes the
           // numbers on the manifest rather than the default the caller overrode.
           budgetFlags?.charsPerToken,
@@ -1506,6 +1560,9 @@ export default class Explore extends BaseCommand {
           type: args.type,
           ...(flags.cursor === undefined ? {} : { cursor: flags.cursor }),
           ...(filter === undefined ? {} : { filter }),
+          // Passed only when it was asked for, so an unturned page sends exactly the options it
+          // always did and the store's own default is the one place `stored` is decided.
+          ...(orderFlag === undefined ? {} : { order }),
           struck,
         };
 

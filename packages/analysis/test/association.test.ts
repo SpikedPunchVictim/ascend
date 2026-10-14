@@ -5,6 +5,7 @@ import {
   benjaminiHochberg,
   chiSquare,
   chiSquarePValue,
+  clusterPermutationNull,
   crosstab,
   functionalDependence,
   mulberry32,
@@ -451,6 +452,136 @@ describe('permutationNull', () => {
   });
 });
 
+describe('clusterPermutationNull', () => {
+  /**
+   * Four sessions of twelve rows where BOTH columns are mostly session state, and the two are
+   * aligned WITHIN each session -- the x rows are the hi rows in every cluster, so at the row level
+   * `a` predicts `b` perfectly.
+   *
+   * The session splits differ (9/7/5/3), which is what makes the cluster null able to move at all:
+   * a row-counted statistic is then a function of which session's block of `b` landed where, and
+   * dealing the blocks around changes it. A corpus where every session had the SAME split would
+   * leave every arrangement identical and the control would return exactly 1 -- correctly, because
+   * there would be no row-level evidence to weigh.
+   *
+   * This is `tool_denial`'s shape in miniature: a `--blocks`-style partition in which `project`
+   * varies per session and the row count is not a sample size.
+   */
+  const SPEC: readonly (readonly [number, number, number])[] = [
+    [12, 9, 9],
+    [12, 7, 7],
+    [12, 5, 5],
+    [12, 3, 3],
+  ];
+  const a: string[] = [];
+  const b: string[] = [];
+  const clusters: string[] = [];
+  {
+    SPEC.forEach(([size, xs, his], cluster) => {
+      for (let i = 0; i < size; i += 1) {
+        a.push(i < xs ? 'x' : 'y');
+        b.push(i < his ? 'hi' : 'lo');
+        clusters.push(`C${String(cluster)}`);
+      }
+    });
+  }
+  const SEED = 'cluster-fixture';
+
+  it('widens the null a cluster structure manufactures, and the control does not', () => {
+    const observed = chiSquare(crosstab(a, b)).chi2;
+    const free = permutationNull(a, b, { iterations: 500, seed: SEED });
+    const clustered = clusterPermutationNull(a, b, clusters, { iterations: 500, seed: SEED });
+
+    // MEASURED on this fixture, 500 iterations, seed 'cluster-fixture': observed 48.00; the free
+    // shuffle's null is median 0.33 / p95 5.33 / max 12.00 and puts the observed at 0.0020 -- the
+    // 1/(iterations+1) floor, which is the free shuffle saying it cannot imagine this arrangement.
+    // The cluster null is median 21.33 / p95 48.00 / max 48.00 and puts the same observed at 0.0539.
+    // A null 65x wider in the median, and a p that moves from the floor to above the conventional
+    // level, is the whole of what a pseudoreplication correction is.
+    expect(observed).toBe(48);
+    expect(free.pValue(observed)).toBe(1 / 501);
+    expect(clustered.pValue(observed)).toBeGreaterThan(free.pValue(observed));
+    expect(clustered.median).toBeGreaterThan(10 * free.median);
+
+    // THE CONTROL ARM, and it is the load-bearing half. The same two columns with every row its own
+    // cluster reproduce the free shuffle EXACTLY -- not approximately, and not merely with a similar
+    // p. One row per cluster means each dealt block is one value, so the deal degenerates to the same
+    // Fisher-Yates over the same array drawing from the same seeded generator. That is what shows the
+    // widening above is the cluster structure's doing rather than an artifact of the primitive.
+    const singles = a.map((_value, index) => `row${String(index)}`);
+    const control = clusterPermutationNull(a, b, singles, { iterations: 500, seed: SEED });
+    expect(control.median).toBe(free.median);
+    expect(control.p95).toBe(free.p95);
+    expect(control.max).toBe(free.max);
+    expect(control.pValue(observed)).toBe(free.pValue(observed));
+  });
+
+  it('deals blocks of unequal size rather than refusing them', () => {
+    // Sessions are not the same length -- the live corpus runs from a handful of rows to hundreds --
+    // so a null that only accepted equal-size clusters would be a null that never ran. Sizes 15/11/8/6
+    // against the fixture above's four 12s. MEASURED, same seed: observed 40.00, free p 0.0020, and
+    // the cluster null still widens it to 0.0539.
+    const uneven: readonly (readonly [number, number, number])[] = [
+      [15, 12, 12],
+      [11, 7, 7],
+      [8, 4, 4],
+      [6, 2, 2],
+    ];
+    const ra: string[] = [];
+    const rb: string[] = [];
+    const rc: string[] = [];
+    uneven.forEach(([size, xs, his], cluster) => {
+      for (let i = 0; i < size; i += 1) {
+        ra.push(i < xs ? 'x' : 'y');
+        rb.push(i < his ? 'hi' : 'lo');
+        rc.push(`C${String(cluster)}`);
+      }
+    });
+
+    const observed = chiSquare(crosstab(ra, rb)).chi2;
+    const free = permutationNull(ra, rb, { iterations: 500, seed: SEED });
+    const clustered = clusterPermutationNull(ra, rb, rc, { iterations: 500, seed: SEED });
+
+    expect(observed).toBe(40);
+    expect(free.pValue(observed)).toBe(1 / 501);
+    expect(clustered.pValue(observed)).toBeGreaterThan(free.pValue(observed));
+  });
+
+  it('is reproducible from its seed, and varies with it', () => {
+    const first = clusterPermutationNull(a, b, clusters, { iterations: 200, seed: 'one' });
+    const again = clusterPermutationNull(a, b, clusters, { iterations: 200, seed: 'one' });
+    const other = clusterPermutationNull(a, b, clusters, { iterations: 200, seed: 'alpha' });
+
+    expect(first.median).toBe(again.median);
+    expect(first.p95).toBe(again.p95);
+    expect(first.max).toBe(again.max);
+    // `p95` rather than `median`, and the reason is this fixture rather than the primitive: four
+    // clusters have only 24 arrangements between them, so the null's median is pinned by the shape
+    // and lands on 12 under every seed tried ('one', 'two', 'alpha', 'beta', 'gamma', 'delta' all
+    // agree). The upper tail is where the draws differ -- 33.33 under 'one', 48 under 'alpha' -- and a
+    // generator that had quietly stopped depending on its seed would show up here.
+    expect(other.p95).not.toBe(first.p95);
+  });
+
+  it('refuses a request it cannot draw a null for', () => {
+    expect(() => clusterPermutationNull(a, b, clusters, { iterations: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => clusterPermutationNull(a, b, clusters.slice(0, 20))).toThrow(
+      /clusters has 20 entries, expected 48/,
+    );
+    expect(() => clusterPermutationNull(a, b.slice(0, 20), clusters)).toThrow(
+      /48 rows in one column and 20 in the other/,
+    );
+
+    // ONE cluster has exactly one arrangement, so every draw would reproduce the observation and the
+    // p would be 1 by arithmetic rather than by evidence -- a control that ran and COULD NOT have
+    // found anything, which reads identically to one that ran and found nothing.
+    const one = a.map(() => 'only');
+    expect(() => clusterPermutationNull(a, b, one)).toThrow(/1 cluster\(s\) over 48 rows/);
+  });
+});
+
 describe('rankAssociations', () => {
   /** Three columns over twelve items: `left` and `mirror` agree exactly, `noise` alternates. */
   const columns: AssociationColumn[] = [
@@ -696,5 +827,91 @@ describe('rankAssociations, with the two controls wired in (asc-fwpe)', () => {
     expect(report.family).toBe(0);
     expect(report.suppressed).toHaveLength(1);
     expect(report.suppressed[0]?.determinism).toBe(1);
+  });
+});
+
+describe('rankAssociations, with the cluster control wired in (asc-n168)', () => {
+  /**
+   * Two `session_id`-shaped clusters of unequal size, `state` mostly fixed inside a session and
+   * `other` merely leaning with it -- the pseudoreplication shape the control exists for, without
+   * the two collapsing into one another. Deliberately not the fixture `clusterPermutationNull` is
+   * measured on: what this block tests is the WIRING, and a second corpus is what shows the wiring
+   * does not depend on one arrangement.
+   */
+  const session = [
+    'S1',
+    'S1',
+    'S1',
+    'S1',
+    'S1',
+    'S1',
+    'S1',
+    'S1',
+    'S1',
+    'S1',
+    'S2',
+    'S2',
+    'S2',
+    'S2',
+    'S2',
+    'S2',
+  ];
+  const state = ['a', 'a', 'a', 'a', 'a', 'b', 'b', 'b', 'b', 'b', 'c', 'c', 'c', 'd', 'd', 'd'];
+  const other = [
+    'hi',
+    'hi',
+    'lo',
+    'lo',
+    'lo',
+    'hi',
+    'hi',
+    'hi',
+    'lo',
+    'lo',
+    'hi',
+    'hi',
+    'lo',
+    'lo',
+    'hi',
+    'lo',
+  ];
+  const columns: AssociationColumn[] = [
+    { name: 'state', values: state },
+    { name: 'other', values: other },
+  ];
+
+  it('reports a cluster p on every pair when it was asked for', () => {
+    const report = rankAssociations(columns, {
+      clusters: session,
+      clusterPermutations: 300,
+      seed: 'clustered',
+    });
+    expect(report.family).toBe(1);
+    expect(report.pairs[0]?.pClustered).toBeGreaterThan(0);
+    // The cluster control does NOT imply the others, and none of them implies it. A reader who asked
+    // only for this one must not be handed a `pPermuted` that was never computed.
+    expect('pPermuted' in (report.pairs[0] as object)).toBe(false);
+    expect('pBlocked' in (report.pairs[0] as object)).toBe(false);
+  });
+
+  it('omits the key when the control was not asked for, or given nothing to permute', () => {
+    for (const pair of rankAssociations(columns).pairs)
+      expect('pClustered' in (pair as object)).toBe(false);
+
+    // Iterations without clusters: there is no cluster structure, so there is no null to compute.
+    for (const pair of rankAssociations(columns, { clusterPermutations: 300 }).pairs)
+      expect('pClustered' in (pair as object)).toBe(false);
+  });
+
+  it('refuses clusters that do not cover the corpus, once, up front', () => {
+    expect(() =>
+      rankAssociations(columns, { clusters: session.slice(0, 6), clusterPermutations: 10 }),
+    ).toThrow(/clusters has 6 entries, expected 16/);
+
+    const holed: (string | null)[] = [...session];
+    holed[3] = null;
+    expect(() => rankAssociations(columns, { clusters: holed, clusterPermutations: 10 })).toThrow(
+      /item 3 has no cluster/,
+    );
   });
 });

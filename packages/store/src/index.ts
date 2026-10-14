@@ -119,7 +119,13 @@ export {
   type SearchScope,
 } from './search.js';
 
-export { entryIds, pageEntries, type PageOptions, type PageResult } from './pages.js';
+export {
+  entryIds,
+  pageEntries,
+  PageOrderError,
+  type PageOptions,
+  type PageResult,
+} from './pages.js';
 
 export { PredicateError, statementCount, wrapPredicate } from './statements.js';
 

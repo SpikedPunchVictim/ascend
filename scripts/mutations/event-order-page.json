@@ -1,0 +1,73 @@
+{
+  "_": "Kill-check for `asc-pcu`: a second paging order, `occurred_at`, beside the stored `recorded_at, id` one, and the refusal that stops a cursor minted under one being replayed against the other. Four mutants sit in `packages/store/src/pages.ts`, which is the whole mechanism -- the keyset column (M1), the scope's order token (M2), the key a row with no clock is given (M3), and the refusal to order a type that declares no `occurred_at` at all (M4) -- and one sits in the CLI (M5), where the order has to reach the dump's own chunking rather than only the page's. Both are needed: a page and a dump that disagreed would leave a caller unable to resume what it was handed. EVERY KILLER WAS FOUND EMPIRICALLY RATHER THAN GUESSED: each mutant was applied to the working tree, the owning file was run with vitest's JSON reporter (`--reporter=json`, and `-t` for M5's file, whose build the killer's own `beforeAll` pays), and the failing test names were read off its assertionResults. NOTES ON TWO MUTANTS THAT WERE CONSIDERED AND LEFT OUT, because the reasons are facts about the mechanism rather than preferences. (1) `packages/core/src/cursor.ts`'s `event: CURSOR_ORDER_EVENT` is the vocabulary table M2 reads, and pointing it at `CURSOR_ORDER` is killable -- but only from a CLI file, since the store suites import `@ascend/core` from `dist/` and do not build it, so a mutation there is invisible to `packages/store/test/pages.test.ts`. It also restates M2's claim one layer down, and the literal it would break (`occurred_at,id`, asserted in the dump manifest) is already pinned by M5's killer. (2) `if (false)` in place of M4's inverted condition is not a usable mutant: the condition is what narrows `declared` from `boolean | undefined` for the branch beneath it, so disabling it fails `tsc -b` and the whole file reports as a failed suite instead of one assertion. A mutant has to be something the evaluator can RUN.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/store/src/pages.ts",
+      "find": "    key: EVENT_TIME_KEY,",
+      "replace": "    key: 'recorded_at',",
+      "killers": [
+        {
+          "file": "packages/store/test/pages.test.ts",
+          "test": "walks a type in event order, which is neither the id order nor the stored order"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/store/src/pages.ts",
+      "find": "  const scope = scopeFingerprint({ type: fingerprintScope, order: order.token });",
+      "replace": "  const scope = scopeFingerprint({ type: fingerprintScope, order: CURSOR_ORDER_TOKENS.stored });",
+      "killers": [
+        {
+          "file": "packages/store/test/pages.test.ts",
+          "test": "refuses a cursor issued under the other order, and says which clock it belongs to"
+        },
+        {
+          "file": "packages/store/test/pages.test.ts",
+          "test": "walks a type in event order, which is neither the id order nor the stored order"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/store/src/pages.ts",
+      "find": "const NO_EVENT_TIME = '!';",
+      "replace": "const NO_EVENT_TIME = '';",
+      "killers": [
+        {
+          "file": "packages/store/test/pages.test.ts",
+          "test": "reaches an entry with no occurred_at, rather than dropping it past the first page"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/store/src/pages.ts",
+      "find": "  if (declared !== true) {",
+      "replace": "  if (declared === true) {",
+      "killers": [
+        {
+          "file": "packages/store/test/pages.test.ts",
+          "test": "refuses the event order for a type that declares no occurred_at"
+        },
+        {
+          "file": "packages/store/test/pages.test.ts",
+          "test": "walks a type in event order, which is neither the id order nor the stored order"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/commands/explore.ts",
+      "find": "        const ids = entryIds(store.db, args.type, order);",
+      "replace": "        const ids = entryIds(store.db, args.type);",
+      "killers": [
+        {
+          "file": "packages/cli/test/explore.test.ts",
+          "test": "states the order in the dump manifest, and chunks the files in that order"
+        }
+      ]
+    }
+  ]
+}

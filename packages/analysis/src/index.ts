@@ -138,6 +138,7 @@ export {
   cell,
   chiSquare,
   chiSquarePValue,
+  clusterPermutationNull,
   crosstab,
   functionalDependence,
   mutualInformation,
@@ -193,7 +194,21 @@ export {
   cluster,
   ClusterError,
   cosine,
-  permutationNull as clusterPermutationNull,
+  /**
+   * `cluster.ts`'s own `permutationNull`, renamed at the barrel rather than at its definition.
+   *
+   * IT HELD THE NAME `clusterPermutationNull` UNTIL asc-n168, and the name was wrong in a way that
+   * mattered once there was a second claimant. Its null is over the SILHOUETTE of a lexical
+   * clustering -- it takes `ClusterDocument[]` and returns `ClusterNull` -- so "cluster" in the name
+   * meant "the clustering this scores", not "the cluster structure this preserves". The association
+   * module's `clusterPermutationNull` means the second, is the one the `asc stats` surface names,
+   * and is the one a reader searching for a pseudoreplication correction will be looking for. Two
+   * functions, one barrel, one name between them; the specific one keeps it.
+   *
+   * The alias is barrel-only and one test consumed it (`cluster.test.ts`, which renamed it back to
+   * `permutationNull` anyway), so the rename is a name that never reached the module's own source.
+   */
+  permutationNull as silhouettePermutationNull,
   sweepThreshold,
   tfidf,
   type Cluster,

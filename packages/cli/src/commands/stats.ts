@@ -120,6 +120,7 @@ import {
   functionalDependence,
   MIN_N,
   mutualInformation,
+  clusterPermutationNull,
   permutationNull,
   PSEUDOREPLICATION_AT,
   rankAssociations,
@@ -179,6 +180,7 @@ const FLAG_MODES: readonly {
   readonly flag:
     | 'temporal'
     | 'blocks'
+    | 'cluster-by'
     | 'permutations'
     | 'limit'
     | 'min-support'
@@ -193,6 +195,16 @@ const FLAG_MODES: readonly {
 }[] = [
   { flag: 'temporal', modes: ['assoc'], what: "the block control's temporal column" },
   { flag: 'blocks', modes: ['assoc'], what: "the block control's block column" },
+  {
+    flag: 'cluster-by',
+    // `--changepoints` and `--distinctive` are named here even though neither can APPLY it, and that
+    // is the point: this table decides which flags each mode will PARSE, and both modes refuse the
+    // flag with a reason rather than a usage error. A mode missing from this list would exit 2 with
+    // "the flag was given to the wrong mode", which reads as a typo rather than as a capability that
+    // does not exist -- the wrong fact, stated confidently.
+    modes: ['assoc', 'correlate', 'rules', 'changepoints', 'distinctive'],
+    what: 'the pseudoreplication correction',
+  },
   { flag: 'permutations', modes: ['assoc', 'correlate'], what: 'the shuffled-label control' },
   {
     flag: 'limit',
@@ -235,6 +247,20 @@ function listedModes(modes: readonly Mode[]): string {
  * unreadable.
  */
 const BLOCK_ITERATIONS = 500;
+
+/**
+ * How many times the cluster control permutes the clusters among the clusters' row positions.
+ *
+ * The same count as `BLOCK_ITERATIONS` and fixed for the same reason: like the block control, this
+ * one runs whenever `--cluster-by` is given, so its count is the tool's to choose and its cost is a
+ * cost it imposes. `--permutations` stays the caller's because that control exists only because the
+ * caller asked for it.
+ *
+ * 500 rather than 5,000 for the same reason again -- standard error of a p near 0.05 is about 0.01,
+ * which decides whether a pairing is inside the cluster structure's own noise. The number this
+ * control produces is compared against a threshold, not published as a measurement.
+ */
+const CLUSTER_ITERATIONS = 500;
 
 /** A day, as `YYYY-MM-DD`, from an ISO timestamp. */
 function dayOf(timestamp: string): string {
@@ -369,8 +395,10 @@ export default class Stats extends BaseCommand {
   static override description =
     'Run one analysis over a type: association, rules, changepoints, distinctive terms, ' +
     'lexical clustering, or near-duplicate collapse. Every p-value it prints is computed at the ' +
-    'raw entry count and is NOT corrected for clustering; a corrected N is reported by ' +
-    '`asc explore <type> --cluster` instead.';
+    'raw entry count and is corrected for clustering only where `--cluster-by <property>` says ' +
+    'which property the rows are echoes of -- which `--assoc`, `--correlate` and `--rules` can do ' +
+    'and does not happen by default; a corrected N is also reported by ' +
+    '`asc explore <type> --cluster`.';
 
   static override examples = [
     '<%= config.bin %> <%= command.id %> tool_denial --assoc',
@@ -381,6 +409,8 @@ export default class Stats extends BaseCommand {
     '<%= config.bin %> <%= command.id %> tool_denial --rules',
     '<%= config.bin %> <%= command.id %> tool_denial --changepoints --period week',
     '<%= config.bin %> <%= command.id %> decision --distinctive --by reversibility',
+    '<%= config.bin %> <%= command.id %> tool_denial --assoc --cluster-by session_id',
+    '<%= config.bin %> <%= command.id %> user_correction --rules --cluster-by session_id',
     '<%= config.bin %> <%= command.id %> decision --cluster --threshold 0.9',
     '<%= config.bin %> <%= command.id %> decision --duplicates',
   ];
@@ -424,6 +454,20 @@ export default class Stats extends BaseCommand {
         'belongs to. Takes the same two forms as --temporal. Answers a DIFFERENT question from the ' +
         'q-values: "is this pairing real over time, or is it the block structure?". Needs ' +
         '--temporal.',
+    }),
+    'cluster-by': Flags.string({
+      description:
+        'Correct every p-value and interval for CLUSTERING: the property one row is an ECHO of, ' +
+        'almost always `session_id`. Not the same question as --blocks, which asks whether a ' +
+        'temporal pairing is the block structure: this asks whether the rows are independent ' +
+        'enough for a row-counted p at all, and on a corpus derived per session they are not -- ' +
+        'one session contributes dozens of near-identical entries counted as independent evidence. ' +
+        "--assoc and --correlate install a cluster-preserving permutation null (whole clusters' " +
+        "blocks of values move together, so each column's marginal is held exactly); --rules " +
+        'recomputes each confidence interval at its design effect. --changepoints and ' +
+        '--distinctive REFUSE it: neither has a cluster-preserving null, and printing an ' +
+        'uncorrected p under this flag is the one thing it exists to prevent. Named `--cluster-by` ' +
+        'because `--cluster` is already a mode.',
     }),
     permutations: Flags.string({
       description:
@@ -575,19 +619,34 @@ export default class Stats extends BaseCommand {
             flags.temporal ?? [],
             flags.blocks,
             permutations,
+            flags['cluster-by'],
           );
           return;
         case 'correlate':
-          this.runCorrelate(format, version.spec, entries, flags.correlate ?? [], permutations);
+          this.runCorrelate(
+            format,
+            version.spec,
+            entries,
+            flags.correlate ?? [],
+            permutations,
+            flags['cluster-by'],
+          );
           return;
         case 'rules':
-          this.runRules(format, version.spec, entries, flags['min-support'], limit);
+          this.runRules(
+            format,
+            version.spec,
+            entries,
+            flags['min-support'],
+            limit,
+            flags['cluster-by'],
+          );
           return;
         case 'changepoints':
-          this.runChangepoints(format, version.spec, entries, flags, limit);
+          this.runChangepoints(format, version.spec, entries, flags, limit, flags['cluster-by']);
           return;
         case 'distinctive':
-          this.runDistinctive(format, version.spec, entries, flags.by, limit);
+          this.runDistinctive(format, version.spec, entries, flags.by, limit, flags['cluster-by']);
           return;
         case 'cluster':
           this.runCluster(format, version.spec, entries, flags, limit);
@@ -835,6 +894,7 @@ export default class Stats extends BaseCommand {
   private warnOnStateLikeColumns(
     entries: readonly RecordedEntry[],
     columns: readonly string[],
+    corrected: boolean,
   ): void {
     const sessions = valueColumn(entries, SESSION_PROPERTY);
     if (sessions.every((value) => value === null)) {
@@ -888,9 +948,54 @@ export default class Stats extends BaseCommand {
         `control will not flag it -- that control holds the marginals fixed, and the dwell ` +
         `weighting is what made the marginals what they are. Either collapse the column to one row ` +
         `per run, or compute the claim at its run count with a clustered method: ` +
-        `\`--blocks <session property>\` reaches the block control, and the effective sample size ` +
-        `is \`clusterDesign\` in packages/analysis/src/design-effect.ts.`,
+        (corrected
+          ? // Said only where the correction is ALREADY running. Telling a caller who just gave
+            // `--cluster-by` to go and give `--cluster-by` is the one thing worse than not warning
+            // -- and what still needs saying here is which column is the corrected one, because
+            // `p` in this table is still the row-counted p and only `p_clustered` rests on the
+            // clusters.
+            `\`--cluster-by\` is in force for this run, and the p it corrects is \`p_clustered\`; ` +
+            `the \`p\` column beside it is still the row-counted p and is still not a sample size. `
+          : `\`--cluster-by ${SESSION_PROPERTY}\` corrects the p-values and intervals of \`--assoc\`, ` +
+            `\`--correlate\` and \`--rules\` at this corpus's own cluster structure, and the ` +
+            `effective sample size it reports is \`clusterDesign\` in ` +
+            `packages/analysis/src/design-effect.ts. `) +
+        `The alternative is still to collapse the column to one row per run before asking.`,
     );
+  }
+
+  /**
+   * The cluster column `--cluster-by` names, one key per entry, or `undefined` when it was not given.
+   *
+   * Shared by all five modes that accept the flag, because the refusal is the same refusal each time
+   * and it is the refusal that matters: a corpus where SOME entries are in a cluster has no null at
+   * all. The row with no cluster cannot be given another row's block, so dropping it would change
+   * the corpus being tested -- and the count is named here because the fix belongs to the caller,
+   * who is the only one who can supply the missing `session_id`.
+   *
+   * A PROPERTY NAME, NOT A CLOCK DERIVATION. `--blocks` takes either, because a block is a period of
+   * time and `at:weekday` is a way of naming one. A cluster is not a period of time -- it is what a
+   * row is an echo of -- so `--cluster-by at:day` is not a thing this accepts, and saying so here
+   * rather than in each mode keeps the two flags' shapes from being read as interchangeable.
+   */
+  private clusterColumn(
+    entries: readonly RecordedEntry[],
+    raw: string | undefined,
+  ): string[] | undefined {
+    if (raw === undefined) return undefined;
+
+    const values = valueColumn(entries, raw);
+    const missing = values.filter((value) => value === null).length;
+    if (missing > 0) {
+      throw refusal(
+        `${String(missing)} of ${String(entries.length)} entries have no '${raw}', so the cluster ` +
+          `correction has nothing to group them by. Every entry has to be in a cluster: a row with ` +
+          `no cluster cannot be given another row's values, and dropping it would change the ` +
+          `corpus being tested. On a derived corpus the property is usually \`session_id\`.`,
+      );
+    }
+
+    return values.map((value) => value as string);
   }
 
   private runAssoc(
@@ -901,6 +1006,7 @@ export default class Stats extends BaseCommand {
     temporalNames: readonly string[],
     rawBlocks: string | undefined,
     permutations: number | undefined,
+    rawClusterBy: string | undefined,
   ): void {
     const names = this.categoricalOrRefuse(spec, entries, 2);
 
@@ -969,9 +1075,11 @@ export default class Stats extends BaseCommand {
     // reaches the shuffled null over every pair, `blocks` reaches the block null over the declared
     // temporal ones. Both are absent (not zero) when not asked for, so "no control ran" stays
     // distinguishable from "a control ran and found nothing".
+    const clusters = this.clusterColumn(entries, rawClusterBy);
     const options: AssociationOptions = {
       ...(blocks === undefined ? {} : { blocks, blockPermutations: BLOCK_ITERATIONS }),
       ...(permutations === undefined ? {} : { permutations }),
+      ...(clusters === undefined ? {} : { clusters, clusterPermutations: CLUSTER_ITERATIONS }),
     };
     const report = rankAssociations(
       columns.map((name) => ({
@@ -1005,7 +1113,7 @@ export default class Stats extends BaseCommand {
     // Before the disclosures below, because it undermines what they are disclosures ABOUT: a pair
     // can be suppressed as definitional and still have every surviving p-value in this table
     // computed at a row count that is not a sample size.
-    this.warnOnStateLikeColumns(entries, columns);
+    this.warnOnStateLikeColumns(entries, columns, rawClusterBy !== undefined);
 
     // The disclosure, not a note. A suppressed pair is usually the STRONGEST thing in the request --
     // it is the same fact twice, so it scores highest -- and a ranking that dropped it in silence
@@ -1050,6 +1158,25 @@ export default class Stats extends BaseCommand {
       );
     }
 
+    if (rawClusterBy !== undefined) {
+      // Stated BEFORE the table, because it is what every number in it is now conditional on. The
+      // cluster count and the largest cluster are quoted rather than described: they are the two
+      // numbers that decide how much the correction moved, and a reader who wants to argue with the
+      // correction needs them.
+      const sizes = new Map<string, number>();
+      for (const key of clusters ?? []) sizes.set(key, (sizes.get(key) ?? 0) + 1);
+      this.warn(
+        `the cluster control ran on every pair at ${String(CLUSTER_ITERATIONS)} iterations, ` +
+          `permuting whole blocks of each pair's SECOND column among the row positions of ` +
+          `${String(sizes.size)} cluster(s) of '${rawClusterBy}' (largest ` +
+          `${String(Math.max(...sizes.values()))} rows). A HIGH p_clustered means the association ` +
+          `is inside what the row count's own non-independence manufactures -- and unlike the ` +
+          `block control this null HOLDS each column's marginal exactly, because the marginal is ` +
+          `the very thing being objected to. p_clustered is PER PAIR and carries no family ` +
+          `correction.`,
+      );
+    }
+
     this.emit(format, {
       columns: [
         'a',
@@ -1066,6 +1193,7 @@ export default class Stats extends BaseCommand {
         'determinism',
         'p_blocked',
         'p_permuted',
+        'p_clustered',
         'asymptotic_valid',
         'small_group',
       ],
@@ -1091,6 +1219,10 @@ export default class Stats extends BaseCommand {
         // to three different questions about the same pair, and a reader comparing them is the
         // reader this table is for.
         ...(pair.pPermuted === undefined ? {} : { p_permuted: pair.pPermuted }),
+        // And the same discipline for the third. All three live in one row because they are answers
+        // to three different questions about the same pair, and a reader comparing them is the
+        // reader this table is for.
+        ...(pair.pClustered === undefined ? {} : { p_clustered: pair.pClustered }),
         // Carried because `p` is only trustworthy where this is true, and a reader who sorts on
         // `p_adjusted` without it is ranking approximations that did not apply.
         asymptotic_valid: pair.asymptoticValid,
@@ -1105,6 +1237,7 @@ export default class Stats extends BaseCommand {
     entries: readonly RecordedEntry[],
     pair: readonly string[],
     permutations: number | undefined,
+    rawClusterBy: string | undefined,
   ): void {
     if (pair.length !== 2) {
       throw usageError(
@@ -1128,12 +1261,19 @@ export default class Stats extends BaseCommand {
     const right = valueColumn(entries, b);
     const x: string[] = [];
     const y: string[] = [];
+    // The clusters of the rows that SURVIVE the absent-drop, kept beside `x` and `y` rather than
+    // filtered out of a second copy of the corpus -- the same alignment `rankAssociations` builds
+    // inside its pair loop, so the two surfaces cannot come to disagree about which rows the null
+    // was drawn over.
+    const rowClusters: string[] = [];
+    const clusterBy = this.clusterColumn(entries, rawClusterBy);
     for (let index = 0; index < entries.length; index += 1) {
       const first = left[index] ?? null;
       const second = right[index] ?? null;
       if (first === null || second === null) continue;
       x.push(first);
       y.push(second);
+      rowClusters.push(clusterBy?.[index] as string);
     }
 
     if (x.length === 0) {
@@ -1175,6 +1315,23 @@ export default class Stats extends BaseCommand {
         `'${b}' alone (floor ${floorOf(permutations)})`;
     }
 
+    // The THIRD control, reached directly for the same reason the second is: this mode never enters
+    // `rankAssociations`. Same primitive, same seeded generator, so the two modes cannot come to
+    // disagree about what a cluster-preserving shuffle means for the same pair. It permutes `y`, the
+    // second column as NAMED -- the same side `permutationNull` moves above, so the two p-values on
+    // this line are comparable with each other.
+    let clustered = '';
+    if (clusterBy !== undefined && table.n > 0) {
+      const pValue = clusterPermutationNull(x, y, rowClusters, {
+        iterations: CLUSTER_ITERATIONS,
+      }).pValue(test.chi2);
+      clustered =
+        `, cluster-corrected p ${pValue.toFixed(6)} over ${String(CLUSTER_ITERATIONS)} ` +
+        `iterations by permuting whole blocks of '${b}' among the ` +
+        `${String(new Set(rowClusters).size)} clusters of '${String(rawClusterBy)}' ` +
+        `(floor ${floorOf(CLUSTER_ITERATIONS)})`;
+    }
+
     this.warn(
       `${a} x ${b}: n=${String(test.n)} of ${String(entries.length)} entries ` +
         `(${String(entries.length - test.n)} dropped for missing one of the two values), ` +
@@ -1182,7 +1339,7 @@ export default class Stats extends BaseCommand {
         `Cramer's V=${String(test.cramersVCorrected)} (Bergsma-corrected), mutual information ` +
         `${String(information.bits)} bits, symmetric uncertainty ` +
         `${String(information.uncertainty)}, determinism ${dependence.determinism.toFixed(3)}` +
-        `${shuffled}.`,
+        `${shuffled}${clustered}.`,
     );
     if (dependence.definitional) {
       this.warn(
@@ -1229,13 +1386,43 @@ export default class Stats extends BaseCommand {
     entries: readonly RecordedEntry[],
     rawSupport: string | undefined,
     limit: number,
+    rawClusterBy: string | undefined,
   ): void {
     const names = this.categoricalOrRefuse(spec, entries, 2);
     const minSupport = this.positiveInteger(rawSupport, 'min-support');
+    const clusters = this.clusterColumn(entries, rawClusterBy);
     const report = associationRules(
       entries.map((entry) => categoricalItems(entry, names)),
-      minSupport === undefined ? {} : { minSupport },
+      {
+        ...(minSupport === undefined ? {} : { minSupport }),
+        ...(clusters === undefined ? {} : { clusters }),
+      },
     );
+
+    // The correction reaches the reader as its own disclosure rather than as a changed number, and
+    // the design effect is named per rule because it is what moved: an interval at an effective N of
+    // seven over forty transactions reads as a wide interval, and a wide interval with no reason
+    // given reads as a thin corpus.
+    if (rawClusterBy !== undefined) {
+      const corrected = report.rules.filter((rule) => rule.confidence?.design !== undefined);
+      this.warn(
+        `every confidence interval was recomputed at the design effect of its own ANTECEDENT ` +
+          `population over '${rawClusterBy}', so \`ci_lower\` and \`ci_upper\` are cluster-corrected ` +
+          `and \`confidence\`, \`antecedent_support\` and \`support\` are still the OBSERVED counts. ` +
+          `The effective N each interval rests on is what changed: ` +
+          corrected
+            .slice(0, 5)
+            .map(
+              (rule) =>
+                `${rule.antecedent.join(' AND ')} -> ${rule.consequent} at ` +
+                `${(rule.confidence?.design?.effectiveN ?? 0).toFixed(1)} of ` +
+                `${String(rule.confidence?.n)} effective`,
+            )
+            .join(', ') +
+          (corrected.length > 5 ? `, and ${String(corrected.length - 5)} more` : '') +
+          `. Read \`design_effect\` and \`effective_n\` per rule in --json.`,
+      );
+    }
 
     this.warn(
       `${String(report.rules.length)} rule(s) from ${String(report.itemsets.length)} frequent ` +
@@ -1258,6 +1445,8 @@ export default class Stats extends BaseCommand {
         'confidence',
         'ci_lower',
         'ci_upper',
+        'design_effect',
+        'effective_n',
         'base_rate',
         'lift',
         'informative',
@@ -1276,6 +1465,16 @@ export default class Stats extends BaseCommand {
               confidence: rule.confidence.p,
               ci_lower: rule.confidence.lower,
               ci_upper: rule.confidence.upper,
+              // The two numbers the correction is: without them the warning above would tell a
+              // reader to go and read something the row does not carry. Omitted, never zero, where
+              // no design was requested -- a design effect of 0 would say the correction collapsed
+              // the sample rather than that none was computed.
+              ...(rule.confidence.design === undefined
+                ? {}
+                : {
+                    design_effect: rule.confidence.design.designEffect,
+                    effective_n: rule.confidence.design.effectiveN,
+                  }),
             }),
         base_rate: rule.baseRate,
         lift: rule.lift,
@@ -1334,7 +1533,23 @@ export default class Stats extends BaseCommand {
       readonly method: string | undefined;
     },
     limit: number,
+    rawClusterBy: string | undefined,
   ): void {
+    if (rawClusterBy !== undefined) {
+      throw refusal(
+        `--changepoints cannot be corrected for clustering, so --cluster-by has nothing to do ` +
+          `here. An entry rate folds many entries into each period, and under --cluster-by this ` +
+          `corpus's entries are echoes of one another within a '${rawClusterBy}', so the periods ` +
+          `are not independent draws either. The correction would have to be a resample that ` +
+          `moves whole clusters' contributions between periods, and that is not a resample this ` +
+          `tool knows how to draw: a cluster whose entries straddle a period boundary cannot be ` +
+          `moved as one block without inventing an assignment of it to a period. Rather than ` +
+          `print an uncorrected p under a flag whose whole purpose is to prevent exactly that, ` +
+          `this refuses. Compute the break on a corpus that is independent by construction, or ` +
+          `read the p as an entry-weighted statement about entries and not about sessions.`,
+      );
+    }
+
     const weekly = flags.period === 'week';
     const bucket = weekly ? weekOf : dayOf;
     const step = weekly ? 7 : 1;
@@ -1456,7 +1671,23 @@ export default class Stats extends BaseCommand {
     entries: readonly RecordedEntry[],
     rawBy: string | undefined,
     limit: number,
+    rawClusterBy: string | undefined,
   ): void {
+    if (rawClusterBy !== undefined) {
+      throw refusal(
+        `--distinctive cannot be corrected for clustering, so --cluster-by has nothing to do ` +
+          `here. Its p comes from a closed-form normal tail over a 2x2 of (term present, term ` +
+          `absent) by (this group, every other group), and a normal tail has no permutation ` +
+          `behind it to hold whole clusters' values together. The correction would have to ` +
+          `recompute that tail at a design effect measured over '${rawClusterBy}', and the term ` +
+          `counts it rests on are token counts inside documents rather than the rows that carry ` +
+          `a cluster key -- so there is no per-term N for the design effect to attach to. ` +
+          `Rather than print an uncorrected p under a flag whose whole purpose is to prevent ` +
+          `exactly that, this refuses. Read the ranked terms as a description of each group's ` +
+          `vocabulary and not as a test that survives a clustered corpus.`,
+      );
+    }
+
     if (rawBy === undefined) {
       throw usageError(
         `--distinctive compares groups and needs to be told which groups: pass --by <property>. ` +

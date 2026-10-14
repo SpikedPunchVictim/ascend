@@ -1,0 +1,29 @@
+{
+  "_": "Kill-check for asc-zimu (E32.3). The broken-pipe guard used to act on EPIPE alone; a reader that destroys the pipe mid-write produces ENOTCONN instead, and @oclif/core's own stdout handler -- registered earlier, EPIPE-or-rethrow -- answered first and rethrew. Both halves of that fix get a mutant: the errno set, and the registration order. Measured on the real binary 2026-10-13: 3 of 300 runs exited 1 with a Node crash dump before, 0 of 600 after.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/streams.ts",
+      "find": "new Set(['EPIPE', 'ENOTCONN'])",
+      "replace": "new Set(['EPIPE'])",
+      "killers": [
+        {
+          "file": "packages/cli/test/streams.test.ts",
+          "test": "exits 0 when an abrupt reader close arrives as ENOTCONN instead"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/streams.ts",
+      "find": "stream.prependListener('error', (error: unknown) => {",
+      "replace": "stream.on('error', (error: unknown) => {",
+      "killers": [
+        {
+          "file": "packages/cli/test/streams.test.ts",
+          "test": "answers before a handler that was registered earlier and would rethrow"
+        }
+      ]
+    }
+  ]
+}

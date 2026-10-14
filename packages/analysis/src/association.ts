@@ -220,6 +220,19 @@ export interface AssociationOptions {
   readonly blocks?: readonly (string | null)[];
   /** Block-control iterations. Default 0 -- off. Only meaningful alongside `blocks`. */
   readonly blockPermutations?: number;
+  /**
+   * One cluster id per item -- the session, the file, whatever a row is an ECHO of.
+   *
+   * When supplied, every pair gets `pClustered`, the empirical p from permuting whole clusters'
+   * value-blocks among the clusters' row positions. This is the third question, distinct from the
+   * other two: `permutations` asks whether the marginals are enough, `blocks` whether the block
+   * structure is, and this one whether the ROWS ARE INDEPENDENT ENOUGH FOR A ROW-COUNTED P AT ALL.
+   * A corpus derived per session answers no to the third, and every p-value in the report is then
+   * computed at a sample size that does not exist.
+   */
+  readonly clusters?: readonly (string | null)[];
+  /** Cluster-control iterations. Default 0 -- off. Only meaningful alongside `clusters`. */
+  readonly clusterPermutations?: number;
 }
 
 /** A pair removed from the ranking because it was the same fact stated twice. */
@@ -263,6 +276,8 @@ export interface PairAssociation extends ChiSquareResult {
   readonly pPermuted?: number;
   /** Empirical p from the block control, present only when `blocks` and `blockPermutations` are set. */
   readonly pBlocked?: number;
+  /** Empirical p from the cluster control, present only when `clusters` and `clusterPermutations` are set. */
+  readonly pClustered?: number;
 }
 
 /** The ranking, with the family size the correction was computed against. */
@@ -878,6 +893,136 @@ export function blockPermutationNull(
 }
 
 /**
+ * The null a CLUSTER STRUCTURE manufactures: permute whole clusters' blocks of the shuffled column
+ * among the clusters' row positions, so the pairing between the two columns is destroyed at the
+ * cluster level while the column's marginal and the corpus's run lengths survive.
+ *
+ * WHY NEITHER EXISTING CONTROL CAN ASK THIS. `permutationNull` shuffles ONE column's labels freely,
+ * so every row is independent under its null -- which is exactly the assumption a clustered corpus
+ * violates. On a corpus derived per session one session contributes dozens of near-identical rows,
+ * and a p computed at the row count answers "would this happen if the rows were independent?", a
+ * question nobody asked. `blockPermutationNull` cannot stand in either: it permutes a
+ * block-to-LABEL map and so requires the shuffled column to be constant within a block (it refuses
+ * a block whose rows disagree). That holds for a weekday derived from a day. It does not hold for a
+ * column that varies within a session, which is the case this exists for.
+ *
+ * WHAT IS HELD AND WHAT MOVES. Held exactly: the first column, every cluster's row positions and
+ * size, and the shuffled column's whole marginal -- the pool below is a rearrangement of the input,
+ * so every value appears exactly as often as it did. What moves is which cluster's block of values
+ * lands on which cluster's rows. Each destination cluster receives a CONTIGUOUS run of the
+ * donor-ordered pool, so the internal runs the corpus actually has are preserved.
+ *
+ * THE MARGINAL IS EXACT, WHICH IS THE OPPOSITE CHOICE FROM `blockPermutationNull` ABOVE and is
+ * deliberate in both places. That null refuses to preserve the marginal because its question is
+ * whether the concentration IS the block structure. This null's question is the reverse one: the
+ * pseudoreplication warning names the marginal itself as the defect -- "the dwell weighting IS the
+ * marginal" -- so a null that re-drew the marginal would carry the same defect and be unable to
+ * object to it. Holding it fixed is what lets this control see the thing it is for.
+ *
+ * CLUSTERS OF UNEQUAL SIZE ARE DEALT, NOT SWAPPED. When every cluster holds the same number of rows
+ * the deal is exactly a whole-block swap. When they differ, a destination cluster's run may straddle
+ * two donors, so the null preserves the run-length distribution in aggregate rather than any single
+ * cluster's donor identity. Stated rather than engineered away: restricting the permutation to
+ * equal-size clusters would leave most real corpora with a null far narrower than the corpus, and a
+ * cluster-preserving null exists to widen the interval, not to narrow it.
+ *
+ * WHICH COLUMN IS PERMUTED. The second, matching `permutationNull` and for the same reason: the
+ * control is asymmetric by construction, and saying which side moves is the difference between a
+ * reproducible p and one that merely matches.
+ */
+export function clusterPermutationNull(
+  a: readonly string[],
+  b: readonly string[],
+  clusters: readonly string[],
+  options: { readonly iterations?: number; readonly seed?: string } = {},
+): PermutationNull {
+  const iterations = options.iterations ?? 500;
+  if (!Number.isInteger(iterations) || iterations < 1)
+    throw new AssociationError(
+      `clusterPermutationNull: iterations must be a positive integer (got ${String(iterations)})`,
+    );
+  if (b.length !== a.length)
+    throw new AssociationError(
+      `clusterPermutationNull: has ${String(a.length)} rows in one column and ${String(b.length)} in the other`,
+    );
+  if (clusters.length !== a.length)
+    throw new AssociationError(
+      `clusterPermutationNull: clusters has ${String(clusters.length)} entries, expected ${String(a.length)}`,
+    );
+
+  // Clusters in FIRST-APPEARANCE order, which is the corpus's own row order and therefore the one a
+  // p-value has to name to be re-derivable -- the same row-order dependency `permutationNull`'s
+  // docblock records, kept here rather than replaced by a sort that would make it invisible.
+  const order: string[] = [];
+  const rowsOf = new Map<string, number[]>();
+  for (let row = 0; row < clusters.length; row += 1) {
+    const key = clusters[row] as string;
+    let rows = rowsOf.get(key);
+    if (rows === undefined) {
+      rows = [];
+      rowsOf.set(key, rows);
+      order.push(key);
+    }
+    rows.push(row);
+  }
+
+  // Below two there is exactly one arrangement, so every draw would reproduce the observation and
+  // the p-value would be 1 by arithmetic rather than by evidence. That is a control that ran and
+  // could not have found anything, which reads identically to one that ran and found nothing.
+  if (order.length < 2)
+    throw new AssociationError(
+      `clusterPermutationNull: ${String(order.length)} cluster(s) over ${String(a.length)} rows -- a ` +
+        `single cluster has one arrangement and nothing to permute`,
+    );
+
+  // The pool: each cluster's values, gathered contiguous, in first-appearance order. A rearrangement
+  // of `b`, so the marginal below is exact by construction rather than by arithmetic that could drift.
+  const pool: string[] = [];
+  const startOf = new Map<string, number>();
+  for (const key of order) {
+    startOf.set(key, pool.length);
+    for (const row of rowsOf.get(key) as number[]) pool.push(b[row] as string);
+  }
+
+  const next = mulberry32(seedOf(options.seed ?? DEFAULT_SEED));
+  const shuffledOrder = [...order];
+  const dealt: string[] = new Array<string>(a.length);
+  const permuted: string[] = new Array<string>(a.length);
+  const stats: number[] = [];
+
+  for (let i = 0; i < iterations; i += 1) {
+    // Fisher-Yates over the CLUSTERS -- the unit of resampling. Carried between iterations for the
+    // same reason `permutationNull` carries its array: each draw is a fresh permutation of the last,
+    // which is as uniform as restarting and costs one less copy.
+    for (let j = shuffledOrder.length - 1; j > 0; j -= 1) {
+      const k = Math.floor(next() * (j + 1));
+      const held = shuffledOrder[j] as string;
+      shuffledOrder[j] = shuffledOrder[k] as string;
+      shuffledOrder[k] = held;
+    }
+
+    let cursor = 0;
+    for (const donor of shuffledOrder) {
+      const start = startOf.get(donor) as number;
+      const rows = rowsOf.get(donor) as number[];
+      for (let k = 0; k < rows.length; k += 1) dealt[cursor++] = pool[start + k] as string;
+    }
+
+    // Dealt out in DESTINATION order, each cluster consuming a contiguous run and writing it back to
+    // its own row positions -- which is what leaves every cluster's size and every row's first-column
+    // value untouched.
+    cursor = 0;
+    for (const dest of order) {
+      for (const row of rowsOf.get(dest) as number[]) permuted[row] = dealt[cursor++] as string;
+    }
+
+    stats.push(chiSquare(crosstab(a, permuted)).chi2);
+  }
+
+  return nullFrom(stats, iterations);
+}
+
+/**
  * Benjamini-Hochberg step-up q-values, returned in the input order.
  *
  * Chosen over Bonferroni because the question here is triage, not confirmation: the caller wants
@@ -949,6 +1094,7 @@ export function rankAssociations(
   const minN = options.minN ?? MIN_N;
   const permutations = options.permutations ?? 0;
   const blockPermutations = options.blockPermutations ?? 0;
+  const clusterPermutations = options.clusterPermutations ?? 0;
   const seed = options.seed ?? DEFAULT_SEED;
 
   // Blocks are validated ONCE, up front, rather than per pair. A missing block is a caller error
@@ -968,6 +1114,24 @@ export function rankAssociations(
     }
   }
 
+  // Validated up front for the same reason and with one extra: a corpus where SOME items are in a
+  // cluster and some are not has no null at all. The row with no cluster cannot be given another
+  // row's block, and dropping it would change the corpus being tested -- the same refusal `blocks`
+  // makes, and the same one the CLI makes one layer up with the property's name in the message.
+  const clusters = options.clusters;
+  if (clusters !== undefined) {
+    if (clusters.length !== items)
+      throw new AssociationError(
+        `rankAssociations: clusters has ${String(clusters.length)} entries, expected ${String(items)}`,
+      );
+    for (let row = 0; row < clusters.length; row += 1) {
+      if (clusters[row] === null)
+        throw new AssociationError(
+          `rankAssociations: item ${String(row)} has no cluster, so the cluster control has nothing to permute`,
+        );
+    }
+  }
+
   type Measured = Omit<PairAssociation, 'pAdjusted'>;
   const measured: Measured[] = [];
 
@@ -979,6 +1143,7 @@ export function rankAssociations(
       const a: string[] = [];
       const b: string[] = [];
       const pairBlocks: string[] = [];
+      const pairClusters: string[] = [];
       for (let row = 0; row < items; row += 1) {
         const x = left.values[row] ?? null;
         const y = right.values[row] ?? null;
@@ -988,6 +1153,7 @@ export function rankAssociations(
         // Only the rows that survived, so the blocks stay aligned with `a` and `b` rather than with
         // the caller's original item order -- the two differ exactly when a row was dropped.
         pairBlocks.push(blocks?.[row] as string);
+        pairClusters.push(clusters?.[row] as string);
       }
 
       const table = crosstab(a, b);
@@ -1012,6 +1178,18 @@ export function rankAssociations(
             }).pValue(test.chi2)
           : undefined;
 
+      // The cluster control permutes the SECOND column, matching `permutationNull`'s asymmetry, and
+      // unlike the block control it is not gated on a `temporal` declaration: the declaration exists
+      // to say which column is a function of a block, and a cluster-preserving null needs no such
+      // thing -- every cluster holds varying values in both columns, which is why it exists.
+      const pClustered =
+        clusterPermutations > 0 && clusters !== undefined && table.n > 0
+          ? clusterPermutationNull(a, b, pairClusters, {
+              iterations: clusterPermutations,
+              seed,
+            }).pValue(test.chi2)
+          : undefined;
+
       measured.push({
         ...test,
         a: left.name,
@@ -1026,6 +1204,7 @@ export function rankAssociations(
         // and "the control returned nothing" are different facts and must not serialise alike.
         ...(pPermuted === undefined ? {} : { pPermuted }),
         ...(pBlocked === undefined ? {} : { pBlocked }),
+        ...(pClustered === undefined ? {} : { pClustered }),
       });
     }
   }

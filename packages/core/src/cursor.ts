@@ -24,6 +24,13 @@
  *
  *     The pair is a total order because `id` is the primary key and so unique.
  *
+ * WHY THERE IS A SECOND ORDER (`asc-pcu`). `recorded_at` is when `asc` WROTE the row; `occurred_at`
+ * is when the event HAPPENED, and for everything `asc ingest claude-code` derives those differ by as
+ * much as the backfill was long. The measurement above is the argument: because every entry of one
+ * ingest run shares a single `recorded_at`, the stored order of a derived type is its `id` order --
+ * a uuid tiebreak -- and nothing about the events at all. So the event order is a second key, and it
+ * is the same `(key, id)` pair for the same reason: `id` is what makes either one total.
+ *
  * WHY THE SCOPE FINGERPRINT. A cursor is a value a caller stores and hands back. If it
  * carried only a position, a cursor issued for one type could be replayed against another
  * and would return a page that is wrong while looking entirely ordinary -- the
@@ -70,7 +77,16 @@ export class CursorError extends Error {
   }
 }
 
-/** The `(recorded_at, id)` of a page's last row: everything after this position comes next. */
+/**
+ * The `(key, id)` of a page's last row: everything after this position comes next.
+ *
+ * `recordedAt` is the order's FIRST position component, whatever that order is -- `recorded_at`
+ * under the stored order, `occurred_at` under the event order (`asc-pcu`). It keeps the stored
+ * order's name because every cursor encoded before the second order existed carried that clock, and
+ * the payload key `r` is what those tokens are read back with. Which clock it holds is not a
+ * property of the value: it is the `order` inside `scope`, and a caller has no business reading
+ * either.
+ */
 export interface CursorPosition {
   readonly recordedAt: string;
   readonly id: string;
@@ -88,16 +104,51 @@ export interface Cursor extends CursorPosition {
 /**
  * What the caller is paging through, as the fingerprint sees it.
  *
- * `order` is part of the scope deliberately: it is fixed today, but the moment a second
- * ordering exists, cursors from one must not be honoured by the other.
+ * `order` is part of the scope because a cursor issued for one ordering must not be honoured by the
+ * other (`asc-pcu`): the same two words mean a different column in each, so replaying an event-time
+ * position against the stored order would page from a row that is not a boundary in that order at
+ * all -- the plausible-wrong-answer class, arrived at by a token that looks entirely ordinary.
  */
 export interface CursorScope {
   readonly type: string;
   readonly order: string;
 }
 
-/** The order every cursor in this version is issued against. */
+/** The default ordering, and the only one that existed before `asc-pcu`. */
 export const CURSOR_ORDER = 'recorded_at,id';
+
+/**
+ * The event-time ordering (`asc-pcu`): the transcript's own clock, not the clock `asc` wrote with.
+ *
+ * A separate token rather than a flag alongside the position, because the fingerprint is computed
+ * from the scope and this is the half of the scope that decides which column the position names --
+ * two orders sharing a token would be two questions sharing one fingerprint, which is the thing the
+ * fingerprint exists to prevent.
+ */
+export const CURSOR_ORDER_EVENT = 'occurred_at,id';
+
+/**
+ * The orderings a caller can ask for, by name.
+ *
+ * The name is the caller's vocabulary (a flag value); the token is what a cursor carries. Both live
+ * here so the two cannot drift into a spelling each -- a flag value that named no token would mint a
+ * cursor no reader could place.
+ */
+export const CURSOR_ORDERS = ['stored', 'event'] as const;
+
+/** One of `CURSOR_ORDERS`. */
+export type CursorOrderName = (typeof CURSOR_ORDERS)[number];
+
+/**
+ * The token each ordering carries inside a cursor's scope.
+ *
+ * Total over `CursorOrderName` by its type, so an ordering added to `CURSOR_ORDERS` without a token
+ * is a compile error here rather than a cursor minted with `undefined` in its scope.
+ */
+export const CURSOR_ORDER_TOKENS: Record<CursorOrderName, string> = {
+  stored: CURSOR_ORDER,
+  event: CURSOR_ORDER_EVENT,
+};
 
 /**
  * The fingerprint for a scope.

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -928,6 +928,257 @@ describe('asc explore --page: one page of entries', () => {
     });
     expect(body.rows.length).toBeGreaterThan(4);
     expect('next_cursor' in body).toBe(false);
+  });
+});
+
+/**
+ * `asc-pcu` -- the second ordering, and the one thing it must not do.
+ *
+ * A derived type's rows are written in one ingest, so `recorded_at` is nearly constant across them
+ * and the stored order is really the id order; the transcript's own clock lives in the `occurred_at`
+ * PROPERTY, which is what a reader asking "what happened first" actually means. `--order` is that
+ * second order, and the property of it worth a test is that a cursor cannot be carried across.
+ *
+ * **The fixture's two orders are deliberately neither equal nor unknowable.** `timed_row` declares
+ * both clocks and is recorded under explicit ids through the DOCUMENT form: the flags form mints the
+ * id, and an id order the test cannot predict is an id order it cannot assert against -- the whole
+ * point here is that both orders are known and different. `recorded_at` cannot be set at all (the
+ * store refuses a document that carries one), so the write clock advances with the insert or ties
+ * and falls back to the id order; either way the stored expectation below is the insertion order
+ * rather than a hope about clock resolution.
+ */
+describe('asc explore --order: the event clock, not the write clock (asc-pcu)', () => {
+  const EVENT_SPEC = {
+    name: 'timed_row',
+    properties: [
+      { name: 'body', type: 'text' },
+      { name: 'occurred_at', type: 'timestamp' },
+    ],
+  };
+
+  /**
+   * Insertion order e-000, e-001, e-002, e-003; event order e-001, e-003, e-002, e-000.
+   *
+   * Four rows rather than three, and that is the assertion's strength rather than its length: a
+   * page that came back in the insertion order or the id order agrees with the event order by chance
+   * one time in twenty-four, so it cannot pass here on luck.
+   */
+  const SCRAMBLED: readonly { readonly id: string; readonly at: string }[] = [
+    { id: 'e-000', at: '2026-09-04T00:00:00.000Z' },
+    { id: 'e-001', at: '2026-09-01T00:00:00.000Z' },
+    { id: 'e-002', at: '2026-09-03T00:00:00.000Z' },
+    { id: 'e-003', at: '2026-09-02T00:00:00.000Z' },
+  ];
+  const STORED_ORDER = ['e-000', 'e-001', 'e-002', 'e-003'];
+  const EVENT_ORDER = ['e-001', 'e-003', 'e-002', 'e-000'];
+
+  /** Its own project, for the reason `boolProject()` gives: the spec is local to this describe. */
+  function eventProject(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'asc-explore-order-'));
+    dirs.push(dir);
+    expect(asc(['init'], dir).status).toBe(0);
+    writeFileSync(join(dir, 'spec.json'), JSON.stringify(EVENT_SPEC));
+    expect(asc(['types', 'define', join(dir, 'spec.json')], dir).status).toBe(0);
+    return dir;
+  }
+
+  /** The four scrambled rows, in the insertion order above. */
+  function recordScrambled(dir: string): void {
+    for (const row of SCRAMBLED) {
+      const run = asc(
+        ['record', EVENT_SPEC.name, '-', '--json'],
+        dir,
+        JSON.stringify({ id: row.id, properties: { body: row.id, occurred_at: row.at } }),
+      );
+      expect(run.status).toBe(0);
+    }
+  }
+
+  /** The ids a page returned, in the order it returned them. */
+  function pagedIds(run: Run): readonly string[] {
+    return (JSON.parse(run.stdout) as { rows: readonly { id: string }[] }).rows.map(
+      (row) => row.id,
+    );
+  }
+
+  /** The cursor a page printed, which the next page is resumed from. */
+  function cursorOf(run: Run): string {
+    return (JSON.parse(run.stdout) as { next_cursor?: string }).next_cursor as string;
+  }
+
+  it('orders the page by occurred_at, and is not the stored order it defaults to', () => {
+    const dir = eventProject();
+    recordScrambled(dir);
+
+    const stored = asc(['explore', EVENT_SPEC.name, '--page', '--limit', '10', '--json'], dir);
+    const event = asc(
+      ['explore', EVENT_SPEC.name, '--page', '--limit', '10', '--order', 'event', '--json'],
+      dir,
+    );
+
+    expect(stored.status).toBe(0);
+    expect(event.status).toBe(0);
+    expect(pagedIds(stored)).toStrictEqual(STORED_ORDER);
+    expect(pagedIds(event)).toStrictEqual(EVENT_ORDER);
+  });
+
+  /**
+   * The guarantee, in the order that has a position worth carrying: following the printed cursors
+   * reaches every entry once and in event order. The stored-order walk at the top of this file
+   * proves a cursor survives the CLI; this proves it survives carrying an `occurred_at` VALUE --
+   * the position the keyset actually compared. A page that re-derived the position from the
+   * hydrated entry would mint a `recorded_at` boundary instead, look correct on page one, and page
+   * from a place the event order does not have on page two.
+   */
+  it('walks the whole type through the printed cursors in event order, covering every entry once', () => {
+    const dir = eventProject();
+    recordScrambled(dir);
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+
+    for (let page = 0; page < 10; page += 1) {
+      const args = ['explore', EVENT_SPEC.name, '--order', 'event', '--limit', '1', '--json'];
+      const run = asc(cursor === undefined ? args : [...args, '--cursor', cursor], dir);
+      expect(run.status).toBe(0);
+      seen.push(...pagedIds(run));
+      const next = (JSON.parse(run.stdout) as { next_cursor?: string }).next_cursor;
+      if (next === undefined) break;
+      cursor = next;
+    }
+
+    expect(seen).toStrictEqual(EVENT_ORDER);
+  });
+
+  /**
+   * The owner's core requirement: a cursor names the order it was issued under, and the other order
+   * refuses it rather than honouring it.
+   *
+   * Both directions, because the refusal could be asymmetric -- an implementation that only asked
+   * "did the caller request event?" would pass the first and serve the second, and serving it is the
+   * failure that matters: the same position means a different row in each order, so the page would
+   * resume from a boundary neither order has, silently skipping or repeating rows.
+   */
+  it('refuses to replay a cursor across the two orders, naming the clock it belongs to', () => {
+    const dir = eventProject();
+    recordScrambled(dir);
+
+    const storedCursor = cursorOf(
+      asc(['explore', EVENT_SPEC.name, '--page', '--limit', '1', '--json'], dir),
+    );
+    const eventCursor = cursorOf(
+      asc(['explore', EVENT_SPEC.name, '--order', 'event', '--limit', '1', '--json'], dir),
+    );
+
+    const storedIntoEvent = asc(
+      ['explore', EVENT_SPEC.name, '--order', 'event', '--cursor', storedCursor],
+      dir,
+    );
+    expect(storedIntoEvent.status).toBe(2);
+    expect(storedIntoEvent.stdout).toBe('');
+    expect(flatten(storedIntoEvent.stderr)).toContain(
+      'cursor was issued for a page ordered by the stored clock (recorded_at)',
+    );
+    expect(flatten(storedIntoEvent.stderr)).toContain(
+      'this page is ordered by event time (the occurred_at property)',
+    );
+
+    const eventIntoStored = asc(['explore', EVENT_SPEC.name, '--cursor', eventCursor], dir);
+    expect(eventIntoStored.status).toBe(2);
+    expect(eventIntoStored.stdout).toBe('');
+    expect(flatten(eventIntoStored.stderr)).toContain(
+      'cursor was issued for a page ordered by event time (the occurred_at property)',
+    );
+    expect(flatten(eventIntoStored.stderr)).toContain(
+      'this page is ordered by the stored clock (recorded_at)',
+    );
+  });
+
+  /**
+   * Named rather than ignored, because the failure it would cause is silent. The map, a crosstab and
+   * a sample each order their own rows by a rule of their own, so a caller who typed `--order` there
+   * would be reading output in an order they did not ask for while believing they had asked.
+   */
+  it('refuses --order on a mode that has no order, naming the two that do', () => {
+    const dir = eventProject();
+    recordScrambled(dir);
+
+    const run = asc(['explore', EVENT_SPEC.name, '--order', 'event'], dir);
+
+    expect(run.status).toBe(2);
+    expect(run.stdout).toBe('');
+    expect(flatten(run.stderr)).toContain('--order only applies to --page and --dump');
+  });
+
+  /**
+   * The dump and a page must stay ONE answer, so the order the files were chunked in is stated in
+   * the manifest. The chunk boundaries are only meaningful as contiguous spans of an order a caller
+   * can resume, and a manifest reading `recorded_at,id` over event-ordered files would be a durable
+   * lie about what the directory holds -- read later, by someone with no way to tell.
+   */
+  it('states the order in the dump manifest, and chunks the files in that order', () => {
+    const dir = eventProject();
+    recordScrambled(dir);
+
+    expect(
+      asc(['explore', EVENT_SPEC.name, '--dump', 'by-event', '--order', 'event'], dir).status,
+    ).toBe(0);
+    expect(asc(['explore', EVENT_SPEC.name, '--dump', 'by-write'], dir).status).toBe(0);
+
+    const manifest = (name: string): { filter: unknown; files: readonly { file: string }[] } =>
+      JSON.parse(readFileSync(join(dir, name, 'manifest.json'), 'utf8')) as {
+        filter: unknown;
+        files: readonly { file: string }[];
+      };
+
+    expect(manifest('by-event').filter).toStrictEqual({
+      type: EVENT_SPEC.name,
+      order: 'occurred_at,id',
+    });
+    // The default is unchanged, and asserted beside the new one so the pair states the rule rather
+    // than the one spelling today's flag happens to produce.
+    expect(manifest('by-write').filter).toStrictEqual({
+      type: EVENT_SPEC.name,
+      order: 'recorded_at,id',
+    });
+
+    const idsOf = (name: string): readonly string[] =>
+      manifest(name).files.flatMap((file) =>
+        readFileSync(join(dir, name, file.file), 'utf8')
+          .trimEnd()
+          .split('\n')
+          .map((line) => (JSON.parse(line) as { id: string }).id),
+      );
+
+    expect(idsOf('by-event')).toStrictEqual(EVENT_ORDER);
+    expect(idsOf('by-write')).toStrictEqual(STORED_ORDER);
+  });
+
+  /**
+   * A type can be perfectly usable and still have no event clock, and the danger is not an error but
+   * SILENCE: an order that finds no `occurred_at` to sort on degenerates to the id order while the
+   * cursor, the manifest and this command's own flag description all say `occurred_at,id`.
+   *
+   * `SPEC` is the fixture that makes this discriminating. It declares `at` as a `timestamp` -- a
+   * clock of its own, but not the one `--order event` means -- so an implementation that sorted by
+   * "the type's timestamp property, whatever it is called" would pass every other test in this
+   * describe and fail here. The same command WITHOUT the flag is asserted beside it, which is what
+   * makes this a statement about the flag rather than about the type.
+   */
+  it('refuses the event order for a type that declares no occurred_at, and pages it by default', () => {
+    const dir = emptyProject();
+    expect(asc(['record', SPEC.name, '--prop', 'count=1', '--json'], dir).status).toBe(0);
+
+    const refused = asc(['explore', SPEC.name, '--page', '--order', 'event'], dir);
+    expect(refused.status).toBe(1);
+    expect(refused.stdout).toBe('');
+    expect(flatten(refused.stderr)).toContain(
+      `type '${SPEC.name}' declares no occurred_at property`,
+    );
+
+    const byDefault = asc(['explore', SPEC.name, '--page', '--json'], dir);
+    expect(byDefault.status).toBe(0);
+    expect(pagedIds(byDefault)).toHaveLength(1);
   });
 });
 

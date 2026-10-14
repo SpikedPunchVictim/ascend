@@ -11,7 +11,9 @@ import {
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   openStore,
+  entryIds,
   pageEntries,
+  PageOrderError,
   PredicateError,
   recordEntry,
   recordInvalidation,
@@ -588,6 +590,198 @@ describe('paging: a filter joins the scope (asc-56k)', () => {
         true,
         false,
       ]);
+    });
+  });
+});
+
+/**
+ * `asc-pcu`: paging by `(occurred_at, id)` instead of `(recorded_at, id)`.
+ *
+ * The property under test is the same one the module has everywhere -- a walk that covers the type
+ * exactly once -- but on a key the caller does not supply. Two things can go wrong that a single
+ * page cannot show, and both are tested by walking rather than by reading:
+ *
+ *   1. **The cursor carries the WRONG column.** `recorded_at` is on every hydrated entry whichever
+ *      order is in force, so minting the position from the entry rather than from the row the query
+ *      ordered by gives page 1 an event-order look and page 2 a stored-order boundary. The walk
+ *      below is what fails on that, and it fails as a missing row rather than as an error.
+ *   2. **A row with no clock is dropped.** `occurred_at` is declared but not `required`, and a NULL
+ *      key makes the row-value comparison NULL rather than true -- so the second such row is
+ *      unreachable from page 2 onward. A page of one is what makes that visible; any larger page
+ *      would show both of them at once and hide it.
+ */
+describe('paging: the event order (asc-pcu)', () => {
+  const EVENTS: TypeSpec = {
+    name: 'event_note',
+    properties: [
+      { name: 'body', type: 'string' },
+      { name: 'occurred_at', type: 'timestamp' },
+    ],
+  };
+
+  const withEvents = <T>(body: (store: Store) => T): T => {
+    const store = openStore({ dir: tempDir() });
+    try {
+      registerType(store.db, EVENTS, { registeredAt: '2026-01-01T00:00:00.000Z' });
+      return body(store);
+    } finally {
+      store.close();
+    }
+  };
+
+  /**
+   * Records one entry per pair, with a `recorded_at` that RUNS THE OTHER WAY.
+   *
+   * The reversal is the fixture's whole job. `recordEntry` writes the envelope clock the caller
+   * hands it, so giving the first id the latest clock makes the stored order the reverse of the id
+   * order -- and neither of those is the event order below. A fixture where any two of the three
+   * agreed could not tell the order in force from the tiebreak that happens to coincide with it.
+   */
+  function seedEvents(store: Store, pairs: readonly (readonly [string, string])[]): void {
+    pairs.forEach(([id, occurredAt], index) => {
+      const recordedAt = `2026-09-11T10:00:${String(pairs.length - index).padStart(2, '0')}.000Z`;
+      recordEntry(
+        store.db,
+        { type: EVENTS.name, properties: { body: `body ${id}`, occurred_at: occurredAt } },
+        context(id, recordedAt),
+      );
+    });
+  }
+
+  /** Every id reachable from a cursor chain, in the order the pages produced them. */
+  function walkEvents(store: Store, limit: number, order: 'stored' | 'event'): string[] {
+    const walked: string[] = [];
+    let cursor: string | undefined;
+
+    for (let page = 0; page < 100; page += 1) {
+      const result = pageEntries(store.db, {
+        type: EVENTS.name,
+        limit,
+        order,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      walked.push(...result.rows.map((row) => row.id));
+      if (result.nextCursor === null) return walked;
+      cursor = result.nextCursor;
+    }
+
+    throw new Error('walk did not terminate');
+  }
+
+  /** The five entries above, with the event order stated rather than computed by the test. */
+  const FIVE: readonly (readonly [string, string])[] = [
+    ['e-000', '2026-09-11T10:04:00.000Z'],
+    ['e-001', '2026-09-11T10:01:00.000Z'],
+    ['e-002', '2026-09-11T10:03:00.000Z'],
+    ['e-003', '2026-09-11T10:00:00.000Z'],
+    ['e-004', '2026-09-11T10:02:00.000Z'],
+  ];
+
+  it('walks a type in event order, which is neither the id order nor the stored order', () => {
+    withEvents((store) => {
+      seedEvents(store, FIVE);
+
+      // Hand-written from the fixture, never read back from the command: deriving the expectation
+      // from the same sort the implementation uses would pass whatever the implementation did.
+      expect(walkEvents(store, 2, 'event')).toEqual(['e-003', 'e-001', 'e-004', 'e-002', 'e-000']);
+      // And the default order is a different sequence, so this test can tell the two apart. The
+      // stored clock runs the other way, which is what makes that true.
+      expect(walkEvents(store, 2, 'stored')).toEqual(['e-004', 'e-003', 'e-002', 'e-001', 'e-000']);
+    });
+  });
+
+  /**
+   * The owner's requirement for the bead, as the caller meets it: the two orders fingerprint
+   * differently, so neither cursor can be replayed against the other.
+   *
+   * Both directions are asserted because the mechanism is symmetric only by construction -- the
+   * scope is `{type, order}` and each order names itself -- and a one-way test would pass against an
+   * implementation that special-cased one of them.
+   */
+  it('refuses a cursor issued under the other order, and says which clock it belongs to', () => {
+    withEvents((store) => {
+      seedEvents(store, FIVE);
+
+      const stored = pageEntries(store.db, { type: EVENTS.name, limit: 2, order: 'stored' });
+      const event = pageEntries(store.db, { type: EVENTS.name, limit: 2, order: 'event' });
+
+      const crossed = (cursor: string, order: 'stored' | 'event'): string => {
+        try {
+          pageEntries(store.db, { type: EVENTS.name, limit: 2, order, cursor });
+        } catch (error) {
+          expect(error).toBeInstanceOf(CursorError);
+          return (error as Error).message;
+        }
+        throw new Error('a cursor from the other order was served');
+      };
+
+      // The message names the clocks rather than printing two hex digests: a caller who added
+      // `--order` to a command line they already had is the caller this refusal is for, and the
+      // fingerprints alone leave them to work out which of the two words they changed.
+      const intoEvent = crossed(stored.nextCursor as string, 'event');
+      expect(intoEvent).toContain('stored clock (recorded_at)');
+      expect(intoEvent).toContain('event time (the occurred_at property)');
+
+      const intoStored = crossed(event.nextCursor as string, 'stored');
+      expect(intoStored).toContain('event time (the occurred_at property)');
+      expect(intoStored).toContain('stored clock (recorded_at)');
+    });
+  });
+
+  /**
+   * `occurred_at` is declared but not `required` (`derived-types.ts`), so a row without one is a
+   * real state -- and a NULL sort key is what the `COALESCE` in `EVENT_TIME_KEY` exists for.
+   *
+   * The page size is ONE on purpose. Both clockless rows sort first, so a page of one hands back the
+   * first of them and a cursor at `('', <its id>)`; the second is then found by comparing a NULL key
+   * against that position, which is NULL rather than true, and it is dropped. Seeding two of them
+   * and paging one at a time is the smallest fixture that can see it -- the first version of this
+   * idea would have been one clockless row in a page of five, where the row is shown before any
+   * cursor is compared and the defect is invisible.
+   */
+  it('reaches an entry with no occurred_at, rather than dropping it past the first page', () => {
+    withEvents((store) => {
+      seedEvents(store, [
+        ['e-000', '2026-09-11T10:01:00.000Z'],
+        ['e-001', '2026-09-11T10:02:00.000Z'],
+      ]);
+      for (const id of ['e-no-clock-a', 'e-no-clock-b']) {
+        recordEntry(
+          store.db,
+          { type: EVENTS.name, properties: { body: `body ${id}` } },
+          context(id, '2026-09-11T09:00:00.000Z'),
+        );
+      }
+
+      const walked = walkEvents(store, 1, 'event');
+
+      expect(walked.slice(0, 2)).toEqual(['e-no-clock-a', 'e-no-clock-b']);
+      expect(walked).toHaveLength(4);
+      expect(new Set(walked).size).toBe(4);
+    });
+  });
+
+  /**
+   * An order the type cannot be put in is refused rather than served, and the reason is a durable
+   * artifact rather than this page: `asc explore --dump --order event` writes the order into
+   * `manifest.json`, so a directory whose index says `occurred_at,id` beside files in `id` order is a
+   * false claim read weeks later by someone who cannot check it.
+   */
+  it('refuses the event order for a type that declares no occurred_at', () => {
+    withStore((store) => {
+      seed(store, 3);
+
+      expect(() => pageEntries(store.db, { type: SPEC.name, limit: 3, order: 'event' })).toThrow(
+        PageOrderError,
+      );
+      // The dump's own reader, which is the one the manifest is written from -- refusing in one
+      // reader and not the other is the divergence this check is placed in the store to prevent.
+      expect(() => entryIds(store.db, SPEC.name, 'event')).toThrow(PageOrderError);
+
+      // The default order is untouched by any of this: `recorded_at` is a column of `entries`, so
+      // the stored order is defined for every type there is.
+      expect(() => pageEntries(store.db, { type: SPEC.name, limit: 3 })).not.toThrow();
+      expect(entryIds(store.db, SPEC.name)).toHaveLength(3);
     });
   });
 });
