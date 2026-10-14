@@ -103,7 +103,7 @@ afterAll(() => {
 });
 
 /**
- * Writes a `pnpm` that prints the control variables it RECEIVED, a `node` that answers the two steps
+ * Writes a `pnpm` that prints the control variables it RECEIVED, a `node` that answers the three steps
  * that would otherwise run against this checkout, and an `align` that answers the full-mode step.
  *
  * The environment is the whole point of the fixture, so the stub prints it rather than the test
@@ -126,6 +126,7 @@ function sandbox(): { dir: string; bin: string } {
       'case "$*" in\n' +
       '  *packages/cli/dist/bin.js*) exit 0 ;;\n' +
       '  *scripts/test-baseline.mjs*) exit 0 ;;\n' +
+      '  *scripts/gate-duplicate-ids.mjs*) exit 0 ;;\n' +
       'esac\n' +
       `exec ${JSON.stringify(process.execPath)} "$@"\n`,
     'utf8',
