@@ -1,0 +1,65 @@
+{
+  "_": "Kill-check for the gate's step environment. `scripts/gate.mjs` decides what a run does from four ASCEND_ variables in `process.env`, the hook that starts it exports two, and every process the runner spawns inherited them -- so a `pnpm test` started by a pre-push gate ran the runner's own control-flow tests under the gate's own mode, 14 of those 32 went red, and every push was blocked from any tree. Four mutants, in the order the decision is made: the call site, the strip, a name missing from the list, and a name that has outlived the read it was added for. Every killer below was FOUND, not guessed: each mutant was planted in the working tree and scripts/gate-env.test.ts run with --reporter=json, and the failing names were read off assertionResults. Measured 2026-10-14, one mutant per run, each restore verified by sha256. M2 and M3 are killed by the same pair deliberately -- a strip that does not happen and a strip that skips one variable are the same leak at two sizes.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "scripts/gate.mjs",
+      "find": "    env: stepEnv(process.env, step.env),",
+      "replace": "    env: { ...process.env, ...step.env },",
+      "killers": [
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is handed none of the variables the runner reads"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "scripts/gate-env.mjs",
+      "find": "  for (const name of CONTROL_ENV) Reflect.deleteProperty(env, name);\n",
+      "replace": "\n",
+      "killers": [
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "takes every variable the runner reads back out of it"
+        },
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is handed none of the variables the runner reads"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "scripts/gate-env.mjs",
+      "find": "  'ASCEND_GATE_HOOK',\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is exactly the set of variables the gate modules read in code"
+        },
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is handed none of the variables the runner reads"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "scripts/gate-env.mjs",
+      "find": "  'ASCEND_PRECOMMIT_FULL',\n",
+      "replace": "  'ASCEND_PRECOMMIT_FULL',\n  'ASCEND_GATE_NOT_A_KNOB',\n",
+      "killers": [
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is exactly the set of variables the gate modules read in code"
+        },
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is handed none of the variables the runner reads"
+        }
+      ]
+    }
+  ]
+}

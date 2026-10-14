@@ -35,6 +35,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { loadavg } from 'node:os';
+import { stepEnv } from './gate-env.mjs';
 import { acquire } from './gate-lock.mjs';
 import { appendRun, ROW_VERSION } from './gate-log.mjs';
 import { check as checkMemo, remember as rememberMemo, treeOf } from './gate-memo.mjs';
@@ -45,6 +46,11 @@ import { SUBSET_SCOPE, TEST_SCOPE_ENV, scopeOf } from './gate-scope.mjs';
  *
  * `env` is added to this process's environment for this step alone. Only the subset run uses it, to
  * tell `vitest.test-count.ts` that what it is about to collect is not the full suite.
+ *
+ * THE STEP DOES NOT INHERIT THE VARIABLES THIS FILE READS. `runStep` strips them first, so a step is
+ * never handed the runner's own mode -- measured 2026-10-14, that leak is what stopped `but push`
+ * (`scripts/gate-env.mjs`, `dogfood/0097`). `env` is applied after the strip, so a step that wants one
+ * can still state it.
  *
  * @typedef {object} Step
  * @property {string} label
@@ -362,7 +368,7 @@ function runStep(step, cwd) {
   const result = spawnSync(step.command, step.args, {
     cwd,
     stdio: 'inherit',
-    env: step.env === undefined ? process.env : { ...process.env, ...step.env },
+    env: stepEnv(process.env, step.env),
   });
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
   const status = statusOf(result);

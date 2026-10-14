@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { stepEnv } from '../../../scripts/gate-env.mjs';
 
 /**
  * Repo-level guard for git-hook wiring. Measured in docs/evidence/EV-hooks.md.
@@ -175,8 +176,16 @@ function runHook(
     // only uses it to find the toplevel, and this IS the toplevel.
     // Bracketed because `noPropertyAccessFromIndexSignature` is on: `PATH` is not a
     // declared member of `ProcessEnv`, so it comes from the index signature.
-    env: {
-      ...process.env,
+    env: stepEnv(process.env, {
+      // THE HOOK'S OWN MODE IS STATED HERE, NOT INHERITED. `ASCEND_GATE_HOOK` and
+      // `ASCEND_PRECOMMIT_FULL` are deliberately absent from the object below, because they are not
+      // this fixture's to choose: the pre-commit hook sets neither, so the runner's default is what
+      // the arms above are about, and the pre-push hook sets both on its own command line. Left
+      // ambient they were not absent at all -- `.githooks/pre-push` exports them, and a suite running
+      // under the pre-push gate inherited both, so the pre-commit arms saw `[pre-push]` labels and an
+      // `align check` step no line here asked for, and went red with nothing wrong in the tree.
+      // `stepEnv` (`scripts/gate-env.mjs`) is the strip, and it is the same one the runner applies to
+      // the steps it spawns, because it is the same question: which mode is this process in.
       PATH: `${bin}:${process.env['PATH'] ?? ''}`,
       // This runs in the real repository, so the gate would record these stubbed runs in
       // the real `.ascend/gate-runs.jsonl` -- six rows per `pnpm test`, each one a run that
@@ -199,7 +208,7 @@ function runHook(
       // only when the suite was running under the gate's own subset -- a fixture that passes alone and
       // fails inside the gate.
       ASCEND_TEST_SCOPE: 'subset',
-    },
+    }),
   });
   return { status: result.status, output: result.stdout + result.stderr };
 }

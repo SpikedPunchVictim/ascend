@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
+import { stepEnv } from './gate-env.mjs';
 import { HOLDER_FILE, LOCK_PATH, POLL_MS } from './gate-lock.mjs';
 import { ALIGN_STEP, STEPS, scopeFor, skippedFor, stepsFor } from './gate.mjs';
 
@@ -266,7 +267,13 @@ function sandbox(stubs: Stubs): { dir: string; bin: string } {
 /** The environment a stubbed run needs: the stubs first, then (usually) the real `PATH`. */
 function runEnv(bin: string, noPnpm: boolean, extra: Record<string, string> = {}) {
   const prelude = noPnpm ? bin : `${bin}:${process.env['PATH'] ?? ''}`;
-  return { ...process.env, PATH: prelude, ...extra };
+  // `stepEnv` and not `{ ...process.env, ... }`, so the gate under test is run in the mode THIS FILE
+  // chose rather than in whatever mode the process that started the suite was in. It is the same
+  // function the runner uses for the steps it spawns (`scripts/gate-env.mjs`), because it is the same
+  // problem: an ambient `ASCEND_GATE_HOOK` or `ASCEND_PRECOMMIT_FULL` reaching a gate that nobody told
+  // to be in that mode. Measured 2026-10-14, with the two variables the pre-push hook exports exported
+  // by hand, this file's own suite went 14 red out of 32 -- a false red with nothing wrong in the tree.
+  return stepEnv(process.env, { ...extra, PATH: prelude });
 }
 
 /**

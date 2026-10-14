@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
+import { stepEnv } from './gate-env.mjs';
 import { MEMO_PATH, MEMO_VERSION, check, readMemo, remember, treeOf } from './gate-memo.mjs';
 import { memoAllowed, scopeFor, skippedFor, skippedWhenAlreadyPassed, stepsFor } from './gate.mjs';
 
@@ -187,7 +188,12 @@ function gate(dir: string, options: { pnpmExit?: number; env?: Record<string, st
   const result = spawnSync(process.execPath, [GATE], {
     cwd: dir,
     encoding: 'utf8',
-    env: { ...env, PATH: `${bin}:${env['PATH'] ?? ''}`, ...options.env },
+    // `stepEnv` rather than a spread of this process's own environment, for the reason
+    // `scripts/gate.test.ts` gives at its own copy of this line: a fixture asserts about a mode IT
+    // chose, and an ambient `ASCEND_GATE_HOOK` or `ASCEND_PRECOMMIT_FULL` -- which `.githooks/pre-push`
+    // exports, and which the suite inherits when the pre-push gate is what started it -- would put the
+    // gate under test in a mode no line below asked for.
+    env: stepEnv(env, { ...options.env, PATH: `${bin}:${env['PATH'] ?? ''}` }),
   });
   const rows = readLog(dir);
   return {
