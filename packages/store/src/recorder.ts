@@ -42,7 +42,7 @@ import { SCHEMA_VERSION } from './schema.js';
 import { requireUtcTimestamp } from './utc-timestamp.js';
 
 /** Where an entry came from. Mirrors the `source` CHECK constraint. */
-export const ENTRY_SOURCES = ['self', 'derived:claude-code'] as const;
+export const ENTRY_SOURCES = ['self', 'derived:claude-code', 'derived:git'] as const;
 export type EntrySource = (typeof ENTRY_SOURCES)[number];
 
 /** What a recorder asks for: a type, and what it observed. */
@@ -430,6 +430,20 @@ interface EntryRow {
  * recorded against, so deriving them from whatever the type looks like today would
  * report three-state ratios for a shape the values never had.
  */
+/**
+ * A stored source, refused rather than read as 'self' when it is none of `ENTRY_SOURCES`. The
+ * CHECK admits only those, so an unknown one means the list and the CHECK have drifted apart.
+ */
+function entrySource(stored: string): EntrySource {
+  const known = ENTRY_SOURCES.find((source) => source === stored);
+  if (known === undefined) {
+    throw new Error(
+      `a stored entry has source '${stored}', which is none of ${ENTRY_SOURCES.join(', ')}`,
+    );
+  }
+  return known;
+}
+
 export function findEntry(db: SqlDatabase, id: string): RecordedEntry | undefined {
   const row = db
     .prepare(
@@ -480,7 +494,7 @@ export function findEntry(db: SqlDatabase, id: string): RecordedEntry | undefine
     typeVersion: row.type_version,
     typeHash: row.type_hash,
     recordedAt: row.recorded_at,
-    source: row.source === 'derived:claude-code' ? 'derived:claude-code' : 'self',
+    source: entrySource(row.source),
     properties,
     na,
     states: validated.states,

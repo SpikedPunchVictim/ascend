@@ -1,0 +1,173 @@
+{
+  "_": "Kill-check for asc-09wx.9: the commit size signal (`commit-size.ts`), the `derived:git` store source, and `asc ingest git`. M1-M4 are the four places the threshold EV-61 measured can be computed a near copy of itself: flagging at the threshold rather than above it, a different percentile, a commit counting toward its own threshold, and an off-by-one in the minimum. M5 drops the graded flag on the way into the entry. M6 and M7 are the two copies of the source list the store keeps beside `ENTRY_SOURCES`: the SQL CHECK, and the row mapping that used to read every unknown source as 'self'. M8 swaps the re-run outcomes, which is the idempotency claim. Killers were found by planting each mutant and reading the failing test names off vitest's JSON reporter. Not covered here: `--no-renames` in `COMMIT_LOG_ARGS`, which the fidelity replay against EV-63's log checks (asc-09wx.9 notes) and no test in this repository does.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/commit-size.ts",
+      "find": "sizeTopDecile: one.added > p90,",
+      "replace": "sizeTopDecile: one.added >= p90,",
+      "killers": [
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "does not flag a commit at the threshold"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/commit-size.ts",
+      "find": "Math.floor(0.9 * before.length)",
+      "replace": "Math.floor(0.8 * before.length)",
+      "killers": [
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "takes the threshold as the 90th percentile of the eligible commits before it"
+        },
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "does not flag a commit at the threshold"
+        },
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "leaves ineligible commits out of the threshold"
+        },
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "does not count a commit toward its own threshold, or a later one"
+        },
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "gives properties the commit_size type accepts, with the threshold"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "records the threshold a commit was graded against, and whether it is above it"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/commit-size.ts",
+      "find": "other.stat.committedAt < at &&",
+      "replace": "other.stat.committedAt <= at &&",
+      "killers": [
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "gives no threshold until 50 eligible commits precede the commit"
+        },
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "takes the threshold as the 90th percentile of the eligible commits before it"
+        },
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "leaves ineligible commits out of the threshold"
+        },
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "does not count a commit toward its own threshold, or a later one"
+        },
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "gives properties the commit_size type accepts, with the threshold"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "records the threshold a commit was graded against, and whether it is above it"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/commit-size.ts",
+      "find": "if (before.length < SIZE_MIN_COMMITS) return base;",
+      "replace": "if (before.length < SIZE_MIN_COMMITS - 1) return base;",
+      "killers": [
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "gives no threshold until 50 eligible commits precede the commit"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/commit-size.ts",
+      "find": "size_top_decile: size.sizeTopDecile,",
+      "replace": "size_top_decile: false,",
+      "killers": [
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "gives properties the commit_size type accepts, with the threshold"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "records the threshold a commit was graded against, and whether it is above it"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/store/src/schema.ts",
+      "find": "'self', 'derived:claude-code', 'derived:git'",
+      "replace": "'self', 'derived:claude-code'",
+      "killers": [
+        {
+          "file": "packages/store/test/recorder.test.ts",
+          "test": "stores and reads back the source derived:git"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "writes one commit_size entry per commit, sourced derived:git and keyed on the sha"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "leaves the threshold out of a commit with too few commits before it"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "records the threshold a commit was graded against, and whether it is above it"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "writes nothing on a second run over the same history"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "writes only the new commit after one more is made"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/store/src/recorder.ts",
+      "find": "source: entrySource(row.source),",
+      "replace": "source: row.source === 'derived:claude-code' ? 'derived:claude-code' : 'self',",
+      "killers": [
+        {
+          "file": "packages/store/test/recorder.test.ts",
+          "test": "stores and reads back the source derived:git"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "writes one commit_size entry per commit, sourced derived:git and keyed on the sha"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/cli/src/commands/ingest/git.ts",
+      "find": "tally[same ? 'present' : 'changed']",
+      "replace": "tally[same ? 'changed' : 'present']",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "writes nothing on a second run over the same history"
+        },
+        {
+          "file": "packages/cli/test/ingest-git.test.ts",
+          "test": "writes only the new commit after one more is made"
+        }
+      ]
+    }
+  ]
+}

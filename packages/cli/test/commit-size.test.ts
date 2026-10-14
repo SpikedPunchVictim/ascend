@@ -1,5 +1,8 @@
+import { validateEntry } from '@ascend/core';
 import { describe, expect, it } from 'vitest';
 import {
+  COMMIT_SIZE_TYPE,
+  commitSizeProperties,
   SIZE_MIN_COMMITS,
   SIZE_WINDOW_DAYS,
   isSource,
@@ -201,5 +204,39 @@ describe('measureCommits', () => {
     const forward = measureCommits(stats);
     const backward = measureCommits([...stats].reverse());
     expect(backward).toStrictEqual(forward);
+  });
+});
+
+describe('commitSizeProperties', () => {
+  const now = 1_800_000_000;
+
+  it('gives properties the commit_size type accepts, with the threshold', () => {
+    const [graded] = measureCommits([...history(50, now), commit('aaa', now, 47)]).slice(-1);
+    const properties = commitSizeProperties(graded!);
+    expect(properties).toMatchObject({
+      p90_added_source_lines: 46,
+      threshold_commits: 50,
+      size_top_decile: true,
+    });
+    expect(validateEntry(COMMIT_SIZE_TYPE, { properties }).errors).toStrictEqual([]);
+  });
+
+  it('leaves all three threshold properties out of an ungraded commit', () => {
+    const [ungraded] = measureCommits([commit('aaa', now, 47)]);
+    const properties = commitSizeProperties(ungraded!);
+    expect(Object.keys(properties).sort()).toStrictEqual([
+      'added_source_lines',
+      'committed_at',
+      'eligible',
+      'files',
+      'removed_source_lines',
+      'source_files',
+    ]);
+    expect(validateEntry(COMMIT_SIZE_TYPE, { properties }).errors).toStrictEqual([]);
+  });
+
+  it('gives the commit time as a UTC timestamp with milliseconds', () => {
+    const [one] = measureCommits([commit('aaa', now, 1)]);
+    expect(commitSizeProperties(one!)['committed_at']).toBe('2027-01-15T08:00:00.000Z');
   });
 });

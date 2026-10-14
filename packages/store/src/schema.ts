@@ -259,7 +259,7 @@ CREATE TABLE entries (
 
   CHECK (id <> ''),
   CHECK (recorded_at <> ''),
-  CHECK (source IN ('self', 'derived:claude-code')),
+  CHECK (source IN ('self', 'derived:claude-code', 'derived:git')),
   CHECK (ascend_version <> ''),
   CHECK (schema_version >= 1),
 

@@ -6,6 +6,7 @@ import type { PropertySpec, TypeSpec } from '@ascend/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   DuplicateEntryError,
+  ENTRY_SOURCES,
   EntryRejectedError,
   findEntry,
   openStore,
@@ -170,6 +171,20 @@ describe('the recorder builds the envelope', () => {
       });
       expect(findEntry(store.db, 'e1')).toEqual(entry);
     });
+  });
+
+  // The list, the SQL CHECK and the row mapping are three copies of one fact: a source the list
+  // admits but the CHECK refuses fails here on write, and one the mapping does not know reads back
+  // as 'self'.
+  it.each(ENTRY_SOURCES)('stores and reads back the source %s', (source) => {
+    withStore((store) => {
+      recordEntry(store.db, { type: 'review_completed' }, context({ source }));
+      expect(findEntry(store.db, 'e1')?.source).toBe(source);
+    });
+  });
+
+  it('admits a git-derived source', () => {
+    expect(ENTRY_SOURCES).toContain('derived:git');
   });
 
   it('stores NULL, not an empty string, for provenance it was not handed', () => {
