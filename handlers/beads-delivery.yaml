@@ -1,0 +1,13 @@
+# asc-09wx.7 (EV-69): one row per SessionStart delivery of the beads context, in either form.
+#
+# `command` is the harness's own string. `bd prime` is the full text, which the harness never
+# inlined (EV-54); `bd-prime-hook.mjs` is the index that replaced it on 2026-10-13. Which of
+# the two a session received is the arm it is in, so both are emitted and the reader splits.
+on: hook.delivery
+description: A SessionStart hook delivered the beads context.
+where:
+  hook_event: { eq: SessionStart }
+  command: { matches: 'bd prime|bd-prime-hook' }
+emit:
+  command: '${command}'
+  bytes: '${bytes}'

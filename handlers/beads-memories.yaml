@@ -1,0 +1,11 @@
+# asc-09wx.7 (EV-69): one row per `bd memories` call, the search path beside `bd recall`.
+#
+# Same match and the same caveat as beads-recall.yaml: the reader keeps rows whose argv starts
+# with `bd memories`.
+on: command.run
+description: A session ran bd memories.
+where:
+  argv: { followed_by: [bd, memories] }
+emit:
+  argv: '${argv}'
+  is_error: '${is_error}'

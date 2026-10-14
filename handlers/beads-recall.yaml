@@ -1,0 +1,20 @@
+# asc-09wx.7 (EV-69): one row per `bd recall <key>` a session ran.
+#
+# The SessionStart hook prints an index of the beads memories, and the index says to run
+# `bd recall <key>` before acting on one. EV-55 measured that the index arrives; this row is
+# what says whether it is then used.
+#
+# The match is `bd` immediately followed by `recall` anywhere in argv, and NOT `head: bd` with
+# `argv: contains recall`: argv is split on whitespace inside quotes too, so the looser form
+# matched every `bd create "... reviewer recall ..."` (37 rows, 11 of them the command). The
+# pair still matches a note that quotes the command (3 of 14 rows), so the reader keeps only
+# rows whose argv STARTS with `bd recall` -- spike/beads-recall/grade.py does, and prints both
+# counts. The whole argv is emitted and the key left to the reader: a capture reads string
+# fields only, and argv is an array.
+on: command.run
+description: A session ran bd recall.
+where:
+  argv: { followed_by: [bd, recall] }
+emit:
+  argv: '${argv}'
+  is_error: '${is_error}'
