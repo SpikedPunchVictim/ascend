@@ -103,12 +103,22 @@ the gate cost a session, and the gate works exactly as designed; the defect is i
 
 ## Consequences and constraints
 
-- **`but push` is deliberately unmeasured, and it is the larger half of the question.** Nothing has been
-  pushed from this session, and pushing is the owner's to run, so whether GitButler fires
-  `.beads/hooks/pre-push` is open. It decides whether Cut 3's bargain — related tests on commit, the
-  full suite at pre-push — has a safety net at all under this workflow, or whether the full suite now
-  runs only when somebody types `pnpm test`. Until it is measured, that cut's assurance is conditional
-  on `git push`, and this record does not claim otherwise.
+- **The push side was measured before this record was an hour old, and the answer is the opposite of
+  the commit side.** `but push` ran the pre-push hook: it printed
+  `[pre-push] scope: everything (no cuts were asked for)`, then format:check and typecheck, then
+  `[pre-push] ascend gate FAILED (exit 2) -- push blocked`, and the push exited non-zero without
+  pushing anything. The run appended a row — `scope full`, `outcome blocked`, `total_ms 18290`, with
+  format:check green at `9656 ms` and typecheck at `8634 ms` status 2. So **GitButler runs the pre-push
+  hook and not the pre-commit hook**, and Cut 3's bargain holds: related tests on commit, the full suite
+  at pre-push. The asymmetry is the finding — the same client that skips the gate on the way in runs it
+  in full on the way out.
+- **A consequence of that answer, measured in the same minute: the pre-push gate checks the working
+  tree, so it gates the checkout rather than the commits.** This push was blocked by *another session's*
+  unfinished edit — three untracked files and five modified ones in one feature area, written two
+  minutes earlier — whose type error is not reachable from any commit on this branch. One session's
+  half-finished tree can block another session's push, and the row it writes names a `head` that has
+  nothing to do with the failure. That deserves its own record; it is named here only so the answer
+  above is not read as a clean one.
 - **Nothing is broken and nothing needs reverting.** The pre-commit hook still guards every commit made
   with `git commit`, which is what it was spliced for. What was missing is a *claim*: nothing in the
   repository said which commits are gated, so an agent could reasonably have believed all of them were.
