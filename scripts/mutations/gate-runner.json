@@ -4,8 +4,8 @@
     {
       "id": "M1",
       "file": "scripts/gate.mjs",
-      "find": "      status = row.status;\n      break;",
-      "replace": "      status = row.status;",
+      "find": "        status = row.status;\n        break;",
+      "replace": "        status = row.status;",
       "killers": [
         {
           "file": "scripts/gate.test.ts",
