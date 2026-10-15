@@ -352,6 +352,12 @@ function blocks(record: TranscriptRecord): readonly Record<string, unknown>[] {
  * the omission below is not a gap in practice. It would become one the day a derived type keys
  * off a control record, which is why the omission is a value rather than a default.
  *
+ * THAT DAY CAME. `api-request-blob` (2026-10-15, `asc-j6pj`) re-carried a request's `tool_use`
+ * blocks while carrying no `uuid`, no `cwd` and no `gitBranch`, and an entry was written from it
+ * with both values below `undefined` -- exactly the gap this paragraph had called not-in-practice.
+ * `accept` now refuses a record with no `uuid` before it reaches this function, so the paragraph
+ * above is kept as the reason that gate is load-bearing rather than as a live caveat.
+ *
  * `cwd` HERE IS PROJECT-RELATIVE, not the transcript's raw absolute path (asc-tlc). The record's
  * own `cwd` belongs to a DIFFERENT project than this store's -- see `DerivedEntry.cwd`'s doc for
  * why the raw value is even wanted -- so it cannot be made relative to this store's root the way
@@ -1608,9 +1614,52 @@ export function createDeriver(): Deriver {
 
     counters.records += 1;
 
+    const uuid = str(record['uuid']);
+
+    // ---- a record with no `uuid` is not an event ------------------------
+    // MEASURED 2026-10-15 on the live corpus, 1,118,625 records: `assistant`, `attachment`,
+    // `user` and `system` carry a `uuid` on EVERY record, and the other twenty record types
+    // carry one on NONE (216,032 records). Presence of `uuid` is therefore what separates an
+    // event from a record that is about events, and this is the gate that reads it.
+    //
+    // WHAT IT FIXES (`asc-j6pj`). The harness began writing `api-request-blob`: a stored REQUEST
+    // BODY that re-carries the `message.content` of the request it stored -- `tool_use` blocks
+    // included -- and carries no `uuid`, `timestamp`, `cwd` or `gitBranch`. Walked as an ordinary
+    // record it emitted a SECOND `skill_activation` for an invocation that already had one, under
+    // the same key and with none of the three provenance values the entry's own definition leans
+    // on. That copy was not merely an extra row: `acceptToolUseBlocks` registers a CLAIM per
+    // call, and a claim is consumed by the next run of the same skill, so a replayed call could
+    // SILENCE a real activation -- a lost event is worse than a duplicated one, and the fixture
+    // for it is in `derive.test.ts`. Measured 71 replayed `tool_use` blocks corpus-wide and 8
+    // replayed `tool_result` blocks; the second number is the same walk reaching
+    // `resolveReviewResults`, which had produced no duplicate only because `review_finding` is
+    // the newest type.
+    //
+    // WHY THE EVENT MARKER AND NOT A LIST OF REPLAY TYPES. A denylist of `api-request*` would fix
+    // this corpus and be wrong about the next one: the harness has already added record types this
+    // adapter has never seen -- `api-request`, `api-request-shape`, `cost-state`,
+    // `artifact-comment-monitor`, `artifact-autoreact-ledger`, `fork-context-ref` -- and every one
+    // of them is a record that is not an event. The marker is a property that held for all four
+    // event types across the whole corpus, and it fails closed in the direction that matters: a
+    // record this adapter has never seen is not an event until it carries a `uuid`.
+    //
+    // THE RISK, STATED RATHER THAN LEFT IMPLICIT: a genuine event type that began arriving without
+    // a `uuid` would be dropped here silently, and this is a DROP rather than a no-op. Nothing
+    // counts it -- the alternative is a counter over the 216,032 records a sweep does not read,
+    // which is a number nobody can act on. What would show it is the corpus test's own per-type
+    // floors: `context_compaction`, `tool_denial`, `verification_run`, `user_correction` and
+    // `skill_activation` each carry one, so a type that stopped deriving fails a gate rather than
+    // disappearing quietly.
+    //
+    // This is the day `localityOf`'s doc predicted: records carrying neither `cwd` nor `gitBranch`
+    // are control records, and none of them triggered a derived event until `api-request-blob`.
+    // The three branches that key on the record's own `uuid` (`context_compaction`, the attributed
+    // run, `user_correction`) keep their own checks; through this gate they are unreachable for a
+    // record with no `uuid`, and they are left as each rule's own local statement of its needs.
+    if (uuid === undefined) return out;
+
     const sessionId = str(record['sessionId']);
     const occurredAt = str(record['timestamp']);
-    const uuid = str(record['uuid']);
     const locality = localityOf(record, file.project);
     const blocksIn = blocks(record);
     const accepted: Accepted = {
