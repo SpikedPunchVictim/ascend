@@ -1,0 +1,49 @@
+{
+  "_": "Kill-check for asc-09wx.10: the commit trigger handler (`handlers/session-commit.yaml`), the row that joins a session to the commits it made. The whole handler is three lines of `where` and three lines of `emit`, so the mutants are the three claims it makes and nothing else. M1 drops the `head` guard, which is the one thing that keeps a command merely MENTIONING a commit -- `npm run commit`, and any `bd create \"... commit ...\"` -- out of the corpus. M2 drops `is_error`, the field that keeps a commit this repository's gate refused from being counted as a commit that landed; 124 of the corpus's 4,483 rows carry it. M3 tightens the argument check to the adjacent pair `followed_by: [git, commit]`, which reads as an obvious improvement and is the one change measured to cost the most: it drops all 413 commits written `git -c user.name=... commit`. Killers were found empirically, by planting each mutant and reading the failing test names off vitest's JSON reporter, not by guessing them.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "handlers/session-commit.yaml",
+      "find": "  head: { eq: git }\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/project-handlers.test.ts",
+          "test": "does not match a command that only mentions the word"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "handlers/session-commit.yaml",
+      "find": "  is_error: '${is_error}'\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/project-handlers.test.ts",
+          "test": "emits the commit a session ran, keyed on the call that ran it"
+        },
+        {
+          "file": "packages/cli/test/project-handlers.test.ts",
+          "test": "carries a refused commit as the text \"true\", so a reader can leave it out"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "handlers/session-commit.yaml",
+      "find": "argv: { contains: commit }",
+      "replace": "argv: { followed_by: [git, commit] }",
+      "killers": [
+        {
+          "file": "packages/cli/test/project-handlers.test.ts",
+          "test": "matches a commit whose subcommand git options come before"
+        },
+        {
+          "file": "packages/cli/test/project-handlers.test.ts",
+          "test": "DOES match a git command that only mentions the word, the measured 1 in 4,483"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+# asc-09wx.10 (EV-61): one row per shell segment that ran a git commit.
+#
+# THE PAIR THIS HALF BELONGS TO. EV-65 measured that the size of a commit is not in the event
+# stream: edit events see the files of only 17 of 54 size-flagged commits, and 26 show no edit at
+# all, so a handler over `file.changed` would miss two large commits in three. Its conclusion was
+# that the size must be read from the working tree (`git diff --numstat` against the last commit)
+# by a hook on a cadence, and that the other half -- which session made which commit -- is what
+# joins those measurements to a session. This handler is that other half.
+#
+# IT IS NOT THE NUDGE, AND IT CANNOT BE. `command.run` is delivered by PostToolUse and by nothing
+# else (`HOOK_STAGES`, packages/adapter-claude-code/src/hook-input.ts), so by the time this row
+# exists `git commit` has already run. The pre-tool-use stage delivers `tool.use.start` alone, and
+# that event carries the tool and its id and no argv, so "about to commit" is not matchable by any
+# handler today: 7 kinds reach a post-tool-use handler, 1 reaches a pre-tool-use one. A handler
+# also has no shell, so it can neither measure the tree nor know a size. What a handler at this
+# moment CAN do is say a fixed sentence about the commit that just landed, which is what
+# asc-09wx.12 exists to size.
+#
+# IT RECORDS NOTHING TODAY, AND THAT IS THE BUCKET RATHER THAN AN OVERSIGHT. It declares neither
+# `type:` nor `say:`, so `loadProjectHandlers` files it under "the rest only report, and are
+# `asc handlers check`'s" (packages/cli/src/typed-handlers.ts): `asc ingest claude-code` writes no
+# entry for it and `asc hook` never runs it. The three beads handlers (`beads-recall`,
+# `beads-memories`, `beads-delivery`) sit in the same bucket and are read by a registered analysis
+# (spike/beads-recall). Making this one a typed handler means a new entry type and a version bump,
+# which asc-09wx.8 owns, so until then the join it exists for is a replay over transcripts.
+#
+# `is_error` IS CARRIED, BECAUSE A FAILED COMMIT IS NOT A COMMIT. This repository's own pre-commit
+# gate refuses commits, and a refused `git commit` produces exactly this event with `is_error`
+# true. Measured over the whole corpus: 124 of 4,483 rows (2.8%). A corpus that counted those as
+# session commits would count the gate's own refusals as work that landed. Note the field reaches
+# a row as TEXT -- `${is_error}` renders to "true", not to true (packages/core/src/handler.ts
+# renders every reference through `String`) -- so a reader comparing it to a JSON boolean reads
+# every row as a pass.
+#
+# THE PREDICATE IS EV-61's, AND IT WAS RE-MEASURED RATHER THAN INHERITED. `execSegments` splits one
+# Bash command into segments and emits a `command.run` per segment
+# (packages/adapter-claude-code/src/normalize.ts), so `head` is the segment's own first token and
+# `cd /repo && git commit -m x` matches on its second segment. `asc handlers check
+# handlers/session-commit.yaml --all-projects`, 2026-10-14, over 2,275 transcript files and
+# 1,362,818 events (2026-08-25 to 2026-10-15): 4,483 rows from 32 sessions.
+#
+#   LOOSE IN ONE DIRECTION, AND BARELY. 4,475 of the 4,483 name `commit` as the subcommand once
+#   git's own global options are stepped over -- 413 of them behind at least one `-c` or `-C`. Of
+#   the eight that do not, seven are commits whose option VALUE is a shell variable
+#   (`git $C commit -qm loss`, `git ${=C} commit -qm inner`, `git twinB twin commit -qm ...`), so
+#   the check is reading the command as written, which is what it has. Exactly one row in 4,483 is
+#   not a commit at all: a `git merge --no-edit -m "... commit is the merge of PR #220 ..."` whose
+#   message quotes the word. One in 4,483 is why the loose `contains` was kept rather than
+#   tightened to a `followed_by: [git, commit]` pair: the tighter form needs the two tokens
+#   adjacent, so it drops all 413 option-bearing commits above -- 9% of the corpus -- and this
+#   definition is the one EV-61's 4,224 triggers and 817 graded commits were counted with.
+#
+#   TIGHT IN THE OTHER. Commands that also make a commit are not emitted: in the same log, 155
+#   `git merge`, 11 `git revert`, 6 `git rebase` and 4 `git cherry-pick`, an upper bound since a
+#   rebase or a merge can end without committing anything. 176 commands, 3.9% of the rows above.
+#   `git commit --amend` IS emitted, because it says `commit`. This is EV-61's definition and the
+#   817 commits it graded were counted with it; widening it now would move a number the epic is
+#   already reading, so the gap is written here instead.
+on: command.run
+description: A session ran a git commit.
+where:
+  head: { eq: git }
+  argv: { contains: commit }
+emit:
+  id: '${id}'
+  argv: '${argv}'
+  is_error: '${is_error}'

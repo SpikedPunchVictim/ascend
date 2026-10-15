@@ -241,6 +241,91 @@ describe('sayStage: stage: pre is a request the harness has to be able to serve 
   });
 });
 
+describe('session-commit', () => {
+  const handler = loadHandler(read('session-commit.yaml'));
+
+  /** The rows one Bash command produces, as the reader of a replayed row would see them. */
+  const commits = async (command: string, isError = false) => {
+    const records = [
+      prompt('go'),
+      {
+        type: 'assistant',
+        sessionId: 's',
+        timestamp: at(),
+        message: {
+          id: 'm-1',
+          content: [{ type: 'tool_use', id: 'c1', name: 'Bash', input: { command } }],
+        },
+      },
+      {
+        type: 'user',
+        sessionId: 's',
+        timestamp: at(),
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: 'c1', is_error: isError, content: '' }],
+        },
+      },
+    ];
+    const result = await replayHandlers([{ name: 'session-commit', handler }], {
+      source: 'transcripts',
+      root: corpus(records),
+      projects: [PROJECT],
+    });
+    const [run] = result.handlers;
+    if (run === undefined) throw new Error('missing replay');
+    return run.rows.map((row) => row.fields);
+  };
+
+  it('emits the commit a session ran, keyed on the call that ran it', async () => {
+    expect(await commits('git commit -m x')).toEqual([
+      { id: 'c1', argv: 'git commit -m x', is_error: 'false' },
+    ]);
+  });
+
+  it('reads the segment a compound command commits in, not the command it is chained to', async () => {
+    // `head` is the SEGMENT's first token, not the first token of the line the segment sits on:
+    // the normalizer splits a command into segments and emits one `command.run` per segment
+    // (packages/adapter-claude-code/src/normalize.ts). `head` for the line above is `git`, and most
+    // of this corpus's commits are written this way.
+    expect((await commits('cd /repo && git commit -q -m x')).map((one) => one['argv'])).toEqual([
+      'git commit -q -m x',
+    ]);
+  });
+
+  it('matches a commit whose subcommand git options come before', async () => {
+    // WHY THE CHECK IS `contains` AND NOT `followed_by: [git, commit]`. The tighter pair needs the
+    // two tokens adjacent, so it drops every commit written this way -- measured 2026-10-14, 413 of
+    // the corpus's 4,475 commit rows. This assertion is where a tightening gets noticed.
+    expect((await commits('git -c user.name=t commit -q -m x')).map((one) => one['argv'])).toEqual([
+      'git -c user.name=t commit -q -m x',
+    ]);
+  });
+
+  it('does not match a command that only mentions the word', async () => {
+    // `contains` compares whole argv elements, so this one is excluded by `head` alone.
+    expect(await commits('npm run commit')).toEqual([]);
+  });
+
+  it('carries a refused commit as the text "true", so a reader can leave it out', async () => {
+    // TEXT, not a boolean: `${is_error}` renders through `String(raw)`
+    // (packages/core/src/handler.ts), so a reader comparing this to JSON's `true` keeps every
+    // refused commit in its count -- and this repository's gate refuses commits.
+    expect(await commits('git commit -m x', true)).toEqual([
+      { id: 'c1', argv: 'git commit -m x', is_error: 'true' },
+    ]);
+  });
+
+  it('DOES match a git command that only mentions the word, the measured 1 in 4,483', async () => {
+    // The half of the definition that is loose, pinned so it cannot be tightened in silence.
+    // Measured 2026-10-14 over 4,483 rows from the whole corpus by reading the subcommand of every
+    // one: this is the only row that was not a commit. If this assertion is being changed, the
+    // header's numbers are what it is changing.
+    expect((await commits('git merge --no-edit -m "the commit is the merge of #220"')).length).toBe(
+      1,
+    );
+  });
+});
+
 describe('review-finding-table', () => {
   const handler = loadHandler(read('review-finding-table.yaml'));
 
