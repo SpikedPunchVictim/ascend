@@ -22,33 +22,42 @@
  * count. So each of these says, in the field the model actually reads, that it is never
  * recorded by hand.
  *
- * MEASURED, on `~/.claude/projects` (read-only), 2026-09-15 -- 843 files, 431,039 records,
- * 1.19 GiB, a 5.2 s sweep. The reader's own re-measurement is in `docs/evidence/EV-corpus.md`, and
- * the record for these types -- the rules, the five-way `verification_run` comparison, and the
- * controlled A/B that settled the heredoc question -- is `docs/evidence/EV-derived.md`;
+ * MEASURED on `~/.claude/projects` (read-only), and RE-MEASURED 2026-10-14: 2,262 files,
+ * 1,122,135 parsed records, 0 malformed, 3,323 entries, 0 rejected, 0 warnings, 0 unkeyable,
+ * 0 unverdictable. The corpus is live, so the date is part of every number here -- it was
+ * 843 files and 431,039 records on 2026-09-15. The reader's own re-measurement is in
+ * `docs/evidence/EV-corpus.md`, and the record for these types -- the rules, the five-way
+ * `verification_run` comparison, and the controlled A/B that settled the heredoc question -- is
+ * `docs/evidence/EV-derived.md`;
  * these are the
  * counts of the thing each type produces, which is a different number from the count of
  * transcript lines that mention it:
  *
  *   type                 entries   per-event identity            shape
- *   verification_run         486   session + tool_use_id         EVENT
- *   tool_denial              457   session + tool_use_id         EVENT
- *   context_compaction       438   session + record uuid         EVENT
- *   skill_activation          87   session + first record uuid   EVENT
- *   user_correction           20   session + record uuid         EVENT
- *   review_finding             0   session + report id + index   EVENT
+ *   verification_run       1490   session + tool_use_id         EVENT
+ *   context_compaction     1147   session + record uuid         EVENT
+ *   tool_denial             504   session + tool_use_id         EVENT
+ *   skill_activation        138   session + first record uuid   EVENT
+ *   review_finding           36   session + report id + index   EVENT
+ *   user_correction           8   session + record uuid         EVENT
  *
- * `review_finding` IS THE FIRST ROW HERE THAT IS ZERO, and it is a measurement rather than a
- * missing one. Re-measured 2026-09-26: `ReportFindings` -- the harness tool a reviewer reports
- * through -- was called 0 times across 1,236 transcript files and 637,258 records. So the rule
- * is written and the producer has never run. A zero in this column means "this type has no
- * entries", never "nobody looked", and the two are the distinction the whole three-state model
- * exists to keep apart.
+ * `review_finding` USED TO BE THE ROW HERE THAT WAS ZERO, AND IT IS NO LONGER, and the change
+ * of state is worth as much as the number. From the rule's declaration until 2026-09-26 it had
+ * none: `ReportFindings` -- the harness tool a reviewer reports through -- had then been called
+ * 0 times across 1,236 transcript files and 637,258 records, and that was a measurement rather
+ * than a missing one. The producer has since run. The column's first non-zero reading is 36, and
+ * THE 36 ARE ONE SESSION -- the session that took this measurement -- so the count is n=1: by
+ * this repository's own `MIN_N` rule that is an anecdote and not a population, and it is why
+ * `derive-real-corpus.test.ts` leaves the type out of its per-type floors, for a reason that has
+ * changed. A zero in this column meant "this type has no entries", never "nobody looked", and the
+ * two are the distinction the whole three-state model exists to keep apart.
  *
  * Those are counts produced by driving the deriver over the whole corpus and validating every
- * entry against the spec below: 1,488 entries, 0 rejected, 0 warnings, 0 duplicate keys, 0
- * unkeyable, 0 unverdictable, 6 key collisions. The total is unchanged by `review_finding`
- * because that type's own count is zero -- see its row above. The
+ * entry against the spec below: 3323 entries, 0 rejected, 0 warnings, 0 repeats of a key within
+ * a single file, 0 unkeyable, 0 unverdictable, and 4 keys repeated across exactly two files each
+ * -- one event carried by two subagent transcripts, which is `asc-hbxl` and the reason the
+ * uniqueness check asserts that single-file zero rather than "no repeat ever". The rows above sum
+ * to that total exactly, `review_finding` included; there is no seventh type. The
  * check is `derive-real-corpus.test.ts`, and it is the reason these definitions can be trusted
  * to match what the transcript actually contains. The counts are a live corpus, not a fixture:
  * this session's own transcript is in there, which is why `tool_denial` rose by one between

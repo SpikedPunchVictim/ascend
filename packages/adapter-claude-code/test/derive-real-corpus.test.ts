@@ -18,15 +18,21 @@ import {
  * written in separate files and the failure mode of a disagreement is an entry that fails
  * validation at ingest, after a sweep has already reported success.
  *
- * MEASURED 2026-09-15 on `~/.claude/projects` (read-only): 843 files, 431,039 records,
- * 1,488 entries -- 486 verification_run, 457 tool_denial, 438 context_compaction, 87
- * skill_activation, 20 user_correction -- with 0 rejected, 0 warnings, 0 duplicate keys,
- * 0 unkeyable, 0 unverdictable, 6 key collisions, in 5.2 s.
+ * MEASURED 2026-09-15 (843 files, 431,039 records, 1,488 entries -- 486 verification_run, 457
+ * tool_denial, 438 context_compaction, 87 skill_activation, 20 user_correction -- with 0
+ * rejected, 0 warnings, 0 duplicate keys, 0 unkeyable, 0 unverdictable, 6 key collisions, in
+ * 5.2 s) and RE-MEASURED 2026-10-14 on `~/.claude/projects` (read-only): 2,262 files,
+ * 1,122,135 records, 3,323 entries -- 1490 verification_run, 1147 context_compaction, 504
+ * tool_denial, 138 skill_activation, 36 review_finding, 8 user_correction -- with 0 rejected, 0
+ * warnings, 0 repeats of a key within one file, 0 unkeyable, 0 unverdictable, and 4 keys
+ * repeated across two files each. The second reading is where `review_finding` first appeared at
+ * all, and both are already stale: they are readings of a LIVE corpus, which is why no count
+ * below is asserted.
  *
  * HOW IT CHECKS. Not by asserting those counts, which move: `~/.claude/projects` is LIVE, and
- * this session's own transcript is in it (measured: tool_denial rose from 456 to 457 while two
- * runs sat minutes apart). Counting is a snapshot; what is asserted instead is everything that
- * is true at ANY corpus size:
+ * this session's own transcript is in it (measured 2026-10-14: `tool_denial` rose from 504 to
+ * 505 between two sweeps taken minutes apart while this line was being written). Counting is a
+ * snapshot; what is asserted instead is everything that is true at ANY corpus size:
  *
  *   1. Every entry validates against its own spec, with no errors AND no warnings.
  *   2. Every key is unique.
@@ -52,7 +58,7 @@ import {
 const ROOT = defaultTranscriptRoot();
 const available = existsSync(ROOT);
 
-/** Measured 2026-09-15: 843 files / 431,039 records / 1,488 entries. Floors, not targets. */
+/** Measured 2026-10-14: 2,262 files / 1,122,135 records / 3,323 entries. Floors, not targets. */
 const MIN_FILES = 100;
 const MIN_RECORDS = 100_000;
 const MIN_ENTRIES = 200;
@@ -63,25 +69,41 @@ const MIN_ENTRIES = 200;
  * A floor of zero would be the vacuous assertion this file exists to avoid: a deriver that
  * emitted nothing at all would satisfy "every entry validates". These are the numbers that
  * make an empty result a failure.
+ *
+ * A floor is a claim about a POPULATION, so each type is read against two measured numbers
+ * rather than one: how many entries the corpus derives, and how many sessions they came from. A
+ * count from a single session cannot hold a floor against a corpus of forty-four, and writing
+ * the pair down is what makes that visible instead of implied. RE-MEASURED 2026-10-14, entries
+ * and sessions: verification_run 1490/24, context_compaction 1147/33, tool_denial 504/44,
+ * skill_activation 138/32, review_finding 36/1, user_correction 8/5.
  */
 const MIN_PER_TYPE: Readonly<Record<string, number>> = {
   verification_run: 50,
   tool_denial: 50,
   context_compaction: 50,
   skill_activation: 10,
-  // 20 measured, across 10 sessions. The floor is deliberately at the measured value rather
-  // than below it, because this is the type whose viability was in question: if it drops, the
-  // type should be re-examined rather than silently tolerated.
+  // RE-MEASURED 2026-10-14: 8 entries across 5 sessions. This comment used to read "20 measured,
+  // across 10 sessions", and the sentence it carried -- that the floor is deliberately at the
+  // measured value rather than below it -- did not describe the pair it sat above even then,
+  // because the floor below is 5. It does not describe this pair either. The measurement is
+  // corrected here and the floor is NOT corrected, because choosing it is a design decision
+  // rather than arithmetic; the honest thing available from the source is that the rationale for
+  // 5 is recorded nowhere this comment can point to. What matters operationally is the headroom,
+  // and it is 3.
   user_correction: 5,
-  // `review_finding` is deliberately ABSENT, and its absence is a measurement rather than an
-  // oversight. It is the sixth declared type and the corpus derives zero of it -- no
-  // `ReportFindings` call exists in 1,236 transcript files (`asc-gtnu`, re-measured
-  // 2026-09-26). A floor here would have to be 0, and a floor of zero is exactly the vacuous
-  // assertion the note above this map was written to refuse: it stays green over a deriver
-  // that emitted nothing. Adding it at 1 would make this file red on every machine until the
-  // first reviewer reports, which is a gate that teaches people to ignore gates. The honest
-  // place for "the count is zero on purpose" is `derived-types.ts`'s count table; the honest
-  // place for "and here is the day it moves" is `asc-gtnu.3`'s fixture test.
+  // `review_finding` is deliberately ABSENT, and the REASON has changed since this omission was
+  // written. It used to be that the corpus derived zero of it -- no `ReportFindings` call in
+  // 1,236 transcript files (`asc-gtnu`, re-measured 2026-09-26) -- so a floor here would have had
+  // to be 0, which is the vacuous assertion the note above refuses, while 1 would have made this
+  // file red on every machine until the first reviewer reported. The type is no longer
+  // unexercised: the corpus derives 36, measured 2026-10-14, and the sentence that said
+  // otherwise is now simply false. THE OMISSION STANDS ON A DIFFERENT FACT. All 36 come from one
+  // session, and it is the session that took the measurement, so there is no population to floor
+  // -- n=1 is an anecdote by this repository's own `MIN_N` rule, and a floor of 36 would be a
+  // floor on one reviewer's single sitting, which is the same gate-teaching disease in a new
+  // costume. What would change it is a second and third session reporting findings, and until
+  // then the honest place for "36, from one session" is `derived-types.ts`'s count table while
+  // the honest place for the rule itself stays `asc-gtnu.3`'s fixture test.
 };
 
 interface Sweep {
