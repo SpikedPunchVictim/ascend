@@ -92,6 +92,15 @@ export {
 } from './ingest-cursor.js';
 
 export {
+  WATCHED_HASHES_FILE,
+  WATCHED_HASHES_FORMAT,
+  readWatchedHashes,
+  writeWatchedHashes,
+  type ReadWatchedHashes,
+  type WatchedHashes,
+} from './watched-hashes.js';
+
+export {
   DuplicateEntryError,
   ENTRY_SOURCES,
   EntryRejectedError,

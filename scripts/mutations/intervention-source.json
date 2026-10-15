@@ -1,0 +1,41 @@
+{
+  "_": "Kill-check for asc-09wx.8.7: what `source` means for a row ascend OBSERVED rather than derived or was told. The decision was to add a fourth value, `observed:capture`, and to say plainly that the suffix names the ascend SUBSYSTEM that produced the row -- `derived:claude-code` is the adapter, `derived:git` is the ingester, `observed:capture` is the SessionStart sweep -- which is the one reading under which all four values are the same kind of word. `self` stays the odd one out, because it is the only value that claims WHO IS SPEAKING rather than which mechanism ran. EV-16 measured 0 of 15 sessions running `asc record`, so a capture row filed under `self` would have inflated the count of 'the model chose to record' with rows nobody chose; entries are immutable, so that false green would have been permanent. The value is written in three places that have to agree, and these are those three. M1 is the command naming itself something else. M2 drops the value from `ENTRY_SOURCES`, the list the JSONL import and the stored-source reader both consult. M3 reverts the SQL CHECK, which is the only runtime enforcement -- the recorder does not validate a source in TypeScript, so a store whose CHECK never heard of the value refuses the row the command just wrote. Killers were found by planting each mutant and reading the failing test names off vitest's JSON reporter, not by guessing: measured 2026-10-15.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/commands/capture.ts",
+      "find": "const SOURCE = 'observed:capture';",
+      "replace": "const SOURCE = 'self';",
+      "killers": [
+        {
+          "file": "packages/cli/test/capture.test.ts",
+          "test": "sources the row observed:capture, so nobody's self-report is counted as the machine's"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/store/src/recorder.ts",
+      "find": "  'derived:git',\n  'observed:capture',\n] as const;",
+      "replace": "  'derived:git',\n] as const;",
+      "killers": [
+        {
+          "file": "packages/store/test/recorder.test.ts",
+          "test": "admits the source a SessionStart capture writes (asc-09wx.8.7)"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/store/src/schema.ts",
+      "find": "CHECK (source IN ('self', 'derived:claude-code', 'derived:git', 'observed:capture')),",
+      "replace": "CHECK (source IN ('self', 'derived:claude-code', 'derived:git')),",
+      "killers": [
+        {
+          "file": "packages/store/test/recorder.test.ts",
+          "test": "stores and reads back the source observed:capture"
+        }
+      ]
+    }
+  ]
+}

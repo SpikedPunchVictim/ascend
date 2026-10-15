@@ -15,6 +15,7 @@ import { join, resolve } from 'node:path';
 import { listTypes, profileType, type TypeProfile } from '@ascend/store';
 import { BaseCommand } from '../base.js';
 import { runDoctor, type HookState } from '../doctor.js';
+import { dueGradesIn } from '../intervention.js';
 import {
   hookScript,
   isScriptCurrent,
@@ -103,7 +104,11 @@ export default class Doctor extends BaseCommand {
       // `withProject` has already established there is a store, so there is a root; the fallback
       // satisfies the type rather than covering a case the command can reach.
       const root = findProjectRoot(resolve(process.cwd())) ?? resolve(process.cwd());
-      return runDoctor(summaries, profiles, this.hookState(root)).map((finding) => ({
+      // The grades owed, gathered here rather than in `doctor.ts`, which is pure -- and gathered with
+      // the same clock `asc types brief` uses, so the size this check reports is the size of the
+      // payload that command would print at this moment.
+      const due = dueGradesIn(store.db, new Date(this.now()));
+      return runDoctor(summaries, profiles, due, this.hookState(root)).map((finding) => ({
         ...finding,
       }));
     });

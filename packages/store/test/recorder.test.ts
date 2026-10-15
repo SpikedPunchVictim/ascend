@@ -187,6 +187,20 @@ describe('the recorder builds the envelope', () => {
     expect(ENTRY_SOURCES).toContain('derived:git');
   });
 
+  // Named rather than left to the `it.each` above, and the difference is not cosmetic: that case
+  // iterates whatever the list happens to hold, so DELETING this value would leave it running three
+  // cases and passing. This is the assertion that fails when the fourth value goes missing.
+  it('admits the source a SessionStart capture writes (asc-09wx.8.7)', () => {
+    expect(ENTRY_SOURCES).toContain('observed:capture');
+  });
+
+  // The second observer, and named for the same reason as the one above: `it.each` iterates the
+  // list as it stands, so it reports one fewer passing case rather than a failure when a value goes
+  // missing. This row is the one that fails.
+  it('admits the source the file.changed ingester writes (asc-09wx.8.6)', () => {
+    expect(ENTRY_SOURCES).toContain('observed:file-changed');
+  });
+
   it('stores NULL, not an empty string, for provenance it was not handed', () => {
     withStore((store) => {
       recordEntry(store.db, { type: 'review_completed' }, context());

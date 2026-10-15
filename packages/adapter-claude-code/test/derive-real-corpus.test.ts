@@ -332,9 +332,13 @@ describe.skipIf(!available)('the deriver against the real corpus', () => {
     // rather than lint-suppressed.
     //
     // What is asserted instead is the adapter's SIDE of that join: the constant the
-    // deriver writes must be the literal the store's CHECK constraint admits. The
-    // check is
-    //     packages/store/src/schema.ts  CHECK (source IN ('self', 'derived:claude-code', 'derived:git'))
+    // deriver writes must be the literal the store's CHECK constraint admits. That
+    // constraint is spelled ONCE, in `packages/store/src/schema.ts` -- look it up there
+    // rather than here. This comment used to quote it, and a copy of a value list in a
+    // comment is a SECOND declaration of the same fact with nothing tying the two
+    // together: this one was written by the feature that added `derived:git`, so it was
+    // correct the day it was written and a value short the next day, when
+    // `observed:capture` landed (dogfood/0110).
     // and the store exports the same list as `ENTRY_SOURCES`. Neither package can
     // see the other here -- store depends on no adapter, and the adapter does not
     // depend on store -- so the two halves are pinned separately and joined where

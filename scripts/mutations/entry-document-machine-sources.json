@@ -1,0 +1,41 @@
+{
+  "_": "Kill-check for asc-09wx.8.9: the `source` refusal in `entry-document.ts` names the values a machine writes, read off `ENTRY_SOURCES` minus `self`. Three mutants, one shape each, because the whole content of the sentence is that one predicate. M1 drops one machine source from the list, which is the historical defect verbatim: the message was spelled by hand and did not move when `derived:git` arrived (dogfood/0110). M2 empties the list. M3 lists `self` among the machine values -- a superset, so it is the mutant a per-value loop would miss and the reason the assertion is exact rather than a containment check. Killers were found by planting each mutant and reading the failing test names off vitest's JSON reporter, not by guessing: measured 2026-10-15. The `ARCHITECTURE.md` half of this bead has no mutant and is not an intended survivor: prose in a markdown file is executed by nothing, so a mutant there would have no killer by construction, and the runner refuses one.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/entry-document.ts",
+      "find": "ENTRY_SOURCES.filter((source) => source !== 'self')",
+      "replace": "ENTRY_SOURCES.filter((source) => source !== 'derived:git')",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "names exactly the sources a machine may claim"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/entry-document.ts",
+      "find": "ENTRY_SOURCES.filter((source) => source !== 'self')",
+      "replace": "ENTRY_SOURCES.filter(() => false)",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "names exactly the sources a machine may claim"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/entry-document.ts",
+      "find": "ENTRY_SOURCES.filter((source) => source !== 'self')",
+      "replace": "[...ENTRY_SOURCES]",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "names exactly the sources a machine may claim"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+# asc-09wx.8.3: one row per beads delivery whose context was USED before the next prompt.
+#
+# Why this exists beside beads-recall.yaml (asc-09wx.7), which counts the calls themselves.
+#
+# `handler-compare.ts` states the reason in its own words: every comparison's outcome is "did any
+# trigger in the unit produce a row", and "for one without [a window], every triggered unit has a
+# row and both arms read 1". beads-recall.yaml fires on the call, so its base rate is 1 by
+# construction -- and `asc handlers power handlers/beads-recall.yaml --effect 0.5` says so, verbatim:
+#
+#     nothing to plan -- the outcome was the same in all 13 units, so there is no variance for any
+#     effect size to move
+#
+# There is no grading point in that. The row is a real reading of how often `bd recall` was run and
+# is the right handler for that question, which is why it stays; what it cannot answer is whether
+# the delivered context was any good, because "a delivery happened and then a row appeared" is not
+# a measurement of the delivery. This handler makes the row the window's VERDICT instead: it opens
+# on a delivery and closes on the next prompt, and it emits only if a `bd recall` was run in
+# between. A row therefore means "this session read a key of the context it was handed, before it
+# was asked anything else", and the proportion is a rate rather than 1.
+#
+# TWO DELIVERY FORMS, deliberately, because that pair IS the EV-55 comparison. `bd prime` (the full
+# text, before 2026-10-13) and `.claude/bd-prime-hook.mjs` (the index, after) are the two arms, and
+# `command` is emitted so a reader can split them without re-deriving which arm a row is in. On this
+# project's log at 2026-10-13: 0 of 303 full-arm deliveries were followed by a recall, against 4 of
+# 58 index-arm deliveries (6.9%, 95% Wilson [0.027, 0.164]) -- EV-55's P2 direction, and evidence
+# rather than the one probe per arm the intervention row's `prediction` had to rest on.
+#
+# THE INNER MATCH IS LOOSE ON PURPOSE, and the reader is told so rather than protected from it.
+# `argv` is split on whitespace inside quotes too, so `followed_by: [bd, recall]` also matches a
+# note that QUOTES the command -- 3 of 14 rows in beads-recall.yaml's count. Here that leak cannot
+# inflate a proportion: the window needs the quoting call to land between the delivery and the next
+# prompt, in a session that also received the context, which is a stricter conjunction than the
+# call handler's. The alternative -- requiring argv to start with `bd recall` -- is not expressible
+# in `where`, and rejecting the rows downstream would move the count out of the handler and into
+# every reader, which is the thing this handler exists to stop.
+#
+# `bytes` is carried for the reason beads-delivery.yaml carries it: the delivery's size is the input
+# the index was meant to shrink, and a rate that rises while the delivered bytes do not is a
+# different finding. asc-09wx.8.4 did NOT widen this field: the delivered size shipped as its own
+# kind, `hook.context` (its own `bytes` plus a `persisted` flag), because one hook run writes several
+# records that disagree about how much text the model received. So `bytes` on a row here is the
+# hook's own OUTPUT length -- 0 on the `hook_success` record that carries no content -- and a reader
+# who wants what the model was actually handed reads `hook.context` instead.
+on: hook.delivery
+description: A beads delivery whose context was used before the next prompt.
+where:
+  hook_event: { eq: SessionStart }
+  command: { matches: 'bd prime|bd-prime-hook' }
+window:
+  until: prompt.submit
+  first:
+    on: command.run
+    where:
+      argv: { followed_by: [bd, recall] }
+emit:
+  command: '${command}'
+  bytes: '${bytes}'
+  recalled_at: '${window.first.ts}'

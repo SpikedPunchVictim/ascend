@@ -75,8 +75,15 @@ import type { TranscriptFile } from './transcript-file.js';
  *    the observed population is dominated by other tools' hooks -- a session-status script on
  *    every Bash call -- so this count moves by far more than ascend's own deliveries, and a reader
  *    counting it is counting the machine's hooks, not this feature's.
+ * 13: sizes on the events that carry text, and the command a call is about to run: `tool.use.end`
+ *    carries `bytes`, `hook.context` is a new kind, one event per `hook_additional_context`
+ *    attachment, and `tool.use.start` carries `head` and `argv` for an `exec` call (asc-09wx.8.4,
+ *    asc-hvnx). One new kind is one more event per attached context -- 672 over 2,496 transcript
+ *    files, measured 2026-10-15 -- and the fields move nothing. `hook.context` is a separate kind
+ *    rather than a field on `hook.delivery` because the two records cannot be joined and do not
+ *    even agree: see the kind's docblock in `event.ts`.
  */
-export const EVENT_DERIVE_VERSION = 12;
+export const EVENT_DERIVE_VERSION = 13;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -327,6 +334,82 @@ function hookDelivery(record: TranscriptRecord): Readonly<Record<string, EventVa
   };
 }
 
+/** The wrapper the harness writes in place of content it declines to inline; see `hookContext`. */
+const PERSISTED_OUTPUT = /^<persisted-output>/;
+
+/**
+ * The `hook.context` fields for a `hook_additional_context` attachment, or `undefined` for any
+ * other record.
+ *
+ * A pure parse, like `hookDelivery` above it, and for a stronger reason: THIS RECORD CANNOT BE
+ * JOINED to the delivery it belongs to. Its `toolUseID` is the hook EVENT NAME -- measured
+ * 2026-10-15, `SessionStart` on 629 of the 669 records this corpus holds -- not a tool-use id, so
+ * matching it against a `hook_success` finds 40 of 669, and two `hook_success` records carrying one
+ * id can precede it. So the record is read as what it is: one delivery's worth of attached context,
+ * self-contained.
+ *
+ * `content` is an ARRAY of strings here, where `hook_success.content` is a string, and joining it
+ * is what makes `bytes` the length of the text the model saw. `persisted` is read off the wrapper
+ * rather than inferred from the length, because a hook whose own output happened to begin
+ * `<persisted-output>` would otherwise be filed as a preview; and the wrapper's own text carries a
+ * 2 KB preview of a file, so on that arm `bytes` is small by construction and means "a preview
+ * arrived", which is exactly what the flag is for.
+ *
+ * The persisted file's path is NOT carried -- see the kind's docblock in `event.ts` for why a field
+ * a handler cannot join against anything is worse than an absent one.
+ */
+function hookContext(record: TranscriptRecord): Readonly<Record<string, EventValue>> | undefined {
+  if (record['type'] !== 'attachment') return undefined;
+  const attachment = rec(record['attachment']);
+  if (attachment === undefined || attachment['type'] !== 'hook_additional_context') {
+    return undefined;
+  }
+  const raw = attachment['content'];
+  const content = Array.isArray(raw)
+    ? (raw as readonly unknown[]).filter((one): one is string => typeof one === 'string').join('')
+    : typeof raw === 'string'
+      ? raw
+      : '';
+  const hookEvent = str(attachment['hookEvent']);
+  const hookName = str(attachment['hookName']);
+  return {
+    ...(hookEvent === undefined ? {} : { hook_event: hookEvent }),
+    ...(hookName === undefined ? {} : { hook_name: hookName }),
+    bytes: Buffer.byteLength(content, 'utf8'),
+    persisted: PERSISTED_OUTPUT.test(content),
+  };
+}
+
+/**
+ * The byte length of the result text one `tool_result` put in front of the model, or `undefined`
+ * when the block carried none.
+ *
+ * A `tool_result` block's `content` is a string or an array of content blocks, and BOTH spellings
+ * are in the corpus, so both are read rather than only the string one. `undefined` rather than `0`
+ * for a block carrying neither: a zero-byte result and a result the harness did not write are
+ * different facts, and `bytes: 0` on `tool.use.end` would put them in one bucket.
+ */
+function resultBytes(block: Record<string, unknown>): number | undefined {
+  const content = block['content'];
+  if (typeof content === 'string') return Buffer.byteLength(content, 'utf8');
+  if (!Array.isArray(content)) return undefined;
+  let total = 0;
+  let seen = false;
+  for (const part of content) {
+    if (typeof part === 'string') {
+      total += Buffer.byteLength(part, 'utf8');
+      seen = true;
+      continue;
+    }
+    const text = rec(part)?.['text'];
+    if (typeof text === 'string') {
+      total += Buffer.byteLength(text, 'utf8');
+      seen = true;
+    }
+  }
+  return seen ? total : undefined;
+}
+
 interface Pending {
   readonly tool: string;
   readonly input: Record<string, unknown>;
@@ -504,7 +587,14 @@ export function createNormalizer(): Normalizer {
       const { tool, input, call, batch } = start;
       const isError = typeof block['is_error'] === 'boolean' ? block['is_error'] : undefined;
       const role = ROLES[tool] ?? 'other';
-      emit(out, 'tool.use.end', call, ts, { tool, id, role, is_error: isError }, batch);
+      emit(
+        out,
+        'tool.use.end',
+        call,
+        ts,
+        { tool, id, role, is_error: isError, bytes: resultBytes(block) },
+        batch,
+      );
 
       if (tool === 'Bash') {
         const command = text(input['command']);
@@ -716,6 +806,11 @@ export function createNormalizer(): Normalizer {
     const delivery = hookDelivery(record);
     if (delivery !== undefined) emit(out, 'hook.delivery', calls, ts, delivery);
 
+    // A separate kind, not a field on the delivery above: the two records cannot be joined. See
+    // `hookContext` and the kind's docblock in `event.ts`.
+    const attached = hookContext(record);
+    if (attached !== undefined) emit(out, 'hook.context', calls, ts, attached);
+
     const notice = taskNotification(record);
     if (notice === undefined) {
       if (leadsWithNotification(record)) counters.unreadNotifications += 1;
@@ -761,18 +856,30 @@ export function createNormalizer(): Normalizer {
         const tool = str(block['name']);
         if (id === undefined || tool === undefined) continue;
         calls += 1;
-        pending.set(id, { tool, input: rec(block['input']) ?? {}, call: calls, batch: batches });
-        const skill = tool === SKILL_TOOL ? str(rec(block['input'])?.['skill']) : undefined;
+        const input = rec(block['input']) ?? {};
+        const role = ROLES[tool] ?? 'other';
+        pending.set(id, { tool, input, call: calls, batch: batches });
+        const skill = tool === SKILL_TOOL ? str(input['skill']) : undefined;
+        // The command the call is about to run, FLATTENED across its segments: one event per call
+        // has no `index` to pick a segment with, and segment 0 alone misses 92% of commits. See
+        // the field's docblock in `event.ts`.
+        const argv = role === 'exec' ? execSegments(text(input['command'])).flat() : [];
         emit(
           out,
           'tool.use.start',
           calls,
           ts,
-          { tool, id, role: ROLES[tool] ?? 'other', ...(skill === undefined ? {} : { skill }) },
+          {
+            tool,
+            id,
+            role,
+            ...(skill === undefined ? {} : { skill }),
+            ...(argv.length === 0 ? {} : { head: argv[0], argv }),
+          },
           batches,
         );
         if (tool === REPORT_FINDINGS_TOOL) {
-          reviewFindings(out, calls, batches, ts, id, rec(block['input']), str(message?.['model']));
+          reviewFindings(out, calls, batches, ts, id, input, str(message?.['model']));
         }
       }
     }

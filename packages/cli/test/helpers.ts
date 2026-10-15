@@ -28,7 +28,7 @@ const AT = '2026-09-29T00:00:00.000Z';
  * definition they share, rather than four copies of the two calls each needs.
  *
  * **An empty tree is a legitimate store and is not what `asc init` leaves behind.** `init` installs
- * the four `STARTER_TYPES` through a fused write, so a project it set up has types in it; several
+ * the five `STARTER_TYPES` through a fused write, so a project it set up has types in it; several
  * suites below assert on an empty registry, and building that state directly is the honest way to
  * get it. `buildIndex` over a tree with no record files yields a current index for the empty
  * fingerprint, which is exactly the store whose `asc types list` has no rows.

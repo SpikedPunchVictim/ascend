@@ -1,0 +1,113 @@
+{
+  "_": "Kill-check for asc-09wx.8.5's second half: handler end of life -- `asc handlers review`, the command that joins a handler FILE to the ledger ROW that measured it. Two files carry the claims. `packages/cli/src/handler-life.ts` decides what holds a handler and what that leaves it as; `packages/cli/src/commands/handlers/review.ts` decides what a reader is shown. The design's own words are the defect this closes -- *\"No step retires a handler today, so a handler outlives the change it measured\"* -- so the dangerous direction is a handler reported as LIVE when nothing reads it: a reader never goes back to a handler reported as watched, and the file stays in `handlers/` replaying on every `asc handlers check`. `open-status-not-open` and `nothing-enumerates-the-directory` are that class; `re-read-shown-for-everything-but-a-watch` is its mirror, printing the re-read instruction for handlers that are open or retired. Killers were found empirically, by planting each mutant and reading the failing test names off vitest's JSON reporter (`vitest run packages/cli/test/handlers-review.test.ts --reporter=json`), never by guessing them. THE FIRST RUN OF THIS SPEC AGREED WITH ITSELF AND WAS WRONG, and the way it was wrong is the thing to read this file for. It named `reads a still-open row as the strongest claim on a handler two rows name` as the sole killer for four mutants and reported all of them killed. That test asserted the order of two holdings on one handler, and holdings arrive in `ledgerRows` order, which is root-id order, and a root id is a UUID v4 -- so the test failed about HALF the time on a tree with no mutant in it at all. Measured afterwards on the unmutated tree: six consecutive runs, 4 red. The spec had therefore recorded the coin as a killer: the mutants appeared killed because the fixture was already broken, and the two of the four that the runner happened to see pass in the same run came back SURVIVED and started this investigation. A killer that fails half the time kills nothing reliably, and no list of named killers can be trusted until each one is known to PASS on the unmutated tree -- which is why the runner checks that first -- `scripts/mutate.mjs` says every killer a spec names must PASS on the unmutated tree first, because a test that already fails kills nothing. The fixture is now deterministic (assertions sorted, with the reason in the test), and what that exposed is the honest shape of the file: THREE mutants nothing killed. Two were real coverage gaps and both are now closed at the source rather than by borrowing a killer -- `no-holdings-falls-through` was unreachable because `reviewRows` restated `'unheld'` as a literal and returned before calling `stateOfLife`, so that function's zero-holdings branch could not be reached from the command (the mutant now dies on `names a handler nothing holds`, which is the case it was always about), and `every-entry-is-a-handler` was invisible because the fixture's `handlers/` held nothing but `.yaml`, so deleting the extension filter changed no output (the fixture now ships `handlers/README.md` and a test pins that it is not reported). The third, `nothing-enumerates-the-directory`, kept a killer that had always been real and lost only the coin. The general lesson, and the reason this paragraph replaced a confident one that said the opposite: a mutation spec measures its KILLERS as much as its mutants, so a spec written against a fixture nobody has checked for determinism is a spec that cannot tell a kill from a coincidence.",
+  "mutants": [
+    {
+      "id": "open-status-not-open",
+      "file": "packages/cli/src/handler-life.ts",
+      "find": "  if (OPEN_STATUSES.includes(status)) return 'open';\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "reads a still-open row as the strongest claim on a handler two rows name"
+        },
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "leaves a handler open when a live row carries the watch disposition"
+        }
+      ]
+    },
+    {
+      "id": "no-holdings-falls-through",
+      "file": "packages/cli/src/handler-life.ts",
+      "find": "  if (life.holdings.length === 0) return 'unheld';\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "names a handler nothing holds, and points at the file it means"
+        }
+      ]
+    },
+    {
+      "id": "open-not-the-strongest-claim",
+      "file": "packages/cli/src/handler-life.ts",
+      "find": "  if (states.includes('open')) return 'open';\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "reads a still-open row as the strongest claim on a handler two rows name"
+        },
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "leaves a handler open when a live row carries the watch disposition"
+        }
+      ]
+    },
+    {
+      "id": "every-entry-is-a-handler",
+      "file": "packages/cli/src/handler-life.ts",
+      "find": "      .filter((one) => /\\.ya?ml$/.test(one))\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "leaves a file under handlers/ alone when it is not a handler at all"
+        }
+      ]
+    },
+    {
+      "id": "nothing-enumerates-the-directory",
+      "file": "packages/cli/src/handler-life.ts",
+      "find": "  for (const path of handlerFiles(projectRoot)) {",
+      "replace": "  for (const path of handlerFiles(projectRoot).slice(0, 0)) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "names a handler nothing holds, and points at the file it means"
+        }
+      ]
+    },
+    {
+      "id": "re-read-shown-for-everything-but-a-watch",
+      "file": "packages/cli/src/commands/handlers/review.ts",
+      "find": "  if (state === 'watch') {",
+      "replace": "  if (state !== 'watch') {",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "reports a closed row that says regression_watch as a watch, and says how to re-read it"
+        },
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "retires a handler whose rows all closed, and lists one whose file is gone"
+        }
+      ]
+    },
+    {
+      "id": "holds-count-off-by-one",
+      "file": "packages/cli/src/commands/handlers/review.ts",
+      "find": "  rows.push({ [HANDLER]: path, [FIELD]: 'holds', [VALUE]: life.holdings.length });",
+      "replace": "  rows.push({ [HANDLER]: path, [FIELD]: 'holds', [VALUE]: life.holdings.length + 1 });",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "reads a still-open row as the strongest claim on a handler two rows name"
+        }
+      ]
+    },
+    {
+      "id": "row-state-collapsed-to-the-handler-state",
+      "file": "packages/cli/src/commands/handlers/review.ts",
+      "find": "    rows.push({ [HANDLER]: path, [FIELD]: 'row_state', [VALUE]: holding.state });",
+      "replace": "    rows.push({ [HANDLER]: path, [FIELD]: 'row_state', [VALUE]: state });",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-review.test.ts",
+          "test": "reads a still-open row as the strongest claim on a handler two rows name"
+        }
+      ]
+    }
+  ]
+}

@@ -17,7 +17,7 @@
  *    and the derived and machine-local files inside it are named individually instead: the index and
  *    its WAL/SHM, the legacy database, and the ingest cursor. Appended, never rewritten outside the
  *    one line this command itself wrote in older versions (see `updateIgnoreText`).
- * 4. **The starter types.** The four in `starters.ts`, registered through the ordinary
+ * 4. **The starter types.** The five in `starters.ts`, registered through the ordinary
  *    `registerDocumentVia` path so they version, diff and export exactly like a user's own -- as ONE
  *    fused write, so a later starter sees an earlier one. Re-running is not "safe", it is *useful*:
  *    improved starter prose lands as `prose-updated` rather than being dropped as `unchanged`
@@ -51,7 +51,7 @@
  *   - **A legacy `ascend.db`.** Previewed against THAT store under a rollback, because registering
  *     against the database the migration is about to move gives the same answers as registering
  *     against the tree it moves it to -- the migration carries the registry across unchanged, which
- *     is its whole verified claim (`EV-34`). The alternative, an in-memory preview, would report four
+ *     is its whole verified claim (`EV-34`). The alternative, an in-memory preview, would report five
  *     `created`s for types the project already has, which is a preview of a different project.
  *
  * A dry run never migrates, never writes the ignore file, and never writes `.gitattributes`.
@@ -72,6 +72,7 @@ import {
   readRecordTree,
   STORE_DIR,
   STORE_FILE,
+  WATCHED_HASHES_FILE,
   writeGitattributes,
   writeProducedLines,
   previewProducedLines,
@@ -136,6 +137,12 @@ const DERIVED_ENTRIES: readonly string[] = [
   `${STORE_DIR}/${STORE_FILE}-wal`,
   `${STORE_DIR}/${STORE_FILE}-shm`,
   `${STORE_DIR}/${INGEST_CURSOR_FILE}`,
+  // The watched-file baseline, and the temp file its atomic write renames into place
+  // (`watched-hashes.ts`). Two lines rather than one because the temp name carries the writer's
+  // pid: a killed run leaves its own behind, and a file git cannot see is the difference between a
+  // stray byte on disk and a stray byte in somebody's next commit.
+  `${STORE_DIR}/${WATCHED_HASHES_FILE}`,
+  `${STORE_DIR}/${WATCHED_HASHES_FILE}.*.ascend-tmp`,
   // The whole directory rather than the one file in it: everything `install-hook` puts there is
   // generated, so a second artifact landing beside the shim should not need a second line here.
   `${SHIM_DIR_RELATIVE_PATH}/`,

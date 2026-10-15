@@ -1346,11 +1346,18 @@ describe('asc ingest claude-code: ephemeral OS temp projects', () => {
  * `asc-27l`: the derived source must be a source the store will ACCEPT.
  *
  * `recordEntry` does not validate `source` at runtime -- enforcement is the `entries` table's
- * CHECK constraint (`source IN ('self','derived:claude-code')`). So the adapter's constant and the
+ * CHECK constraint (`schema.ts`, INITIAL, on the `entries` table; look it up there rather than
+ * here). So the adapter's constant and the
  * store's vocabulary are two independent declarations of the same fact with nothing tying them
  * together, and the failure mode is not subtle: a drift between them makes every derived insert
  * fail at the SQLite layer, with an error that says the constraint was violated and never says
  * which of the two declarations moved.
+ *
+ * That sentence used to spell the CHECK out, and it spelled it wrong: it read
+ * `source IN ('self','derived:claude-code')` -- two of the three values the constraint held -- so a
+ * reader checking the vocabulary here would have been told `derived:git` was not one. A THIRD
+ * declaration of the fact this comment is about, and one nothing could tie to the other two. It
+ * points at `schema.ts` now, which is the only spelling that cannot drift.
  *
  * This is the same shape as the false-green class this project treats as severity-zero: a rule
  * that references a name nothing defines evaluates as vacuous truth. The check below is what

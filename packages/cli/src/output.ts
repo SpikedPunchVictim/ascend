@@ -652,8 +652,14 @@ function firstUnitToKeepFromEnd(text: string, budget: number): number {
  *   cut is inside a flag exactly when the run ending at it has odd length (GB12/13).
  *
  * The ends of the string are always boundaries, which is what ends both callers' loops.
+ *
+ * **Exported because it is the repository's ONE statement of this rule, and there is a second
+ * clipper.** `brief-text.ts` cuts a ledger row's `change` for the brief's due-grade line, and it cuts
+ * by CODE POINT because that is the unit a reader counts a name in; a second subset of UAX #29 written
+ * there would be two implementations of one invariant, and the one nobody re-measured is the one that
+ * would drift. The unit a caller counts in is the caller's business; where a cut is legal is not.
  */
-function isBoundary(text: string, index: number): boolean {
+export function isBoundary(text: string, index: number): boolean {
   if (index <= 0 || index >= text.length) return true;
   if (isHighSurrogate(text.charCodeAt(index - 1)) && isLowSurrogate(text.charCodeAt(index))) {
     return false;

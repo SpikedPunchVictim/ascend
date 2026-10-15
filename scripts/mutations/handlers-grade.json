@@ -1,0 +1,113 @@
+{
+  "_": "Kill-check for asc-09wx.8.3's second half: `asc handlers grade <entry-id>`, the command that reads an intervention row's OWN metric rather than a handler path someone typed, proves the ruler has not moved since the row was written, and prints that row's comparison and power figure (packages/cli/src/commands/handlers/grade.ts). Eight mutants, one per claim. The two that matter most are the pair of verifications the command exists for: `ruler-hash-not-checked` lets a handler whose `where` clause was edited be graded against a baseline taken under the old one, and `derive-version-not-checked` compares units counted from two different derivations of the same log. Both are invisible in every other way -- the numbers still print, and they are the right shape. `split-at-now-not-the-rows-own-date` is the third of that family: it makes the comparison a window chosen at read time instead of the one the row pre-registered, which is the difference between a test and a number somebody went looking for. The rest are the refusals and the last sentence. Killers were found empirically, by planting each mutant and reading the failing test names off vitest's JSON reporter, not by guessing them. NOTE the harness runs with --allow-dirty: this spec's target is uncommitted while asc-09wx.8.3 is open, and the restore's sha256 check is what makes that safe.",
+  "mutants": [
+    {
+      "id": "ruler-hash-not-checked",
+      "file": "packages/cli/src/commands/handlers/grade.ts",
+      "find": "      if (named.handler.hash !== reading.sha256) {",
+      "replace": "      if (false) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "refuses when the handler on disk is not the one the metric names"
+        }
+      ]
+    },
+    {
+      "id": "derive-version-not-checked",
+      "file": "packages/cli/src/commands/handlers/grade.ts",
+      "find": "      if (result.derive_version !== reading.deriveVersion) {",
+      "replace": "      if (false) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "names the derivation when the row was read at a different one"
+        }
+      ]
+    },
+    {
+      "id": "split-at-now-not-the-rows-own-date",
+      "file": "packages/cli/src/commands/handlers/grade.ts",
+      "find": "      const at = askedAt === undefined ? point?.appliedAt : isoInstant(askedAt);",
+      "replace": "      const at = askedAt === undefined ? now.toISOString() : isoInstant(askedAt);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "splits at the row’s own applied_at, not at the moment it is read"
+        },
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "counts each arm, and the difference the fixture’s two halves were built to have"
+        }
+      ]
+    },
+    {
+      "id": "rule-read-off-the-wrong-property",
+      "file": "packages/cli/src/commands/handlers/grade.ts",
+      "find": "  const rule = nonEmpty(stated.properties['rule']);",
+      "replace": "  const rule = nonEmpty(stated.properties['status']);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "refuses a metric with no rule beside it, which asc record also refuses at write time"
+        },
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "prints the row’s state and the ruler it names"
+        }
+      ]
+    },
+    {
+      "id": "non-intervention-entry-graded",
+      "file": "packages/cli/src/commands/handlers/grade.ts",
+      "find": "  if (entry.typeName !== TYPE_NAME) {",
+      "replace": "  if (entry.typeName === TYPE_NAME) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "refuses an id the store does not hold, and one that is not an intervention"
+        }
+      ]
+    },
+    {
+      "id": "horizon-boundary-slack",
+      "file": "packages/cli/src/commands/handlers/grade.ts",
+      "find": "    if (asked.horizon <= 0) {",
+      "replace": "    if (asked.horizon < 0) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "refuses a horizon of zero active days"
+        }
+      ]
+    },
+    {
+      "id": "reaches-inverted",
+      "file": "packages/cli/src/commands/handlers/grade.ts",
+      "find": "  if (point.days >= needed) {",
+      "replace": "  if (point.days <= needed) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "says the row is short, with the gap, when its grading point is under what the effect needs"
+        },
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "says the row is planned for when its grading point covers the wait"
+        }
+      ]
+    },
+    {
+      "id": "unplannable-row-says-nothing-specific",
+      "file": "packages/cli/src/commands/handlers/grade.ts",
+      "find": "'grading point to reach'",
+      "replace": "'grading point to reach, and the plan above was skipped'",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-grade.test.ts",
+          "test": "says the plan could not be computed rather than comparing against nothing"
+        }
+      ]
+    }
+  ]
+}

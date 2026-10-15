@@ -1,0 +1,125 @@
+{
+  "_": "Kill-check for asc-09wx.8.1: the `intervention` ledger's two load-bearing pieces -- the conditional rule that a row carrying a metric must carry the rule it will be graded by (`starterEntryIssue` in packages/cli/src/starters.ts), and the chain resolver that turns a row's immutable entries into its current state (packages/cli/src/intervention.ts). Ten mutants, one per claim. The starters.ts mutants are the three shapes the rule can take and be wrong in: it never fires (a metric with no rule is recorded, which is the whole defect section 9 was deciding about), it ignores the rule (a pre-registered row is refused, so the honest case cannot be written), and it fires on every row (which would make `asc-09wx.8.2`'s machine-written captures unwritable, and is the mutant the rule's own docblock was corrected by). The intervention.ts mutants are each a direction the resolver can be wrong in, and the dangerous direction is under-flagging: `days-floor` reports `daysShort: 0` beside a grade still premature, `due-date-inclusive` flags every correctly-timed grade, and `bad-date-compared` lets NaN through a comparison as false so a premature grade reads as fine. Killers were found empirically, by planting each mutant and reading the failing test names off vitest's JSON reporter, not by guessing them. One harness note, because it produced a false reading here: the first version of this search did not delete the reporter's output file between mutants and did not distinguish a RUN that failed from a test that failed, so two mutants reported the PREVIOUS mutant's failures -- the exact confusion `mutation-harness-must-distinguish` exists to prevent. Every row below was re-confirmed by hand.",
+  "mutants": [
+    {
+      "id": "no-rule-never-refused",
+      "file": "packages/cli/src/starters.ts",
+      "find": "  if (!hasValue('metric') || hasValue('rule')) return undefined;\n",
+      "replace": "  return undefined;\n",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "refuses a row carrying a metric and no rule"
+        }
+      ]
+    },
+    {
+      "id": "rule-ignored",
+      "file": "packages/cli/src/starters.ts",
+      "find": "  if (!hasValue('metric') || hasValue('rule')) return undefined;",
+      "replace": "  if (!hasValue('metric')) return undefined;",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "records the same row once the rule names what would count"
+        }
+      ]
+    },
+    {
+      "id": "rule-fires-on-every-row",
+      "file": "packages/cli/src/starters.ts",
+      "find": "  if (!hasValue('metric') || hasValue('rule')) return undefined;\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "does not touch a row carrying no metric at all"
+        }
+      ]
+    },
+    {
+      "id": "chain-tiebreak-dropped",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "  if (a.id === b.id) return 0;\n  return a.id < b.id ? -1 : 1;",
+      "replace": "  return 0;",
+      "killers": [
+        {
+          "file": "packages/cli/test/intervention.test.ts",
+          "test": "orders by (recorded_at, id)"
+        }
+      ]
+    },
+    {
+      "id": "blank-continues-is-a-root",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "  return typeof value === 'string' && value.trim() !== '' ? value : undefined;",
+      "replace": "  return typeof value === 'string' ? value : undefined;",
+      "killers": [
+        {
+          "file": "packages/cli/test/intervention.test.ts",
+          "test": "does not read a blank continues as a root id"
+        }
+      ]
+    },
+    {
+      "id": "oldest-applied-wins",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "    if (typeof at === 'string' && !Number.isNaN(Date.parse(at))) applied = at;",
+      "replace": "    if (applied === undefined && typeof at === 'string' && !Number.isNaN(Date.parse(at))) applied = at;",
+      "killers": [
+        {
+          "file": "packages/cli/test/intervention.test.ts",
+          "test": "takes the newest statement of the wait"
+        }
+      ]
+    },
+    {
+      "id": "bad-date-compared",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "    if (typeof at === 'string' && !Number.isNaN(Date.parse(at))) applied = at;",
+      "replace": "    if (typeof at === 'string') applied = at;",
+      "killers": [
+        {
+          "file": "packages/cli/test/intervention.test.ts",
+          "test": "does not compare an unparseable applied_at"
+        }
+      ]
+    },
+    {
+      "id": "days-floor",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "daysShort: Math.ceil(remaining / DAY_MS)",
+      "replace": "daysShort: Math.floor(remaining / DAY_MS)",
+      "killers": [
+        {
+          "file": "packages/cli/test/intervention.test.ts",
+          "test": "never reports zero days short"
+        }
+      ]
+    },
+    {
+      "id": "due-date-inclusive",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "      if (remaining > 0) {",
+      "replace": "      if (remaining >= 0) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/intervention.test.ts",
+          "test": "leaves a grade taken on or after the grading point alone"
+        }
+      ]
+    },
+    {
+      "id": "every-head-claims-a-grade",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "  return head.properties['status'] === 'graded';",
+      "replace": "  return true;",
+      "killers": [
+        {
+          "file": "packages/cli/test/intervention.test.ts",
+          "test": "does not flag a chain whose head claims no grade"
+        }
+      ]
+    }
+  ]
+}

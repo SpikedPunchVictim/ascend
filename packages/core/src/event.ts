@@ -67,10 +67,53 @@ export const ENVELOPE_FIELDS: Readonly<Record<string, EventFieldType>> = {
 export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventFieldType>>>> = {
   /** The user's own message. */
   'prompt.submit': { text: 'string' },
-  /** `skill` is the skill a skill-loading call names. */
-  'tool.use.start': { tool: 'string', id: 'string', role: 'string', skill: 'string' },
-  /** `is_error` is the harness's flag, kept under the harness's name. It is not an exit status. */
-  'tool.use.end': { tool: 'string', id: 'string', role: 'string', is_error: 'boolean' },
+  /**
+   * `skill` is the skill a skill-loading call names.
+   *
+   * `head` and `argv` are the shell command an `exec` call is about to run, so a PRE-tool-use
+   * handler can be selective about a command before it runs (asc-hvnx). Both are ABSENT on a call
+   * that is not an `exec`, rather than empty -- a handler matching `head` on a `Read` is then
+   * matching nothing, not matching a default.
+   *
+   * **`argv` is the command's tokens FLATTENED ACROSS ITS SEGMENTS, which is deliberately not what
+   * `command.run`'s `argv` is.** That event is one per executed segment and carries `index`; this
+   * is one per call and has no index, so a per-segment choice would have to pick one. Picking the
+   * first is the trap this field exists to avoid: MEASURED 2026-10-15 over 2,496 transcript files,
+   * of 162,906 `Bash` calls, `[git, commit]` is in the first segment on 306 and ONLY in a later
+   * segment on 3,508 -- so an `argv` holding segment 0 alone makes the commit predicate miss 92%
+   * of commits, and a nudge built on it reads as working. Flattening costs, on the same corpus,
+   * 36,136,724 bytes of JSON against 12,183,082 for the first segment alone, 0.381% of an 8.84 GiB
+   * log, and `head` is `argv`'s first token either way.
+   *
+   * A flat token list also loses the segment boundary, and that is the price: `followed_by` cannot
+   * see that two tokens were in different commands. It errs toward matching -- `echo git commit` in
+   * ONE segment matches `[git, commit]` -- which is the same loose-inner-match direction
+   * `handlers/beads-context-used.yaml` states for its own predicate.
+   */
+  'tool.use.start': {
+    tool: 'string',
+    id: 'string',
+    role: 'string',
+    skill: 'string',
+    head: 'string',
+    argv: 'array',
+  },
+  /**
+   * `is_error` is the harness's flag, kept under the harness's name. It is not an exit status.
+   *
+   * `bytes` is the UTF-8 byte length of the result text the model received, which is what lets a
+   * handler count the context a tool spent (asc-09wx.8.4). It is the same quantity under the same
+   * name as `hook.context`'s `bytes`: both say how much text one record put in front of the model.
+   * ABSENT, never `0`, when the record carried no result text -- a zero-byte result and a result
+   * the harness did not write are different facts.
+   */
+  'tool.use.end': {
+    tool: 'string',
+    id: 'string',
+    role: 'string',
+    is_error: 'boolean',
+    bytes: 'number',
+  },
   /** One per executed segment of a shell call. `is_error` belongs to the whole call. */
   'command.run': {
     id: 'string',
@@ -193,6 +236,15 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
    * hook's output in the event log, which is measured rolling at ~1.33 MB/day (`EV-39` Q1); this
    * population carries 2,170,732 bytes of it, mean 25.0 and max 3,756 per delivery.
    *
+   * **`bytes: 0` has a SECOND cause, and this kind cannot name it.** `bytes` here is the hook's own
+   * output length; the record that says what reached the MODEL is a different one, and `hook.context`
+   * is that record. Measured 2026-10-15 over 2,496 files: all 672 attached contexts have at least one
+   * `hook_success` in the contiguous attachment cluster before them, 1,260 records between them, 743
+   * with no content at all and 517 carrying text. So a reader asking "did this hook put anything in
+   * front of the model" reads this event AND `hook.context`, and `bytes` alone answers a narrower
+   * question than it looks like. `hook.context`'s docblock has the run in which the two records
+   * disagree about one delivery.
+   *
    * MEASURED 2026-10-12, read-only over the real corpus, 30 days (2026-09-12 -> 2026-10-12):
    * 86,877 `hook_success` attachments. `hook_event` is PreToolUse 46,871 / PostToolUse 35,895 /
    * UserPromptSubmit 1,295 / Stop 1,254 / SessionStart 986 / SubagentStop 585, and is never absent
@@ -222,6 +274,51 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
     exit_code: 'number',
     bytes: 'number',
     sha256: 'string',
+  },
+  /**
+   * The context a hook ATTACHED, one event per `hook_additional_context` attachment record
+   * (asc-09wx.8.4). A different record from `hook.delivery`, and that is why this is a kind rather
+   * than a field on that one.
+   *
+   * MEASURED 2026-10-15, read-only over this machine's `~/.claude/projects` (2,496 files): 672
+   * `hook_additional_context` records, every one carrying `content` as a ONE-ELEMENT ARRAY of
+   * strings.
+   *
+   * **The records written for ONE hook run disagree about it, and none of the others holds what was
+   * attached.** Three consecutive records of a run in this checkout's own transcript: a
+   * `hook_success` with empty `content`; a SECOND `hook_success` carrying the same `toolUseID` and
+   * 3,567 bytes of the hook's own output; and the `hook_additional_context` whose `toolUseID` is
+   * `SessionStart` and whose content -- the wrapper below -- is 1,538 bytes. The model was handed
+   * those 1,538 and neither of the other two.
+   *
+   * So the two records do not join, and the join is not merely lossy. `toolUseID` here is the hook
+   * EVENT NAME on 632 of the 672 (SessionStart, PostToolUse, PreToolUse), which is not the id the
+   * sibling `hook_success` carries, and two `hook_success` records can hold ONE `toolUseID` between
+   * them. Every one of the 672 has at least one `hook_success` in the contiguous attachment cluster
+   * before it -- 1,260 records, 743 carrying no content at all and 517 carrying text -- so a reader
+   * summing `hook.delivery.bytes` near a delivery gets a number that has nothing to do with what
+   * the model read. That false reading is what this kind exists to replace, and it is why this is a
+   * pure parse of ONE record: no correlation, and no assumption about which record came first.
+   *
+   * `bytes` is the byte length of the content this record carries, which IS what reached the model,
+   * on both arms below. `persisted` says which arm: when the harness judges a delivery too large to
+   * inline it writes the text to a file and puts a `<persisted-output>` wrapper holding a 2 KB
+   * preview in the stream instead, so on that arm `bytes` is the WRAPPER's length and is small by
+   * construction. The 672 split 313 persisted against 359 inlined, and the persisted lengths cluster
+   * at 1,289-1,922 bytes. The wrapper is matched rather than inferred from its size, because a hook
+   * whose own output happened to begin that way would otherwise be filed as persisted.
+   *
+   * The persisted file's PATH is deliberately NOT a field. A `where` compares a field against a
+   * literal and never against another field, so a `path` here could not be joined to the
+   * `file.read` that read the file back -- `EV-54` measured 8 tool calls naming a persisted hook
+   * file -- and a field that looks like it makes that join expressible is worse than an absent one.
+   * `bytes` and `persisted` are what a handler can actually use.
+   */
+  'hook.context': {
+    hook_event: 'string',
+    hook_name: 'string',
+    bytes: 'number',
+    persisted: 'boolean',
   },
   /** Synthetic: the stream ended. What closes every window still open. */
   'session.end': {},

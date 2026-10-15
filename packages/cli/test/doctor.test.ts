@@ -12,6 +12,7 @@ import {
   runDoctor,
   versionDrift,
 } from '../src/doctor.js';
+import type { DueGrade } from '../src/intervention.js';
 
 /** `asc doctor`'s checks (asc-12a), over hand-built registry summaries and profiles. */
 
@@ -249,9 +250,27 @@ describe('propertyStates', () => {
   });
 });
 
+/**
+ * A grade the project owes itself, as `intervention.ts` derives one (`asc-09wx.8.5`).
+ *
+ * Hand-built rather than derived from a store, for the reason this file gives every summary it
+ * builds: these checks are pure functions of what the ledger reports, and a fixture that had to
+ * record real rows to produce a due date would be testing the chain rule rather than the report.
+ */
+function dueGrade(root: string, days: number): DueGrade {
+  return {
+    root,
+    handler: 'handlers/beads-delivery.yaml',
+    change: '`handlers/beads-delivery.yaml`',
+    appliedAt: '2026-09-01T00:00:00.000Z',
+    days,
+    dueAt: '2026-10-01T00:00:00.000Z',
+  };
+}
+
 describe('briefSize', () => {
   it('measures the brief as `asc types brief` renders it, and passes a small registry', () => {
-    const [finding] = briefSize([summary('note', { recordWhen: 'x'.repeat(40) })]);
+    const [finding] = briefSize([summary('note', { recordWhen: 'x'.repeat(40) })], []);
     // `Record with: asc record TYPE -  (a JSON entry on stdin)` (55) + newline + `note -- ` (8) +
     // 40 characters = 104. It read `48 bytes` before the recording command existed, `86` once it
     // did (`asc-uftd`), and `111` once the input note was added (`asc-k0l9`); spelling the command
@@ -265,7 +284,7 @@ describe('briefSize', () => {
   it('counts the command line only when there is a brief to put it on (asc-uftd)', () => {
     // No active types means no brief at all -- `asc types brief` prints nothing rather than a
     // bare command line naming a type that is not there, so the size is zero, not 37.
-    const [finding] = briefSize([summary('old', { status: 'deprecated' })]);
+    const [finding] = briefSize([summary('old', { status: 'deprecated' })], []);
     expect(finding?.detail.startsWith('0 bytes,')).toBe(true);
   });
 
@@ -274,17 +293,54 @@ describe('briefSize', () => {
     const types = Array.from({ length: 40 }, (_, index) =>
       summary(`type_${String(index)}`, { recordWhen }),
     );
-    const [finding] = briefSize(types);
+    const [finding] = briefSize(types, []);
     expect(finding?.status).toBe('warn');
     expect(finding?.detail).toContain('prints only the lines that fit');
   });
 
   it('counts only active types, as the brief does', () => {
-    const [finding] = briefSize([
-      summary('note'),
-      summary('old', { status: 'deprecated', recordWhen: 'z'.repeat(BRIEF_TOKEN_CAP * 10) }),
-    ]);
+    const [finding] = briefSize(
+      [
+        summary('note'),
+        summary('old', { status: 'deprecated', recordWhen: 'z'.repeat(BRIEF_TOKEN_CAP * 10) }),
+      ],
+      [],
+    );
     expect(finding?.status).toBe('ok');
+  });
+
+  /**
+   * `asc-09wx.8.5`: the grades owed are part of the payload, so they are part of the size.
+   *
+   * The check's contract is to report the size of *what the brief actually prints*. A block the
+   * doctor did not count would be a payload it called small while the session received it whole --
+   * the drift the recording command's move into `brief-text.ts` closed, one block along.
+   */
+  it('counts the grades owed, and says how many there are', () => {
+    const [withDue] = briefSize(
+      [summary('note', { recordWhen: 'x'.repeat(40) })],
+      [dueGrade('e'.repeat(36), 30)],
+    );
+    const [without] = briefSize([summary('note', { recordWhen: 'x'.repeat(40) })], []);
+
+    // Counted rather than assumed small: the same registry with one grade owed is the same registry
+    // plus that grade's own line, which is more than a few bytes.
+    expect(Number(withDue?.detail.split(' ')[0])).toBeGreaterThan(
+      Number(without?.detail.split(' ')[0]),
+    );
+    expect(withDue?.subject).toContain('1 grades owed');
+  });
+
+  it('measures a store with no active type but a grade owed as non-zero, not as empty', () => {
+    // The empty case is silence -- but a grade owed names a row, a command and an id, so a
+    // deprecated-only registry that owes one is not the empty case, and the brief prints it.
+    const [finding] = briefSize(
+      [summary('old', { status: 'deprecated' })],
+      [dueGrade('f'.repeat(36), 30)],
+    );
+
+    expect(finding?.detail.startsWith('0 bytes,')).toBe(false);
+    expect(finding?.subject).toContain('0 active types');
   });
 });
 
@@ -305,6 +361,7 @@ describe('runDoctor', () => {
     const findings = runDoctor(
       [summary('note')],
       [profile('note', [property('text', { measured: 5 })])],
+      [],
       noHook(),
     );
     expect(findings.map((finding) => finding.check)).toEqual([

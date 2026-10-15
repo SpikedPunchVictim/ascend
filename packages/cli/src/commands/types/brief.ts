@@ -68,12 +68,13 @@ import { listTypes } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
 import {
   BRIEF_CAP_BYTES,
-  RECORD_COMMAND_LINE,
+  briefHead,
   briefLines,
   briefText,
   reviewAfterReached,
 } from '../../brief-text.js';
 import { usageError } from '../../errors.js';
+import { dueGradesIn } from '../../intervention.js';
 
 /** The whole brief's path under the project root. Written only when the payload has to be capped. */
 const BRIEF_FILE = '.ascend/brief.txt';
@@ -160,10 +161,15 @@ export default class TypesBrief extends BaseCommand {
         return;
       }
 
-      if (summaries.length === 0) return;
+      // The clock is read once, here, and handed to `dueGradesIn` as a value -- `base.ts` says why the
+      // boundary package owns that read and nothing below it does.
+      const due = dueGradesIn(store.db, new Date(this.now()));
+      const whole = briefText(summaries, due);
+      // Nothing to say at all: no active type and no grade owed. The empty case is silence rather
+      // than a bare command line, and `briefText` is where that rule lives.
+      if (whole === '') return;
 
       const lines = briefLines(summaries);
-      const whole = briefText(summaries);
 
       // The pointer is named relative to the caller's working directory rather than to the project
       // root, because a store is found by walking UP from the cwd: run from a subdirectory, the
@@ -173,14 +179,17 @@ export default class TypesBrief extends BaseCommand {
         `[${String(kept)} of ${String(total)} types shown; the other ${String(total - kept)} are ` +
         `in ${pointer} -- read it before recording anything.]`;
 
-      // The recording command is **not one of the lines `fitBrief` counts, and its bytes are still
-      // charged to the cap**: the budget handed to the fitter is the cap less the header, so
-      // `header + fit.text` is what has to fit. Keeping it out of the counted set is what makes the
-      // note's `N of M types` mean types -- put the header in the list and a capped brief would
-      // account for it as a dropped type, and the count a reader checks against `asc types list`
-      // would be off by one. Taking the bytes off the top is what keeps `BRIEF_CAP_BYTES` a bound on
-      // the payload rather than on part of it.
-      const budget = BRIEF_CAP_BYTES - Buffer.byteLength(`${RECORD_COMMAND_LINE}\n`, 'utf8');
+      // The recording command and the grades owed are **not among the lines `fitBrief` counts, and
+      // their bytes are still charged to the cap**: the budget handed to the fitter is the cap less
+      // this prefix, so `head + fit.text` is what has to fit. Keeping them out of the counted set is
+      // what makes the note's `N of M types` mean types -- put either in the list and a capped brief
+      // would account for it as a dropped type, and the count a reader checks against `asc types
+      // list` would be off. Taking the bytes off the top is what keeps `BRIEF_CAP_BYTES` a bound on
+      // the payload rather than on part of it, and it is why the due-grade block is bounded in
+      // `brief-text.ts` (`DUE_GRADE_LIMIT`): a line the fitter cannot drop has to have a bound of its
+      // own, or the cap is not a bound at all.
+      const head = briefHead(summaries, due);
+      const budget = BRIEF_CAP_BYTES - Buffer.byteLength(`${head}\n`, 'utf8');
 
       const fit = fitBrief(lines, note, budget);
       if (fit.kept === lines.length) {
@@ -196,12 +205,12 @@ export default class TypesBrief extends BaseCommand {
       // handed the capped stdout is told to go and read this one.
       try {
         writeFileSync(join(root, BRIEF_FILE), whole, 'utf8');
-        this.log(`${RECORD_COMMAND_LINE}\n${fit.text}`);
+        this.log(`${head}\n${fit.text}`);
       } catch (cause) {
         // Not swallowed. The payload still has to fit under the ceiling, so the fallback is the
         // same fit with a note that claims no file -- never a pointer to one that is not there.
         this.log(
-          `${RECORD_COMMAND_LINE}\n${
+          `${head}\n${
             fitBrief(
               lines,
               (kept, total) =>

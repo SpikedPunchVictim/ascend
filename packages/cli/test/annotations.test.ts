@@ -54,7 +54,7 @@ const bin = join(root, 'packages/cli/dist/bin.js');
  * `treeFingerprint` hashes the record files' RELATIVE paths and never their absolute ones.
  *
  * The fixture is still built by the REAL BINARY rather than through `@ascend/store`, so it keeps
- * producing what `asc init` produces -- including the four starter types that command registers.
+ * producing what `asc init` produces -- including the five starter types that command registers.
  * Rebuilding that through the store API would be a second definition of what a project is, which is
  * the kind of thing that agrees on the day it is written and drifts on the day after.
  *

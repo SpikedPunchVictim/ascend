@@ -1,0 +1,97 @@
+{
+  "_": "Kill-check for asc-09wx.8.2: the capture, which hashes the files a session is shaped by and records one `intervention` row for whatever moved. Two files carry the claims -- packages/cli/src/watched.ts decides what is watched and what counts as a change, packages/cli/src/commands/capture.ts decides what is written. Every mutant below is a direction one of those can be wrong in, and the dangerous direction is always a FALSE ROW rather than a missed one: a missed change costs one observation and is repaired by the next edit, while a spurious row is permanent (entries are immutable) and is the whole reason `watched-hashes.ts` prefers silence to a claim. Three mutants are of that class -- `vanished-is-not-a-change` under-reports, while `unreadable-reads-as-absent` and `watch-identity-order-sensitive` each produce a row that says a file was deleted or that a whole set was newly created when neither happened. Two more are about the baseline rather than the row (`dry-run-writes-the-baseline`, `applied-not-claimed`) and one is about the watched set itself (`everything-is-a-hook-script`). Killers were found empirically, by planting each mutant and reading the failing test names off vitest's JSON reporter, never by guessing them -- and `unreadable-reads-as-absent` is why that matters. Its first form deleted the `isThere` guard outright, which makes the `return` below it unreachable and costs the `error` narrowing (`error TS18046: 'error' is of type 'unknown'`), so `tsc -b` refused the tree and the runner reported \"ran no test\" for both killers -- the exact shape a survivor has, from a mutant that never ran at all (`mutation-harness-must-distinguish`). The mutant flips `isThere`'s own return instead -- the same defect stated in the helper rather than at its call site -- and that does compile.",
+  "mutants": [
+    {
+      "id": "vanished-is-not-a-change",
+      "file": "packages/cli/src/watched.ts",
+      "find": "    if (was === is) continue;",
+      "replace": "    if (was === is || is === undefined) continue;",
+      "killers": [
+        {
+          "file": "packages/cli/test/watched.test.ts",
+          "test": "reports a file that vanished with only the hash it had"
+        },
+        {
+          "file": "packages/cli/test/capture.test.ts",
+          "test": "reports a file that was deleted, with only the hash it had"
+        }
+      ]
+    },
+    {
+      "id": "unreadable-reads-as-absent",
+      "file": "packages/cli/src/watched.ts",
+      "find": "    lstatSync(path);\n    return true;",
+      "replace": "    lstatSync(path);\n    return false;",
+      "killers": [
+        {
+          "file": "packages/cli/test/watched.test.ts",
+          "test": "reports a directory where a watched file should be as incomplete, naming it"
+        },
+        {
+          "file": "packages/cli/test/capture.test.ts",
+          "test": "writes no row, writes no baseline, names the path, and exits non-zero"
+        }
+      ]
+    },
+    {
+      "id": "watch-identity-order-sensitive",
+      "file": "packages/cli/src/watched.ts",
+      "find": "  return sha256Hex(canonicalJson(paths.map((path) => path.display).sort()));",
+      "replace": "  return sha256Hex(canonicalJson(paths.map((path) => path.display)));",
+      "killers": [
+        {
+          "file": "packages/cli/test/watched.test.ts",
+          "test": "is independent of the order the paths were discovered in"
+        }
+      ]
+    },
+    {
+      "id": "home-wins-over-project",
+      "file": "packages/cli/src/watched.ts",
+      "find": "  const fromRoot = under(absolute, root);",
+      "replace": "  const fromRoot = under(absolute, home);",
+      "killers": [
+        {
+          "file": "packages/cli/test/watched.test.ts",
+          "test": "spells a home-level file under ~ when the project is not the home directory"
+        }
+      ]
+    },
+    {
+      "id": "everything-is-a-hook-script",
+      "file": "packages/cli/src/watched.ts",
+      "find": "    .filter((name) => HOOK_SCRIPT_EXTENSIONS.some((extension) => name.endsWith(extension)))",
+      "replace": "    .filter(() => true)",
+      "killers": [
+        {
+          "file": "packages/cli/test/watched.test.ts",
+          "test": "finds hook scripts directly under .claude/, by the extensions a hook may carry"
+        }
+      ]
+    },
+    {
+      "id": "dry-run-writes-the-baseline",
+      "file": "packages/cli/src/commands/capture.ts",
+      "find": "      if (!dryRun) writeWatchedHashes(tree, { watch: identity, files: observation.files });",
+      "replace": "      writeWatchedHashes(tree, { watch: identity, files: observation.files });",
+      "killers": [
+        {
+          "file": "packages/cli/test/capture.test.ts",
+          "test": "reports what would be recorded and writes neither the entry nor the baseline"
+        }
+      ]
+    },
+    {
+      "id": "applied-not-claimed",
+      "file": "packages/cli/src/commands/capture.ts",
+      "find": "    status: 'applied',",
+      "replace": "    status: 'proposed',",
+      "killers": [
+        {
+          "file": "packages/cli/test/capture.test.ts",
+          "test": "records a dated row with both hashes and no reason, for an edit nobody recorded"
+        }
+      ]
+    }
+  ]
+}

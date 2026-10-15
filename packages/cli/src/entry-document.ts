@@ -25,11 +25,14 @@
  * **Some keys are refused with a reason rather than merely being unknown**, and those refusals are
  * the interesting part of this file:
  *
- *   - `source` -- `self` and `derived:claude-code` are a claim about *provenance*: that a machine
- *     derived this from a transcript rather than someone observing it. It is the one column that
- *     tells real observation from inference, and a hand-written or model-written document asserting
- *     it would corrupt exactly the distinction it exists to draw. The adapter that derives entries
- *     writes them through the store (`recorder.ts`), not through this command.
+ *   - `source` -- the three machine values are a claim about *provenance*: that a machine observed
+ *     or derived this rather than someone reporting it. It is the one column that tells real
+ *     observation from inference, and a hand-written or model-written document asserting it would
+ *     corrupt exactly the distinction it exists to draw. The adapters and the capture write them
+ *     through the store (`recorder.ts`), not through this command. `observed:capture` was the
+ *     fourth value and is the reason the axis is stated as three-way rather than two-way: a
+ *     SessionStart sweep OBSERVES and does not DERIVE, and `self` would have made its rows
+ *     indistinguishable from the model's own (`asc-09wx.8.7`).
  *   - `recorded_at` -- the clock belongs to `BaseCommand.now()`. A document that could set its own
  *     timestamp could backdate an entry, and the ledger's whole chronological value rests on
  *     `recorded_at` being what ascend observed rather than what a caller claimed.
@@ -54,6 +57,8 @@
  * is written by a model, and `evidenceText` where the field is `evidence_text` is the likely
  * mistake. Ignoring it would record the entry with no evidence text while reporting success.
  */
+
+import { ENTRY_SOURCES } from '@ascend/store';
 
 import { refusal } from './errors.js';
 import { describeValue, fieldError, isJsonObject } from './json-fields.js';
@@ -93,6 +98,20 @@ const KNOWN_KEYS = [
 ] as const;
 
 /**
+ * The values a machine writes, read off `ENTRY_SOURCES` rather than spelled out here.
+ *
+ * `self` is the only source that answers WHO is speaking; every other one names the machine that
+ * OBSERVED or DERIVED the row, and each is set by exactly the one command that did. That is the
+ * whole rule, so the message below states the rule and shows the list the rule produces.
+ *
+ * Spelled by hand, the list went stale twice: it was written when there were two machine values,
+ * and it did not move for `asc-09wx.9`'s `derived:git` or `asc-09wx.8.7`'s `observed:capture`. A
+ * caller who read it and typed the older value would have written a row the store's CHECK refuses
+ * (dogfood/0110).
+ */
+const MACHINE_SOURCES = ENTRY_SOURCES.filter((source) => source !== 'self');
+
+/**
  * Keys that an entry document may plausibly carry and never may, with the reason.
  *
  * A map rather than a second list because the reason is the useful part of the message, and a
@@ -100,8 +119,11 @@ const KNOWN_KEYS = [
  */
 const FORBIDDEN_KEYS: Readonly<Record<string, string>> = {
   source:
-    "'source' records whether ascend OBSERVED this or DERIVED it, so only the thing doing the " +
-    'deriving may set it. An entry recorded by hand or by a command is always source "self".',
+    "'source' records whether ascend OBSERVED this, DERIVED it, or was TOLD it, so only the thing " +
+    'doing the observing or deriving may set it. A document recorded by hand -- or by the model ' +
+    'through `asc record` -- is always source "self", the one value that says WHO is speaking; ' +
+    'every other value names the machine that observed or derived the row, and only that command ' +
+    `sets it: ${MACHINE_SOURCES.join(', ')}.`,
   recorded_at:
     "'recorded_at' is read from ascend's clock when the entry is written. A document that could " +
     'set it could backdate an entry, and the ledger sorts chronologically by that column alone.',

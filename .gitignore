@@ -58,6 +58,15 @@ node_modules/
 # untracked file -- the noise that makes a real untracked file easy to skim past.
 .ascend/gate.lock/
 
+# The watched-file baseline `asc capture` diffs against (asc-09wx.8.2): one content hash per watched
+# path, written by the SessionStart hook. Machine-local for a reason the two files above do not have
+# -- it is a READING OF THIS CHECKOUT'S WORKING TREE at a moment, so a committed copy would be a
+# claim about the committer's `CLAUDE.md` and would make the next session on a fresh clone diff
+# against it and write a row about every watched file at once. The temp name carries the writer's
+# pid, because two SessionStart hooks may be writing at the same time.
+.ascend/watched-hashes.json
+.ascend/watched-hashes.json.*.ascend-tmp
+
 # align machine-local files — telemetry (opt-in: ALIGN_TELEMETRY=1 / --telemetry / align.config.ts telemetry:true)
 # and the scan-observation record, which is evidence about THIS checkout only (ADR 029).
 .align/telemetry.jsonl

@@ -259,7 +259,20 @@ CREATE TABLE entries (
 
   CHECK (id <> ''),
   CHECK (recorded_at <> ''),
-  CHECK (source IN ('self', 'derived:claude-code', 'derived:git')),
+  -- 'observed:capture' was added IN PLACE (asc-09wx.8.7), not by a migration -- see the MIGRATIONS
+  -- docblock: the initial schema is still fixed in place while ascend is unreleased, and an
+  -- in-place edit is what CHECK (major >= 1) above is the precedent for. It is a strictly
+  -- PERMISSIVE change: no stored row can violate the widened constraint that the old one allowed,
+  -- so no store can hold data this edit makes invalid, and the only stores that exist are a test's
+  -- temp directory and the gitignored, regenerable index.db. A migration would have had to DROP
+  -- and recreate this table -- and with it the two immutability triggers below and the ~90
+  -- registry-emitted idx_prop_* indexes -- to widen one literal. Measured on this checkout's
+  -- store: the rebuild is 646 ms and replays 93 objects, against one edited line.
+  -- 'observed:file-changed' is the same edit for the same reason (asc-09wx.8.6): one more literal
+  -- on the permissive side, so no stored row becomes invalid and there is nothing to migrate.
+  CHECK (
+    source IN ('self', 'derived:claude-code', 'derived:git', 'observed:capture', 'observed:file-changed')
+  ),
   CHECK (ascend_version <> ''),
   CHECK (schema_version >= 1),
 
@@ -524,12 +537,18 @@ function correctIdentityTriggerMessage(db: SqlDatabase): void {
  * populations would diverge with nothing reporting it.
  *
  * That reason does not hold yet, and the boundary is worth stating rather than
- * assuming. ascend has never been released; no store has ever existed outside a test's
- * temp directory, and none is committed (`.ascend/` is gitignored). So the initial
- * schema is still fixed IN PLACE, and migration 1 carries a `major` immutability check
- * that was added after it first ran. A patch migration here would leave permanent
- * residue describing a defect no user ever had -- and would spend a version number that
- * a real schema change should get. Once ascend ships, this stops being true and the
+ * assuming. What licenses an in-place edit is NOT that no store exists -- one does, and has
+ * since `.ascend/index.db` was first built here, beside a record tree that is tracked and is
+ * itself the store. It is that the artifact an in-place edit invalidates is a derived,
+ * regenerable cache, and that is a fact about WHERE the constraint lives rather than how many
+ * stores there are, so it does not expire when one appears. The `entries` CHECK and the
+ * registry's `idx_prop_*` indexes exist only in `index.db`; the JSONL tree under `.ascend/entries`
+ * carries no constraint at all, so no edit here can make a stored RECORD invalid, and
+ * `asc index build` rebuilds the index from the tree in one command (measured 2026-10-15:
+ * 12368 records). So the initial schema is still fixed IN PLACE, and migration 1 carries a `major`
+ * immutability check that was added after it first ran. A patch migration here would leave permanent
+ * residue describing a defect no user ever had -- and would spend a version number that a real
+ * schema change should get. Once ascend ships, this stops being true and the
  * rule becomes absolute.
  *
  * Migration 2 is a genuine schema change, so it is a genuine new migration rather than

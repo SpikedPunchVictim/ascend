@@ -1,0 +1,113 @@
+{
+  "_": "Kill-check for asc-09wx.8.5's first half: the grade a project owes itself, printed into the SessionStart brief. Two files carry the claims. `packages/cli/src/intervention.ts` decides WHICH rows are owed (`dueGrades`); `packages/cli/src/brief-text.ts` decides what each is shown as -- the bound, the wording, the clip -- and `packages/cli/src/commands/types/brief.ts` decides what the block costs the payload. The dangerous direction throughout is a FALSE GRADE: an entry is immutable and a reader acts on the line, so a brief that says a wait is up when it is not is worse than one that stays quiet. `not-yet-due-is-owed` and `every-row-owed-including-closed-ones` are that class; `header-not-charged-to-the-cap` is the bound quietly ceasing to be one. Killers were found empirically, by planting each mutant and reading the failing test names off vitest's JSON reporter, never by guessing them -- and that is the only reason three of these eight have killers at all. THE FIRST RUN OF THIS SPEC HAD THREE SURVIVORS, and all three were FIXTURE gaps rather than spec errors, which is the shape `mutation-survivors-point-at-the-fixture` names: (1) `cut-can-split-a-character` -- the fixture tiled a ZWJ family from code point 0, so the 60-point cut landed two points past the joiner and the back-off could be deleted with the file green; the fixture now carries one leading code point so the cut lands ON the joiner. (2) `header-not-charged-to-the-cap` -- `fitBrief` fills to the cap in whole lines, and the over-cap fixture's ~1,750-byte lines left ~950 bytes of slack, so a ~330-byte charge changed nothing; `PACKED_REPEATS` in `types.test.ts` builds a registry whose slack is under 100 bytes, which forces the charge to drop a line. (3) `root-order-instead-of-wait-order` -- the end-to-end order test was a COIN FLIP, because `ledgerRows` sorts by root id and a root id is a random UUID, so deleting the sort passed whenever the two ids happened to fall in due order; a check that passes half the time is worse than none, because it reports the mutant as killed when it was only lucky, and the deterministic killer is now a unit test handing `dueGrades` rows in root order. A later reader widening any of those three fixtures back should expect these ids to become survivors again.",
+  "mutants": [
+    {
+      "id": "limit-zero",
+      "file": "packages/cli/src/brief-text.ts",
+      "find": "export const DUE_GRADE_LIMIT = 5;",
+      "replace": "export const DUE_GRADE_LIMIT = 0;",
+      "killers": [
+        {
+          "file": "packages/cli/test/brief-text.test.ts",
+          "test": "names them longest-waiting first, as `dueGrades` orders them"
+        },
+        {
+          "file": "packages/cli/test/types.test.ts",
+          "test": "prints a line naming the row, the wait and the command that reads it"
+        }
+      ]
+    },
+    {
+      "id": "cut-can-split-a-character",
+      "file": "packages/cli/src/brief-text.ts",
+      "find": "  while (end > 0 && !isBoundary(text, end)) end = indexBefore(text, end);\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/brief-text.test.ts",
+          "test": "does not leave a joiner hanging at the cut"
+        }
+      ]
+    },
+    {
+      "id": "says-due-not-due-to-become-readable",
+      "file": "packages/cli/src/brief-text.ts",
+      "find": "so it is due to become readable.",
+      "replace": "so it is due.",
+      "killers": [
+        {
+          "file": "packages/cli/test/brief-text.test.ts",
+          "test": "says the grade is due to BECOME READABLE, because the instant it names is an earlier bound"
+        }
+      ]
+    },
+    {
+      "id": "remainder-line-always-printed",
+      "file": "packages/cli/src/brief-text.ts",
+      "find": "  if (rest === 0) return named;",
+      "replace": "  if (rest < 0) return named;",
+      "killers": [
+        {
+          "file": "packages/cli/test/brief-text.test.ts",
+          "test": "does not print a remainder line when every grade fits"
+        },
+        {
+          "file": "packages/cli/test/brief-text.test.ts",
+          "test": "says nothing at all when no grade is owed"
+        }
+      ]
+    },
+    {
+      "id": "header-not-charged-to-the-cap",
+      "file": "packages/cli/src/commands/types/brief.ts",
+      "find": "      const budget = BRIEF_CAP_BYTES - Buffer.byteLength(`${head}\\n`, 'utf8');",
+      "replace": "      const budget = BRIEF_CAP_BYTES;",
+      "killers": [
+        {
+          "file": "packages/cli/test/types.test.ts",
+          "test": "takes the grade's bytes out of the types it shows, rather than adding them to the cap"
+        }
+      ]
+    },
+    {
+      "id": "every-row-owed-including-closed-ones",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "    if (row.head.properties['status'] !== 'applied') continue;",
+      "replace": "    if (row.head.properties['status'] === 'applied') continue;",
+      "killers": [
+        {
+          "file": "packages/cli/test/types.test.ts",
+          "test": "says nothing about a row whose newest entry has already answered it"
+        },
+        {
+          "file": "packages/cli/test/types.test.ts",
+          "test": "keeps a grade that was closed as ungradeable out of the list, rather than waiting forever"
+        }
+      ]
+    },
+    {
+      "id": "not-yet-due-is-owed",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "    if (Date.parse(point.dueAt) > now.getTime()) continue;",
+      "replace": "    if (Date.parse(point.dueAt) < now.getTime()) continue;",
+      "killers": [
+        {
+          "file": "packages/cli/test/types.test.ts",
+          "test": "says nothing about a wait that has not run out"
+        }
+      ]
+    },
+    {
+      "id": "root-order-instead-of-wait-order",
+      "file": "packages/cli/src/intervention.ts",
+      "find": "  return [...due].sort((a, b) =>\n    a.dueAt === b.dueAt ? (a.root < b.root ? -1 : 1) : a.dueAt < b.dueAt ? -1 : 1,\n  );",
+      "replace": "  return due;",
+      "killers": [
+        {
+          "file": "packages/cli/test/intervention.test.ts",
+          "test": "puts the longest-waiting first, by the bound that passed and not by the row id"
+        }
+      ]
+    }
+  ]
+}

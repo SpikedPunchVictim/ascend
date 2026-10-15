@@ -1,0 +1,192 @@
+{
+  "_": "Kill-check for asc-09wx.8.4, one EVENT_DERIVE_VERSION bump carrying three payloads: `bytes` on `tool.use.end`, the new `hook.context` kind, and `head`/`argv` on `tool.use.start` (the last of which is asc-hvnx, settled into this bump by the owner). The mutants are chosen at the places a reader of the new fields would be misled rather than at the places the code could crash, because every one of these fields feeds a SUM or a PREDICATE and a wrong number there is green: M1, M2 and M3 are the three ways a byte count can be wrong (characters for bytes, half the corpus's spellings, a fabricated zero); M4, M5 and M6 are the three ways the attached context can be misread (any attachment counted as this one, one array element standing for the whole, the persisted marker matched anywhere); M7 and M8 are the command fields, and M7 is the mutant this whole field exists against -- measured on 2026-10-15, a first-segment-only `argv` makes a `[git, commit]` predicate miss 92% of commits while still firing, which is a nudge that reads as working; M9 and M10 delete a field from the flat registry in `packages/core/src/event.ts`, which is the guard that turns a typo in a handler into a load error rather than a `where` that is silently never true -- and M12 is the same mutant on `tool.use.start`'s `head`/`argv`, which is the pair asc-hvnx was filed for: without the registry entry the selector is refused, so M12 is the guard on the acceptance criterion itself. M13 is M7 at a weaker strength, kept beside it because the two are killed by different tests: M7 by the asserts that read the array, M13 by the one that asks the predicate. The killers were found empirically rather than guessed: each mutant was applied, the owning files were run with vitest's JSON reporter, and the failing test names were read off its assertionResults. M9 and M10 are also killed by a test written before them -- `createNormalizer`'s 'emits only fields its kind declares', which sweeps every field of every event against the registry -- and that is named here rather than omitted, because a registry mutant killed only by the new kind's own assertions would suggest the sweep does not cover a new kind. M11 is an intended survivor and is the prose half of this change: the corrected docblocks.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "  if (typeof content === 'string') return Buffer.byteLength(content, 'utf8');",
+      "replace": "  if (typeof content === 'string') return content.length;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "counts BYTES rather than characters, so a multibyte result is not reported short"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "  return seen ? total : undefined;",
+      "replace": "  return undefined;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "counts a result written as content BLOCKS, the other spelling in the corpus"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "  if (!Array.isArray(content)) return undefined;\n  let total = 0;",
+      "replace": "  if (!Array.isArray(content)) return 0;\n  let total = 0;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "leaves `bytes` ABSENT when the record carried no result text, rather than writing zero"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "  if (attachment === undefined || attachment['type'] !== 'hook_additional_context') {",
+      "replace": "  if (attachment === undefined) {",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "emits nothing for a `hook_success`, and nothing for a non-attachment"
+        },
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "puts the flag on the context and NOT on the delivery, whose own record cannot say it"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "    ? (raw as readonly unknown[]).filter((one): one is string => typeof one === 'string').join('')",
+      "replace": "    ? (raw as readonly unknown[]).filter((one): one is string => typeof one === 'string').slice(0, 1).join('')",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "joins a multi-element array rather than counting only its first element"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "const PERSISTED_OUTPUT = /^<persisted-output>/;",
+      "replace": "const PERSISTED_OUTPUT = /<persisted-output>/;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "reads the marker only at the START, so a hook that describes the wrapper is inlined"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "        const argv = role === 'exec' ? execSegments(text(input['command'])).flat() : [];",
+      "replace": "        const argv = role === 'exec' ? [...(execSegments(text(input['command']))[0] ?? [])] : [];",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "flattens the tokens ACROSS segments, which is what a commit predicate needs"
+        },
+        {
+          "file": "packages/adapter-claude-code/test/hook-input.test.ts",
+          "test": "flattens across segments here too, so the predicate a replay satisfies works live"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "            ...(argv.length === 0 ? {} : { head: argv[0], argv }),",
+      "replace": "            head: argv[0],\n            argv,",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "leaves both ABSENT on a call that runs no shell command, rather than writing []"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "packages/core/src/event.ts",
+      "find": "    is_error: 'boolean',\n    bytes: 'number',\n  },\n  /** One per executed segment of a shell call.",
+      "replace": "    is_error: 'boolean',\n  },\n  /** One per executed segment of a shell call.",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "emits only fields its kind declares"
+        },
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "is a number, so a handler can compare it against a budget"
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "file": "packages/core/src/event.ts",
+      "find": "  'hook.context': {\n    hook_event: 'string',\n    hook_name: 'string',\n    bytes: 'number',\n    persisted: 'boolean',\n  },",
+      "replace": "  'hook.context': {\n    hook_event: 'string',\n    hook_name: 'string',\n    bytes: 'number',\n  },",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "declares the two fields a reader needs, with the types a `where` checks"
+        },
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "compiles a handler that reads the delivered bytes and the persisted flag"
+        },
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "compiles one that selects only the previews, the worst arm of the tax"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "file": "packages/core/src/event.ts",
+      "find": "   * **The records written for ONE hook run disagree about it, and none of the others holds what was\n   * attached.** Three consecutive records of a run in this checkout's own transcript: a\n   * `hook_success` with empty `content`; a SECOND `hook_success` carrying the same `toolUseID` and\n   * 3,567 bytes of the hook's own output; and the `hook_additional_context` whose `toolUseID` is\n   * `SessionStart` and whose content -- the wrapper below -- is 1,538 bytes. The model was handed\n   * those 1,538 and neither of the other two.\n",
+      "replace": "",
+      "survivor": true,
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "emits the hook that attached it and the bytes it put in front of the model"
+        }
+      ],
+      "why": "No assertion reads a docblock, so this paragraph is unkillable by construction -- and it is an intended survivor rather than a gap because deleting prose here cannot change what the evaluator does. This particular paragraph is worth the entry: it REPLACES a published claim that was false. The first draft of this kind's docblock said all 672 attached contexts had an EMPTY sibling `hook_success`, so `hook.delivery.bytes` was 0 for every delivery that injected anything; the corpus says otherwise -- one run writes an empty `hook_success` AND one carrying 3,567 bytes, while the model was handed 1,538 -- so the number in the prose was a JOIN COUNT read as an emptiness count. A docblock is the one place that mistake survives review, which is exactly why a survivor here names the test it is held by rather than claiming to be covered."
+    },
+    {
+      "id": "M12",
+      "file": "packages/core/src/event.ts",
+      "find": "    skill: 'string',\n    head: 'string',\n    argv: 'array',\n  },",
+      "replace": "    skill: 'string',\n  },",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "declares both with the types a `where` checks literals against"
+        },
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "loads every selector the bead measured as REFUSED, not just the tightest one"
+        }
+      ]
+    },
+    {
+      "id": "M13",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "        const argv = role === 'exec' ? execSegments(text(input['command'])).flat() : [];",
+      "replace": "        const argv = role === 'exec' ? execSegments(text(input['command'])).flat().slice(0, 2) : [];",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "flattens the tokens ACROSS segments, which is what a commit predicate needs"
+        },
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "fires on a commit that is not the first command in the line"
+        }
+      ],
+      "why": "M7 flattens nothing and M13 flattens only the first two tokens: both are the same class at different strengths, and the pair is deliberate. M7 is the mutant the field exists against and is killed by the two asserts that read the ARRAY; M13 leaves the array long enough that `head` is right and a `[git, commit]` pair in the first segment is still adjacent, so it survives a `head`-only assert and is killed by the array assert AND, independently, by the one that asks the PREDICATE about a commit in a LATER segment. That second killer is the asc-hvnx acceptance criterion, and it is named here because it is the only one of the two that would still kill a mutant this short if the array assert were ever relaxed to the first segment."
+    }
+  ]
+}

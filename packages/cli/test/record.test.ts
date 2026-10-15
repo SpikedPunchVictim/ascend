@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ENTRY_SOURCES } from '@ascend/store';
 
 /**
  * `asc record`, driven as the real binary.
@@ -1214,6 +1215,116 @@ describe('asc record', () => {
     });
   });
 
+  /**
+   * `asc-09wx.8.1`. The `intervention` ledger's rule, and the one question `asc-09wx.8`'s design
+   * deliberately left open: *"either the type requires a rule property beside `prediction`, or
+   * 'exploratory' is defined precisely: a row with a prediction and no rule, which can be reported
+   * but never verdicted."* The first option ships.
+   *
+   * **It is expressed here rather than in the definition because it is conditioned on another
+   * property**, and `PropertySpec` can only say `required` -- which for this type would mean every
+   * row needs a rule, including the rows the capture mechanism writes without a metric. That is the
+   * same reasoning `asc-xvz5`'s rule above is built on, and both are in `starterEntryIssue` for it.
+   *
+   * **Every arm below is driven as the real binary**, because the claim is about what reached the
+   * ledger rather than about what the command said. The N/A arm was corrected by one: the first
+   * version refused `--na metric`, which its own docblock said it passed.
+   */
+  describe('a metric with no rule for what "helped" means (asc-09wx.8.1)', () => {
+    // `status` is deliberately NOT in the base: it is `required`, so every arm below supplies it,
+    // and several arms supply a DIFFERENT one. Passing it twice is a duplicate flag, which oclif
+    // answers with a usage error -- exit 2, which is not the refusal any of these arms is about.
+    const row = ['record', 'intervention', '--prop=change=.claude/settings.json'];
+    const proposed = [...row, '--prop=status=proposed'];
+
+    it('refuses a row carrying a metric and no rule, and writes nothing', () => {
+      const dir = project();
+      const run = asc([...proposed, '--prop=metric={"handler":"beads-recall.yaml"}'], dir);
+
+      expect(run.status).toBe(1);
+      const message = flatten(run.stderr);
+      expect(message).toContain('metric but no rule');
+      // The door, named in the form this caller is using: a refusal that does not name one is a
+      // stuck recorder.
+      expect(message).toContain('--prop=rule');
+      expect(stored(dir)).toEqual([]);
+    });
+
+    it('refuses on a dry run too, because a preview cannot promise a write the write refuses', () => {
+      const dir = project();
+      const run = asc(
+        [...proposed, '--prop=metric={"handler":"beads-recall.yaml"}', '--dry-run', '--json'],
+        dir,
+      );
+
+      expect(run.status).toBe(1);
+      expect(flatten(run.stderr)).toContain('metric but no rule');
+      expect(stored(dir)).toEqual([]);
+    });
+
+    it('records the same row once the rule names what would count', () => {
+      const dir = project();
+      const run = asc(
+        [
+          ...proposed,
+          '--prop=metric={"handler":"beads-recall.yaml"}',
+          '--prop=rule=the share of compaction segments that run bd recall rises by 20 points',
+          '--json',
+        ],
+        dir,
+      );
+
+      expect(run.status).toBe(0);
+      // Read back out of SQLite: the rule is what made the write legal, so the assertion is that it
+      // reached the row rather than that it was accepted.
+      expect(stored(dir)).toHaveLength(1);
+      expect(stored(dir)[0]?.properties_json).toContain('bd recall rises by 20 points');
+    });
+
+    it('does not touch a row carrying no metric at all, which is what the capture mechanism writes', () => {
+      // The control that decides whether the rule is about metrics or about rows. `asc-09wx.8.2`
+      // hashes a watched file, sees a difference and writes "something changed on this date" with
+      // no metric and no reason. A rule that demanded a rule here would make that mechanism's own
+      // output unwritable -- a rule the honest case beside it cannot satisfy.
+      const dir = project();
+      const run = asc(
+        [...row, '--prop=status=applied', '--prop=applied_at=2026-10-13T00:00:00.000Z', '--json'],
+        dir,
+      );
+      expect(run.status).toBe(0);
+      expect(stored(dir)).toHaveLength(1);
+    });
+
+    it('does not demand a rule for a metric explicitly marked N/A, which is how a row says it has none', () => {
+      // The arm the real binary corrected. `--na metric` asserts "this row has nothing to be graded
+      // against" -- the honest three-state encoding of "no metric" -- and it is the same claim as
+      // omitting the property. Reading an N/A as a decision that a rule is now OWED got this
+      // backwards and refused the case its own docblock said it passed.
+      const dir = project();
+      const run = asc([...row, '--prop=status=ungradeable', '--na', 'metric', '--json'], dir);
+
+      expect(run.status).toBe(0);
+      expect(stored(dir)).toHaveLength(1);
+      expect(stored(dir)[0]?.na_json).toContain('metric');
+    });
+
+    it('does not accept an N/A rule as the rule, because that is the contradiction the rule catches', () => {
+      // The other half of the asymmetry, and the one that makes the rule mean anything. A row
+      // asserting both that the metric is worth measuring and that it is not worth saying what would
+      // count has asserted the exact state pre-registration exists to prevent -- and `--na rule` is
+      // the spelling that would otherwise slip past. It is read as "no rule", not as a decision.
+      const dir = project();
+      const run = asc(
+        [...proposed, '--prop=metric={"handler":"beads-recall.yaml"}', '--na', 'rule'],
+        dir,
+      );
+
+      expect(run.status).toBe(1);
+      expect(flatten(run.stderr)).toContain('metric but no rule');
+      expect(stored(dir)).toEqual([]);
+    });
+  });
+
   it('fills in the provenance it can read, and refuses the parts it cannot', () => {
     const dir = project();
     const run = asc(
@@ -1273,7 +1384,7 @@ describe('asc record', () => {
   it('refuses source, recorded_at, cwd and type, each with its reason', () => {
     const dir = project();
     const cases: readonly (readonly [string, string])[] = [
-      ['source', 'only the thing doing the deriving'],
+      ['source', 'only the thing doing the observing or deriving'],
       ['recorded_at', 'read from ascend'],
       ['cwd', 'read from the process'],
       ['type', 'the type is the command operand'],
@@ -1292,6 +1403,28 @@ describe('asc record', () => {
       expect(flatten(run.stderr), key).toContain(reason);
     }
     expect(stored(dir)).toEqual([]);
+  });
+
+  it('names exactly the sources a machine may claim, so the refusal cannot go stale (asc-09wx.8.9)', () => {
+    // The vocabulary in this refusal was spelled by hand and went stale twice: it was written
+    // when there were two machine values, and it did not move for `asc-09wx.9`'s `derived:git` or
+    // `asc-09wx.8.7`'s `observed:capture` (dogfood/0110). The message reads the list off
+    // `ENTRY_SOURCES` now, and this is the assertion that keeps that honest.
+    //
+    // Exact rather than "contains each machine source": a message that also named `self` among
+    // them would be wrong about which side of the axis `self` is on, and a per-value loop cannot
+    // see that -- it passes on a superset. `self` belongs in the sentence, which says a document
+    // is always `self`; what it may not do is appear in the list of what a machine writes.
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '-'],
+      dir,
+      JSON.stringify({ properties: { chosen: 'a' }, source: 'self' }),
+    );
+    const machineSources = ENTRY_SOURCES.filter((value) => value !== 'self');
+
+    expect(run.status).toBe(1);
+    expect(flatten(run.stderr)).toContain(`sets it: ${machineSources.join(', ')}.`);
   });
 
   it('refuses an unknown field rather than dropping it in silence', () => {

@@ -164,7 +164,7 @@ export function derivationVersion(type: string): number {
 /**
  * The sentence a model reads in `asc types brief`, and it must stay short: the brief is a
  * context tax on EVERY session in the project. These cost 73 characters each -- 438 across the
- * six -- which is cheaper than the four starter types, and for a fact the model needs, which
+ * six -- which is cheaper than the five starter types, and for a fact the model needs, which
  * is "do not record these".
  *
  * The count is IN the sentence because it is the reason the budget test's cap has moved twice:

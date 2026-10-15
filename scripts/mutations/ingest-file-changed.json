@@ -1,0 +1,153 @@
+{
+  "_": "Kill-check for asc-09wx.8.6: `asc ingest file-changed`, the second observer of `asc-09wx.8`'s intervention ledger, plus the three places its `source` value is written. The mechanism is small and each of its claims is a separate decision, so the mutants are chosen one per decision rather than one per function: the source value itself landing in a sibling bucket (M10) -- the mistake the 'the suffix names the ascend subsystem, not the thing read' argument exists to prevent, and the one that would inflate nobody's count because entries are immutable; the id keyed on the EVENT rather than on the tool call it came from (M2), which is the difference between one row per edit and one row per MultiEdit; the watched set as the filter rather than as a formality (M7); `applied_at` omitted rather than fabricated when the event carried no timestamp (M8); `applied_at` never omitted at all (M6's sibling, M9's is `status`); `digest` absent because the event carries edit strings and not file bytes (M3) -- filling it by hashing the file at ingest time is the honest-looking version of the same defect, so the mutant plants exactly that; validation before the transaction rather than inside it (M5). M4 is the `--dry-run` arm, and it is here because the preview runs the REAL writers under a rollback: a cut that made the preview write would be invisible to any assertion about the counts it prints. The killers were found empirically rather than guessed: each mutant was applied, the owning suites were run with vitest's JSON reporter, and the failing names were read off its assertionResults -- never chosen from the test titles. M2 is worth one note: written as `event.id` it does not compile (`TS4111`, an index-signature property needs the bracket spelling), so it was respelled `event['id']` -- a mutant killed by `tsc` is a mutant the suite never reached, and the run's own beforeAll would have reported that as a failing test rather than as a dead mutant. M12 kills eleven of the thirteen tests, which is not redundancy: `observed:file-changed` missing from the store's CHECK constraint refuses every row of the run, and that breadth is the measurement of how much of this feature is one value.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "!isAbsolute(path)",
+      "replace": "false",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "does not resolve a relative path against the working directory"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "seq: event.seq,",
+      "replace": "seq: event['id'],",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "writes one row per EDIT, so a MultiEdit’s edits are not one row"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "change: `\\`${change.display}\\``,\n    status: 'applied',",
+      "replace": "change: `\\`${change.display}\\``,\n    digest: { path: change.display },\n    status: 'applied',",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "omits `digest`, which it cannot fill honestly"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "const dryRun = flags['dry-run'];",
+      "replace": "const dryRun = false;",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "previews the counts a run would produce, and writes nothing"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "if (checked.ok) {",
+      "replace": "if (true) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "refuses a row whose `applied_at` is not a timestamp, rather than writing it"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "tally[same ? 'present' : 'changed'] += 1;",
+      "replace": "tally.present += 1;",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "reports `changed` when a stored row about the same event says something else"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "const display = watched.get(resolve(path));",
+      "replace": "const display = resolve(path);",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "counts the events it left out, so the watched set is a number rather than an absence"
+        },
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "writes one row per change, dated to the tool call that made it"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "...(change.ts === undefined ? {} : { applied_at: change.ts }),",
+      "replace": "applied_at: change.ts ?? '1970-01-01T00:00:00.000Z',",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "writes a row with no `applied_at` when the event carried no timestamp"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "status: 'applied',",
+      "replace": "status: 'proposed',",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "writes one row per change, dated to the tool call that made it"
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "file": "packages/cli/src/commands/ingest/file-changed.ts",
+      "find": "const SOURCE = 'observed:file-changed';",
+      "replace": "const SOURCE = 'observed:capture';",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "writes one row per change, dated to the tool call that made it"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "file": "packages/store/src/recorder.ts",
+      "find": "  'observed:file-changed',\n] as const;",
+      "replace": "] as const;",
+      "killers": [
+        {
+          "file": "packages/store/test/recorder.test.ts",
+          "test": "admits the source the file.changed ingester writes (asc-09wx.8.6)"
+        }
+      ]
+    },
+    {
+      "id": "M12",
+      "file": "packages/store/src/schema.ts",
+      "find": "'observed:capture', 'observed:file-changed')",
+      "replace": "'observed:capture')",
+      "killers": [
+        {
+          "file": "packages/cli/test/ingest-file-changed.test.ts",
+          "test": "writes one row per change, dated to the tool call that made it"
+        }
+      ]
+    }
+  ]
+}

@@ -148,10 +148,12 @@ describe('output flags on the root reach the command a bare `asc` runs', () => {
     const run = asc(['--json'], project());
 
     expect(run.status).toBe(0);
-    // The literal is deliberate: this is a second place the number is written down, so a bump has
-    // to be made here too rather than only in `output.test.ts`. It is 3 since `asc record
-    // --dry-run` began omitting a minted `id` (`asc-mw1u`).
-    expect(JSON.parse(run.stdout)).toMatchObject({ ascend_output: 3, row_count: 4 });
+    // The literals are deliberate: this is a second place both numbers are written down, so a change
+    // to either has to be made here too rather than only in `output.test.ts`. `ascend_output` is 3
+    // since `asc record --dry-run` began omitting a minted `id` (`asc-mw1u`). `row_count` is the
+    // number of starter types a fresh project registers, and it moved 4 -> 5 when `intervention`
+    // joined them (`asc-09wx.8.1`): a bare `asc` runs `types brief`, which lists one row per starter.
+    expect(JSON.parse(run.stdout)).toMatchObject({ ascend_output: 3, row_count: 5 });
   });
 
   it('makes `asc --json` byte-identical to the command it stands for', () => {

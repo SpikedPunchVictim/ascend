@@ -678,33 +678,54 @@ describe('asc types brief', () => {
   });
 });
 
-describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
-  /**
-   * A registry whose brief is over the cap by construction: six types, each with ~1,750 bytes of
-   * `record_when` prose.
-   *
-   * Few types with long prose rather than many types with short ones, because this fixture's cost
-   * is one subprocess per `types define` and the cap responds to bytes, not to type count.
-   */
-  function oversize(dir: string): readonly string[] {
-    return Array.from({ length: 6 }, (_, index) => {
-      const name = `bulk_${String(index)}`;
-      asc(
-        [
-          'types',
-          'define',
-          json(dir, `${name}.json`, {
-            name,
-            properties: [{ name: 'note', type: 'string' }],
-            record_when: `${name} `.repeat(250),
-          }),
-        ],
-        dir,
-      );
-      return name;
-    });
-  }
+/**
+ * A registry whose brief is over the cap by construction: six types, each with ~1,750 bytes of
+ * `record_when` prose.
+ *
+ * Few types with long prose rather than many types with short ones, because this fixture's cost
+ * is one subprocess per `types define` and the cap responds to bytes, not to type count.
+ *
+ * **At module scope rather than inside the describe that first needed it**, because the cap is a
+ * property of the whole payload: the due-grade block (`asc-09wx.8.5`) is charged against the same
+ * cap, so the suite asking whether a grade still reaches a reader through a capped brief needs this
+ * same registry. A second copy would be a second fixture to keep in step with the first, which is
+ * how two tests come to disagree about what "over the cap" means.
+ *
+ * **`repeats` is a parameter because "over the cap" and "packing the cap" are different fixtures.**
+ * Long lines overflow the cap but leave up to a line's worth of slack under it, and a charge smaller
+ * than that slack changes nothing -- see the packed case below, which is where the charge is actually
+ * measured.
+ */
+function oversize(dir: string, repeats = 250): readonly string[] {
+  return Array.from({ length: 6 }, (_, index) => {
+    const name = `bulk_${String(index)}`;
+    asc(
+      [
+        'types',
+        'define',
+        json(dir, `${name}.json`, {
+          name,
+          properties: [{ name: 'note', type: 'string' }],
+          record_when: `${name} `.repeat(repeats),
+        }),
+      ],
+      dir,
+    );
+    return name;
+  });
+}
 
+/**
+ * How many words of `record_when` make a `bulk_*` brief line ~1,305 bytes, and therefore make the six
+ * of them land at ~7,900 bytes -- inside the 8,000-byte cap, with under 100 bytes to spare.
+ *
+ * **The point of the number is the slack being SMALLER than the header**, which is ~330 bytes (the
+ * recording command, a due-grade line, and two newlines). Only then does charging the header to the
+ * cap force `fitBrief` to drop a line, which is what makes the charge observable at all.
+ */
+const PACKED_REPEATS = 185;
+
+describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
   it('caps what it prints, and writes the whole brief beside the store', () => {
     const dir = project();
     const names = oversize(dir);
@@ -780,6 +801,239 @@ describe('asc types brief above the delivery ceiling (asc-3q7)', () => {
     const rows = envelope(asc(['types', 'brief', '--json'], dir).stdout);
     expect(rows).toHaveLength(names.length);
     expect(rows.map((row) => row['name']).sort()).toEqual([...names].sort());
+  });
+});
+
+/**
+ * A minimal `intervention`, declared with names and shapes only.
+ *
+ * Every property here is one the shipped type in `starters.ts` carries; the prose is not, because
+ * what these cases ask about is the brief's rendering of the ledger rule rather than the type's
+ * own wording. `continues` is what makes a chain, and it is the property every state change is
+ * written through.
+ */
+const INTERVENTION = {
+  name: 'intervention',
+  properties: [
+    { name: 'change', type: 'string', required: true },
+    { name: 'applied_at', type: 'timestamp' },
+    { name: 'grading_point', type: 'duration', unit: 'days' },
+    {
+      name: 'status',
+      type: 'enum',
+      enum_values: ['proposed', 'applied', 'graded', 'reverted', 'ungradeable'],
+      required: true,
+    },
+    { name: 'continues', type: 'ref' },
+  ],
+  description: 'A change to how work is done, with the measurement that will grade it.',
+  record_when: 'Record when you change how work is done.',
+};
+
+const LEDGER_CHANGE = '`handlers/beads-delivery.yaml`';
+
+/**
+ * A project holding one open `intervention` row, and the root id it was recorded under.
+ *
+ * **`applied_at` defaults to 2020 -- the past -- so the row is due**: a wait of one active day whose
+ * earlier bound passed years ago. The other cases move one field each. A fixed instant rather than
+ * "now minus an interval", because the line this feeds names the bound it used, and an assertion
+ * against a moving date would be an assertion about the clock rather than about the rule.
+ */
+function interventionRow(
+  dir: string,
+  overrides: Record<string, unknown> = {},
+): { readonly root: string; readonly change: string } {
+  const defined = asc(['types', 'define', json(dir, 'intervention.json', INTERVENTION)], dir);
+  expect(defined.status, flatten(defined.stderr)).toBe(0);
+
+  const recorded = asc(
+    ['record', 'intervention', '-', '--json'],
+    dir,
+    JSON.stringify({
+      properties: {
+        change: LEDGER_CHANGE,
+        status: 'applied',
+        applied_at: '2020-01-01T00:00:00.000Z',
+        grading_point: 1,
+        ...overrides,
+      },
+    }),
+  );
+  expect(recorded.status, flatten(recorded.stderr)).toBe(0);
+  // Read off the command's own envelope rather than the tree: the id is what the line has to print,
+  // and a fixture that went looking for it on disk could agree with a line that named the wrong one.
+  return { root: String(envelope(recorded.stdout)[0]?.['id']), change: LEDGER_CHANGE };
+}
+
+/** A second entry in the chain, whose `status` is the row's current state. */
+function closeRow(dir: string, root: string, status: string): void {
+  const closed = asc(
+    ['record', 'intervention', '-', '--json'],
+    dir,
+    JSON.stringify({ properties: { change: LEDGER_CHANGE, continues: root, status } }),
+  );
+  expect(closed.status, flatten(closed.stderr)).toBe(0);
+}
+
+/**
+ * The grades the brief says the project owes itself (`asc-09wx.8.5`).
+ *
+ * **This is the half of the feature `brief-text.test.ts` cannot reach.** That file pins the block's
+ * bounds and its wording as pure text; what it cannot ask is whether a row the store actually holds
+ * reaches a session at all -- which is the whole mechanism, because a rule that fires on no store is
+ * a rule nobody is ever told about. So these cases drive the real binary against a real store, with
+ * the row written the way the capture mechanism writes one and read back out of the payload.
+ */
+describe('the grade asc types brief owes (asc-09wx.8.5)', () => {
+  it('prints a line naming the row, the wait and the command that reads it', () => {
+    const dir = project();
+    const { root } = interventionRow(dir);
+
+    const run = asc(['types', 'brief'], dir);
+    expect(run.status).toBe(0);
+
+    const owed = run.stdout.split('\n').filter((line) => line.startsWith('grade owed: '));
+    expect(owed).toHaveLength(1);
+    expect(owed[0]).toContain(root);
+    expect(owed[0]).toContain(LEDGER_CHANGE);
+    expect(owed[0]).toContain('1 active days');
+    expect(owed[0]).toContain('asc handlers grade');
+    // The flag the command refuses without. `dueGradeLine`'s own test says why it has to be taught
+    // here; this one says it survives the trip through the real command.
+    expect(owed[0]).toContain('--effect');
+  });
+
+  it('puts the grade above the types, under the recording command', () => {
+    const dir = project();
+    asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);
+    interventionRow(dir);
+
+    const lines = asc(['types', 'brief'], dir).stdout.trim().split('\n');
+    expect(lines[0]).toBe(RECORD_COMMAND_LINE);
+    expect(lines[1]?.startsWith('grade owed: ')).toBe(true);
+    // The grade goes above every type line, not between them: a reader who scans the top of the
+    // payload for what to do next finds the thing that is owed before the list it was owed against.
+    expect(lines.slice(2)).toContain(
+      'review_completed -- Record when a review of a change reaches a verdict.',
+    );
+  });
+
+  it('says nothing about a wait that has not run out', () => {
+    // The bound is `applied_at` plus CALENDAR days, so an instant far enough ahead is not due
+    // whatever today is. Spelled as a fixed date in the far future rather than "a few days from
+    // now" so that this case does not stop being about the rule on some later day.
+    const dir = project();
+    interventionRow(dir, { applied_at: '2099-01-01T00:00:00.000Z' });
+
+    expect(asc(['types', 'brief'], dir).stdout).not.toContain('grade owed:');
+  });
+
+  it('says nothing about a row whose newest entry has already answered it', () => {
+    // The row is due by its own dates; what removes it is that somebody graded it. A brief that
+    // kept asking after the grade would be a brief nobody trusts to stop.
+    const dir = project();
+    const { root } = interventionRow(dir);
+    closeRow(dir, root, 'graded');
+
+    const run = asc(['types', 'brief'], dir);
+    expect(run.status).toBe(0);
+    expect(run.stdout).not.toContain('grade owed:');
+  });
+
+  it('keeps a grade that was closed as ungradeable out of the list, rather than waiting forever', () => {
+    // `ungradeable` is the exit for a row no honest reading is possible for. Listing it would be
+    // exactly the forever-wait the type's own `record_when` warns against leaving behind.
+    const dir = project();
+    const { root } = interventionRow(dir);
+    closeRow(dir, root, 'ungradeable');
+
+    expect(asc(['types', 'brief'], dir).stdout).not.toContain('grade owed:');
+  });
+
+  it('names the longest-waiting first when the project owes more than one', () => {
+    const dir = project();
+    const late = interventionRow(dir, { applied_at: '2021-06-01T00:00:00.000Z' });
+    const early = interventionRow(dir, { applied_at: '2019-06-01T00:00:00.000Z' });
+
+    const owed = asc(['types', 'brief'], dir)
+      .stdout.trim()
+      .split('\n')
+      .filter((line) => line.startsWith('grade owed: '));
+
+    expect(owed).toHaveLength(2);
+    expect(owed[0]).toContain(early.root);
+    expect(owed[1]).toContain(late.root);
+  });
+
+  it('still reaches the reader through a capped brief, and is not counted as a type', () => {
+    // The block is charged off the TOP of the cap, where `fitBrief` cannot drop it -- so this is the
+    // case that says the charge is real: an over-cap registry is precisely where a session is least
+    // likely to have learned the verb by hand, and a grade that vanished there vanished where it was
+    // most needed.
+    const dir = project();
+    const names = oversize(dir);
+    const { root } = interventionRow(dir);
+
+    const run = asc(['types', 'brief'], dir);
+    expect(run.status).toBe(0);
+
+    const lines = run.stdout.trim().split('\n');
+    expect(lines[0]).toBe(RECORD_COMMAND_LINE);
+    expect(lines[1]).toContain('grade owed: ');
+    expect(lines[1]).toContain(root);
+
+    // The cap is a bound on the WHOLE payload, not on the type lines alone.
+    expect(Buffer.byteLength(run.stdout, 'utf8')).toBeLessThanOrEqual(8_000);
+    // The count the note gives is read off the store rather than computed from `names`, because
+    // `names` is only the oversized fixture: the `intervention` type this case had to register is
+    // an active type too, and the whole point of the assertion is that the grade line is NOT. A
+    // reader checking the note against `asc types list` gets the same number.
+    const active = envelope(asc(['types', 'list', '--json'], dir).stdout).filter(
+      (row) => row['status'] === 'active',
+    );
+    expect(active.length).toBeGreaterThan(names.length);
+    expect(run.stdout).toContain(`of ${String(active.length)} types shown`);
+    // ...and the grade line is not one of the types counted, which is what makes that number the
+    // number a reader can check. Dropping it into the list would make the note claim one more
+    // type was shown than was, on the one payload where the arithmetic is hardest to do by eye.
+    expect(run.stdout.split('\n')[0]).not.toContain('grade owed');
+
+    // The whole brief, header and grade included, is what the pointer names -- a reader sent to the
+    // file must not find a shorter document than the stdout it was cut from.
+    const written = readFileSync(join(dir, '.ascend', 'brief.txt'), 'utf8').split('\n');
+    expect(written[0]).toBe(RECORD_COMMAND_LINE);
+    expect(written[1]).toContain('grade owed: ');
+    for (const name of names) expect(written.join('\n')).toContain(`${name} -- `);
+  });
+
+  it("takes the grade's bytes out of the types it shows, rather than adding them to the cap", () => {
+    // **Why a fixture that packs the cap, when the case above is already over it.** `fitBrief` fills
+    // to the cap in whole lines, so `oversize`'s ~1,750-byte lines leave up to 1,750 bytes of slack
+    // under the cap -- and a charge of a few hundred bytes for the header sinks into that slack
+    // without changing which lines are kept. Measured: against the over-cap registry, handing the
+    // fitter `BRIEF_CAP_BYTES` *without* subtracting the header left every assertion in this describe
+    // green, so the charge was a rule that could be deleted. `PACKED_REPEATS` leaves less slack than
+    // the header costs, which forces the charge to drop a line -- and that is what makes the bound on
+    // the whole payload load-bearing rather than nominal.
+    const dir = project();
+    oversize(dir, PACKED_REPEATS);
+    const { root } = interventionRow(dir);
+
+    const run = asc(['types', 'brief'], dir);
+    expect(run.status).toBe(0);
+
+    const lines = run.stdout.trim().split('\n');
+    expect(lines[0]).toBe(RECORD_COMMAND_LINE);
+    expect(lines[1]).toContain('grade owed: ');
+    expect(lines[1]).toContain(root);
+
+    // The bound itself: the header plus a full complement of lines is over it, so a budget that did
+    // not subtract the header puts the payload past the cap.
+    expect(Buffer.byteLength(run.stdout, 'utf8')).toBeLessThanOrEqual(8_000);
+    // And the charge is paid by dropping type lines, which is the only way the bytes can come out of
+    // the registry rather than out of thin air. The note appears only when something was dropped.
+    expect(run.stdout).toContain('types shown');
   });
 });
 

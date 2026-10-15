@@ -106,6 +106,12 @@ const DERIVED_IGNORES = [
   '.ascend/ascend.db-wal',
   '.ascend/ascend.db-shm',
   '.ascend/ingest-cursor.json',
+  // The watched-file baseline, and the temp file its atomic write renames into place
+  // (`asc-09wx.8.2`). The temp name carries the writer's pid, so a killed run leaves its own
+  // behind -- a stray byte on disk, unless git can see it, in which case it is a stray byte in
+  // somebody's next commit.
+  '.ascend/watched-hashes.json',
+  '.ascend/watched-hashes.json.*.ascend-tmp',
   '.ascend/bin/',
 ];
 
@@ -192,10 +198,16 @@ function viewCount(dir: string): number {
   }
 }
 
-const STARTERS = ['decision', 'review_completed', 'stage_transition', 'stuck_event'];
+const STARTERS = [
+  'decision',
+  'intervention',
+  'review_completed',
+  'stage_transition',
+  'stuck_event',
+];
 
 describe('asc init', () => {
-  it('creates the store, ignores it, and installs the four starter types', () => {
+  it('creates the store, ignores it, and installs the five starter types', () => {
     const dir = repo();
     const run = asc(['init'], dir);
 
@@ -205,7 +217,7 @@ describe('asc init', () => {
     expect(registry(dir).every((row) => row.version === 1)).toBe(true);
     // Views, not just rows: a type row whose view failed to build is a type that cannot be
     // queried, and `registerType` would have rolled the row back -- so this checks the two agree.
-    expect(viewCount(dir)).toBe(4);
+    expect(viewCount(dir)).toBe(5);
   });
 
   it('reports every step as a row, so --json describes the same run as the table', () => {
@@ -252,6 +264,47 @@ describe('asc init', () => {
     // this very command is re-initialising and warn about it on every re-run -- a warning that
     // fires always is one nobody reads.
     expect(flatten(again.stderr)).not.toContain('shadowed');
+  });
+
+  it('lands a starter the store predates, and leaves the others exactly as they were', () => {
+    // The path THIS repo's own store takes: it was built before `intervention` existed
+    // (`asc-09wx.8.1`), so re-running `init` has to ADD the type without rewriting the four
+    // beside it. The idempotency test above covers the store that already has every starter; this
+    // is the one missing exactly one, which is the state every existing project is in.
+    //
+    // The fixture rewrites the TREE and deletes the derived index, and it does it in that order for
+    // a reason found the hard way: `entry_types` is immutable by trigger -- "a registered version
+    // cannot be deleted. Use status = deprecated." -- so the store cannot represent a project that
+    // never had the type by removing the row, and a test that tried was asserting a fixture the
+    // store refuses to let anyone build. What a real old project has is four lines in the tree it
+    // exported, and that IS constructible. Deleting `index.db` is not a workaround, it is the
+    // removal of a derived copy so the tree is what gets read back -- the same tree-over-index
+    // distinction the `prose-updated` test below is built on.
+    const dir = repo();
+    asc(['init'], dir);
+
+    const types = join(dir, '.ascend', 'types', '0001.jsonl');
+    writeFileSync(
+      types,
+      readFileSync(types, 'utf8')
+        .split('\n')
+        .filter(
+          (line) => line !== '' && (JSON.parse(line) as { name?: string }).name !== 'intervention',
+        )
+        .join('\n') + '\n',
+    );
+    rmSync(join(dir, '.ascend', 'index.db'));
+
+    const again = asc(['init', '--json'], dir);
+    expect(again.status).toBe(0);
+    expect(outcomeOf(again, 'type', 'intervention')).toBe('created');
+    // The other four are reported and left alone. Asserted per name rather than as a count: a
+    // count would be equally green if `init` re-created one of them and skipped another.
+    for (const name of ['decision', 'review_completed', 'stage_transition', 'stuck_event']) {
+      expect(outcomeOf(again, 'type', name)).toBe('unchanged');
+    }
+    expect(registry(dir).map((row) => row.name)).toEqual(STARTERS);
+    expect(viewCount(dir)).toBe(5);
   });
 
   it('reports prose-updated when a starter word changed, rather than dropping it as unchanged', () => {
@@ -312,12 +365,12 @@ describe('asc init', () => {
 
     const run = asc(['init', '--dry-run', '--json'], dir);
     // `unchanged` rather than `created`: the preview read the store it was asked about. A
-    // preview that reported `created` for four existing types would be describing a run that
+    // preview that reported `created` for five existing types would be describing a run that
     // does not exist.
     expect(outcomeOf(run, 'type', 'review_completed')).toBe('unchanged');
     expect(outcomeOf(run, 'store')).toBe('already present');
     expect(registry(dir)).toEqual(before);
-    expect(viewCount(dir)).toBe(4);
+    expect(viewCount(dir)).toBe(5);
   });
 
   it('preserves an existing .gitignore, including a last line with no newline', () => {
@@ -575,7 +628,7 @@ describe('asc init', () => {
     // cannot quietly double the digest. Line 1 also states that the entry arrives on stdin, because
     // without that clause the command a session runs as printed exits 1 (`asc-k0l9`).
     expect(lines[0]).toBe('Record with: asc record TYPE -  (a JSON entry on stdin)');
-    expect(lines.slice(1)).toHaveLength(4);
+    expect(lines.slice(1)).toHaveLength(5);
     expect(brief.stdout.length).toBeLessThan(2500);
   });
 });

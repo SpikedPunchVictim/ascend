@@ -3,6 +3,13 @@
 # `command` is the harness's own string. `bd prime` is the full text, which the harness never
 # inlined (EV-54); `bd-prime-hook.mjs` is the index that replaced it on 2026-10-13. Which of
 # the two a session received is the arm it is in, so both are emitted and the reader splits.
+#
+# `bytes` on a row is the HOOK'S OWN OUTPUT length, and it is NOT the size of the context the
+# model received -- measured 2026-10-15, one run writes an empty `hook_success` and a second
+# carrying 3,567 bytes of the hook's output while the attached context handed the model 1,538.
+# The injected size is `hook.context`'s `bytes`, beside its `persisted` flag. This handler is
+# left emitting `hook.delivery`'s for the reason it was written: it counts deliveries and which
+# form each took. A reader who wants the injected size reads the other kind.
 on: hook.delivery
 description: A SessionStart hook delivered the beads context.
 where:

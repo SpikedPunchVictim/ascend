@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { EVENT_KINDS, eventFieldType, type NormalizedEvent } from '@ascend/core';
+import { EVENT_KINDS, compileHandler, eventFieldType, type NormalizedEvent } from '@ascend/core';
 import { EVENT_DERIVE_VERSION, createNormalizer } from '../src/index.js';
 import type { TranscriptFile, TranscriptRecord } from '../src/index.js';
 
@@ -978,6 +978,8 @@ describe('review.finding, from a ReportFindings call', () => {
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 13: `tool.use.end` carries `bytes`, `hook.context` is a new kind, and `tool.use.start`
+    // carries `head`/`argv` for an exec call (asc-09wx.8.4, asc-hvnx).
     // 12: `hook.delivery` reads a `hook_success` attachment (asc-xn4g).
     // 11: every event carries `segment`; a compaction is `segment.start` (asc-73cb).
     // 10: `check.run` carries `paths` (asc-gtnu.10).
@@ -989,7 +991,7 @@ describe('review.finding, from a ReportFindings call', () => {
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(12);
+    expect(EVENT_DERIVE_VERSION).toBe(13);
   });
 });
 
@@ -1025,5 +1027,448 @@ describe('tool.use.start, for a Skill call (asc-tuur.2)', () => {
 
   it('declares skill as a string, so a handler can match on it', () => {
     expect(eventFieldType('tool.use.start', 'skill')).toBe('string');
+  });
+});
+
+/**
+ * `tool.use.start`, for the command a call is about to run (asc-hvnx).
+ *
+ * `command.run` carries the same two names, and it is emitted from the tool RESULT -- so by the time
+ * it exists, the command has already run. A handler that has to be selective BEFORE a command, which
+ * is what a PRE-tool-use stage is for, has only this event.
+ */
+describe('tool.use.start, for the command it is about to run (asc-hvnx)', () => {
+  const starts = (records: readonly TranscriptRecord[]): NormalizedEvent[] =>
+    normalize(records).filter((event) => event.kind === 'tool.use.start');
+
+  const bash = (command: string): TranscriptRecord =>
+    assistant([{ id: 't1', name: 'Bash', input: { command } }]);
+
+  it('carries the head and the tokens of a shell command', () => {
+    expect(starts([bash('bd close asc-1')])).toMatchObject([
+      { tool: 'Bash', role: 'exec', head: 'bd', argv: ['bd', 'close', 'asc-1'] },
+    ]);
+  });
+
+  it('flattens the tokens ACROSS segments, which is what a commit predicate needs', () => {
+    // MEASURED 2026-10-15 over 2,496 transcript files: of 162,906 `Bash` calls, `[git, commit]` sits
+    // in the FIRST segment of 306 and ONLY in a later one of 3,508 -- so an `argv` holding segment 0
+    // alone makes a `followed_by: [git, commit]` predicate miss 92% of commits, and a nudge built on
+    // it fires on 8% while reading as working. This is that shape, and the assert below is the
+    // predicate itself rather than the array spelling: what has to survive is that the pair is
+    // ADJACENT in the flat list.
+    const [start] = starts([bash('git add a.mjs && git status --short && git commit -m y')]);
+    const argv = start?.['argv'] as readonly string[];
+    expect(argv).toEqual([
+      'git',
+      'add',
+      'a.mjs',
+      'git',
+      'status',
+      '--short',
+      'git',
+      'commit',
+      '-m',
+      'y',
+    ]);
+    expect(argv.some((one, index) => one === 'git' && argv[index + 1] === 'commit')).toBe(true);
+  });
+
+  it('drops a bare `cd` the way the segment split does, so head is the first real command', () => {
+    // `cd /tmp` is a step, not a command: `execSegments` yields no segment for it. Both spellings go
+    // through the same function, so `tool.use.start` and `command.run` agree about what a command is
+    // -- and a handler matching `head: git` is not defeated by a leading `cd`.
+    const [start] = starts([bash('cd /tmp && git commit -m y')]);
+    expect(start?.['head']).toBe('git');
+    expect(start?.['argv']).toEqual(['git', 'commit', '-m', 'y']);
+  });
+
+  it('leaves both ABSENT on a call that runs no shell command, rather than writing []', () => {
+    // A handler matching `head` on a `Read` then matches NOTHING. Writing `[]` instead would make it
+    // match an exec call that ran no segment, which is a different and reachable record.
+    const [start] = starts([assistant([{ id: 't1', name: 'Read', input: { file_path: '/x' } }])]);
+    expect(start?.['role']).toBe('read');
+    expect('head' in (start ?? {})).toBe(false);
+    expect('argv' in (start ?? {})).toBe(false);
+  });
+
+  it('declares both with the types a `where` checks literals against', () => {
+    // The kind is what lets the strict loader refuse a typo by name; the TYPE is what refuses a
+    // `followed_by` on `head` or an `eq` on `argv`. Without the two together a handler over these
+    // fields is a `where` that is silently never true.
+    expect(eventFieldType('tool.use.start', 'head')).toBe('string');
+    expect(eventFieldType('tool.use.start', 'argv')).toBe('array');
+  });
+});
+
+/**
+ * `tool.use.end`, for the bytes its result carried (asc-09wx.8.4).
+ *
+ * This is the field that makes `EV-54`'s context tax countable. That review found three detectors,
+ * one of which paid -- the context tax -- and the one that paid could not be written as a handler,
+ * because an event carried no size. The same quantity under the same name is on `hook.context`.
+ */
+describe('tool.use.end, for the bytes its result carried (asc-09wx.8.4)', () => {
+  const ends = (records: readonly TranscriptRecord[]): NormalizedEvent[] =>
+    normalize(records).filter((event) => event.kind === 'tool.use.end');
+
+  const call = assistant([{ id: 't1', name: 'Read', input: { file_path: '/x' } }]);
+
+  /** A result whose `content` is whatever the caller says, which the shared helper cannot express. */
+  const result = (content: unknown): TranscriptRecord => ({
+    type: 'user',
+    sessionId: 'sess-1',
+    timestamp: TS,
+    message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false, content }] },
+  });
+
+  it('counts the bytes of a result that is one string', () => {
+    const [event] = ends([call, result('hello')]);
+    expect(event?.['bytes']).toBe(5);
+  });
+
+  it('counts a result written as content BLOCKS, the other spelling in the corpus', () => {
+    // Both spellings occur, and reading only the string one would report every block-shaped result
+    // as carrying nothing -- a false zero, which is the class `EV-54` could not count and the reason
+    // `hook.context` exists as a kind rather than a widened field.
+    const [event] = ends([
+      call,
+      result([
+        { type: 'text', text: 'hello' },
+        { type: 'text', text: '!' },
+      ]),
+    ]);
+    expect(event?.['bytes']).toBe(6);
+  });
+
+  it('counts BYTES rather than characters, so a multibyte result is not reported short', () => {
+    // The whole use of the number is a SUM a reader compares against a budget, so a character count
+    // would under-report exactly the non-English text a context tax is most likely to contain.
+    const text = 'naïve — ok';
+    const [event] = ends([call, result(text)]);
+    expect(event?.['bytes']).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(event?.['bytes']).not.toBe(text.length);
+  });
+
+  it('writes a real ZERO for an empty result, which is not the same as no result', () => {
+    // The harness wrote a result and it was empty. That is a measurement, and it belongs in a sum.
+    const [event] = ends([call, result('')]);
+    expect(event?.['bytes']).toBe(0);
+  });
+
+  it('leaves `bytes` ABSENT when the record carried no result text, rather than writing zero', () => {
+    // The other side of the pair above: nothing to measure is not a measurement of nothing. Folding
+    // it into the zero bucket would make a reader's sum quietly wrong instead of visibly short.
+    const [event] = ends([call, result(undefined)]);
+    expect('bytes' in (event ?? {})).toBe(false);
+  });
+
+  it('is a number, so a handler can compare it against a budget', () => {
+    expect(eventFieldType('tool.use.end', 'bytes')).toBe('number');
+  });
+});
+
+/**
+ * `hook.context` (asc-09wx.8.4): the context a hook ATTACHED, read off the harness's own
+ * `hook_additional_context` attachment.
+ *
+ * A different record from `hook.delivery`, and why is measured rather than argued. Read-only over
+ * this machine's `~/.claude/projects` on 2026-10-15 (2,496 files): 672 such records, every one
+ * carrying `content` as a ONE-ELEMENT ARRAY of strings. Three consecutive records of ONE real run in
+ * this checkout's own transcript: a `hook_success` with empty content, a SECOND `hook_success`
+ * carrying the same `toolUseID` and 3,567 bytes of the hook's own output, and this record -- whose
+ * `toolUseID` is the hook EVENT NAME `SessionStart` and whose content, 1,538 bytes, is the wrapper
+ * below. The model was handed those 1,538 and neither of the other two.
+ *
+ * Both record shapes below are transcribed from that run rather than invented.
+ */
+describe('hook.context', () => {
+  const attachment = (attachment: Record<string, unknown>): TranscriptRecord => ({
+    type: 'attachment',
+    sessionId: 'sess-1',
+    timestamp: TS,
+    attachment,
+  });
+
+  const attached = (fields: Record<string, unknown> = {}): Record<string, unknown> => ({
+    type: 'hook_additional_context',
+    hookEvent: 'SessionStart',
+    hookName: 'SessionStart',
+    toolUseID: 'SessionStart',
+    content: ['the index'],
+    ...fields,
+  });
+
+  const contexts = (records: readonly TranscriptRecord[]): NormalizedEvent[] =>
+    normalize(records).filter((event) => event.kind === 'hook.context');
+
+  /** A `hook_success` sibling, as the harness writes it: a different record with a different id. */
+  const hookSuccess = (content: string): Record<string, unknown> => ({
+    type: 'hook_success',
+    hookEvent: 'SessionStart',
+    hookName: 'SessionStart:startup',
+    toolUseID: 'd18d2d1a-3ac4-41d7-a939-c26f8a717a0a',
+    command: 'node .claude/bd-prime-hook.mjs',
+    exitCode: 0,
+    content,
+  });
+
+  /** The persisted arm's content verbatim, as the harness writes it in place of the text. */
+  const WRAPPER = [
+    '<persisted-output>\n',
+    'Output too large (46.3KB). Full output saved to: /Users/me/.claude/projects/x/tool-results/a.txt\n\n',
+    'Preview (first 2KB):\n',
+    '[bd prime] If this output is truncated by your host, read the full persisted hook output',
+  ].join('');
+
+  it('emits the hook that attached it and the bytes it put in front of the model', () => {
+    expect(contexts([attachment(attached())])).toMatchObject([
+      { hook_event: 'SessionStart', hook_name: 'SessionStart', bytes: 9, persisted: false },
+    ]);
+  });
+
+  it('reads `persisted: false` and counts the text itself for an inlined delivery', () => {
+    const [event] = contexts([attachment(attached({ content: ['a sentence'] }))]);
+    expect(event?.['persisted']).toBe(false);
+    expect(event?.['bytes']).toBe(Buffer.byteLength('a sentence', 'utf8'));
+  });
+
+  it('reads `persisted: true` off the wrapper, and counts the WRAPPER the model received', () => {
+    // The number is small by construction, and that is the honest one: what reached the model is the
+    // wrapper and its 2 KB preview, not the 46.3 KB the wrapper names. Counting the delivered text
+    // instead would need the persisted FILE, which the log does not hold and a replay cannot be
+    // handed -- so the field reports what is on the record and `persisted` says which arm it is.
+    const [event] = contexts([attachment(attached({ content: [WRAPPER] }))]);
+    expect(event?.['persisted']).toBe(true);
+    expect(event?.['bytes']).toBe(Buffer.byteLength(WRAPPER, 'utf8'));
+    expect(event?.['bytes']).toBeLessThan(1024);
+  });
+
+  it('joins a multi-element array rather than counting only its first element', () => {
+    // `content` is an ARRAY on this record. A reader taking element 0 would report a fraction of what
+    // the model received while looking like it had measured the whole thing.
+    const [whole] = contexts([attachment(attached({ content: ['the ', 'index'] }))]);
+    const [part] = contexts([attachment(attached({ content: ['the '] }))]);
+    expect(whole?.['bytes']).toBe(9);
+    expect(part?.['bytes']).toBe(4);
+  });
+
+  it('counts BYTES rather than characters, so a multibyte preview is not reported short', () => {
+    const content = 'naïve — ok';
+    const [event] = contexts([attachment(attached({ content: [content] }))]);
+    expect(event?.['bytes']).toBe(Buffer.byteLength(content, 'utf8'));
+    expect(event?.['bytes']).not.toBe(content.length);
+  });
+
+  it('does not file a hook that only PRINTS the marker as a preview', () => {
+    // The flag is read off the wrapper's exact leading marker rather than guessed from a size, so a
+    // hook whose own output began with those words is an inlined delivery. Inferring from the size
+    // would also have to be right about every future 2 KB preview length.
+    const [event] = contexts([attachment(attached({ content: ['Output too large (46.3KB)'] }))]);
+    expect(event?.['persisted']).toBe(false);
+    expect(event?.['bytes']).toBe(Buffer.byteLength('Output too large (46.3KB)', 'utf8'));
+  });
+
+  it('reads the marker only at the START, so a hook that describes the wrapper is inlined', () => {
+    // The anchor is the whole content of the test: a hook explaining the persisted form to a reader
+    // prints the marker in the middle of its own text, and an unanchored match would file that
+    // delivery -- whose bytes ARE the whole text -- under the arm where bytes is a truncated preview.
+    const [event] = contexts([
+      attachment(
+        attached({
+          content: ['A hook that exceeds the limit is replaced by a <persisted-output> wrapper.'],
+        }),
+      ),
+    ]);
+    expect(event?.['persisted']).toBe(false);
+  });
+
+  it('does NOT carry the injected text, so the log holds no second copy of it', () => {
+    // `hook.delivery`'s rule, and the same reason: this population is the largest injected source in
+    // `EV-54`, and a 46.3 KB `bd prime` per session is measured rolling at ~1.33 MB/day (`EV-39` Q1).
+    const [event] = contexts([attachment(attached({ content: ['a sentence'] }))]);
+    expect(event?.['content']).toBeUndefined();
+    expect(Object.values(event ?? {})).not.toContain('a sentence');
+  });
+
+  it('leaves `hook_event` and `hook_name` absent rather than writing the empty string', () => {
+    // An empty string IS a value: a reader filtering on `hook_event !== ''` would be counting this
+    // default as a measurement. The bytes are still taken -- a delivery that named neither still put
+    // text in the stream.
+    const bare = Object.fromEntries(
+      Object.entries(attached()).filter(([name]) => name !== 'hookEvent' && name !== 'hookName'),
+    );
+    const [event] = contexts([attachment(bare)]);
+    expect('hook_event' in (event ?? {})).toBe(false);
+    expect('hook_name' in (event ?? {})).toBe(false);
+    expect(event?.['bytes']).toBe(9);
+  });
+
+  it('emits nothing for a `hook_success`, and nothing for a non-attachment', () => {
+    // The two records are different facts about one run, and neither stands in for the other: this
+    // kind reads one discriminator and any other value is the same case.
+    expect(contexts([attachment(hookSuccess('a sentence'))])).toEqual([]);
+    expect(contexts([prompt('a sentence')])).toEqual([]);
+  });
+
+  it('puts the flag on the context and NOT on the delivery, whose own record cannot say it', () => {
+    // The measured defect this kind exists for, in one assertion: BOTH records arrive for one run, the
+    // delivery carrying the hook's own output and the context carrying what was attached, and only
+    // one of them can be asked whether the text was persisted.
+    const events = normalize([
+      attachment(hookSuccess('the index')),
+      attachment(attached({ content: [WRAPPER] })),
+    ]);
+    const [delivery] = events.filter((event) => event.kind === 'hook.delivery');
+    const [context] = events.filter((event) => event.kind === 'hook.context');
+    expect(delivery?.['bytes']).toBe(Buffer.byteLength('the index', 'utf8'));
+    expect('persisted' in (delivery ?? {})).toBe(false);
+    expect(context?.['persisted']).toBe(true);
+  });
+
+  it('counts a redelivered context twice, because each attachment is its own record', () => {
+    expect(contexts([attachment(attached()), attachment(attached())])).toHaveLength(2);
+  });
+
+  it('declares the two fields a reader needs, with the types a `where` checks', () => {
+    expect(eventFieldType('hook.context', 'bytes')).toBe('number');
+    expect(eventFieldType('hook.context', 'persisted')).toBe('boolean');
+  });
+});
+
+/**
+ * The bead's own acceptance criterion, stated as a test: *"A handler over hook.delivery can count
+ * bytes injected per stream and deliveries that arrived as a preview. The context-tax detector is
+ * expressible as a handler, or the reason it is not is recorded."*
+ *
+ * `compileHandler` is the strict loader every handler file goes through, and it refuses a `where`
+ * naming a field its kind does not carry. So "expressible" is not a claim about prose here: the
+ * handler below compiles, and the typo below is refused BY NAME.
+ */
+describe('a handler over the attached context (asc-09wx.8.4)', () => {
+  const HANDLER = {
+    on: 'hook.context',
+    description: 'How much context a hook attached, and whether it arrived as a preview.',
+    where: { hook_event: { eq: 'SessionStart' } },
+    emit: {
+      bytes: '${bytes}',
+      persisted: '${persisted}',
+      hook_event: '${hook_event}',
+    },
+  };
+
+  it('compiles a handler that reads the delivered bytes and the persisted flag', () => {
+    // One row per attached context. "Per stream" is a sum over these rows, which is what every
+    // handler's count is -- `emit` writes a row, and the reader aggregates.
+    expect(() => compileHandler(HANDLER)).not.toThrow();
+    expect(compileHandler(HANDLER).on).toBe('hook.context');
+  });
+
+  it('compiles one that selects only the previews, the worst arm of the tax', () => {
+    expect(() => compileHandler({ ...HANDLER, where: { persisted: { eq: true } } })).not.toThrow();
+  });
+
+  it('refuses a field name this kind does not carry, and names it', () => {
+    // The severity-zero case the flat registry exists for: without it, `bytse` is a `where` that is
+    // silently never true -- a handler that runs green and matches nothing.
+    expect(() => compileHandler({ ...HANDLER, emit: { bytse: '${bytse}' } })).toThrow(
+      /hook\.context has no field "bytse"/u,
+    );
+  });
+
+  it('refuses a literal of the wrong type, so a numeric budget cannot be written as a string', () => {
+    expect(() => compileHandler({ ...HANDLER, where: { bytes: { eq: 'big' } } })).toThrow(
+      /the field is a number/u,
+    );
+  });
+
+  it('refuses `matches` on the byte count, which is not a string', () => {
+    expect(() => compileHandler({ ...HANDLER, where: { bytes: { matches: '^1' } } })).toThrow(
+      /matches needs a string field/u,
+    );
+  });
+});
+
+/**
+ * asc-hvnx's own measurement, turned the other way round and stated as a test.
+ *
+ * The bead says, verbatim: *"Four pre-tool-use selectors tried through the strict loader with
+ * `say:` + `stage: pre`. `argv contains commit`, `argvs`, and `head git` are each REFUSED
+ * (`"tool.use.start has no field ..."`); only `tool: {eq: Bash}` loads."* That was true of the kind
+ * before the two fields existed, and it is why the bead was filed: a hook that fires BEFORE a
+ * command could not read the command. The handler below is the one it was filed for, and the
+ * refusals beside it pin the other end -- a field this kind does not carry is still refused BY NAME,
+ * so this is two fields arriving rather than the loader loosening.
+ */
+describe('a pre-tool-use handler that can be selective about the command (asc-hvnx)', () => {
+  const starts = (records: readonly TranscriptRecord[]): NormalizedEvent[] =>
+    normalize(records).filter((event) => event.kind === 'tool.use.start');
+
+  const bash = (command: string): TranscriptRecord =>
+    assistant([{ id: 't1', name: 'Bash', input: { command } }]);
+
+  /** The handler asc-hvnx was filed for: fire before a commit, and on nothing else. */
+  const HANDLER = {
+    on: 'tool.use.start',
+    description: 'Say something before a commit runs.',
+    stage: 'pre',
+    where: { argv: { followed_by: ['git', 'commit'] } },
+    say: 'About to commit.',
+  };
+
+  it('compiles a `say:` + `stage: pre` handler that selects a commit by an adjacent pair', () => {
+    // This is the four-selector measurement's outcome, as an assertion: `argv` is an array, so
+    // `followed_by` takes it, and the pair is the predicate rather than the array spelling. This
+    // document is refused by the kind as the bead measured it -- `head` and `argv` did not exist --
+    // whether or not the bead's own probe spelled the pair exactly this way.
+    expect(() => compileHandler(HANDLER)).not.toThrow();
+    expect(compileHandler(HANDLER).sayStage).toBe('pre');
+  });
+
+  it('loads every selector the bead measured as REFUSED, not just the tightest one', () => {
+    // `tool` was the ONE that loaded. The other three are the ones the measurement is about, so
+    // each is asserted on its own rather than only in the combination above -- a `where` combining
+    // them would still load if one of them were refused and the test caught only the throw.
+    for (const where of [
+      { tool: { eq: 'Bash' } },
+      { head: { eq: 'git' } },
+      { argv: { contains: 'commit' } },
+      { argv: { followed_by: ['git', 'commit'] } },
+    ]) {
+      expect(() => compileHandler({ ...HANDLER, where })).not.toThrow();
+    }
+  });
+
+  it('fires on a commit that is not the first command in the line', () => {
+    // The case the field exists for, and the one a `head`-only predicate cannot express: measured
+    // over 2,496 transcript files, `[git, commit]` is in the FIRST segment of 306 `Bash` calls and
+    // only in a LATER one of 3,508. A predicate keyed on the segment would miss 92% of commits.
+    const [start] = starts([bash('git add a.mjs && git commit -m y')]);
+    expect(compileHandler(HANDLER).where(start as NormalizedEvent, () => undefined)).toBe(true);
+  });
+
+  it('does not fire on a git command that is not a commit, or on a call that runs no command', () => {
+    // Both conjuncts are load-bearing: `git status` has the head but not the pair, and a `Read`
+    // carries neither field -- so a handler matching `head` on a non-exec call matches NOTHING
+    // rather than everything, which is the absent-not-empty decision one describe above.
+    const [status] = starts([bash('git status --short')]);
+    const [read] = starts([assistant([{ id: 't1', name: 'Read', input: { file_path: '/x' } }])]);
+    const where = compileHandler(HANDLER).where;
+    expect(where(status as NormalizedEvent, () => undefined)).toBe(false);
+    expect(where(read as NormalizedEvent, () => undefined)).toBe(false);
+  });
+
+  it('refuses `followed_by` on `head`, which is a string rather than an array', () => {
+    expect(() =>
+      compileHandler({ ...HANDLER, where: { head: { followed_by: ['git', 'commit'] } } }),
+    ).toThrow(/followed_by needs an array field/u);
+  });
+
+  it('still refuses a field name this kind does not carry, and names it', () => {
+    // The refusals the bead measured are gone BECAUSE the fields now exist -- not because the
+    // loader loosened. A name that is still not on `tool.use.start` is refused the same way.
+    expect(() => compileHandler({ ...HANDLER, where: { cwd: { eq: '/tmp' } } })).toThrow(
+      /tool\.use\.start has no field "cwd"/u,
+    );
   });
 });

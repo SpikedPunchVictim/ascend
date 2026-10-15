@@ -41,8 +41,35 @@ import type { SqlDatabase } from './sql-port.js';
 import { SCHEMA_VERSION } from './schema.js';
 import { requireUtcTimestamp } from './utc-timestamp.js';
 
-/** Where an entry came from. Mirrors the `source` CHECK constraint. */
-export const ENTRY_SOURCES = ['self', 'derived:claude-code', 'derived:git'] as const;
+/**
+ * Where an entry came from. Mirrors the `source` CHECK constraint.
+ *
+ * **The suffix names the ascend subsystem that produced the row, not the thing read.** That is the
+ * one reading under which all five values are the same kind of word: `derived:claude-code` is the
+ * adapter (`packages/adapter-claude-code`), `derived:git` is the ingester (`asc ingest git`),
+ * `observed:capture` is the SessionStart sweep (`asc capture`), and `observed:file-changed` is the
+ * ingester that reads `file.changed` events (`asc ingest file-changed`, `asc-09wx.8.6`) -- so a row
+ * says which mechanism watched, which is what lets a change seen by BOTH observers be read as two
+ * rows about one edit rather than as one unexplained duplicate. There are two observers and not one
+ * observer named twice because they answer different questions about the same edit: the sweep says
+ * "these files differed when this session began", the event says "this session wrote this path at
+ * this instant", and only one of the two can see an edit made and reverted inside one session.
+ *
+ * **`self` is the odd one out and stays that way.** It is the only value that is a claim about who
+ * is SPEAKING rather than what read something: every `self` row is one the model wrote about itself
+ * through `asc record`. Adding `observed:capture` is what keeps that true, and it is the reason the
+ * value exists -- `EV-16` measured 0 of 15 sessions running `asc record`, so a capture row filed
+ * under `self` would have inflated the count of "the model chose to record" with rows nobody chose
+ * at all. Entries are immutable, so that false green would have been permanent. Settled in
+ * `asc-09wx.8.7`; the capture writes it from `asc-09wx.8.2`'s command.
+ */
+export const ENTRY_SOURCES = [
+  'self',
+  'derived:claude-code',
+  'derived:git',
+  'observed:capture',
+  'observed:file-changed',
+] as const;
 export type EntrySource = (typeof ENTRY_SOURCES)[number];
 
 /** What a recorder asks for: a type, and what it observed. */

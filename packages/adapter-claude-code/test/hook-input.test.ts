@@ -126,3 +126,33 @@ describe('stageForKind', () => {
     expect(stageForKind('session.end', 'pre-tool-use')).toBeUndefined();
   });
 });
+
+describe('the command a live PreToolUse call is about to run (asc-hvnx)', () => {
+  // The point of the field is a handler that is selective about a command BEFORE it runs, and a hook
+  // is the only place that can act that early. Live and replayed have to say the same thing, or a
+  // handler written against `asc handlers check` would fire on the log and never on the session.
+  const preToolUse = (command: string): Record<string, unknown> => ({
+    session_id: 's-1',
+    cwd: '/work/project',
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_input: { command },
+    tool_use_id: 'toolu_1',
+  });
+
+  it('carries head and argv from a PreToolUse input', () => {
+    const events = hookEvents('pre-tool-use', preToolUse('git commit -m y')) ?? [];
+    expect(events[0]).toMatchObject({
+      kind: 'tool.use.start',
+      role: 'exec',
+      head: 'git',
+      argv: ['git', 'commit', '-m', 'y'],
+    });
+  });
+
+  it('flattens across segments here too, so the predicate a replay satisfies works live', () => {
+    const events = hookEvents('pre-tool-use', preToolUse('git add a.mjs && git commit -m y')) ?? [];
+    const argv = events[0]?.['argv'] as readonly string[];
+    expect(argv.some((one, index) => one === 'git' && argv[index + 1] === 'commit')).toBe(true);
+  });
+});

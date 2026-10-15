@@ -6,6 +6,9 @@
 
 import type { TypeSummary } from '@ascend/store';
 
+import type { DueGrade } from './intervention.js';
+import { isBoundary } from './output.js';
+
 /**
  * The byte count this command refuses to exceed on its own stdout.
  *
@@ -181,19 +184,152 @@ export function briefLines(summaries: readonly TypeSummary[]): readonly string[]
 }
 
 /**
- * The whole payload: the recording command, then one line per type.
+ * How many due grades the brief names before it stops and counts the rest (`asc-09wx.8.5`).
+ *
+ * **A bound is required of this block, because it is charged off the TOP of the cap where `fitBrief`
+ * cannot drop it.** The type lines below it are fitted and a note accounts for what was dropped; a
+ * block that cannot be dropped AND has no bound of its own would be the one way this payload could
+ * be pushed past `BRIEF_CAP_BYTES`, which is a delivery bound nothing reports the breach of
+ * (`commands/types/brief.ts` carries that measurement). With `CHANGE_CHARS` below bounding one line
+ * as well, the block's worst case is this many lines plus one remainder line; `brief-text.test.ts`
+ * measures that worst case against the cap rather than asserting it is small.
+ *
+ * **Five rather than one, and the remainder is not lost.** A backlog of ungraded rows is exactly what
+ * this block exists to surface, so naming one of five would keep the other four invisible for another
+ * session -- and grading the five named here is what brings the rest forward, because the block is
+ * ordered by the bound that passed, oldest first.
+ */
+export const DUE_GRADE_LIMIT = 5;
+
+/**
+ * How much of a row's `change` a due-grade line prints.
+ *
+ * `change` is a free-text `string` property, so its length is whatever somebody typed, and a due
+ * grade whose line ran to 10,000 bytes would be exactly the unbounded block `DUE_GRADE_LIMIT` exists
+ * to prevent -- one line over the cap with nothing able to drop it. The name in full is on the row
+ * and `asc handlers grade` prints it; what the brief needs is enough of it to recognize the row by.
+ */
+const CHANGE_CHARS = 60;
+
+/**
+ * `text` cut to at most `max` code points, backed off to a cluster boundary, marked when it was cut.
+ *
+ * **By code point and not by byte or code unit**, because a reader counts a name in characters and
+ * cutting either of the other two severs one. `asc-bcv.23` is this repository's record of `--table`
+ * splitting a grapheme cluster and showing a plausible-looking *different* character, which a reader
+ * has no way to notice -- and a code-point cut is not enough on its own, because a combining mark, a
+ * ZWJ sequence or a flag is several code points that render as one character.
+ *
+ * **The boundary rule is `output.ts`'s, imported rather than restated.** That file carries the fixed
+ * subset of UAX #29 it was measured against and the reason it is not `Intl.Segmenter`; a second copy
+ * here would be two implementations of one invariant, and this one would be the copy nobody
+ * re-measures. What is local is the UNIT -- code points, because that is what the budget names -- and
+ * the conversion from it to the code-unit index `isBoundary` reads.
+ */
+function clip(text: string, max: number): string {
+  // `Array.from`, not a spread -- the same spelling `store/src/search.ts` uses for the same reason,
+  // and the one the lint rule insists on: a spread over a string is the shape that silently
+  // mishandles characters above the BMP in other hands.
+  const points = Array.from(text);
+  if (points.length <= max) return text;
+
+  // Where the code-point cut falls, as a code-unit index: `isBoundary` reads code units, and a code
+  // point above the BMP is two of them.
+  let end = 0;
+  for (const point of points.slice(0, max)) end += point.length;
+  // Walk back until `isBoundary` allows the cut. The walk shrinks only, so the result is never
+  // longer than `max` code points, and it terminates at 0 -- always a boundary.
+  while (end > 0 && !isBoundary(text, end)) end = indexBefore(text, end);
+  return `${text.slice(0, end)}...`;
+}
+
+/** The index at which the code point ending at `index` begins, reading a surrogate pair as one. */
+function indexBefore(text: string, index: number): number {
+  const previous = text.charCodeAt(index - 1);
+  return previous >= 0xdc00 && previous <= 0xdfff && index >= 2 ? index - 2 : index - 1;
+}
+
+/**
+ * One line for a grade the project owes itself.
+ *
+ * **The wording is the decision, not decoration** (`asc-09wx.8.5`, decision `c38bf1a2`). The instant
+ * this names is `applied_at` plus `grading_point` in CALENDAR days while `grading_point` is stated in
+ * ACTIVE days, so it is an earlier bound on when the wait is up rather than the moment it is: on the
+ * sparsest corpus measured it lands 14.98 calendar days early and permits a grade holding 20 of the
+ * 30 active days the row asked for (`dogfood/0106`, and `DueGrade` in `intervention.ts`). A line that
+ * said "due" would be read as a verdict, and would be a false alarm on every sparse log -- so it says
+ * **due to BECOME READABLE**, which is what the row means and what the reader can act on.
+ *
+ * **`--effect` is named with its placeholder because the command has no default for it and refuses
+ * without it.** That refusal is deliberate (`grade.ts`: *"a figure this row did not choose would be
+ * this command inventing an effect size for it"*), so the flag has to be taught somewhere; a reader
+ * who discovers it from a usage error has spent a turn doing it, which is the discovery step
+ * `dogfood/0028` records the cost of. The value itself is the reader's to supply, and the row's own
+ * `prediction` is where they look for it.
+ */
+export function dueGradeLine(due: DueGrade): string {
+  return (
+    `grade owed: ${clip(due.change, CHANGE_CHARS)} -- waited ${String(due.days)} active days, and ` +
+    `the earlier bound on it (${due.dueAt}) has passed, so it is due to become readable. ` +
+    `Read it: asc handlers grade ${due.root} --effect <the size the row predicted>`
+  );
+}
+
+/**
+ * The due-grade lines, longest-waiting first, with one line accounting for any the limit left out.
+ *
+ * The remainder is a count and nothing else, deliberately: there is no command that lists due grades
+ * (`asc handlers grade` takes one id), and a pointer naming `asc query` with SQL over a versioned
+ * view would be a claim this module cannot keep true as the type is versioned. Grading the rows named
+ * here is what brings the rest forward, so the line counts them and says so.
+ */
+export function dueGradeLines(due: readonly DueGrade[]): readonly string[] {
+  const named = due.slice(0, DUE_GRADE_LIMIT).map(dueGradeLine);
+  const rest = due.length - named.length;
+  if (rest === 0) return named;
+  return [
+    ...named,
+    `[and ${String(rest)} more rows' waits are up -- this list names the ${String(
+      DUE_GRADE_LIMIT,
+    )} that have waited longest, and grading those brings the next ones forward.]`,
+  ];
+}
+
+/**
+ * The fixed prefix: the recording command when there is a type to record, then the grades owed.
+ *
+ * **Separated from `briefText` because the command has to charge these bytes to the cap itself.**
+ * `commands/types/brief.ts` hands `fitBrief` a budget of the cap less this text, exactly as it does
+ * for the recording command alone -- so this is the one thing `fitBrief` can never drop, and it is
+ * why `DUE_GRADE_LIMIT` is a bound rather than a preference.
+ *
+ * **The recording command is dropped when there is no active type, and that is a rule of its own.**
+ * `asc record TYPE -` with no type to put in the TYPE slot is a command the project cannot run, and a
+ * due-grade block is still something for a reader to point at -- so a registry with no active type
+ * prints the grades owed and no header, rather than teaching a command that would refuse.
+ */
+export function briefHead(summaries: readonly TypeSummary[], due: readonly DueGrade[]): string {
+  const header = summaries.length === 0 ? [] : [RECORD_COMMAND_LINE];
+  return [...header, ...dueGradeLines(due)].join('\n');
+}
+
+/**
+ * The whole payload: the recording command, the grades owed, then one line per type.
  *
  * **The empty case is silence, not a bare command line.** A header with no types under it names a
  * command and shows a reader nothing to point it at, and the deprecated-only registry -- a store
  * whose every type has been retired -- is exactly the case where the old contract printed nothing
  * at all. Returning `''` here rather than `RECORD_COMMAND` keeps that, so the rule lives in one
- * place instead of in each caller's early return.
+ * place instead of in each caller's early return. **A due grade counts as something to point at**:
+ * it names a row, a command and an id, so a store with no active type and an ungraded row is not
+ * the empty case and prints its grade.
  *
  * Shared with `asc doctor` so the size that check reports is the size of what this renders, header
  * included; that sharing is the reason the command line belongs here rather than in the hook script,
  * which the doctor cannot see and `BRIEF_CAP_BYTES` does not bound.
  */
-export function briefText(summaries: readonly TypeSummary[]): string {
+export function briefText(summaries: readonly TypeSummary[], due: readonly DueGrade[]): string {
   const lines = briefLines(summaries);
-  return lines.length === 0 ? '' : [RECORD_COMMAND_LINE, ...lines].join('\n');
+  const head = briefHead(summaries, due);
+  return head === '' ? lines.join('\n') : [head, ...lines].join('\n');
 }

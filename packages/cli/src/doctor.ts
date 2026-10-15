@@ -30,6 +30,7 @@ import type { TypeProfile, TypeSummary } from '@ascend/store';
 import { BRIEF_CAP_BYTES, briefText } from './brief-text.js';
 import { countCodePoints } from './budget.js';
 import type { HookBinaryKind } from './hook-script.js';
+import type { DueGrade } from './intervention.js';
 
 export type DoctorCheck =
   | 'dead_type'
@@ -214,15 +215,25 @@ export function propertyStates(profiles: readonly TypeProfile[]): readonly Docto
   ];
 }
 
-/** The brief's size against the token cap, measured on the text `asc types brief` prints. */
-export function briefSize(summaries: readonly TypeSummary[]): readonly DoctorFinding[] {
+/**
+ * The brief's size against the token cap, measured on the text `asc types brief` prints.
+ *
+ * **It takes the grades owed, because the brief prints them and this check's contract is to report
+ * the size of what the brief actually prints** (`asc-uftd`, `asc-09wx.8.5`). A due-grade block the
+ * doctor did not count would be a payload the doctor called small while the session received it in
+ * full -- the same drift the recording command's move into `brief-text.ts` closed, one block along.
+ * The alternative, an allowance added on top of the measured text, would be a second number for one
+ * size, which is what this module's docblock refuses.
+ */
+export function briefSize(
+  summaries: readonly TypeSummary[],
+  due: readonly DueGrade[],
+): readonly DoctorFinding[] {
   const active = summaries.filter((summary) => summary.status === 'active');
-  // The whole payload through the shared renderer, header and all (`asc-uftd`). This is why the
-  // recording command lives in `brief-text.ts` and nowhere else: this check's contract is to report
-  // the size of *what the brief actually prints*, and a line the payload prints that this does not
-  // count is precisely the drift `brief-text.ts` exists to prevent. An empty registry renders to
-  // `''` rather than to a bare command line, so a deprecated-only store measures 0.
-  const text = briefText(active);
+  // The whole payload through the shared renderer, header and grades and all. An empty registry with
+  // no grade owed renders to `''` rather than to a bare command line, so a deprecated-only store with
+  // nothing to grade measures 0.
+  const text = briefText(active, due);
   const bytes = Buffer.byteLength(text, 'utf8');
   const tokens = Math.round(countCodePoints(text) / BRIEF_CODE_POINTS_PER_TOKEN);
   const over = tokens > BRIEF_TOKEN_CAP;
@@ -235,7 +246,10 @@ export function briefSize(summaries: readonly TypeSummary[]): readonly DoctorFin
     {
       check: 'brief_size',
       status: over ? 'warn' : 'ok',
-      subject: `${String(active.length)} active types`,
+      subject:
+        due.length === 0
+          ? `${String(active.length)} active types`
+          : `${String(active.length)} active types, ${String(due.length)} grades owed`,
       detail:
         `${String(bytes)} bytes, ~${String(tokens)} tokens of ${String(BRIEF_TOKEN_CAP)}` +
         ` (a delivery bound: a larger payload is truncated silently)${capped}`,
@@ -456,6 +470,7 @@ export function hookGeneration(state: HookState): readonly DoctorFinding[] {
 export function runDoctor(
   summaries: readonly TypeSummary[],
   profiles: readonly TypeProfile[],
+  due: readonly DueGrade[],
   hook: HookState,
 ): readonly DoctorFinding[] {
   const entries = summaries.reduce((sum, summary) => sum + summary.entryCount, 0);
@@ -465,7 +480,7 @@ export function runDoctor(
     ...nearDuplicates(summaries),
     ...versionDrift(profiles),
     ...propertyStates(profiles),
-    ...briefSize(summaries),
+    ...briefSize(summaries, due),
     ...exportStatus(entries, struck),
     ...hookGeneration(hook),
   ];

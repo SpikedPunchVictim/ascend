@@ -351,9 +351,9 @@ export function resolveHookBinary(
  * **And the stage path still ENDS with an `exit 0`, which is not the old mask and must not be
  * deleted as one.** The two things an `exit 0` here can mean are different: the pre-fix script
  * exited 0 with the binary's status thrown away, and this one exits 0 only after that status was
- * tested. Deleting the line instead of the discard is a live hazard, not a tidy-up -- the script's
- * last two statements are the SessionStart tail, `ingest claude-code` and `types brief`, so a stage
- * call that stops exiting early FALLS THROUGH into them. Measured while writing this: the generated
+ * tested. Deleting the line instead of the discard is a live hazard, not a tidy-up -- what follows it
+ * is the SessionStart tail, `ingest claude-code`, `capture` and `types brief`, so a stage call that
+ * stops exiting early FALLS THROUGH into all three. Measured while writing this: the generated
  * script without it printed the hook's JSON and then `types brief`'s output on the same stream, so a
  * PostToolUse hook answered with two documents and Claude Code could parse neither. The distinction
  * is the whole reason the line is commented rather than merely present, and the asc-tuur.4 test that
@@ -371,14 +371,15 @@ export function resolveHookBinary(
  * interpreter line and its own executable bit set by whichever package manager created it, so it is
  * run directly.
  *
- * The store guard and the ingest-then-brief pair carry the same guarantees as the inline command
- * this replaced: `${STORE_DIR}/` is gitignored, so a teammate who clones this repository has the
- * hook and no store, and must see nothing rather than an error; `ingest claude-code` runs first
- * with both streams discarded, then `types brief` runs regardless of ingest's exit status, because
- * a broken ingest must never be able to suppress the one thing this hook has always reliably done.
- * Two ordinary statements on two lines carry that guarantee here, in place of the `;` the old
- * inline command needed to state explicitly: a script does not need `&&` to make one statement run
- * after another.
+ * The store guard and the ingest-then-capture-then-brief tail carry the same guarantees as the inline
+ * command this replaced: `${STORE_DIR}/` is gitignored, so a teammate who clones this repository has
+ * the hook and no store, and must see nothing rather than an error; `ingest claude-code` runs first
+ * with both streams discarded, then the two that follow run regardless of any earlier status,
+ * because a broken ingest must never be able to suppress the one thing this hook has always reliably
+ * done. Ordinary statements on their own lines carry that guarantee here, in place of the `;` the
+ * old inline command needed to state explicitly: a script does not need `&&` to make one statement
+ * run after another. `capture` is the one of the three that is *read* afterwards, because its status
+ * is the only thing that decides this script's exit code -- see the comment beside it in the body.
  *
  * **The text names this module, not `install-hook.ts`, and that is load-bearing.** The line is what
  * a reader of the script is told to go read, and `asc-mu20` moved `hookScript` out of the command
@@ -521,7 +522,25 @@ if [ -n "$1" ]; then
 fi
 
 run ingest claude-code >/dev/null 2>&1
+
+# Capture reads and WRITES, and its stderr is the ONLY channel it has to the model: on
+# SessionStart, exit-0 stderr is discarded and never reaches the transcript (the Claude Code
+# hooks reference is explicit, and dogfood/0082 is three sessions of that silence). So its
+# stdout is discarded -- a table on the injected stream would put ascend's own bookkeeping in
+# front of a session as if it were context -- and its status is TESTED rather than swallowed.
+# A watched file that is there and cannot be read writes no row and no baseline, and says so;
+# exiting 0 there would make a capture that has silently stopped capturing look like one that
+# found nothing.
+run capture >/dev/null
+capture_status=$?
+
+# Last, and still unconditioned on everything above: a broken ingest or an unreadable watched
+# file must never suppress the one thing this hook has always reliably done.
 run types brief
+brief_status=$?
+
+[ "$capture_status" -eq 0 ] || exit "$capture_status"
+exit "$brief_status"
 `;
 }
 

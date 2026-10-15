@@ -201,7 +201,9 @@ entry_types(name, version, spec_json, type_hash, description, record_when, statu
 entries(
   id, type_name, type_version, type_hash,
   recorded_at, run_id, workflow, actor,     -- actor = model/agent that recorded it
-  source,                                   -- 'self' | 'derived:claude-code'
+  source,                                   -- 'self' | a machine source ('derived:*' or
+                                            --          'observed:*'); the closed list is in
+                                            --          packages/store/src/schema.ts
   cwd, repo, git_sha, branch,
   properties_json, na_json, evidence_text,
   ascend_version, schema_version

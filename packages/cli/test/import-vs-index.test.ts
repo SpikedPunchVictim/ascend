@@ -329,9 +329,9 @@ const child = (dir: string, args: readonly string[]): Run =>
 /**
  * A project directory with NO store, so both arms start from the same nothing.
  *
- * Deliberately not `asc init`. `init` registers the four starter types, which land in
+ * Deliberately not `asc init`. `init` registers the five starter types, which land in
  * `entry_types` on the import arm and not on the index arm -- the index arm builds from a tree that
- * holds only this corpus -- so an `init`ed target would make the two dumps differ by four rows that
+ * holds only this corpus -- so an `init`ed target would make the two dumps differ by five rows that
  * have nothing to do with the question. `asc import` creates the store it needs, which
  * `corpus.test.ts` already relies on. Measured while writing this: a seeded project gives 6
  * `entry_types` where the corpus names 2, and the assertion below caught it.
