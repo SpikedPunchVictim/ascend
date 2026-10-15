@@ -1,6 +1,7 @@
 import { validateEntry } from '@ascend/core';
 import { describe, expect, it } from 'vitest';
 import {
+  COMMIT_LOG_ARGS,
   COMMIT_SIZE_TYPE,
   commitSizeProperties,
   SIZE_MIN_COMMITS,
@@ -30,6 +31,26 @@ function history(count: number, end: number): CommitStat[] {
     commit(`h${String(index)}`, end - (count - index) * DAY, index + 1),
   );
 }
+
+describe('COMMIT_LOG_ARGS', () => {
+  // THE ASK, PINNED. The module exports its arguments so that "the text this module parses and the
+  // command that produces it cannot drift apart", and until this test only the reading half of that
+  // sentence was checked -- the parser's behaviour, never the ask. Dropping `--no-renames` from the
+  // list leaves every other test in this file green, and it is not a cosmetic loss: the flag is the
+  // definition `EV-63` was measured with, and replaying that log's 367 commits gives the same added
+  // source lines on all 367 with it and on 365 without it. Whoever removes it is changing what the
+  // recorder measures and should have to say so in this diff.
+  it('asks git log for the exact shape parseCommitLog reads', () => {
+    expect(COMMIT_LOG_ARGS).toStrictEqual([
+      'log',
+      '--no-merges',
+      '--no-renames',
+      '-z',
+      '--numstat',
+      '--format=%x1e%H%x1f%ct%x1f',
+    ]);
+  });
+});
 
 describe('isSource', () => {
   it.each([

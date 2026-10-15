@@ -1,5 +1,5 @@
 {
-  "_": "Kill-check for asc-09wx.9: the commit size signal (`commit-size.ts`), the `derived:git` store source, and `asc ingest git`. M1-M4 are the four places the threshold EV-61 measured can be computed a near copy of itself: flagging at the threshold rather than above it, a different percentile, a commit counting toward its own threshold, and an off-by-one in the minimum. M5 drops the graded flag on the way into the entry. M6 and M7 are the two copies of the source list the store keeps beside `ENTRY_SOURCES`: the SQL CHECK, and the row mapping that used to read every unknown source as 'self'. M8 swaps the re-run outcomes, which is the idempotency claim. Killers were found by planting each mutant and reading the failing test names off vitest's JSON reporter. Not covered here: `--no-renames` in `COMMIT_LOG_ARGS`, which the fidelity replay against EV-63's log checks (asc-09wx.9 notes) and no test in this repository does.",
+  "_": "Kill-check for asc-09wx.9: the commit size signal (`commit-size.ts`), the `derived:git` store source, and `asc ingest git`. M1-M4 are the four places the threshold EV-61 measured can be computed a near copy of itself: flagging at the threshold rather than above it, a different percentile, a commit counting toward its own threshold, and an off-by-one in the minimum. M5 drops the graded flag on the way into the entry. M6 and M7 are the two copies of the source list the store keeps beside `ENTRY_SOURCES`: the SQL CHECK, and the row mapping that used to read every unknown source as 'self'. M8 swaps the re-run outcomes, which is the idempotency claim. Killers were found by planting each mutant and reading the failing test names off vitest's JSON reporter. M9 is the ask rather than the reading: the one argument in `COMMIT_LOG_ARGS` that is a measured definition rather than plumbing. Before it, removing `--no-renames` left the whole suite green and moved the recorder onto a definition EV-63 never tested -- measured 2026-10-14 by planting it, 31 of this file's 32 assertions passed and only the new one failed. It pins the whole list, so nothing in `COMMIT_LOG_ARGS` is unchecked now; the one agreement still kept by hand is between the `--format` string and the separators the parser splits on, which the parser tests pin from their own side.",
   "mutants": [
     {
       "id": "M1",
@@ -166,6 +166,18 @@
         {
           "file": "packages/cli/test/ingest-git.test.ts",
           "test": "writes only the new commit after one more is made"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "packages/cli/src/commit-size.ts",
+      "find": "  '--no-renames',\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/commit-size.test.ts",
+          "test": "asks git log for the exact shape parseCommitLog reads"
         }
       ]
     }
