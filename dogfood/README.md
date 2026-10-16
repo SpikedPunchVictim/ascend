@@ -193,8 +193,71 @@ context; the depth lives in the numbered files.
 
 | [0114](0114-2026-10-15-a-refusal-whose-prescribed-remedy-cannot-clear-it.md) | **the derive-version refusal tells the reader to re-run `asc ingest claude-code` to rewrite the log, and that command cannot clear the refusal.** The writer appends and nothing under the tree removes or truncates a stream file — `packages/cli/src/event-log.ts` imports exactly `appendFileSync, mkdirSync, readFileSync, readdirSync, statSync`, so the log's own module has no capability to delete anything — so a re-run writes the new version's lines *beside* the stale ones and the next read refuses at the **same file and the same line**. Measured against the shipped `dist` on a temp tree holding one version-12 line: `READ BEFORE: …main/0001.jsonl:1 was derived at version 12, and this build derives 13. Refused rather than replayed…`, then the prescribed re-run, then `READ AFTER RE-DERIVE:` the identical message, the stale line still line 1. Not hypothetical: `.ascend/events` holds **6,145** stream files — **2,605** whose first line is version 11, **3,465** at 12, **75** at 13, **19** holding two versions at once, the `11/12` pairs being proof that the **previous** bump appended too. So `asc handlers check --source log` and `asc ingest file-changed` have been refusing in this checkout since the 11 → 12 bump. The refusal itself is right and stays; the sentence after it prescribes a no-op that reports success. `n = 6,145` files for the census | `asc-qdkv` (P2, open) | **nobody was looking for it** — the question came from taking one `asc-09wx.8.4` acceptance criterion (*"every event carries the new derive version"*) literally and counting the log, which nothing had ever done; the two files that settled it were the previous bump's leftovers sitting in the real tree |
 
-One hundred and fourteen findings, each with its own mechanism. The mechanism is the part that repeats even
+| [0115](0115-2026-10-15-a-sizing-instrument-that-refuses-every-nudge.md) | **the instrument `asc-09wx.12` names as the way to size the commit-risk nudge refuses every nudge, because a `say:` handler's row *is* its sentence and so is emitted on every trigger.** `asc handlers power` defines its outcome as *"a trigger in the segment produced a row"*; `packages/core/src/handler.ts` compiles a `say:` handler as *"an emit of one field, `say`"*; so `successes == units` and `whyNot` refuses before any arithmetic runs. Measured over 2,316 files / 1,412,273 events, 2026-08-25 to 2026-10-15, 48 active days, with the only commit-moment predicate the repo has (`handlers/session-commit.yaml`'s, and, newly expressible after `asc-hvnx`, the same at `stage: pre`): `units = 851 / successes = 851` and `units = 736 / successes = 736`, both returning `verdict = "nothing to plan -- the outcome was the same in all 851 units, so there is no variance for any effect size to move"`; `asc handlers check` states the same identity as `rows = 4579 / triggers = 4579`. Underneath it sits a second mismatch of the same shape: the outcome a nudge exists to move is `EV-63`'s rework, a git fact, and the replay reads transcripts. The instrument plans a *capture* handler (`edit-unverified`, `units = 398 / successes = 216 / design_effect = 18.614`) and cannot plan a *nudge*. It does still give the useful half — **17.7 units per active day** at the commit, **15.3** before it | `asc-xg62` (P2, open) | **nobody was looking for it** — the step was a handoff instruction (*"use the existing holdout arm and `asc handlers power` to size it first"*) that reads as mechanical: write the handler, pass the file, read the number. Two things had to hold for the refusal to be read as a refusal rather than as "no signal": a `say:` handler had to exist to pass at all, and `units 851 / successes 851` had to be read as *the instrument cannot see this* rather than *there is nothing here*. The `rows 4579 / triggers 4579` pair, printed by a different command, is what turned the first read into a mechanism |
+
+| [0116](0116-2026-10-15-a-commit-map-that-nothing-checks.md) | **the commit map the rework measurement reads is rebuilt from eight repositories by an ad-hoc dump, and nothing asserts a rebuild is a superset of the map it replaces — so a refresh that dropped 113 source-bearing commits reported the experiment as *cheaper* than the one it replaced.** Two errors in reconstructing it survived every check the spike has. (1) The refspec: a dump following only the checked-out branch gives `grizzly-wip` **835** commits against **1,884** across all refs, which drops 113 source-bearing commits, takes the 489-unit ceiling to **420**, and moves the accrual rate from 10.188 to 8.750 units per active day — with the `EV-63` cross-check still green, because it consumes the map and never inspects how it was made. The only tell was arithmetic that cannot be true: **a ceiling can only grow.** (2) The clock: `EV-63`'s four snapshots record `%at` and the four grizzly dumps record `%ct`, **130 commits disagreeing by up to 19.7 hours**, and every window test `0 < rw_at - c['at'] <= 7*DAY` subtracts two clocks for half the corpus; nothing detected it, it fell out of failing to *reproduce* the old files rather than out of any question about them. Rebuilt with `--all` and one field, every old dump reproduces byte-for-byte on its overlap (0 differences across 367/2118/387/220/3989/3635/1843/3127 commits) and **no published figure moves** — on **21,820** rework pairs against `EV-71`'s **19,662** | `asc-7e9u` (P3, open) — the assertion; `asc-560h` (P3, open) — the dated re-measure | **nobody was looking for it** — the step was a chore on a close-out list (*"regenerate the `ev63` numstat before any re-run"*) and reads as mechanical: dump eight repositories, swap the files, re-run. It was findable only because regenerating an input has a property re-running does not — it can be checked against the copy it replaces, and that copy was still on disk |
+
+One hundred and sixteen findings, each with its own mechanism. The mechanism is the part that repeats even
 when the findings do not, so each record states its own explicitly.
+
+> **Adding 0116, the detector agreed a fifty-fifth time.** `grep -c '^| \[0' dogfood/README.md` returned
+> **115** and `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **116**; `comm` of the disk
+> numbers against the indexed ones returned exactly **`0116`**, on the disk-only side, and the sentence above
+> the table read *"One hundred and fifteen"* with it. Re-run after the row landed: **116** indexed against
+> **116** on disk, `comm` empty.
+>
+> **The finding was a chore, and the chore is what made it checkable.** `EV-71`'s close-out list ends with
+> *"regenerate the `ev63` numstat before any re-run"*, carried into this session as a task and reading as
+> mechanical: dump eight repositories, swap the files, re-run. Re-running an input checks nothing about it;
+> *regenerating* one can be checked against the copy it replaces, and the copy was still on disk. That is the
+> whole reason both errors surfaced — not a better question, but a step that happened to have a predecessor
+> to compare against.
+>
+> **The tell was monotonicity, not disagreement.** Rebuilt without `--all`, the ceiling came out at 420 where
+> the map it replaced had 489. Adding commits to a map cannot remove a source-bearing commit from it, so a
+> *smaller* population is a missing input and never a measurement. Every other check in the spike reads the
+> map and is blind to how it was made: the `EV-63` cross-check reproduces to the digit for the repositories
+> that still have their commits, and the design-effect arithmetic closes. Had the funnel been printed after
+> the rebuild instead of beside it, a refresh that dropped 113 commits would have been reported as the
+> experiment getting cheaper.
+>
+> **The second error had no tell at all.** `%at` against `%ct` moves 130 of 17,822 commits by up to 19.7
+> hours, and unlike the refspec it changes no count — old and new agree on every total, so no monotonicity
+> argument reaches it. It was found only by reproducing the eight old files byte-for-byte and failing on 130
+> of them, which is not a check anyone was running and not one the handoff asked for. `EV-73` then measured
+> it and it costs nothing, which is luck: on a 7-day window and a 19.7-hour disagreement it could as easily
+> have moved a boundary case, and nothing would have said so.
+>
+> **Adding 0115, the detector agreed a fifty-fourth time.** `grep -c '^| \[0' dogfood/README.md` returned
+> **114** and `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **115**; `comm` of the disk
+> numbers against the indexed ones returned exactly **`0115`**, on the disk-only side, and the sentence above
+> the table read *"One hundred and fourteen"* with it. Re-run after the row landed: **115** indexed against
+> **115** on disk, `comm` empty.
+>
+> **The refusal was produced by the tool being asked the question it was built to answer.** This is the
+> uncomfortable one. Every other record in this series is about a defect found while doing something else;
+> this one is about a command that was *run exactly as its own bead instructed*, returned a well-formed
+> refusal, and exited 0. Nothing misled anyone except the refusal's shape: `units 851 / successes 851 /
+> "nothing to plan"` reads as *no signal here*, and is in fact *my outcome definition does not describe your
+> intervention*. One of those numbers — 851 units — is a great deal of signal. A session skimming for
+> `days_to_power` would have found it absent and reported "the tool says this cannot be sized", which is true
+> and useless, and would have written it in a bead comment rather than here.
+>
+> **What made it visible was writing the input rather than reading the output.** There is no nudge handler in
+> this repo to hand the command, so one had to be composed from `handlers/session-commit.yaml`'s predicate
+> before anything could be measured — and composing it is what made *"a say handler has no `emit:`"* (the
+> loader refuses the combination outright) and *"a say handler's row is its sentence"* (so successes equal
+> triggers) into two facts about the same artifact. Read as a code review, `handler-power.ts` is correct at
+> every line: a sentence is a one-field emit, and a replayed handler's outcome is the row it produced. The
+> defect is in the composition.
+>
+> **The class is `dogfood/0104`'s, one layer up, and the tell generalizes.** `0104` was a *delivery* gap —
+> no kind reaching a pre-command handler carried the command — and it surfaced when something needed to fire
+> before a commit. This is a *sizing* gap in the same vocabulary, and it surfaced when something needed to be
+> measured rather than delivered. The tell to carry forward: **a refusal that is structurally guaranteed for
+> a whole class of inputs is a statement about the instrument, not about the input.** `successes == units` is
+> not a property of the nudge being sized; it is a property of what `say:` compiles to, and it would fire for
+> every nudge that could ever be written.
 
 > **Adding 0114, the detector agreed a fifty-third time.** `grep -c '^| \[0' dogfood/README.md` returned
 > **113** and `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **114**; `comm` of the disk
