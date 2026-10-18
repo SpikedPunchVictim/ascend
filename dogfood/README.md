@@ -197,9 +197,35 @@ context; the depth lives in the numbered files.
 
 | [0116](0116-2026-10-15-a-commit-map-that-nothing-checks.md) | **the commit map the rework measurement reads is rebuilt from eight repositories by an ad-hoc dump, and nothing asserts a rebuild is a superset of the map it replaces — so a refresh that dropped 113 source-bearing commits reported the experiment as *cheaper* than the one it replaced.** Two errors in reconstructing it survived every check the spike has. (1) The refspec: a dump following only the checked-out branch gives `grizzly-wip` **835** commits against **1,884** across all refs, which drops 113 source-bearing commits, takes the 489-unit ceiling to **420**, and moves the accrual rate from 10.188 to 8.750 units per active day — with the `EV-63` cross-check still green, because it consumes the map and never inspects how it was made. The only tell was arithmetic that cannot be true: **a ceiling can only grow.** (2) The clock: `EV-63`'s four snapshots record `%at` and the four grizzly dumps record `%ct`, **130 commits disagreeing by up to 19.7 hours**, and every window test `0 < rw_at - c['at'] <= 7*DAY` subtracts two clocks for half the corpus; nothing detected it, it fell out of failing to *reproduce* the old files rather than out of any question about them. Rebuilt with `--all` and one field, every old dump reproduces byte-for-byte on its overlap (0 differences across 367/2118/387/220/3989/3635/1843/3127 commits) and **no published figure moves** — on **21,820** rework pairs against `EV-71`'s **19,662** | `asc-7e9u` (P3, **fixed** 2026-10-18) — the assertion; `asc-560h` (P3, open) — the dated re-measure | **nobody was looking for it** — the step was a chore on a close-out list (*"regenerate the `ev63` numstat before any re-run"*) and reads as mechanical: dump eight repositories, swap the files, re-run. It was findable only because regenerating an input has a property re-running does not — it can be checked against the copy it replaces, and that copy was still on disk |
 
-One hundred and sixteen findings, each with its own mechanism. The mechanism is the part that repeats even
+| [0117](0117-2026-10-18-a-measurement-input-reaped-from-a-temp-tree.md) | **a measurement input reaped from an OS temp tree made the published design 3.3× worse, and nothing errored.** `asc-560h` was claimed four days early to check its premise instead of waiting for the date, and both halves were wrong. The map half is a mechanism error: a refresh **cannot** move the ceiling — **489** on the frozen map and **489** on a fresh dump, `missing-from-frozen 0` for all eight repositories, because the ceiling is join ∩ map and a refresh adds only commits the join has never heard of; what a refresh decides is the *outcome*, where **85 of the 95** units still open at `EV-71`'s NOW have rework candidates the frozen map cannot see (**344** distinct commits) because their windows reach past coverage ending `2026-10-15T23:52Z`. The input half is the damaging one: the EV-63 scratchpad is **empty — 0 files**, taking `traced.tsv`, `list.tsv` and the `blame.py` tracer, which `gen_seeds.py` had made single-copy by building `U` with `only_unfed=True`. Re-running the measurement on what survives gives `rework_pairs 19,927`, `any rate 0.57614`, `designEffect 15.22071`, `effectiveN 25.886` against the published **21,820 / 0.78173 / 4.60581 / 85.544**, with the funnel unmoved at 852/489/394/95/363 — it reads the map and the join and never the traces, so nothing looked malformed. The tracer was rebuilt from its own output and required to reproduce the surviving traces before being trusted: **7/322** commits with the diff not ignoring whitespace, **138/322** once `-w` was on both diff and blame, **322/322** once files were keyed on the old side, and **7 of 8** lists exhaustive with one row in 2,992 differing in a column no consumer reads. Re-traced, every published digit returns exactly, on **21,822** pairs against 21,820 | `asc-0qbw` (P2, open) — the temp tree; `asc-560h` (P3, in progress) — the measurement it blocked | **nobody was looking for it** — the bead is date-bound and the date was four days out; both halves surfaced only because the premise was checked first instead of waited for, and the degradation was caught by measuring *before* the recovery, so the recovery could be required to put the digits back rather than merely to run without error |
+
+One hundred and seventeen findings, each with its own mechanism. The mechanism is the part that repeats even
 when the findings do not, so each record states its own explicitly.
 
+> **Adding 0117, the detector agreed a fifty-sixth time.** `grep -c '^| \[0' dogfood/README.md` returned
+> **116** and `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **118** (117 findings plus the
+> `0000` template, which `ls` prints without a slash and the `-v` therefore never excludes); `comm` of the disk
+> numbers against the indexed ones returned exactly **`0117`** alongside the standing **`0000`**, on the
+> disk-only side, and the sentence above the table read *"One hundred and sixteen"* with it. Re-run after the
+> row landed: **117** indexed against **118** on disk, `comm` back to `0000` alone.
+>
+> **The loss was predicted in a bead, and naming it changed nothing.** `asc-0qbw` says the measurement
+> "survives only under `/private/tmp/claude-501/...`", calls the tree one "macOS may reap at any time", and
+> offers two options: commit the scripts, or accept the loss deliberately. Neither was taken. A bead that
+> names a hazard is not a check on it, and four days before a date-bound re-measurement the tree was empty.
+>
+> **What made it recoverable was that the lost instrument had left fingerprints.** The tracer could be
+> rebuilt because it had written 16 trace files that survive, and every wrong guess showed up as a
+> disagreement with output that already existed: **7/322** commits reproduced with the diff not ignoring
+> whitespace, **138/322** once `-w` was on both sides, **322/322** once files were keyed on the old side —
+> a deletion's new side is `/dev/null`, and keying on it dropped 75 rows from a single commit. That is
+> `dogfood/0116`'s lesson in a different key: a rebuild is checkable against the thing it replaces, and here
+> the thing it replaced was the tracer's own output.
+>
+> **The failing direction was the diagnosis.** The middle attempt never invented a row — every error was a
+> *missing* one. A rebuild that over-reports and a rebuild that under-reports are different bugs, and the
+> asymmetry said the parse was wrong rather than the blame, which is where the answer was.
+>
 > **Adding 0116, the detector agreed a fifty-fifth time.** `grep -c '^| \[0' dogfood/README.md` returned
 > **115** and `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **116**; `comm` of the disk
 > numbers against the indexed ones returned exactly **`0116`**, on the disk-only side, and the sentence above

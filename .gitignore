@@ -202,10 +202,17 @@ spike/tmp/
 # second directory rather than a merge because its files are named for the timestamp field they
 # carry, and globbing them together with `t/` would mix two clocks in one measurement.
 #
+# `cost/t3/` is the recovery trace asc-560h needed after the EV-63 scratchpad was reaped (asc-0qbw).
+# A third directory for the same reason as the second: it covers the commits the surviving lists
+# deliberately skip, and merging it into `t2/` would overwrite rows a different `already()` set
+# produced. The tracer that writes it is `cost/blame.py`, which is TRACKED -- it was rebuilt from
+# its own output precisely because the original was not.
+#
 # Neither `cost/out/*.numstat.log` nor the whole of `cost/snap/` needs a rule here: both are
 # `*.log`, and `*.log` above already covers them.
 # ---------------------------------------------------------------------------
 spike/rework-design-effect/out/
 spike/rework-design-effect/cost/t/
 spike/rework-design-effect/cost/t2/
+spike/rework-design-effect/cost/t3/
 spike/rework-design-effect/cost/out/

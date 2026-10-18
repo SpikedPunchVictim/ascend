@@ -46,7 +46,14 @@ def src(c):
 def already(n):
     """Every commit any earlier run traced for this repo -- the `rw` column of its `.out` files."""
     seen = set()
-    for path in glob.glob(f'{costdir}/t/*.{n}.out') + ([f'{ev63}/{n}/traced.tsv'] if n in TRACED else []):
+    # `t2/` and `t3/` are earlier runs too, and leaving them out re-lists work that is already done:
+    # after the recovery trace, that was 3,281 commits of redundant blame. Their filenames carry the
+    # timestamp field, so including the field in the pattern cannot mix two clocks the way globbing a
+    # directory of differently-clocked files would.
+    paths = (glob.glob(f'{costdir}/t/*.{n}.out')
+             + [f'{costdir}/{d}/D.{field}.{n}.out' for d in ('t2', 't3')]
+             + ([f'{ev63}/{n}/traced.tsv'] if n in TRACED else []))
+    for path in paths:
         try:
             fh = open(path, encoding='utf-8', errors='replace')
         except OSError:
