@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Bead** | `asc-7e9u` (P3, open) — the superset assertion; `asc-560h` (P3, open) — the dated re-measurement |
+| **Bead** | `asc-7e9u` (P3, **fixed** 2026-10-18) — the superset assertion; `asc-560h` (P3, open) — the dated re-measurement |
 | **Surfaced** | 2026-10-15 |
 | **Surfaced by** | `EV-71`'s own close-out item, *"regenerate the `ev63` numstat before any re-run"*, carried into this session as a task |
 | **Entry type(s)** | none — the map is a spike input, not an ascend record |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | fixed in the working tree 2026-10-18 (see **Resolution**) — the assertion landed in `numstat.py`; the dated re-measurement stays open |
 
 ## What was found
 
@@ -111,10 +111,81 @@ from the thing it refreshed", which is not a claim any existing record makes.
 - **The 489-unit ceiling is still censored**, and the reason is now a date rather than a gap: the 95
   open windows shut between 2026-10-15 and 2026-10-22, and a re-measurement on 2026-10-22 sees 483 of
   489. No rebuild can bring that forward.
-- **A superset assertion is the cheap fix and is not in place.** One line in `delta.py` — or in
-  whatever consumes a map — comparing `set(new) >= set(old)` would have caught Error 1 at the moment
-  it happened, and would have been true for Error 2, which is why the clock needed the byte-level
-  reproduction instead.
+- **A superset assertion was the cheap fix and was not in place. It is now, in `numstat.py` — see
+  **Resolution**.** It catches Error 1 at the moment it happens, and it is silent on Error 2 by
+  construction, which is why the clock still needs the byte-level reproduction. The one-line form
+  (`set(new) >= set(old)` over commit ids) turned out to be wrong here for a reason nobody had
+  predicted: it fires on ascend's own map on every rebuild, because GitButler rewrites the Workspace
+  Commit.
+
+## Resolution
+
+**Fixed in `spike/rework-design-effect/cost/numstat.py` on 2026-10-18 (`asc-7e9u`).** When the output
+path already holds a map, the dump parses it, compares commit ids, and refuses to write unless every
+old commit that carried numstat rows is present in the new one. The comparison runs *before* the write,
+so a refusal leaves the old file byte-identical rather than half-overwritten. A genuine loss is stated
+rather than inferred — `--allow-shrink "<reason>"` — and the reason is printed with the run, so the
+override is a claim someone made and not a flag someone flipped.
+
+**The rule is over commits that carried files, and that refinement is measured, not defensive.** The
+one-line version — a superset over commit ids — fires on every rebuild of ascend's own map. GitButler
+rewrites the Workspace Commit on each operation, so the previous one becomes unreachable from every ref
+while remaining in the object database. First run against `snap/at/ascend.numstat.log`: 401 commits
+held, 403 dumped, **one dropped**, and the dropped record is `6bb7e039` "GitButler Workspace Commit"
+with an empty body. A commit with no body has no file for a unit to join on, so `src()` is false for it,
+`delta.py` never selects it to trace, and it cannot move the ceiling, a rate or an outcome — dropping it
+is inert. A check whose only possible answer is always the same `--allow-shrink` is a check that gets
+rubber-stamped, which is the failure mode of a rule stricter than the invariant it protects.
+
+Four cases, run against real dumps:
+
+```
+superset   ascend over ascend's own map      403 commits (+3 new, 0 dropped with files, 1 empty-bodied dropped)  exit 0
+shrink     spindle over ascend's map         holds 401, dumps 222, 399 of the old ones that carried files are not in it
+                                             and the file it refused to replace still hashes 0320234e…  exit 1
+stated     the same shrink, --allow-shrink   222 commits (+222 new, 399 dropped with files, allowed: …)  exit 0
+no reason  --allow-shrink with no argument   "--allow-shrink needs a reason: a map that shrank is a claim, not a flag"  exit 1
+```
+
+All eight repositories, each dumped over its own current map, pass with **zero false positives**:
+
+```
+ascend 403 (+3 new, 0 dropped)  grizzly-pl 4672 (+914)  mast 531 (+31)  spindle 222 (+0)
+grizzly-exp 4424 (+313)         grizzly-sv 4765 (+1030) grizzly-wip 1884 (+0)  grizzly-platform 3211 (+0)
+```
+
+**What it still cannot see is Error 2.** It compares commit ids, which both clocks produce identically,
+so it is silent on the `%at`/`%ct` split by construction. That one still needs the byte-level
+reproduction of all eight dumps, and no superset test will ever replace it.
+
+**A consequence that lands on 2026-10-22, found by the check on its first real run — and the first
+version of this paragraph was wrong.** The grizzly clones have moved since the map was frozen on
+2026-10-15: `grizzly-pl` by **914** commits, `grizzly-sv` by **1,030**, `grizzly-exp` by **313**;
+`grizzly-wip` and `grizzly-platform` are unchanged. `asc-560h`'s premise that *"no commit map
+regeneration is needed"* is stale.
+
+**What a refresh can move, measured rather than assumed** (2026-10-18, over the join and a fresh dump
+of all eight repositories):
+
+```
+ceiling on the frozen map  489      ceiling on the fresh map  489      difference  0
+units already graded on a closed commit 394   open at EV-71's NOW 95   (reconciles with EV-73)
+open units with rework candidates the frozen map cannot see  85   distinct candidates  344
+```
+
+The ceiling **cannot** move, and that is a structural fact rather than this dump: the ceiling is
+join ∩ map, every commit the join names is already in the frozen map (`missing-from-frozen 0` for all
+eight), and a refresh adds only commits the join has never heard of. The first version of this
+paragraph said the opposite — that adding commits could only grow the ceiling and that accrual was at
+stake — which is the Error 1 mechanism run backwards: a bad refspec *removes* join commits and drops
+units, a good refresh *adds* non-join commits and moves nothing.
+
+What a refresh decides is the **outcome**. A unit is graded only once its window has elapsed, and the
+95 units still open at EV-71's NOW are exactly the ones whose windows reach past the map's coverage
+end, `2026-10-15T23:52Z`. Grading them on the frozen map right-censors the rework the 7-day window
+exists to catch. So the dated re-measurement needs the map refreshed **and** the new source-bearing
+commits traced before `remeasure.py` runs — a candidate that is in the map but in no trace is not
+rework evidence either.
 
 ## Links
 

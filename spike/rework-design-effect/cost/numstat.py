@@ -25,13 +25,71 @@
 # measurement look BETTER than the one it replaces. `spike/rework-design-effect/cost/numstat.py` is
 # the only place this refspec is chosen, so it is chosen here and nowhere else.
 #
-# Read-only against the repository. Usage: python3 -I numstat.py <repo-path> <out.log> [at|ct]
-import subprocess, sys
+# A REBUILD IS CHECKED AGAINST THE MAP IT REPLACES (asc-7e9u, dogfood/0116). The commit map is
+# reconstructed from the same repositories on every pass, so a mistake in the rebuild and a change in
+# the source look identical to everything downstream: the harnesses consume the map and cannot see how
+# it was made, and EV-63's cross-check stays green on a map that has simply lost a repository's
+# commits. The only check available is against the previous copy, and it is the one thing a re-run
+# never needs and a rebuild always does. So when `out_path` already holds a map, this refuses to
+# replace it with one that is not a superset of it. The comparison happens BEFORE the write, so a
+# refusal leaves the old file exactly as it was rather than half-overwritten.
+#
+# It compares COMMIT IDS and whether each carried any numstat rows, and nothing else, which is what
+# makes it clock-independent -- both fields produce the same id set, so it is silent on the `%at`/`%ct`
+# split by construction. That is its blind spot as much as its design: EV-73 needed a byte-level
+# reproduction of all eight dumps to find the clock split, because no superset test can see it.
+#
+# "SUPERSET" MEANS OVER COMMITS THAT CARRIED FILES, and the refinement is measured rather than
+# defensive. A record with an empty body has no file for a unit to join on, so `src()` is false for it,
+# `delta.py` never selects it to trace, and it cannot move the ceiling, a rate or an outcome: dropping
+# it is provably inert. Commits as such are not, because in THIS repository they churn -- GitButler
+# rewrites the Workspace Commit on every operation, so it is reachable from no ref once the workspace
+# moves on. Measured 2026-10-18: `snap/at/ascend.numstat.log` holds 401 commits, the rebuild holds
+# 403, and the one commit the rebuild drops is `6bb7e039` "GitButler Workspace Commit" with an empty
+# body. A rule written over commit ids alone would demand `--allow-shrink` on every rebuild of
+# ascend's own map, and a flag whose reason is always the same is a flag that gets rubber-stamped.
+#
+# A repository can still legitimately lose real commits -- a force-push that rebases a branch away, a
+# `git gc` that prunes an unreachable ref. From here that is indistinguishable from a wrong refspec,
+# so it is not guessed at: it has to be stated, with a reason, as `--allow-shrink`, and it is printed.
+#
+# Read-only against the repository. Usage:
+#   python3 -I numstat.py <repo-path> <out.log> [at|ct] [--allow-shrink <reason>]
+import os, subprocess, sys
 
-repo, out_path = sys.argv[1], sys.argv[2]
-field = sys.argv[3] if len(sys.argv) > 3 else 'at'
+args = sys.argv[1:]
+reason = None
+if '--allow-shrink' in args:
+    i = args.index('--allow-shrink')
+    if i + 1 == len(args):
+        sys.exit('--allow-shrink needs a reason: a map that shrank is a claim, not a flag')
+    reason = args[i + 1]
+    del args[i:i + 2]
+if len(args) < 2:
+    sys.exit('usage: numstat.py <repo-path> <out.log> [at|ct] [--allow-shrink <reason>]')
+repo, out_path = args[0], args[1]
+field = args[2] if len(args) > 2 else 'at'
 if field not in ('at', 'ct'):
     sys.exit(f'timestamp field must be `at` (author) or `ct` (committer), not {field!r}')
+
+def records(text):
+    """sha -> whether the record carried numstat rows, i.e. whether anything could join on it."""
+    out = {}
+    for rec in text.split('\x1e')[1:]:
+        f = rec.split('\x1f')
+        if f[0]:
+            # Fail closed: a record too short to have a body counts as one that HAD files, so a
+            # truncated dump is refused rather than written off as inert.
+            out[f[0]] = True if len(f) < 4 else bool(f[3].strip())
+    return out
+
+def held(path):
+    """What a dump already holds, or None if there is no dump there yet."""
+    try:
+        return records(open(path, encoding='utf-8', errors='replace').read())
+    except OSError:
+        return None
+
 # The separators are git's own %x1e/%x1f so the format is produced by git and never reassembled by
 # hand: a body containing a separator byte cannot be constructed here, only passed through.
 fmt = f'%x1e%H%x1f%{field}%x1f%s%x1f\n'
@@ -40,6 +98,26 @@ raw = subprocess.run(['git', '-C', repo, 'log', '--all', '--numstat', '--no-rena
                      capture_output=True, text=True, errors='replace')
 if raw.returncode != 0:
     sys.exit(f'git log failed in {repo}: {raw.stderr.strip()}')
+
+new, old = records(raw.stdout), held(out_path)
+missing = {} if old is None else {s: r for s, r in old.items() if s not in new}
+lost = {s for s, rows in missing.items() if rows}
+if lost and reason is None:
+    sys.exit(
+        f'{out_path} holds {len(old)} commits, this dump holds {len(new)}, and {len(lost)} of the old '
+        f'ones that carried files are not in it (e.g. {sorted(lost)[0]}).\n'
+        f'  A rebuilt commit map can only ADD to the map it replaces. A dump that drops commits is '
+        f'either a dump that followed the wrong refspec -- `--all` is load-bearing, grizzly-wip is 835 '
+        f'commits on HEAD against 1,884 across all refs -- or a repository that lost history, and from '
+        f'here the two are identical. Nothing was written.\n'
+        f'  If the repository really did lose history, state it: --allow-shrink "<reason>"')
+
 open(out_path, 'w', encoding='utf-8').write(raw.stdout)
-records = raw.stdout.split('\x1e')[1:]
-print(f'{out_path}: {len(records)} commits, {len(raw.stdout) / 1e6:.2f} MB')
+if old is None:
+    change = ''
+else:
+    gained, inert = len(new.keys() - old.keys()), len(missing) - len(lost)
+    change = (f' (+{gained} new, {len(lost)} dropped with files'
+              f'{"" if not lost else f", allowed: {reason}"}'
+              f'{"" if not inert else f", {inert} empty-bodied dropped"})')
+print(f'{out_path}: {len(new)} commits, {len(raw.stdout) / 1e6:.2f} MB{change}')
