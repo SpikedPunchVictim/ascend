@@ -146,12 +146,12 @@ describe('the line for a grade the project owes', () => {
     // with no back-off passes this test: removing the back-off left it green, which is a false green
     // about the one rule the back-off exists for. One leading code point shifts the cut onto the
     // joiner itself, and that is the only position where the rule does anything at all.
-    const family = `a${'👨‍👩'.repeat(100)}`;
+    const family = `a${'👨\u200d👩'.repeat(100)}`;
     const line = dueGradeLine(due({ change: family }));
 
     // The assertion is on what precedes the ellipsis: a joiner there joins nothing, and the pair it
     // was meant to hold together now reads as two characters.
-    expect(line).not.toContain(`‍...`);
+    expect(line).not.toContain(`\u200d...`);
     expect(line).toContain('...');
     // And the cut still happened where a reader would put it: at most the budget, never more.
     const printed = line.slice(line.indexOf('grade owed: ') + 'grade owed: '.length);
