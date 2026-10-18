@@ -12,7 +12,7 @@
 # which is what decides whether the 489-unit ceiling can be measured yet.
 #
 #   python3 -I remeasure.py <join.jsonl> <costdir> <field> <out.json> [now-epoch] [delta-dir]
-import collections, datetime, glob, json, re, sys
+import collections, datetime, glob, json, re, subprocess, sys
 
 join_path, costdir, field, out_path = sys.argv[1:5]
 ev63 = sys.argv[7] if len(sys.argv) > 7 else '/private/tmp/claude-501/-Users-spikedpunchvictim-projects-ascend/feca35f3-deeb-44e4-b4ce-6871f5f42ccd/scratchpad/ev63'
@@ -44,6 +44,50 @@ H = {n: parse(f'{costdir}/snap/{field}/{n}.numstat.log') for n in REPOS}
 def src(n, s):
     c = H[n].get(s)
     return bool(c) and any(a > 0 and not NOT_SOURCE.search(f) for f, a in c['files'])
+
+# ---- coverage: was every source-bearing commit ATTEMPTED by some trace? (asc-synu, dogfood/0117)
+#
+# A trace that was never made, or one that was reaped, is indistinguishable from a complete one from
+# here: the pair set is shorter, the outcome flips for some units, and every number below stays
+# well-formed. Measured 2026-10-18 when EV-63's traced.tsv was gone, the `any` rate fell 0.78173 ->
+# 0.57614 and the design effect rose 4.60581 -> 15.22071 with no error anywhere. So this refuses
+# rather than reporting a number computed over a gap.
+#
+# It reads the ATTEMPTED lists that sit beside the traces, never the `rw` column of the `.out` files:
+# a commit can be attempted and produce no rows at all -- the grizzly repositories' remaining delta
+# commits rewrite documentation only -- and counting those as untraced would fail them forever.
+#
+# Root commits are exempt, one `rev-list` per repository rather than a per-commit test. They can
+# never be attempted because blame needs a parent to diff against: the eight in this map are
+# `delta.py`'s own filter, applied for the same reason.
+PATHS = {n: f'/Users/spikedpunchvictim/projects/grizzly/{n}' for n in REPOS}
+PATHS.update({'ascend': '/Users/spikedpunchvictim/projects/ascend',
+              'mast': '/Users/spikedpunchvictim/projects/mast',
+              'spindle': '/Users/spikedpunchvictim/projects/spindle'})
+
+attempted = collections.defaultdict(set)
+for n in REPOS:
+    for pattern in (f'{costdir}/t/*.{n}.tsv', f'{costdir}/{fielddir}/D.{field}.{n}.tsv'):
+        for path in glob.glob(pattern):
+            for line in open(path, encoding='utf-8', errors='replace'):
+                s = line.split('\t')[0].strip()
+                if s:
+                    attempted[n].add(s)
+
+def roots_of(n):
+    r = subprocess.run(['git', '-C', PATHS[n], 'rev-list', '--max-parents=0', '--all'],
+                       capture_output=True, text=True)
+    return set(r.stdout.split()) if r.returncode == 0 else set()
+
+untraced = {n: sorted(s for s in H[n]
+                      if src(n, s) and s not in attempted[n] and s not in roots_of(n))
+            for n in REPOS}
+if any(untraced.values()):
+    sys.exit('untraced source-bearing commits in the map -- the traces do not cover it, so any '
+             'outcome computed here would be censored rather than measured:\n'
+             + '\n'.join(f'  {n}: {len(v)} (e.g. {v[0]})' for n, v in untraced.items() if v)
+             + '\n  Trace them first: delta.py writes the list, blame.py traces it. Nothing was '
+               'written.')
 
 # ---- the rework pairs ----
 # Three trace sources, and the first is not optional. `ev63/<repo>/traced.tsv` is EV-63's own trace,
@@ -126,6 +170,9 @@ json.dump(dict(outcomes=outcomes, commits=commits, units_any=units_any,
 
 print(json.dumps(dict(
     field=f'%{field}',
+    # Printed so a passing run shows the coverage check evaluated the whole map rather than being
+    # skipped: it is always equal to the number of commits the assertion above walked.
+    source_bearing_in_map=sum(1 for n in REPOS for s in H[n] if src(n, s)),
     rework_pairs=len(p7),
     units_total=len({r['unit'] for r in rows}),
     units_with_commit=len(per_unit),

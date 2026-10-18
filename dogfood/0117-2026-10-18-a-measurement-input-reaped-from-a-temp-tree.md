@@ -118,9 +118,16 @@ the only thing that failed was a number nobody had a reason to re-read — until
 - **`cost/t3/` holds the re-traced coverage** and is ignored like `t/` and `t2/`. It exists as a third
   directory rather than a merge because its commit lists come from a different `already()` set, and
   merging would overwrite rows a different selection produced.
-- **`remeasure.py` still cannot tell a missing trace directory from an empty one.** The check that
-  would close this is a coverage assertion — every source-bearing commit in the map is in some trace —
-  and it is not written.
+- **`remeasure.py` could not tell a missing trace from an empty one. It can now** (`asc-synu`, landed
+  with this record). A coverage assertion refuses to report an outcome unless every source-bearing
+  commit in the map was *attempted* by some trace, reading the attempted lists that sit beside the
+  traces rather than the `rw` column — a commit can be attempted and produce no rows at all, and root
+  commits can never be attempted because blame needs a parent. Shown to fail before being trusted:
+  pointed at `t2/` alone, the exact degraded input that produced `0.57614`, it exits 1, writes no
+  output, and names **1,083** untraced commits across **exactly the four repositories** EV-63 had
+  traced — ascend 206, grizzly-pl 548, mast 189, spindle 140. The five lists that survived were
+  present and complete-looking for all eight repositories; only the union was short, which is why a
+  presence check would have missed it and a coverage check does not.
 - **The 2026-10-22 run still needs the map refreshed and the new commits traced**, for the reason in
   the first half above. The date was never the only obstacle; it was the visible one.
 
@@ -128,8 +135,8 @@ the only thing that failed was a number nobody had a reason to re-read — until
 
 Fixed in the working tree on 2026-10-18: `blame.py` rebuilt and validated as above, `cost/t3/` traced
 over the 3,281 uncovered commits, and the measurement re-run to reproduce every published figure.
-`asc-0qbw` is **not** closed by this — `ev62/outcome.py` and `ev63/analyse.py` remain lost, and the
-coverage assertion above is unwritten.
+`asc-0qbw` is **not** closed by this — `ev62/outcome.py` and `ev63/analyse.py` remain lost. The
+coverage gap it exposed is closed separately by `asc-synu`.
 
 ## Links
 
