@@ -256,7 +256,9 @@ Honest about what exists, because a README that overstates is worse than one tha
 `asc ingest claude-code`, `asc search`, `asc explore` in all of its modes (the default profile,
 `--page`, `--sample`, `--max-tokens`, `--dump`, and the `--select`, `--filter` and `--group-by`
 drill-down), `asc stats` and the analysis layer behind it, `asc annotate`, `asc kappa`,
-`asc invalidate`, `asc export` and `asc import`, `asc handlers check` and `compare`, and
+`asc invalidate`, `asc export` and `asc import`, `asc handlers check` and `compare`,
+`asc standing-costs` (bytes injected per attachment source, per instruction file, per skill listing,
+and returned per tool, per Bash first command and per `--help` look-up), and
 `asc install-hook` and `asc install-skill` (the analysis skill and its slash command), and
 `asc doctor` (dead types, near-duplicate names, version drift, per-property not_applicable and
 not_measured counts, the brief's size against its 2,000-token cap, and whether the installed hook

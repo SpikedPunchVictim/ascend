@@ -1,0 +1,137 @@
+{
+  "_": "Kill-check for `asc standing-costs` (asc-09wx.11). Every mutant here is an attribution rule that a plausible implementation would get wrong: a character count where EV-54 measured bytes, `content` where it measured `stdout`, a record counted once instead of once per file, a first command taken from a segment that did not run, a hook wrapper matched anywhere in the text, and a set difference replaced by a subtraction. Each killer was found by planting the mutant and reading the failing names off assertionResults, not guessed. The invariants in the test file are the second line of defence: they compare the per-report totals against the report they must reconcile with, so an attribution that merely shifts bytes between two correct rows still fails.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "  return typeof value === 'string' ? Buffer.byteLength(value, 'utf8') : 0;",
+      "replace": "  return typeof value === 'string' ? value.length : 0;",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "measures UTF-8 bytes across every file of one instructions record, and loads per file"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "      const source = typeof stdout === 'string' ? stdout : attachment['content'];",
+      "replace": "      const source = attachment['content'];",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "sizes hook_success by stdout, names the channel, and says so when it had to use content"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "        for (const file of files) {",
+      "replace": "        for (const file of files.slice(0, 1)) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "measures UTF-8 bytes across every file of one instructions record, and loads per file"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "      if (Array.isArray(blocks)) for (const block of blocks) total += byteLength(block);",
+      "replace": "      if (Array.isArray(blocks)) total += byteLength(blocks[0]);",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "sums every block of an mcp instructions delta"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "sub !== undefined && !sub.startsWith('-') && MULTI_VERB_HEADS.has(head)",
+      "replace": "sub !== undefined && !sub.startsWith('-') && head === 'never'",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "attributes a Bash result to the head and its subcommand"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "      flushBash();\n      return {",
+      "replace": "      return {",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "labels a call whose every segment was stripped rather than losing its bytes"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "  return sessionCount < MIN_N",
+      "replace": "  return false",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "judges MIN_N on sessions, not on calls"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "      if (kept.length < head.length) hasMore = true;",
+      "replace": "      if (false) hasMore = true;",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "trims ranked reports per report, states each population, and leaves fact rows alone"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "      value: [...listed].filter((name) => !invoked.has(name)).length,",
+      "replace": "      value: listed.size - invoked.size,",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "reports never-invoked as a set difference, so an invoked name that was never listed is not invented"
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "const PERSISTED = /^<persisted-output>/;",
+      "replace": "const PERSISTED = /<persisted-output>/;",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "distinguishes a persisted hook preview from inline context"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "file": "packages/cli/src/standing-costs.ts",
+      "find": "  return command.slice(0, match.index + match[0].length).trim();",
+      "replace": "  return command.trim();",
+      "killers": [
+        {
+          "file": "packages/cli/test/standing-costs.test.ts",
+          "test": "aggregates a piped look-up under the command up to the flag"
+        }
+      ]
+    }
+  ]
+}

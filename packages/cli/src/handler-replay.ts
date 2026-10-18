@@ -16,6 +16,7 @@ import {
   EVENT_DERIVE_VERSION,
   createNormalizer,
   streamCorpus,
+  type CorpusOptions,
   type NormalizeCounters,
 } from '@ascend/adapter-claude-code';
 import {
@@ -170,6 +171,25 @@ export interface LogReplay {
 export type ReplayOptions = TranscriptReplay | LogReplay;
 
 /** Stream the projects' transcripts once, offering every event to every handler. */
+/**
+ * The corpus a scope asks for.
+ *
+ * One owner because the rule inside it is easy to lose when it is copied: a project NAMED with
+ * `--project` is always read, so it never inherits the ephemeral skip that exists for sweeps over
+ * everything (asc-80m). Skipping a named project would report a zero over a log nobody read — found
+ * by the default-project test, whose scratch project sits under `tmpdir`.
+ *
+ * Here rather than in `handler-scope.ts`, which imports this module: the other direction would make
+ * the two files import each other.
+ */
+export function corpusOptionsFor(
+  scope: Pick<TranscriptReplay, 'root' | 'projects' | 'includeEphemeral'>,
+): CorpusOptions {
+  return scope.projects === 'all'
+    ? { root: scope.root, includeEphemeral: scope.includeEphemeral ?? false }
+    : { root: scope.root, projects: new Set(scope.projects), includeEphemeral: true };
+}
+
 export async function replayHandlers(
   handlers: readonly NamedHandler[],
   options: ReplayOptions,
@@ -228,17 +248,9 @@ export async function replayHandlers(
   let ephemeral = 0;
 
   if (options.source === 'transcripts') {
-    const totals = await streamCorpus(
-      (record, file) => {
-        for (const event of normalizer.accept(record, file)) offer(event);
-      },
-      // The ephemeral skip exists for sweeps over every project (asc-80m). A caller who NAMED a
-      // project asked for it, and skipping it would report a zero over a log that was never read --
-      // found by the default-project test, whose scratch project sits under tmpdir.
-      options.projects === 'all'
-        ? { root: options.root, includeEphemeral: options.includeEphemeral ?? false }
-        : { root: options.root, projects: new Set(options.projects), includeEphemeral: true },
-    );
+    const totals = await streamCorpus((record, file) => {
+      for (const event of normalizer.accept(record, file)) offer(event);
+    }, corpusOptionsFor(options));
     files = totals.files;
     // Paths, not just files. `totals.failures` is per-FILE incomplete reads; a directory the walk
     // may not enter is recorded by the reader instead (`reader.ts`, reason `'unreadable'`)
