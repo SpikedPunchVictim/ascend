@@ -35,7 +35,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { loadavg } from 'node:os';
-import { stepEnv } from './gate-env.mjs';
+import { INDEX_ENV, stepEnv } from './gate-env.mjs';
 import { acquire } from './gate-lock.mjs';
 import { appendRun, ROW_VERSION } from './gate-log.mjs';
 import { check as checkMemo, remember as rememberMemo, sameStep, treeOf } from './gate-memo.mjs';
@@ -52,11 +52,16 @@ import { SUBSET_SCOPE, TEST_SCOPE_ENV, scopeOf } from './gate-scope.mjs';
  * (`scripts/gate-env.mjs`, `dogfood/0097`). `env` is applied after the strip, so a step that wants one
  * can still state it.
  *
+ * `keeps` names a stripped variable this step means to receive anyway. Two steps read the index on
+ * purpose -- the commit's own contents, not the tree -- and a path-limited commit hands the hook a
+ * temporary index, so they have to say so or they would verify the wrong set (`dogfood/0118`).
+ *
  * @typedef {object} Step
  * @property {string} label
  * @property {string} command
  * @property {readonly string[]} args
  * @property {Record<string, string>} [env]
+ * @property {readonly string[]} [keeps]
  */
 
 /**
@@ -83,8 +88,16 @@ const CHECK_STEPS = [
     label: 'store verify --staged',
     command: 'node',
     args: ['packages/cli/dist/bin.js', 'store', 'verify', '--staged'],
+    // Reads `git ls-files -s`: the index is the subject, so a path-limited commit's temporary index
+    // is the right one to read (`dogfood/0118`).
+    keeps: INDEX_ENV,
   },
-  { label: 'duplicate entry ids', command: 'node', args: ['scripts/gate-duplicate-ids.mjs'] },
+  {
+    label: 'duplicate entry ids',
+    command: 'node',
+    args: ['scripts/gate-duplicate-ids.mjs'],
+    keeps: INDEX_ENV,
+  },
   { label: 'lint', command: 'pnpm', args: ['lint'] },
 ];
 
@@ -396,7 +409,7 @@ function runStep(step, cwd) {
   const result = spawnSync(step.command, step.args, {
     cwd,
     stdio: 'inherit',
-    env: stepEnv(process.env, step.env),
+    env: stepEnv(process.env, step.env, step.keeps),
   });
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
   const status = statusOf(result);

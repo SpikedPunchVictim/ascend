@@ -51,6 +51,27 @@ export const CONTROL_ENV = Object.freeze([
 ]);
 
 /**
+ * Variables GIT sets for the COMMIT BEING MADE, which change what "the index" means.
+ *
+ * `git commit -- <paths>` hands the hook a temporary index holding only those paths and points
+ * `GIT_INDEX_FILE` at it. Every process the gate spawns inherits that, so a `git ls-files` inside the
+ * suite enumerates the commit instead of the tree: measured 2026-10-18 against an index holding one
+ * file, `packages/core/test/purity-enforcement.test.ts` failed four assertions that pass against the
+ * real index (`asc-09wx.18`, `dogfood/0118`).
+ *
+ * They are stripped for the reason the four above are -- a step that inherited one is answering a
+ * question nobody asked it -- with an exception those four do not need. Two steps DO mean "the commit
+ * being made": `store verify --staged` and `duplicate entry ids` both read `git ls-files -s`, which is
+ * the index and nothing else, so they state `keeps: INDEX_ENV`. The strip is a default, not a blanket.
+ *
+ * NOT completeness-checked, and it cannot be: these modules hold no source of truth for the names git
+ * sets. It is a short explicit list rather than a pattern, so adding one is a decision on the record.
+ *
+ * @type {readonly string[]}
+ */
+export const INDEX_ENV = Object.freeze(['GIT_INDEX_FILE']);
+
+/**
  * The environment for one spawned step: this process's own, without the variables above, plus whatever
  * the step states for itself.
  *
@@ -59,10 +80,15 @@ export const CONTROL_ENV = Object.freeze([
  *
  * @param {Record<string, string | undefined>} base
  * @param {Record<string, string>} [extra] What the step states. Applied after the strip, so it wins.
+ * @param {readonly string[]} [keeps] Names this step means to receive anyway. A step that reads the
+ * index on purpose says so here rather than the strip being written around it.
  * @returns {Record<string, string | undefined>}
  */
-export function stepEnv(base, extra) {
+export function stepEnv(base, extra, keeps) {
   const env = { ...base };
-  for (const name of CONTROL_ENV) Reflect.deleteProperty(env, name);
+  for (const name of [...CONTROL_ENV, ...INDEX_ENV]) {
+    if (keeps !== undefined && keeps.includes(name)) continue;
+    Reflect.deleteProperty(env, name);
+  }
   return extra === undefined ? env : { ...env, ...extra };
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
-import { CONTROL_ENV, stepEnv } from './gate-env.mjs';
+import { CONTROL_ENV, INDEX_ENV, stepEnv } from './gate-env.mjs';
 import { TEST_SCOPE_ENV } from './gate-scope.mjs';
 
 /**
@@ -114,7 +114,9 @@ function sandbox(): { dir: string; bin: string } {
   const bin = mkdtempSync(join(tmpdir(), 'asc-gate-env-bin-'));
   made.push(dir, bin);
 
-  const shown = [...CONTROL_ENV, TEST_SCOPE_ENV].map((name) => `[${name}=$${name}]`).join(' ');
+  const shown = [...CONTROL_ENV, TEST_SCOPE_ENV, ...INDEX_ENV]
+    .map((name) => `[${name}=$${name}]`)
+    .join(' ');
   const fakePnpm = join(bin, 'pnpm');
   writeFileSync(fakePnpm, `#!/bin/sh\necho "pnpm-stub: $* ${shown}"\nexit 0\n`, 'utf8');
   chmodSync(fakePnpm, 0o755);
@@ -124,9 +126,11 @@ function sandbox(): { dir: string; bin: string } {
     fakeNode,
     '#!/bin/sh\n' +
       'case "$*" in\n' +
-      '  *packages/cli/dist/bin.js*) exit 0 ;;\n' +
+      // The two steps that read the index say what they were handed, so the exemption is checked
+      // through the real runner and not only in stepEnv's own unit test.
+      '  *packages/cli/dist/bin.js*) echo "node-stub: staged [GIT_INDEX_FILE=$GIT_INDEX_FILE]"; exit 0 ;;\n' +
+      '  *scripts/gate-duplicate-ids.mjs*) echo "node-stub: duplicate-ids [GIT_INDEX_FILE=$GIT_INDEX_FILE]"; exit 0 ;;\n' +
       '  *scripts/test-baseline.mjs*) exit 0 ;;\n' +
-      '  *scripts/gate-duplicate-ids.mjs*) exit 0 ;;\n' +
       'esac\n' +
       `exec ${JSON.stringify(process.execPath)} "$@"\n`,
     'utf8',
@@ -161,6 +165,20 @@ describe('the environment a step is handed', () => {
 
   it('leaves an environment with none of them in it alone', () => {
     expect(stepEnv({ PATH: '/bin' })).toStrictEqual({ PATH: '/bin' });
+  });
+
+  it('takes the index git set for the commit being made back out of it, unless the step means it', () => {
+    // A path-limited commit hands the hook a temporary index and points GIT_INDEX_FILE at it. Every
+    // `git ls-files` below the gate then enumerates the commit instead of the tree -- four assertions
+    // in purity-enforcement.test.ts, measured 2026-10-18 (`asc-09wx.18`, `dogfood/0118`).
+    const base = { PATH: '/bin', GIT_INDEX_FILE: '/tmp/partial.idx' };
+    expect(stepEnv(base)['GIT_INDEX_FILE']).toBeUndefined();
+    // The two steps that read `git ls-files -s` mean the index, and say so.
+    expect(stepEnv(base, undefined, INDEX_ENV)['GIT_INDEX_FILE']).toBe('/tmp/partial.idx');
+    // A keep list is not a licence to keep something else: it exempts exactly what it names.
+    expect(
+      stepEnv({ ASCEND_GATE_HOOK: 'pre-push', GIT_INDEX_FILE: '/x' }, undefined, INDEX_ENV),
+    ).toStrictEqual({ GIT_INDEX_FILE: '/x' });
   });
 
   it("keeps a step's own value, because the strip happens first", () => {
@@ -217,6 +235,9 @@ describe('a step, driven through the real runner', () => {
       ASCEND_PRECOMMIT_FULL: '1',
       ASCEND_GATE_SCOPE: 'full',
       ASCEND_GATE_NO_RECORD: '1',
+      // What a path-limited commit hands the hook. Without the strip, the suite's `git ls-files`
+      // enumerators see this index instead of the tree (`dogfood/0118`).
+      GIT_INDEX_FILE: '/tmp/partial.idx',
     };
 
     const result = spawnSync(process.execPath, [GATE], { cwd: dir, encoding: 'utf8', env });
@@ -246,5 +267,12 @@ describe('a step, driven through the real runner', () => {
     // states it -- this is the other direction of the same fix, and a strip written as "remove every
     // ASCEND_ variable" would pass everything above and fail here.
     expect(result.stdout).toContain(`pnpm-stub: test ${blank} [${TEST_SCOPE_ENV}=]`);
+    // The index variable goes for the suite, where it is the whole defect, and stays for the two
+    // steps whose subject IS the index. Both directions, through the real runner.
+    expect(result.stdout).toContain(
+      `pnpm-stub: test ${blank} [${TEST_SCOPE_ENV}=] [GIT_INDEX_FILE=]`,
+    );
+    expect(result.stdout).toContain('node-stub: staged [GIT_INDEX_FILE=/tmp/partial.idx]');
+    expect(result.stdout).toContain('node-stub: duplicate-ids [GIT_INDEX_FILE=/tmp/partial.idx]');
   });
 });

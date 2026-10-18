@@ -1,10 +1,10 @@
 {
-  "_": "Kill-check for the gate's step environment. `scripts/gate.mjs` decides what a run does from four ASCEND_ variables in `process.env`, the hook that starts it exports two, and every process the runner spawns inherited them -- so a `pnpm test` started by a pre-push gate ran the runner's own control-flow tests under the gate's own mode, 14 of those 32 went red, and every push was blocked from any tree. Four mutants, in the order the decision is made: the call site, the strip, a name missing from the list, and a name that has outlived the read it was added for. Every killer below was FOUND, not guessed: each mutant was planted in the working tree and scripts/gate-env.test.ts run with --reporter=json, and the failing names were read off assertionResults. Measured 2026-10-14, one mutant per run, each restore verified by sha256. M2 and M3 are killed by the same pair deliberately -- a strip that does not happen and a strip that skips one variable are the same leak at two sizes.",
+  "_": "Kill-check for the gate's step environment. `scripts/gate.mjs` decides what a run does from four ASCEND_ variables in `process.env`, the hook that starts it exports two, and every process the runner spawns inherited them -- so a `pnpm test` started by a pre-push gate ran the runner's own control-flow tests under the gate's own mode, 14 of those 32 went red, and every push was blocked from any tree (dogfood/0097). GIT_INDEX_FILE is the same leak with a sharper edge and a declared exception (dogfood/0118): `git commit -- <paths>` hands the hook a temporary index, it redefines what 'the index' and 'the tree' refer to for every process below, and the two steps whose subject IS the index say `keeps: INDEX_ENV`. Eight mutants, in the order the decision is made: the call site, the strip, a name missing from the list, a name that has outlived its read, the index variable dropped from the strip, the keep exemption ignored, and each of the two `keeps` removed on its own. Every killer below was FOUND, not guessed: each mutant was planted in the working tree and scripts/gate-env.test.ts run with --reporter=json, and the failing names were read off assertionResults. Measured 2026-10-14 for M1-M4 and 2026-10-18 for M5-M8, one mutant per run, each restore verified by sha256. M2 and M3 are killed by the same pair deliberately -- a strip that does not happen and a strip that skips one variable are the same leak at two sizes -- and M5 and M6 likewise, at the two halves of the index rule.",
   "mutants": [
     {
       "id": "M1",
       "file": "scripts/gate.mjs",
-      "find": "    env: stepEnv(process.env, step.env),",
+      "find": "    env: stepEnv(process.env, step.env, step.keeps),",
       "replace": "    env: { ...process.env, ...step.env },",
       "killers": [
         {
@@ -16,7 +16,7 @@
     {
       "id": "M2",
       "file": "scripts/gate-env.mjs",
-      "find": "  for (const name of CONTROL_ENV) Reflect.deleteProperty(env, name);\n",
+      "find": "  for (const name of [...CONTROL_ENV, ...INDEX_ENV]) {\n    if (keeps !== undefined && keeps.includes(name)) continue;\n    Reflect.deleteProperty(env, name);\n  }\n",
       "replace": "\n",
       "killers": [
         {
@@ -55,6 +55,62 @@
           "file": "scripts/gate-env.test.ts",
           "test": "is exactly the set of variables the gate modules read in code"
         },
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is handed none of the variables the runner reads"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "scripts/gate-env.mjs",
+      "find": "  for (const name of [...CONTROL_ENV, ...INDEX_ENV]) {",
+      "replace": "  for (const name of [...CONTROL_ENV]) {",
+      "killers": [
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "takes the index git set for the commit being made back out of it, unless the step means it"
+        },
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is handed none of the variables the runner reads"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "scripts/gate-env.mjs",
+      "find": "    if (keeps !== undefined && keeps.includes(name)) continue;\n",
+      "replace": "\n",
+      "killers": [
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "takes the index git set for the commit being made back out of it, unless the step means it"
+        },
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is handed none of the variables the runner reads"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "scripts/gate.mjs",
+      "find": "    // is the right one to read (`dogfood/0118`).\n    keeps: INDEX_ENV,\n",
+      "replace": "    // is the right one to read (`dogfood/0118`).\n",
+      "killers": [
+        {
+          "file": "scripts/gate-env.test.ts",
+          "test": "is handed none of the variables the runner reads"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "scripts/gate.mjs",
+      "find": "    args: ['scripts/gate-duplicate-ids.mjs'],\n    keeps: INDEX_ENV,\n",
+      "replace": "    args: ['scripts/gate-duplicate-ids.mjs'],\n",
+      "killers": [
         {
           "file": "scripts/gate-env.test.ts",
           "test": "is handed none of the variables the runner reads"

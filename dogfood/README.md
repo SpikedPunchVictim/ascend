@@ -199,9 +199,34 @@ context; the depth lives in the numbered files.
 
 | [0117](0117-2026-10-18-a-measurement-input-reaped-from-a-temp-tree.md) | **a measurement input reaped from an OS temp tree made the published design 3.3× worse, and nothing errored.** `asc-560h` was claimed four days early to check its premise instead of waiting for the date, and both halves were wrong. The map half is a mechanism error: a refresh **cannot** move the ceiling — **489** on the frozen map and **489** on a fresh dump, `missing-from-frozen 0` for all eight repositories, because the ceiling is join ∩ map and a refresh adds only commits the join has never heard of; what a refresh decides is the *outcome*, where **85 of the 95** units still open at `EV-71`'s NOW have rework candidates the frozen map cannot see (**344** distinct commits) because their windows reach past coverage ending `2026-10-15T23:52Z`. The input half is the damaging one: the EV-63 scratchpad is **empty — 0 files**, taking `traced.tsv`, `list.tsv` and the `blame.py` tracer, which `gen_seeds.py` had made single-copy by building `U` with `only_unfed=True`. Re-running the measurement on what survives gives `rework_pairs 19,927`, `any rate 0.57614`, `designEffect 15.22071`, `effectiveN 25.886` against the published **21,820 / 0.78173 / 4.60581 / 85.544**, with the funnel unmoved at 852/489/394/95/363 — it reads the map and the join and never the traces, so nothing looked malformed. The tracer was rebuilt from its own output and required to reproduce the surviving traces before being trusted: **7/322** commits with the diff not ignoring whitespace, **138/322** once `-w` was on both diff and blame, **322/322** once files were keyed on the old side, and **7 of 8** lists exhaustive with one row in 2,992 differing in a column no consumer reads. Re-traced, every published digit returns exactly, on **21,822** pairs against 21,820 | `asc-0qbw` (P2, open) — the temp tree; `asc-560h` (P3, in progress) — the measurement it blocked | **nobody was looking for it** — the bead is date-bound and the date was four days out; both halves surfaced only because the premise was checked first instead of waited for, and the degradation was caught by measuring *before* the recovery, so the recovery could be required to put the digits back rather than merely to run without error |
 
-One hundred and seventeen findings, each with its own mechanism. The mechanism is the part that repeats even
+| [0118](0118-2026-10-18-a-path-limited-commit-hands-the-gate-its-own-index.md) | **`git commit -- <paths>` hands the hook a temporary index, and the gate handed it to every step it spawned, so the suite's `git ls-files` enumerated the commit instead of the tree.** `GIT_INDEX_FILE` changes what "the index", "the tree" and "tracked" *refer to* for every process below it, so four assertions in `packages/core/test/purity-enforcement.test.ts` and one in `scripts/gate-scope.test.ts` failed on a commit whose diff had nothing to do with them — 3,497 other tests passed. Reproduced 2026-10-18 by building the index git would build (`read-tree HEAD`, keep one path): `Tests 4 failed \| 16 passed (20)` with the variable set, `Tests 20 passed (20)` without it. The fix strips `GIT_INDEX_FILE` like the four `ASCEND_` knobs already stripped (`dogfood/0097`), with two declared exceptions: `store verify --staged` and `duplicate entry ids` read `git ls-files -s` and the index is their *subject*, so they carry `keeps: INDEX_ENV` — verified by accident when a one-file index made the staged step report **12,412** problems across 0 record files, which is it reading the temporary index correctly. End to end, under a 26-file partial index, every gate step is green: `format:check 0 typecheck 0 store verify --staged 0 duplicate entry ids 0 lint 0 test 0 (385,796 ms) test count 0`, `Tests 3815 passed \| 2 skipped (3817)` | `asc-09wx.18` (P2, fixed) | **nobody was looking for it** — the commit that failed was a documentation commit made with a path limit, and the workaround (commit without one) made five red tests read as an environment nuisance for five days, while the bead's own description had the cause right from the first day |
+
+One hundred and eighteen findings, each with its own mechanism. The mechanism is the part that repeats even
 when the findings do not, so each record states its own explicitly.
 
+> **Adding 0118, the detector agreed a fifty-seventh time.** `grep -c '^| \[0' dogfood/README.md` returned
+> **117** and `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **119** (118 findings plus the
+> `0000` template, which `ls` prints without a slash and the `-v` therefore never excludes); `comm` of the disk
+> numbers against the indexed ones returned exactly **`0118`** alongside the standing **`0000`**. Re-run after
+> the row landed: **118** indexed against **119** on disk, `comm` back to `0000` alone.
+>
+> **The variable did not change what the step was told, it changed what its words referred to.** Every leak
+> `dogfood/0097` is about puts a value where a step did not expect it; `GIT_INDEX_FILE` redefines "the index",
+> "the tree" and "tracked" for everything below, so a test written correctly against the tree measured the
+> commit. That is why no assertion mentions git and no gate file mentions the index: there is no single place
+> where the mistake looks like one.
+>
+> **Two days of a known bug, closed by building the thing rather than reading the symptom.** The bead had the
+> cause right from the first day — "GIT_INDEX_FILE is a path the tests' `git ls-files` cannot resolve" — and
+> still sat open, because the workaround (commit without the path limit) made it read as an environment
+> nuisance. What closed it was constructing the index git would have constructed and setting only that
+> variable: the four failures fell out in one run.
+>
+> **The fix has exceptions, and the accident that proved them.** `store verify --staged` and `duplicate entry
+> ids` read `git ls-files -s`; the index is their subject. Measured while driving the gate under a one-file
+> index: the staged step reported **12,412** problems across 0 record files, which is it reading the
+> temporary index correctly and refusing a commit that really does omit those records.
+>
 > **Adding 0117, the detector agreed a fifty-sixth time.** `grep -c '^| \[0' dogfood/README.md` returned
 > **116** and `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **118** (117 findings plus the
 > `0000` template, which `ls` prints without a slash and the `-v` therefore never excludes); `comm` of the disk
