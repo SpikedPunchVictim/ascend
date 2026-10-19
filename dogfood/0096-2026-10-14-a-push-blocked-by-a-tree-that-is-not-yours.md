@@ -7,7 +7,7 @@
 | **Surfaced by** | `but push` — the first attempt to publish the gate-cost branch |
 | **Entry type(s)** | none — this is about the gate's own reach, not the store |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | fixed 2026-10-19 — see Resolution |
 
 ## What was found
 
@@ -122,6 +122,47 @@ commit, too wide on push.
 - **Nothing needs reverting.** The pre-push hook does what it was built to do. What is wrong is the
   claim implicit in its name — that it gates the push, when it gates the checkout the push is made
   from.
+
+## Resolution (2026-10-19) — the push gates the commits
+
+The hook no longer typechecks and tests the shared checkout. `.githooks/pre-push` captures git's ref
+lines (and re-points stdin at them, so beads' block still receives them) and hands them to
+`scripts/push-gate.mjs`, which for each pushed commit creates a detached worktree, installs
+`pnpm install --offline --frozen-lockfile`, runs this checkout's `scripts/gate.mjs` with that worktree
+as its working directory, and removes the worktree in a `finally`.
+
+Measured on this repository: the offline install of a fresh worktree is **11.3 s** including its
+`prepare: tsc -b`, and the full gate inside one is **3,867 collected / 3,865 passed in 165 files** --
+against the same suite run in the checkout. A live run of the installed hook, verbatim:
+
+```
+[pre-push] gating a86aeb7 for refs/heads/demo
+...
+test count: 3867 collected / 3865 passed in 165 files -- baseline 3049 / 3047, 818 above baseline
+[pre-push] ascend gate ok
+```
+
+and the row it wrote, which is the fact this record says the old row could not state:
+
+```
+{"head":"a86aeb79c21a203095a21095c7154ec95e9b6dbf","tree":"decc188684ea5530304ce85a8ed4468c3c4ea495","work":"decc188684ea5530304ce85a8ed4468c3c4ea495","outcome":"ok","scope":"full"}
+```
+
+`head` is the pushed commit; `tree` and `work` are its tree. `pnpm ungated` reports that commit as
+covered by the run that guarded it — the loop `dogfood/0095` asked for, closed on the push side.
+
+Both consequences this record named are gone. An uncommitted edit in the checkout is not in the
+commit's worktree, pinned by a test that dirties a fixture checkout, materialises the commit, and
+asserts the worktree's `git status` is empty and its tree is the commit's. And the row names the pushed
+sha rather than a workspace `head`.
+
+The cost is one full gate per pushed tip, where the old arrangement ran one gate on the checkout and
+answered a second ref from the memo (`dogfood/0099`). That verdict was about the directory, which was
+the defect.
+
+**And the first live run failed** — not on this mechanism, but because the new suite asserted the
+repository holds exactly one worktree while running inside the second one. That is `dogfood/0119`
+(`asc-9ve8`), fixed in the same change.
 
 ## Links
 
