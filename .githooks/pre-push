@@ -62,12 +62,13 @@ echo "[pre-push] ascend gate ok"
 
 # WHICH COMMITS THIS CHECKOUT HAS NEVER JUDGED, said and not enforced.
 #
-# `but commit` does not run the pre-commit hook (`asc-rzhr`, `dogfood/0095`), so a commit can be
-# created that no gate has read -- and until `scripts/gate-coverage.mjs` existed, nothing here could
-# even name it. This is the moment the list is worth printing: the work is about to leave the
-# machine. It WARNS rather than blocks, deliberately, because a commit whose content was edited again
-# in the worktree, or which another applied branch also changed, is not a commit this hook can prove
-# anything about -- and a hook that blocked on a maybe would be bypassed within a week.
+# A commit can exist that no gate has read: `git commit` runs the hook, but a tool that creates
+# commits through its own library does not, and GitButler did exactly that for a year (`asc-rzhr`,
+# `dogfood/0095`). Until `scripts/gate-coverage.mjs` existed, nothing here could even name such a
+# commit. This is the moment the list is worth printing: the work is about to leave the machine. It
+# WARNS rather than blocks, deliberately, because a commit whose content was edited again in the
+# worktree, or which another applied branch also changed, is not a commit this hook can prove anything
+# about -- and a hook that blocked on a maybe would be bypassed within a week.
 #
 # `|| true` and a subshell, for the reason the gate above is a subshell: this must never change the
 # push's status, and `cd` must not leak into beads' block below.

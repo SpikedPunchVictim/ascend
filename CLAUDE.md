@@ -173,17 +173,18 @@ already costs 226–672 s and moves with machine load (`ascend-gate-cost-and-cor
 only exists once a feature is finished — so a gate step would red commits that have nothing to do
 with it. This is a session practice, not a pre-commit one.
 
-### `but commit` runs no hook, so run the gate yourself
+### `git commit` runs the gate; `pnpm ungated` says what that proved
 
-GitButler creates commits through its own library and never invokes `.beads/hooks/pre-commit`
-(`asc-rzhr`, `dogfood/0095`). `but 0.22.3` offers no commit-hook path at all: no flag on `but commit`,
-no hook setting in `but config`, and the managed hook script it ships targets git's hooks directory.
+This repository uses vanilla git. `git commit` runs `.beads/hooks/pre-commit`, which carries ascend's
+gate above beads' block; `pnpm hook:install` re-splices both hooks from `.githooks/` and refuses any
+gate that could short-circuit beads' block.
 
-So before `but commit`, run `node scripts/gate.mjs` and act on its verdict. `pnpm ungated` lists every
-local commit no gate run covers and says why — it exits 1 when the list is non-empty, and the
-pre-push hook prints the same list as a warning without blocking the push. A single gate run on the
-current tree covers every commit whose content the checkout still holds, so the remedy for a non-empty
-list is usually one run, not one run per commit.
+The gate is still not the only way a commit can be made, and it was bypassed for a year by GitButler,
+whose `but commit` runs no hook at all (`asc-rzhr`, `dogfood/0095`) — that is why every run now records
+the index and working trees it read, and why `pnpm ungated` exists. It lists every local commit no gate
+run covers, with the reason, and exits 1 when the list is non-empty. A single gate run covers every
+commit whose content the checkout still holds, so the remedy for a non-empty list is usually one run,
+not one run per commit.
 
 <!-- align:start -->
 ## align — architecture conformance
