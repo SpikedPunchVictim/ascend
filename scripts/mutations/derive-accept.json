@@ -1,5 +1,5 @@
 {
-  "_": "Kill-check for the nine per-type closures in packages/adapter-claude-code/src/derive.ts, written when they were extracted into their own functions. Each mutant breaks ONE rule a closure encodes and names the single test that must notice. The killers were found empirically rather than guessed -- each mutant was applied, derive.test.ts was run with vitest's JSON reporter, and the failing test names were read off -- because a killer that only *should* fail is the same false green as an assertion that is never shown to fail. There is NO intended survivor here, and that is the honest result rather than an omission: all eight mutants are observable, so declaring one equivalent to exercise the `held` path would have meant inventing one. That path is exercised by scripts/mutations/types-capture.json and statement-count.json.",
+  "_": "Kill-check for the nine per-type closures in packages/adapter-claude-code/src/derive.ts, written when they were extracted into their own functions. Each mutant breaks ONE rule a closure encodes and names the single test that must notice. The killers were found empirically rather than guessed -- each mutant was applied, derive.test.ts was run with vitest's JSON reporter, and the failing test names were read off -- because a killer that only *should* fail is the same false green as an assertion that is never shown to fail. There is NO intended survivor here, and that is the honest result rather than an omission: all eight mutants are observable, so declaring one equivalent to exercise the `held` path would have meant inventing one. That path is exercised by scripts/mutations/types-capture.json and statement-count.json. RESPUN 2026-10-14 (dogfood/0102, asc-j6pj): a ninth rule joined the file -- accept() must refuse a record that is NOT AN EVENT, because the harness's api-request-blob re-carries a request body's own tool_use blocks (no uuid, no timestamp, no cwd, no gitBranch) and one invocation derived TWO skill_activation entries, the second with no locality and holding a claim that could silence a real one. M9 drops the gate, M10 inverts its sense, and M11 moves it above the record counter so a record the gate refuses stops being counted as offered. Killers found the same way, empirically rather than guessed.",
   "mutants": [
     {
       "id": "M1",
@@ -94,6 +94,46 @@
         {
           "file": "packages/adapter-claude-code/test/derive.test.ts",
           "test": "maps the harness category to class"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "if (uuid === undefined) return out;",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "writes nothing for a request body replaying a Skill call"
+        },
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "does not let a replayed call swallow the next real run of that skill"
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "if (uuid === undefined) return out;",
+      "replace": "if (uuid !== undefined) return out;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "writes the activation when the SAME call arrives on a record that is an event"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "file": "packages/adapter-claude-code/src/derive.ts",
+      "find": "    counters.records += 1;\n\n    const uuid = str(record['uuid']);",
+      "replace": "    const uuid = str(record['uuid']);\n\n    if (uuid === undefined) return out;\n\n    counters.records += 1;",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/derive.test.ts",
+          "test": "still counts the record as offered, because it was"
         }
       ]
     }

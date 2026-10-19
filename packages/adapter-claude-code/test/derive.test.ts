@@ -803,6 +803,79 @@ describe('skill_activation, one per REQUEST rather than one per stream (asc-gtnu
 
 // ---------------------------------------------------------------------------
 
+describe('a record that is not an event (asc-j6pj)', () => {
+  // The harness began writing `api-request-blob`: a stored REQUEST BODY, which re-carries the
+  // `message.content` of the request it stored -- including its `tool_use` blocks -- and carries
+  // no `uuid`, `timestamp`, `cwd` or `gitBranch`. `accept` walked it like any other record, so
+  // `acceptToolUseBlocks` emitted a SECOND `skill_activation` for an invocation that already had
+  // one, from an event that had no locality to copy: a duplicate key with a null `cwd`, a null
+  // `branch` and no `occurred_at`.
+  //
+  // MEASURED 2026-10-15 over the live corpus, 1,118,625 records: `assistant`, `attachment`,
+  // `user` and `system` carry a `uuid` on EVERY record, and the other twenty types carry one on
+  // NONE -- so presence of `uuid` is what separates an event from a record that is not one.
+  // Exactly one of those twenty carried a field any branch of `accept` reads: `api-request-blob`,
+  // 71 records with a `tool_use` block and 8 with a `tool_result`. The gate is therefore the
+  // event marker rather than a list of replay types, because the harness has added record types
+  // this adapter has never seen before and will again.
+  const blob = (
+    blocks: readonly Record<string, unknown>[],
+    extra: Record<string, unknown> = {},
+  ): TranscriptRecord =>
+    record(blocks, {
+      uuid: undefined,
+      timestamp: undefined,
+      cwd: undefined,
+      gitBranch: undefined,
+      type: 'api-request-blob',
+      ...extra,
+    });
+
+  const callSkill = (id: string): Record<string, unknown> => ({
+    type: 'tool_use',
+    id,
+    name: 'Skill',
+    input: { skill: 'bug-hunt' },
+  });
+
+  it('writes nothing for a request body replaying a Skill call', () => {
+    expect(derive([blob([callSkill('toolu_1')])])).toEqual([]);
+  });
+
+  it('writes nothing for a request body replaying a tool result', () => {
+    expect(
+      derive([blob([{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: true }])]),
+    ).toEqual([]);
+  });
+
+  it('still counts the record as offered, because it was', () => {
+    const deriver = createDeriver();
+    deriver.accept(blob([callSkill('toolu_1')]), FILE);
+    deriver.drain();
+    expect(deriver.counters.records).toBe(1);
+  });
+
+  it('writes the activation when the SAME call arrives on a record that is an event', () => {
+    const entries = ofType(derive([record([callSkill('toolu_1')])]), 'skill_activation');
+    expect(entries.map((entry) => entry.key)).toEqual(['sess-1:toolu_1']);
+  });
+
+  it('does not let a replayed call swallow the next real run of that skill', () => {
+    // The duplicate was not only an extra row: it registered a CLAIM, which is consumed by the
+    // next run of the same skill. One replayed call could therefore silence a real activation.
+    const entries = ofType(
+      derive([
+        blob([callSkill('toolu_1')]),
+        record([], { attributionSkill: 'bug-hunt', uuid: 'u1' }),
+      ]),
+      'skill_activation',
+    );
+    expect(entries.map((entry) => entry.key)).toEqual(['sess-1:u1']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('verification_run', () => {
   /** A check invocation followed by its result, which is how the transcript records a run. */
   const run = (id: string, isError: boolean, command = 'pnpm test'): TranscriptRecord[] => [
