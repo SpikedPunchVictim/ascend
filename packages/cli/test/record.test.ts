@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -173,6 +173,23 @@ describe('asc record', () => {
       rationale: 'git does this already',
       reversibility: 'reversible',
     });
+  });
+
+  it('names the store it wrote to, in the envelope and in the table', () => {
+    // `asc-zvzx`, dogfood/0121: the root is found by walking UP from the cwd, so a probe with a
+    // scratch HOME still writes into whatever repository it is standing in -- and nothing in the
+    // output used to say which. A writer cannot undo what it did; this is the line that says it.
+    const dir = project();
+    const where = join(realpathSync(dir), '.ascend');
+    const entry = ['--prop=chosen=walk up', '--prop=rationale=git does this already'];
+
+    const json = asc(['record', 'decision', ...entry, '--json'], dir);
+    expect(json.status).toBe(0);
+    expect((JSON.parse(json.stdout) as { store?: string }).store).toBe(where);
+
+    const table = asc(['record', 'decision', ...entry], dir);
+    expect(table.status).toBe(0);
+    expect(table.stdout).toContain(`store: ${where}`);
   });
 
   it('reads a document from standard input, which is the primary path', () => {

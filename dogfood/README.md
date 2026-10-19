@@ -205,13 +205,15 @@ context; the depth lives in the numbered files.
 
 | [0120](0120-2026-10-19-a-seeded-control-not-reproducible-from-its-seed.md) | **the stats fixture honoured the permutation control's seed and not its input order, so a `k/501` draw was compared against a pinned constant and failed one run in twenty.** `association.ts` documents the rule in one sentence — *"REPRODUCIBLE FROM ITS PARAMETERS AND ITS INPUT ORDER, and only from both"* — and one `asc record` call gives every entry the same `recorded_at`, so the store's `(recorded_at, id)` order was whatever ids were minted and `permutationNull` walks the array it is given. `k` observed across runs: **6** (0.011976047904191617), **3** (0.005988023952095809), **2** (0.003992015968063872) against a bound of 0.0061698993205439034 — which sits between k=4 and k=3, so it passed at 6 and failed at 3 and 2. Naming the fixture's ids (`block-00 … block-29`) made the order the plan's order and the value deterministic: **k = 7, 0.013972055888223553**, pinned with `toBeCloseTo(…, 12)` and confirmed **10 of 10** consecutive runs | `asc-407m` (P2, closed 2026-10-19) | **nobody was looking for it** — it arrived as a red suite on an unrelated corpus change, and the first diagnosis was wrong in the way this repository keeps re-learning: *"passes 20 of 20 standalone"* was remembered rather than re-measured, and the re-measurement found one failure in twenty with no gate in flight. The class is a reproducibility claim with one of its two halves untested — and the source file had already written the second half down |
 
-One hundred and twenty findings, each with its own mechanism. The mechanism is the part that repeats even
+| [0121](0121-2026-10-19-a-probe-that-believed-home-isolated-the-store.md) | **a throwaway probe ran from this repository's root with `HOME` at a fresh temp directory, believing that isolated the store; it does not, because the root is found by walking UP from `process.cwd()`, so the probe wrote an `intervention` entry into a tracked file and `asc types brief` then printed a permanent `grade owed:` line for a row that can never honestly be graded.** The row: `.ascend/entries/intervention-61c12e2ee039/0001.jsonl`, id `d4662211-42c2-49a1-a912-17b31324473b`, `status applied`, `grading_point 1`. The repair was a hand edit plus `asc index build` — **12,350** records, fingerprint `f46caf90.df` — after which `asc store verify` passed. `n = 1` | `asc-zvzx` (P2, closed 2026-10-19) | **nobody was looking for it** — the probe's output looked exactly like a working isolated probe, and the damage surfaced afterwards as a line in an unrelated brief. The class is a write that reports the least about itself in the one direction a caller cannot undo: every input to the mistake (the resolved root, the store directory) was a fact the tool knew and printed nowhere. `asc record` now sets `store` on its output, in the envelope and at the head of the table |
+
+One hundred and twenty-one findings, each with its own mechanism. The mechanism is the part that repeats even
 when the findings do not, so each record states its own explicitly.
 
-> **Adding 0120, the detector agreed.** `grep -c '^| \[0' dogfood/README.md` returned **119** and
-> `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **120** (119 findings plus the
-> `0000` template); `comm` of the disk numbers against the indexed ones returned exactly **`0120`**
-> alongside the standing **`0000`**. Re-run after the row landed: **120** indexed, `comm` back to
+> **Adding 0121, the detector agreed.** `grep -c '^| \[0' dogfood/README.md` returned **120** and
+> `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **121** (120 findings plus the
+> `0000` template); `comm` of the disk numbers against the indexed ones returned exactly **`0121`**
+> alongside the standing **`0000`**. Re-run after the row landed: **121** indexed, `comm` back to
 > `0000` alone.
 >
 > **A seed is half of a reproducibility claim.** The source file said so — "REPRODUCIBLE FROM ITS

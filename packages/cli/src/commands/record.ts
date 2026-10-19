@@ -57,7 +57,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, relative } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { Args, Flags } from '@oclif/core';
 import {
   EntryRejectedError,
@@ -67,6 +67,7 @@ import {
   previewProducedLines,
   UnknownTypeError,
   writeProducedLines,
+  STORE_DIR,
   type Producers,
   type RecordContext,
   type RecordRequest,
@@ -828,7 +829,15 @@ export default class RecordEntry extends BaseCommand {
         );
       }
 
-      this.emit(format, { columns: ['index', 'id', 'type', 'version'], rows });
+      // WHICH STORE, ALWAYS. The root is found by walking UP from the cwd, so a probe with a
+      // scratch HOME still writes into whatever repository it is standing in -- and the output used
+      // to look identical either way (`asc-zvzx`, `dogfood/0121`). A writer cannot undo what it
+      // did, so the one command that writes says where.
+      this.emit(format, {
+        columns: ['index', 'id', 'type', 'version'],
+        rows,
+        store: join(root, STORE_DIR),
+      });
     });
   }
 

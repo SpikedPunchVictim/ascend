@@ -277,6 +277,18 @@ export interface Output {
   readonly coverage?: Coverage;
 
   /**
+   * The `.ascend` directory a WRITE went to, absolute.
+   *
+   * Additive, and set only by a command that writes: `asc record` is the one that needs it, because
+   * the project root is found by walking UP from `process.cwd()` and nothing in the command's output
+   * used to say which tree it had touched. A probe that believed `HOME` isolated the store wrote into
+   * a real record tree and looked exactly like a working isolated probe (`asc-zvzx`, `dogfood/0121`).
+   * The read side does not report it: a reader who is unsure where a read came from can ask
+   * `asc where`-style questions, but a writer cannot undo what it did.
+   */
+  readonly store?: string;
+
+  /**
    * Where to resume, for an output that showed part of a larger result. Absent otherwise.
    *
    * Absence here is not a stand-in value and does not need the `complete()` treatment: a command
@@ -538,6 +550,8 @@ export interface JsonEnvelope {
   readonly assist?: SearchAssist;
   /** Mirrors `Output.filter`. Present whenever `--filter` was applied, `matched === unfiltered` included. */
   readonly filter?: FilterPopulation;
+  /** Mirrors `Output.store`. Present only on a command that wrote, to say which tree it wrote to. */
+  readonly store?: string;
 }
 
 export function renderJson(output: Output): string {
@@ -552,6 +566,7 @@ export function renderJson(output: Output): string {
     ...(settled.trim === undefined ? {} : { trim: settled.trim }),
     ...(settled.assist === undefined ? {} : { assist: settled.assist }),
     ...(settled.filter === undefined ? {} : { filter: settled.filter }),
+    ...(settled.store === undefined ? {} : { store: settled.store }),
   };
   return JSON.stringify(envelope);
 }
@@ -819,6 +834,7 @@ export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): stri
   // once overflowed a spread argument list" pins, and rewriting this literal as a `push` brought
   // it straight back -- caught by that test, which is why it is there.
   const body: string[] = [
+    ...(output.store === undefined ? [] : [`store: ${output.store}`, '']),
     ...(output.filter === undefined ? [] : [renderFilterPopulation(output.filter), '']),
     line([...output.columns]),
     widths.map((width) => '-'.repeat(width)).join('  '),
