@@ -70,6 +70,9 @@ interface RunRow {
   readonly scope?: string;
   readonly skipped?: readonly { readonly step: string; readonly why: string }[];
   readonly outcome: string;
+  /** What the run read (`asc-rzhr`). A judged run read nothing, so it records no working tree. */
+  readonly tree?: string | null;
+  readonly work?: string | null;
 }
 
 type Step = import('./gate.mjs').Step;
@@ -259,6 +262,12 @@ describe('the tree, not the diff', () => {
     expect(second.last?.skipped?.map((entry) => entry.step)).toEqual(WHOLE_RUN);
     expect(second.last?.outcome).toBe('ok');
     expect(treeOf(dir)).toBe(remembered?.tree);
+    // AND IT READS NOTHING, so it hands the coverage query no working tree. The run whose verdict it
+    // is repeating has its own row carrying the trees it actually read; recording this run's worktree
+    // would claim a verdict about content no step in this process ever looked at.
+    expect(first.last?.work).toMatch(/^[0-9a-f]{40}$/);
+    expect(second.last?.tree).toBe(remembered?.tree);
+    expect(second.last?.work).toBeNull();
   });
 
   it('re-runs everything when one byte of the index changes', () => {

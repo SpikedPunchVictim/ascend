@@ -1,0 +1,137 @@
+{
+  "_": "Kill-check for asc-rzhr: recording what a gate run read, and comparing commits to it. The defects these mutants plant are the two directions a wrong answer gets worse in -- a commit reported covered that no run read, and the fields that make a run's verdict about content rather than about a checkout. Every killer below was found by planting the mutant and reading the failing test names off the runner's JSON, not by choosing the test that looked closest.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "scripts/gate-coverage.mjs",
+      "find": "  const env = { GIT_INDEX_FILE: join(dir, 'index') };",
+      "replace": "  const env = {};",
+      "killers": [
+        {
+          "file": "scripts/gate-coverage.test.ts",
+          "test": "moves the working-tree hash for an unstaged edit and leaves the index hash alone"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "scripts/gate.mjs",
+      "find": "        tree,\n        work,\n        staged: staged(root),",
+      "replace": "        work,\n        staged: staged(root),",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "records the two trees the run read, so a verdict can be matched to a commit"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "scripts/gate.mjs",
+      "find": "        tree,\n        work,\n        staged: staged(root),",
+      "replace": "        tree,\n        staged: staged(root),",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "records the two trees the run read, so a verdict can be matched to a commit"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "scripts/gate-coverage.mjs",
+      "find": "  if (fields.length > 2) return { merge: true, paths: [] };",
+      "replace": "  if (fields.length > 2) return { merge: false, paths: [] };",
+      "killers": [
+        {
+          "file": "scripts/gate-coverage.test.ts",
+          "test": "does not ask a merge commit to be covered, and counts it rather than dropping it"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "scripts/gate-coverage.mjs",
+      "find": "    const blob = status === 'D' ? null : (fields2[3] ?? null);",
+      "replace": "    const blob = fields2[3] ?? null;",
+      "killers": [
+        {
+          "file": "scripts/gate-coverage.test.ts",
+          "test": "does not cover a deletion with a tree that still holds the file"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "scripts/gate-coverage.mjs",
+      "find": "  if (row['outcome'] !== 'ok') return { covered: false, why: 'the run did not pass' };",
+      "replace": "  if (row['outcome'] === 'ok') return { covered: false, why: 'the run did not pass' };",
+      "killers": [
+        {
+          "file": "scripts/gate-coverage.test.ts",
+          "test": "does not cover from a run that did not pass"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "scripts/gate-coverage.mjs",
+      "find": "    return { covered: false, why: 'the run recorded no tree (it predates the field)' };",
+      "replace": "    return { covered: true, why: '' };",
+      "killers": [
+        {
+          "file": "scripts/gate-coverage.test.ts",
+          "test": "does not cover from a row that recorded no tree"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "scripts/gate-coverage.mjs",
+      "find": "      if (covers(row, changed, mapOf).covered) {",
+      "replace": "      if (row['outcome'] === 'ok') {",
+      "killers": [
+        {
+          "file": "scripts/gate-coverage.test.ts",
+          "test": "reports two commits that change the same path, because the merged tree is neither of them"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "scripts/gate-coverage.mjs",
+      "find": "      return { covered: false, why: `the working tree that run read differs at ${entry.path}` };",
+      "replace": "      return { covered: false, why: `the index that run read differs at ${entry.path}` };",
+      "killers": [
+        {
+          "file": "scripts/gate-coverage.test.ts",
+          "test": "says which of the two trees disagreed, so a dirty checkout is not read as a stale index"
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "file": "scripts/gate-coverage.mjs",
+      "find": "      git(root, ['read-tree', 'HEAD'], env) === null &&\n      git(root, ['read-tree', '--empty'], env) === null",
+      "replace": "      git(root, ['read-tree', 'HEAD'], env) === null",
+      "killers": [
+        {
+          "file": "scripts/gate-coverage.test.ts",
+          "test": "hashes an unborn HEAD, which is every fixture and every first commit"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "file": "scripts/gate-coverage.mjs",
+      "find": "    return { covered: false, why: 'the run judged nothing (the memo answered it)' };",
+      "replace": "    return { covered: false, why: 'the run recorded no tree (it predates the field)' };",
+      "killers": [
+        {
+          "file": "scripts/gate-coverage.test.ts",
+          "test": "does not cover from a row that recorded no tree"
+        }
+      ]
+    }
+  ]
+}

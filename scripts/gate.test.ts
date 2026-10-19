@@ -49,6 +49,14 @@ interface RunRow {
   readonly v: number;
   readonly at: string;
   readonly head: string | null;
+  /**
+   * What this run READ, as opposed to what the checkout pointed at (`asc-rzhr`). `head` is the right
+   * answer to "which checkout was this?" and the wrong answer to "what did that verdict cover?" --
+   * under a `but` commit the two are different commits. `null` in a directory that is not a
+   * repository, which is most of this file's fixtures.
+   */
+  readonly tree?: string | null;
+  readonly work?: string | null;
   readonly staged: { readonly count: number; readonly top: Record<string, number> } | null;
   readonly steps: readonly StepRow[];
   readonly total_ms: number;
@@ -529,6 +537,28 @@ describe('driving the real gate', () => {
     }
     // The total is the sum of the parts, so a step's cost cannot go missing between them.
     expect(row?.total_ms).toBe((row?.steps ?? []).reduce((sum, step) => sum + step.ms, 0));
+  });
+
+  it('records the two trees the run read, so a verdict can be matched to a commit', () => {
+    // `asc-rzhr`: without these fields the log could not answer "was this commit gated?", because
+    // `head` names the checkout and a `but commit` never advances it. On a clean checkout the two
+    // are the same tree; they are recorded separately because the steps read two different things.
+    const { status, dir, log } = runGate({}, ['README.md']);
+    expect(status).toBe(0);
+    const row = log[0];
+    expect(row?.tree).toMatch(/^[0-9a-f]{40}$/);
+    expect(row?.work).toMatch(/^[0-9a-f]{40}$/);
+    expect(row?.tree).toBe(row?.work);
+    expect(row?.work).toBe(
+      execFileSync('git', ['write-tree'], { cwd: dir, encoding: 'utf8' }).trim(),
+    );
+  });
+
+  it('records no tree when it records no row, so a fixture run pays for neither', () => {
+    const { status, dir, log } = runGate({ env: { ASCEND_GATE_NO_RECORD: '1' } }, ['README.md']);
+    expect(status).toBe(0);
+    expect(log).toEqual([]);
+    expect(existsSync(join(dir, '.ascend', 'gate-runs.jsonl'))).toBe(false);
   });
 
   it("blocks with the failing step's own status, not a generic one", () => {

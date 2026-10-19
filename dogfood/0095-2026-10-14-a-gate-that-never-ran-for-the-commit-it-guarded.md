@@ -7,7 +7,7 @@
 | **Surfaced by** | `pnpm test` on the tree the gate cuts had just been committed into — the suite went red on a citation that no gate run had ever had the chance to see |
 | **Entry type(s)** | none — this is about the gate's own delivery, not the store |
 | **Severity** | P2 |
-| **Status** | open |
+| **Status** | open — partially fixed 2026-10-18, see Resolution |
 
 ## What was found
 
@@ -128,6 +128,45 @@ the gate cost a session, and the gate works exactly as designed; the defect is i
 - **The instrument that found it was the suite, not the gate.** That is worth keeping in view when the
   gate's cost is next discussed: on this evidence the pre-push gate and a careful `pnpm test` are the
   same instrument, and the pre-commit gate is a third thing that runs on a different client.
+
+## Resolution (2026-10-18) — the recording half
+
+**The commit side cannot be fixed by a hook.** On `but 0.22.3` there is no hook flag on `but commit`,
+no hook setting in `but config`, and the managed hook script the binary ships manages git's hooks
+directory, which `but` never invokes. So the fix is not a hook: it is the question this record said
+nothing could answer.
+
+**Before.** Every row in `.ascend/gate-runs.jsonl` held `head` — the checkout, which a `but commit`
+never advances — and `staged`, a count and top-level directories. No row could be matched to a commit.
+Measured with the new query over the 35 local commits above `64fddce`:
+
+```
+ungated: 34 of 35 commit(s) have no gate run covering their content (every local commit above
+64fddce); 1 not asked
+  ... the run recorded no tree (it predates the field)
+```
+
+The one not asked is the GitButler workspace commit, a merge that introduces no content.
+
+**Now.** Every run records `tree` (the index, which `store verify --staged` and `duplicate entry ids`
+read) and `work` (a temporary index built with `git add -A`, which `format:check`, `typecheck`, `lint`
+and `test` read). A memo-judged run records no `work`, because it ran no step. `pnpm ungated` compares
+each commit's changed paths against both trees, and the pre-push hook prints the same list as a
+warning. After one green run on this checkout:
+
+```
+covered 10   uncovered 24   skipped 1
+```
+
+**The ten are the commits whose content the checkout still holds.** The twenty-four are exactly what
+this record names — commits no gate ever read — and the reason text now says which: some are "no tree
+recorded (it predates the field)", the rest name the path where today's tree differs from the commit,
+because later commits edited the same file. Coverage decays as a file is edited again, which is the
+honest reading: a run proves a verdict about the content in front of it, not about a commit forever.
+
+**What is still open.** Nothing blocks a push. A commit whose paths were edited again, or which
+another applied branch also changed, genuinely was not read by any run, and blocking on that would
+stop pushes for content no branch owns — that is `asc-n0if`, and it wants these numbers first.
 
 ## Links
 

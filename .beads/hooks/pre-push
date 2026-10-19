@@ -60,6 +60,28 @@ fi
 
 echo "[pre-push] ascend gate ok"
 
+# WHICH COMMITS THIS CHECKOUT HAS NEVER JUDGED, said and not enforced.
+#
+# `but commit` does not run the pre-commit hook (`asc-rzhr`, `dogfood/0095`), so a commit can be
+# created that no gate has read -- and until `scripts/gate-coverage.mjs` existed, nothing here could
+# even name it. This is the moment the list is worth printing: the work is about to leave the
+# machine. It WARNS rather than blocks, deliberately, because a commit whose content was edited again
+# in the worktree, or which another applied branch also changed, is not a commit this hook can prove
+# anything about -- and a hook that blocked on a maybe would be bypassed within a week.
+#
+# `|| true` and a subshell, for the reason the gate above is a subshell: this must never change the
+# push's status, and `cd` must not leak into beads' block below.
+#
+# SKIPPED UNDER `ASCEND_GATE_NO_RECORD`, which is how `packages/cli/test/dev-hooks.test.ts` runs the
+# hooks. That fixture runs in this repository, so the query would read the real log and the real
+# commits six times per suite for a warning no assertion reads -- real work done for a fixture.
+if [ -z "${ASCEND_GATE_NO_RECORD:-}" ]; then
+  (
+    cd "$(git rev-parse --show-toplevel)"
+    node scripts/ungated-commits.mjs --warn >&2
+  ) || true
+fi
+
 # --- BEGIN BEADS INTEGRATION v1.2.2 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then

@@ -38,6 +38,7 @@ import { loadavg } from 'node:os';
 import { INDEX_ENV, stepEnv } from './gate-env.mjs';
 import { acquire } from './gate-lock.mjs';
 import { appendRun, ROW_VERSION } from './gate-log.mjs';
+import { worktreeOf } from './gate-coverage.mjs';
 import { check as checkMemo, remember as rememberMemo, sameStep, treeOf } from './gate-memo.mjs';
 import { SUBSET_SCOPE, TEST_SCOPE_ENV, scopeOf } from './gate-scope.mjs';
 
@@ -480,13 +481,26 @@ function main() {
   // already holds. `scripts/gate-memo.mjs` owns the rules; what lives here is which runs may ask
   // (`memoAllowed`) and what a record must have run before it may answer this one (`requiredOf`).
   const memoOff = !memoAllowed(process.env);
-  const tree = memoOff ? null : treeOf(root);
+  // THE ROW ASKS A DIFFERENT QUESTION FROM THE MEMO, and now records its own answer. The memo asks
+  // "may I skip this run?", which `but commit` never asks because `but` runs no hook (`asc-rzhr`).
+  // The row is asked "what content did this verdict cover?", and until it could answer, nothing on
+  // this checkout could say whether a commit had ever been gated (`dogfood/0095`). So both trees are
+  // recorded when a row will be written at all -- the index the staged steps read, and the working
+  // tree the test, lint, format and typecheck steps read. A fixture run records nothing and pays for
+  // neither.
+  const rowWanted = !isSet(process.env.ASCEND_GATE_NO_RECORD);
+  const tree = memoOff && !rowWanted ? null : treeOf(root);
   const verdict = memoOff
     ? { hit: false, why: '', memo: null }
     : checkMemo({ root, tree, required: requiredOf(planned) });
   // `judged` runs nothing and still exits 0. What it must NOT do is record a run that happened --
   // hence `skipped` below, which names every step the run would have taken and why it did not.
   const judged = verdict.hit;
+  // A JUDGED RUN IS NOT RECORDED AS HAVING READ ANYTHING. It runs no step, so the working tree in
+  // front of it is content nobody checked; the run whose verdict it is repeating has its own row
+  // carrying its own trees. Recording this one's worktree would hand the coverage query a verdict
+  // about a tree no step read, which is the false green this whole file exists to refuse.
+  const work = rowWanted && !judged ? worktreeOf(root) : null;
   if (judged) say(`${verdict.why}${atOf(verdict.memo)} -- every step skipped`);
 
   const steps = judged ? [] : planned;
@@ -579,6 +593,11 @@ function main() {
         v: ROW_VERSION,
         at: new Date().toISOString(),
         head: head(root),
+        // What this run read, rather than what the checkout pointed at. `head` is kept as it was --
+        // it is still the right answer to "which checkout was this?", and the two are not the same
+        // question: under a `but` commit, `head` is a workspace commit the new commit is not.
+        tree,
+        work,
         staged: staged(root),
         steps: rows,
         total_ms: rows.reduce((sum, row) => sum + row.ms, 0),

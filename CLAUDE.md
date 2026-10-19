@@ -173,6 +173,18 @@ already costs 226–672 s and moves with machine load (`ascend-gate-cost-and-cor
 only exists once a feature is finished — so a gate step would red commits that have nothing to do
 with it. This is a session practice, not a pre-commit one.
 
+### `but commit` runs no hook, so run the gate yourself
+
+GitButler creates commits through its own library and never invokes `.beads/hooks/pre-commit`
+(`asc-rzhr`, `dogfood/0095`). `but 0.22.3` offers no commit-hook path at all: no flag on `but commit`,
+no hook setting in `but config`, and the managed hook script it ships targets git's hooks directory.
+
+So before `but commit`, run `node scripts/gate.mjs` and act on its verdict. `pnpm ungated` lists every
+local commit no gate run covers and says why — it exits 1 when the list is non-empty, and the
+pre-push hook prints the same list as a warning without blocking the push. A single gate run on the
+current tree covers every commit whose content the checkout still holds, so the remedy for a non-empty
+list is usually one run, not one run per commit.
+
 <!-- align:start -->
 ## align — architecture conformance
 

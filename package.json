@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "test:baseline": "pnpm test && node scripts/test-baseline.mjs update",
     "mutate": "node scripts/mutate.mjs",
+    "ungated": "node scripts/ungated-commits.mjs",
     "lint": "eslint . --ignore-pattern \"packages/*/test/fixtures/**\"",
     "lint:all": "eslint .",
     "format": "prettier --write .",
