@@ -10,9 +10,10 @@
 # machine. A commit proves what it touched; a push proves the repository.
 #
 # WHAT IS DELIBERATELY NOT DUPLICATED. There is no second step list. This hook runs the same
-# `scripts/gate.mjs` the commit runs, with `ASCEND_PRECOMMIT_FULL=1` -- the escape hatch that already
-# meant "run everything, and also `align check`". One runner, one definition of the steps, and a cut
-# can never leave a check unwired at push time, because the push path does not know about cuts.
+# `scripts/gate.mjs` the commit runs -- the CHECKOUT's copy, with the pushed commit materialised as its
+# working directory -- with `ASCEND_PRECOMMIT_FULL=1`, the escape hatch that already meant "run
+# everything, and also `align check`". One runner, one definition of the steps, and a cut can never
+# leave a check unwired at push time, because the push path does not know about cuts.
 #
 # `ASCEND_GATE_HOOK` is what the runner prints in front of each line. Without it a push would talk
 # about pre-commit, and the reader would be told the wrong moment is failing.
@@ -32,26 +33,54 @@
 # and a suite that is red at push time is a suite the commit's cut did not run. The remedy is to fix
 # the tree, not to bypass the hook.
 #
-# COST. This is the expensive path, and it is on purpose: the whole suite plus a repo scan. What it is
-# NOT is once per push, and this paragraph said exactly that until it was measured. Git runs this hook
-# once per `git push` COMMAND it is handed -- one push carrying two refs is still one run, and two
-# pushes are two -- and `but push` pushes a stack one branch at a time. So a stack is gated once per
-# BRANCH, on an index that does not move between them: measured 2026-10-14, one `but push` of a
-# two-branch stack ran this gate twice, 302.4 s and 259.0 s of the 568 s the push took (`dogfood/0099`).
+# COST. This is the expensive path, and it is on purpose: the whole suite plus a repo scan, PER PUSHED
+# TIP. A push carrying two refs pays two full runs, because `scripts/push-gate.mjs` gates each commit
+# on its own content in its own worktree (`asc-n0if`). The earlier arrangement ran one gate on the
+# shared checkout and got the second ref for free from the memo -- measured 2026-10-14 as 302.4 s and
+# 259.0 s of a 568 s two-branch `but push` (`dogfood/0099`) -- but that verdict was about the
+# directory, not about either commit, and it could be blocked by an edit in no commit at all
+# (`dogfood/0096`). The cost was chosen over that.
 #
-# What makes the repeats affordable is Cut 4. The second run computes the same tree, and
-# `ASCEND_PRECOMMIT_FULL` no longer puts `scripts/gate-memo.mjs` out of reach -- a PUSH's record clears
-# a push's bar (`requiredOf` in `scripts/gate.mjs`), so the second is answered rather than paid for. A
-# record a COMMIT left still cannot answer here, and that is the bar: it is the one step only a run
-# with no cuts plans, and no commit-level run ever takes `align check`.
+# A record a COMMIT left still cannot answer here: the bar is `align check`, which only a run with no
+# cuts plans, and no commit-level run ever takes it. A push's own record is not reused either, because
+# each tip is a different tree.
 
-(
-  set -eu
-  ROOT="$(git rev-parse --show-toplevel)"
-  cd "$ROOT"
-  ASCEND_GATE_HOOK=pre-push ASCEND_PRECOMMIT_FULL=1 node scripts/gate.mjs
-)
-status=$?
+# THE REFS, CAPTURED AND HANDED BACK. git writes one line per pushed ref on this hook's stdin, and
+# `scripts/push-gate.mjs` is what knows which commits those lines name. The file is re-pointed at for
+# beads' block below -- `exec 0< "$REF_LIST"` at this level, not inside the subshell -- so the block
+# still sees the same input. Unlinking it afterwards is safe: the open descriptor keeps the inode.
+REF_LIST="$(mktemp "${TMPDIR:-/tmp}/ascend-push-refs.XXXXXX")"
+cat > "$REF_LIST"
+exec 0< "$REF_LIST"
+
+# WHAT IS GATED, AND WHERE. `scripts/push-gate.mjs` materialises each pushed commit in a temporary
+# worktree and runs this checkout's gate script against it (`asc-n0if`), so an uncommitted edit in the
+# working tree -- anyone's -- cannot block the push, and the run's row names the pushed sha rather
+# than whatever the checkout happens to point at.
+#
+# A FIXTURE IS NOT A PUSH. `ASCEND_GATE_NO_RECORD` is set by `packages/cli/test/dev-hooks.test.ts`,
+# which runs this hook in this repository to test its control flow; materialising worktrees and
+# installing dependencies there would be real work done for a fixture. That path runs the gate in
+# place, which is what it did before this change and what those tests assert.
+if [ -n "${ASCEND_GATE_NO_RECORD:-}" ]; then
+  (
+    set -eu
+    ROOT="$(git rev-parse --show-toplevel)"
+    cd "$ROOT"
+    ASCEND_GATE_HOOK=pre-push ASCEND_PRECOMMIT_FULL=1 node scripts/gate.mjs
+  )
+  status=$?
+else
+  (
+    set -eu
+    ROOT="$(git rev-parse --show-toplevel)"
+    cd "$ROOT"
+    node scripts/push-gate.mjs "$REF_LIST"
+  )
+  status=$?
+fi
+
+rm -f "$REF_LIST"
 
 if [ "$status" -ne 0 ]; then
   echo "[pre-push] ascend gate FAILED (exit $status) -- push blocked" >&2
@@ -60,25 +89,3 @@ fi
 
 echo "[pre-push] ascend gate ok"
 
-# WHICH COMMITS THIS CHECKOUT HAS NEVER JUDGED, said and not enforced.
-#
-# A commit can exist that no gate has read: `git commit` runs the hook, but a tool that creates
-# commits through its own library does not, and GitButler did exactly that for a year (`asc-rzhr`,
-# `dogfood/0095`). Until `scripts/gate-coverage.mjs` existed, nothing here could even name such a
-# commit. This is the moment the list is worth printing: the work is about to leave the machine. It
-# WARNS rather than blocks, deliberately, because a commit whose content was edited again in the
-# worktree, or which another applied branch also changed, is not a commit this hook can prove anything
-# about -- and a hook that blocked on a maybe would be bypassed within a week.
-#
-# `|| true` and a subshell, for the reason the gate above is a subshell: this must never change the
-# push's status, and `cd` must not leak into beads' block below.
-#
-# SKIPPED UNDER `ASCEND_GATE_NO_RECORD`, which is how `packages/cli/test/dev-hooks.test.ts` runs the
-# hooks. That fixture runs in this repository, so the query would read the real log and the real
-# commits six times per suite for a warning no assertion reads -- real work done for a fixture.
-if [ -z "${ASCEND_GATE_NO_RECORD:-}" ]; then
-  (
-    cd "$(git rev-parse --show-toplevel)"
-    node scripts/ungated-commits.mjs --warn >&2
-  ) || true
-fi

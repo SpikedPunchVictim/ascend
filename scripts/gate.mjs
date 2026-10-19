@@ -35,9 +35,10 @@
  */
 import { spawnSync } from 'node:child_process';
 import { loadavg } from 'node:os';
+import { resolve } from 'node:path';
 import { INDEX_ENV, stepEnv } from './gate-env.mjs';
 import { acquire } from './gate-lock.mjs';
-import { appendRun, ROW_VERSION } from './gate-log.mjs';
+import { appendRun, LOG_PATH, ROW_VERSION } from './gate-log.mjs';
 import { worktreeOf } from './gate-coverage.mjs';
 import { check as checkMemo, remember as rememberMemo, sameStep, treeOf } from './gate-memo.mjs';
 import { SUBSET_SCOPE, TEST_SCOPE_ENV, scopeOf } from './gate-scope.mjs';
@@ -465,6 +466,11 @@ function head(root) {
 
 function main() {
   const root = process.cwd();
+  // WHERE THE SHARED STATE LIVES, which is not always where the run happens. A push gates a
+  // temporary worktree of the pushed commit (`scripts/push-gate.mjs`), and the worktree is deleted
+  // when the gate finishes -- so the run row and the lock must live in the checkout, or the verdict
+  // would be recorded in a directory nobody keeps. Unset for every other run: `root` is the answer.
+  const stateRoot = process.env.ASCEND_GATE_STATE_ROOT ?? root;
   // What this commit can reach, and therefore what it has to run. Derived from the staged PATHS
   // rather than from the counts above: the counts say what kind of commit it is, and this decides
   // what it costs.
@@ -518,7 +524,9 @@ function main() {
   // NOT TAKEN BY A FIXTURE, for the reason the record below is not written by one -- and the flag
   // that says so is named for the narrower job it was introduced for. A fixture run holding the
   // real lock would make a real commit wait for a run that never happened.
-  const lock = isSet(process.env.ASCEND_GATE_NO_RECORD) ? NO_LOCK : acquire({ root, report: say });
+  const lock = isSet(process.env.ASCEND_GATE_NO_RECORD)
+    ? NO_LOCK
+    : acquire({ root: stateRoot, report: say });
   if (!lock.ok) {
     // The lock is a cost device, not a correctness device: failing to take it must not become a new
     // way for a commit to be refused. Reported, and not obeyed.
@@ -620,7 +628,7 @@ function main() {
         blocked_at: blocked ? blocked.label : null,
         loadavg: loadavg(),
       },
-      { root },
+      { root, logPath: resolve(stateRoot, LOG_PATH) },
     );
     if (!record.ok) {
       // Reported and ignored. The gate's verdict is not this file's to change.

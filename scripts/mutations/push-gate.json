@@ -1,0 +1,137 @@
+{
+  "_": "Kill-check for asc-n0if: gating the pushed commits in worktrees of their own. The mutants plant the two directions that matter -- a commit that is not gated but reported as gated (the fail-open class), and a commit that is gated as something other than itself (the directory wearing the commit's name). Every killer was found by planting the mutant and reading the failing test names off the runner's JSON.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "scripts/push-gate.mjs",
+      "find": "    if (ref.localOid === '' || ZERO.test(ref.localOid)) continue;",
+      "replace": "    if (ref.localOid === '') continue;",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "gates each distinct commit once, and never a deletion"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "scripts/push-gate.mjs",
+      "find": "    byOid.set(ref.localOid, named);",
+      "replace": "    byOid.set(`${ref.localOid}:${String(named.length)}`, named);",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "gates each distinct commit once, and never a deletion"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "scripts/push-gate.mjs",
+      "find": "  return git(root, ['rev-parse', '--verify', `${oid}^{commit}`]);",
+      "replace": "  return git(root, ['rev-parse', '--verify', oid]);",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "dereferences a tag to the commit it names, and refuses an object that is not one"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "scripts/push-gate.mjs",
+      "find": "  if (git(root, ['worktree', 'add', '--detach', dir, sha]) === null) {",
+      "replace": "  if (git(root, ['worktree', 'add', dir, sha]) === null) {",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "materialises the commit, so an uncommitted edit in the checkout is not part of it"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "scripts/push-gate.mjs",
+      "find": "  delete env.GIT_INDEX_FILE;\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "drops git's own variables and states the mode, so the run cannot read the checkout's metadata"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "scripts/push-gate.mjs",
+      "find": "    ASCEND_GATE_STATE_ROOT: base['ASCEND_GATE_STATE_ROOT'] ?? root,",
+      "replace": "    ASCEND_GATE_STATE_ROOT: root,",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "runs the gate in a worktree of the commit, and records a row about THAT commit"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "scripts/push-gate.mjs",
+      "find": "    if (installed.status !== 0) {",
+      "replace": "    if (installed.status === 0) {",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "runs the gate in a worktree of the commit, and records a row about THAT commit"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "scripts/push-gate.mjs",
+      "find": "    return ran.status === 0 ? { ok: true, why: '' } : { ok: false, why: 'the gate refused' };",
+      "replace": "    return { ok: true, why: '' };",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "blocks the push when the gate refuses the commit, and still removes the worktree"
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "file": "scripts/push-gate.mjs",
+      "find": "    const head = git(root, ['rev-parse', 'HEAD']);\n    if (head !== null) tips.push({ oid: head, refs: ['HEAD'] });\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "gates HEAD when it was handed no refs, rather than gating nothing"
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "file": "scripts/push-gate.mjs",
+      "find": "    const [localRef, localOid, remoteRef, remoteOid] = fields;\n    refs.push({",
+      "replace": "    const [localRef, localOid, remoteRef, remoteOid] = fields;\n    if (fields.length !== 4) continue;\n    refs.push({",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "reads one ref per line, and keeps a line it cannot fully read"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "file": "scripts/push-gate.mjs",
+      "find": "  } finally {\n    tearDown(root, spot);\n  }",
+      "replace": "  } finally {\n    void spot;\n  }",
+      "killers": [
+        {
+          "file": "scripts/push-gate.test.ts",
+          "test": "runs the gate in a worktree of the commit, and records a row about THAT commit"
+        }
+      ]
+    }
+  ]
+}

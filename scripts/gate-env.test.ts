@@ -260,7 +260,8 @@ describe('a step, driven through the real runner', () => {
     // layers cover different halves: this one that every variable in the list is stripped, the
     // derivation test above that the list is the right one.
     const blank =
-      '[ASCEND_GATE_HOOK=] [ASCEND_GATE_NO_RECORD=] [ASCEND_GATE_SCOPE=] [ASCEND_PRECOMMIT_FULL=]';
+      '[ASCEND_GATE_HOOK=] [ASCEND_GATE_NO_RECORD=] [ASCEND_GATE_SCOPE=] ' +
+      '[ASCEND_GATE_STATE_ROOT=] [ASCEND_PRECOMMIT_FULL=]';
     expect(result.stdout).toContain(`pnpm-stub: format:check ${blank} `);
     expect(result.stdout).toContain(`pnpm-stub: test ${blank} `);
     // Not over-broad. `ASCEND_TEST_SCOPE` is not the runner's to remove, and the full-suite step still

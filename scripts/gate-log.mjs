@@ -19,7 +19,7 @@
  * red would be a worse version of the same defect.
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 /** Relative to the repository root, which is the gate's working directory. */
 export const LOG_PATH = '.ascend/gate-runs.jsonl';
@@ -45,7 +45,10 @@ export const ROW_VERSION = 1;
  * @returns {AppendResult}
  */
 export function appendRun(row, { root = process.cwd(), logPath = LOG_PATH } = {}) {
-  const path = join(root, logPath);
+  // `resolve`, not `join`: a PUSH run happens in a temporary worktree but must record its row in the
+  // checkout's log (`scripts/push-gate.mjs`), so the path it passes is absolute. `join(root, '/abs')`
+  // silently produces `<root>/abs`, which would write the row into the worktree and lose it.
+  const path = resolve(root, logPath);
   try {
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(row)}\n`, 'utf8');

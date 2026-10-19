@@ -186,6 +186,18 @@ run covers, with the reason, and exits 1 when the list is non-empty. A single ga
 commit whose content the checkout still holds, so the remedy for a non-empty list is usually one run,
 not one run per commit.
 
+### A push gates the commits it carries, in worktrees of their own
+
+`.githooks/pre-push` hands git's ref list to `scripts/push-gate.mjs`, which materialises each pushed
+commit with `git worktree add --detach`, runs `pnpm install --offline --frozen-lockfile`, and then
+runs **this checkout's** `scripts/gate.mjs` with the worktree as its working directory. The verdict is
+therefore about the commit, not about whatever is unfinished in the shared checkout, and the run row
+names the pushed sha (`asc-n0if`, `dogfood/0096`).
+
+Cost: one full gate per pushed tip — measured 11.3 s of install plus ~420 s of gate per commit. A push
+that cannot be gated (worktree, install, or gate) blocks, because a push that was not gated must never
+be reported as gated. `ASCEND_GATE_NO_RECORD` keeps the old in-place path for the hook's own tests.
+
 <!-- align:start -->
 ## align — architecture conformance
 
