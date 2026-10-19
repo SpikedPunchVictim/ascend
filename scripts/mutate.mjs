@@ -52,6 +52,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { loadavg } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -645,6 +646,34 @@ async function runMutant(m) {
     inFlight.delete(path);
   }
 
+  // A SURVIVOR IS RE-RUN ONCE, and `asc-9lfs` is why. A killer that asserts a wall-clock bound dies
+  // or survives with machine load: the gate-lock spec's L4 mutant was reported SURVIVED, and the same
+  // killer FAILED when planted by hand minutes later -- the assertion held only while the wait
+  // exceeded the overhead between the test's clock and the gate's first step, which was 860 ms on one
+  // run and 2710 ms on another. One extra run of a killer that already survived costs seconds
+  // (survivors are rare) and turns the verdict from "the mutant lives" into "this killer is not a
+  // function of the code", which is the thing the reader needs to know and the thing that stops the
+  // cheap fix -- deleting the assertion -- from looking like the answer.
+  /** @type {string[]} */
+  const flaky = [];
+  if (survivors.length > 0 && m.survivor !== true) {
+    for (const test of [...survivors]) {
+      const killer = m.killers.find((entry) => entry.test === test);
+      if (killer === undefined) continue;
+      const { code, out } = await runKiller(killer);
+      if (executed(out) !== 0 && code !== 0) {
+        survivors.splice(survivors.indexOf(test), 1);
+        flaky.push(test);
+        notes.push(
+          `${m.id}  "${test}" survived the first run and died on a re-run with the mutant still ` +
+            `planted -- a load-dependent killer, not a survivor. Load average at the re-run: ` +
+            `${(loadavg()[0] ?? 0).toFixed(2)}. Pin the assertion to something the code decides, or bracket ` +
+            `it (the killer-side practice in the test this was measured in).`,
+        );
+      }
+    }
+  }
+
   const verdict = dead.length
     ? dead.some((d) => d.cause === 'suite-failed')
       ? 'DEAD KILLER -- the file ran no test'
@@ -653,10 +682,12 @@ async function runMutant(m) {
       ? died.length
         ? 'intended survivor KILLED'
         : 'intended survivor -- held'
-      : survivors.length
-        ? 'SURVIVED a named killer'
-        : 'killed by every named killer';
-  const missed = survivors.length || dead.length;
+      : flaky.length
+        ? 'FLAKY KILLER -- survived once, died on the re-run'
+        : survivors.length
+          ? 'SURVIVED a named killer'
+          : 'killed by every named killer';
+  const missed = survivors.length || flaky.length || dead.length;
   // Restore is verified by sha256 rather than trusted: a mutant left in the tree would be reported as
   // a kill it did not earn, and would silently poison every later run.
   const restored = sha(readFileSync(path)) === sha(original);
@@ -665,7 +696,7 @@ async function runMutant(m) {
       m.id,
       restored ? verdict : `RESTORE FAILED; ${verdict}`,
       died.length ? String(died.length) : '-',
-      [...survivors, ...dead.map((d) => d.test)].join(', ') || '-',
+      [...survivors, ...flaky, ...dead.map((d) => d.test)].join(', ') || '-',
     ],
     failed: (m.survivor ? died.length > 0 || dead.length > 0 : missed > 0) || !restored,
     notes,
@@ -787,10 +818,11 @@ async function main(argv) {
   console.log('|---|---|---|---|');
   for (const r of rows) console.log(`| ${r.join(' | ')} |`);
   if (notes.length > 0) {
-    // The diagnosis for a killer that never ran, carrying vitest's own `Error:` line. It is printed
-    // here rather than in the row so the table stays a table -- and it is printed at all because the
-    // cost of not having it is reproducing the run by hand (`dogfood/0080`).
-    console.log('\nwhy a killer never ran:');
+    // The diagnosis a row cannot carry: vitest's own `Error:` line for a killer that never ran, and
+    // the re-run evidence for a killer that survived once (`asc-9lfs`). Printed here rather than in
+    // the row so the table stays a table, and printed at all because the cost of not having it is
+    // reproducing the run by hand (`dogfood/0080`).
+    console.log('\nnotes:');
     for (const note of notes) console.log(`  ${note}`);
   }
   console.log(`\n${repair.line}`);
