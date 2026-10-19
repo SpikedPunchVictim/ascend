@@ -195,6 +195,13 @@ function binDir(formatExit = 0): string {
 
 const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 
+/** How many worktrees this repository holds right now -- the baseline a run must return to. */
+function worktreeCount(): number {
+  return execFileSync('git', ['worktree', 'list'], { cwd: repoRoot, encoding: 'utf8' })
+    .trim()
+    .split('\n').length;
+}
+
 function runPush(
   refs: string,
   formatExit = 0,
@@ -250,6 +257,7 @@ describe('gating a pushed commit', () => {
       encoding: 'utf8',
     }).trim();
 
+    const before = worktreeCount();
     const { status, output, state } = runPush(`${line('refs/heads/fixture', tip)}\n`);
     expect(status).toBe(0);
     expect(output).toContain('[pre-push] gating');
@@ -260,12 +268,11 @@ describe('gating a pushed commit', () => {
     expect(row?.['tree']).toBe(tree);
     expect(row?.['work']).toBe(tree);
     expect(row?.['outcome']).toBe('ok');
-    // And the worktree it ran in is gone.
-    expect(
-      execFileSync('git', ['worktree', 'list'], { cwd: repoRoot, encoding: 'utf8' })
-        .trim()
-        .split('\n'),
-    ).toHaveLength(1);
+    // And the worktree it ran in is gone. Compared against the count from BEFORE the run, not against
+    // one: this repository can legitimately hold other worktrees -- a live pre-push gate holds one
+    // while it works, and a person may -- and an assertion of "exactly one" would fail on a fact this
+    // test has no business asserting.
+    expect(worktreeCount()).toBe(before);
   });
 
   it('blocks the push when the gate refuses the commit, and still removes the worktree', () => {
@@ -273,15 +280,12 @@ describe('gating a pushed commit', () => {
       cwd: repoRoot,
       encoding: 'utf8',
     }).trim();
+    const before = worktreeCount();
     const { status, output } = runPush(`${line('refs/heads/fixture', tip)}\n`, 1);
 
     expect(status).toBe(1);
     expect(output).toContain('the gate refused');
-    expect(
-      execFileSync('git', ['worktree', 'list'], { cwd: repoRoot, encoding: 'utf8' })
-        .trim()
-        .split('\n'),
-    ).toHaveLength(1);
+    expect(worktreeCount()).toBe(before);
   });
 
   it('gates HEAD when it was handed no refs, rather than gating nothing', () => {

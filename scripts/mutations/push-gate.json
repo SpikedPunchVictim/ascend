@@ -47,7 +47,9 @@
           "file": "scripts/push-gate.test.ts",
           "test": "materialises the commit, so an uncommitted edit in the checkout is not part of it"
         }
-      ]
+      ],
+      "survivor": true,
+      "why": "Equivalent by construction, measured rather than assumed: `git worktree add <path> <40-hex sha>` creates a DETACHED HEAD with or without --detach, because git will not create a branch named by a commit id -- measured 2026-10-19 in a scratch repository, where `git -C <worktree> symbolic-ref -q HEAD` fails in both forms. `commitOf` always hands materialize a resolved sha, so the flag changes no byte the evaluator executes. It stays in the source because it states the intent at the call site, and the test named here is the one that must keep passing through the mutant: it is the 0096 regression, and it is what would catch the flag mattering if materialize ever took a ref name."
     },
     {
       "id": "M5",
