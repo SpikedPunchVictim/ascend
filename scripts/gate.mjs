@@ -42,7 +42,7 @@ import { acquire } from './gate-lock.mjs';
 import { appendRun, LOG_PATH, ROW_VERSION } from './gate-log.mjs';
 import { worktreeOf } from './gate-coverage.mjs';
 import { check as checkMemo, remember as rememberMemo, sameStep, treeOf } from './gate-memo.mjs';
-import { SUBSET_SCOPE, TEST_SCOPE_ENV, scopeOf } from './gate-scope.mjs';
+import { FULL_SCOPE, SUBSET_SCOPE, TEST_SCOPE_ENV, scopeOf } from './gate-scope.mjs';
 
 /**
  * One gate step. `label` is what a reader sees; `command`/`args` are what runs.
@@ -122,7 +122,7 @@ const TEST_STEP = {
   label: 'test',
   command: 'pnpm',
   args: ['test'],
-  env: { [TEST_SCOPE_ENV]: '' },
+  env: { [TEST_SCOPE_ENV]: FULL_SCOPE },
 };
 
 // The test-count baseline (asc-049w). `dogfood/0061` is a green gate over a file whose 55

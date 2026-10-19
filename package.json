@@ -12,7 +12,7 @@
     "build": "tsc -b",
     "prepare": "pnpm build",
     "typecheck": "tsc -b && tsc -p tsconfig.eslint.json",
-    "test": "vitest run",
+    "test": "ASCEND_TEST_SCOPE=full vitest run",
     "test:watch": "vitest",
     "test:baseline": "pnpm test && node scripts/test-baseline.mjs update",
     "mutate": "node scripts/mutate.mjs",

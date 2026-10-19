@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import TestCount from '../vitest.test-count.js';
-import { SUBSET_SCOPE, TEST_SCOPE_ENV } from './gate-scope.mjs';
+import { FULL_SCOPE, SUBSET_SCOPE, TEST_SCOPE_ENV } from './gate-scope.mjs';
 
 /**
  * What the test-count reporter writes, and what it must not.
@@ -84,10 +84,10 @@ function restoreEnv(key: string, value: string | undefined): void {
 }
 
 describe('the scan a narrowed run must not write', () => {
-  it('writes the scan for an ordinary run, so the guard is not "never write"', () => {
+  it('writes the scan for a run that says it collected the suite, so the guard is not "never write"', () => {
     // The direction that makes the other one mean something: a reporter that returned early always
     // would pass the test below and break the baseline check for every full run.
-    const { written, scan } = runReporter({});
+    const { written, scan } = runReporter({ [TEST_SCOPE_ENV]: FULL_SCOPE });
 
     expect(written).toBe(true);
     expect(scan).toMatchObject({ files: 0, tests: 0, passed: 0, byFile: {} });
@@ -101,11 +101,12 @@ describe('the scan a narrowed run must not write', () => {
     expect(written).toBe(false);
   });
 
-  it('treats any other value of the scope variable as a full run', () => {
-    // An equality on the gate's own word, not a truthiness test: `ASCEND_TEST_SCOPE=1` is not the
-    // gate saying it narrowed anything, and a person's own `pnpm test` sets nothing at all.
-    for (const value of ['', '0', 'subsetted', 'FULL']) {
-      expect(runReporter({ [TEST_SCOPE_ENV]: value }).written, value).toBe(true);
+  it('writes nothing for any value that is not the word (`asc-19x2`)', () => {
+    // An equality on the whole word, not a truthiness test and not a suffix match: silence is what
+    // `pnpm vitest run <one file>` sets, and that is not the suite either.
+    for (const value of ['', '0', 'subsetted', 'FULL', 'subset']) {
+      expect(runReporter({ [TEST_SCOPE_ENV]: value }).written, value).toBe(false);
     }
+    expect(runReporter({}).written).toBe(false);
   });
 });

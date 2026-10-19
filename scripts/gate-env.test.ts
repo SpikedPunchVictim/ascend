@@ -267,11 +267,12 @@ describe('a step, driven through the real runner', () => {
     // Not over-broad. `ASCEND_TEST_SCOPE` is not the runner's to remove, and the full-suite step still
     // states it -- this is the other direction of the same fix, and a strip written as "remove every
     // ASCEND_ variable" would pass everything above and fail here.
-    expect(result.stdout).toContain(`pnpm-stub: test ${blank} [${TEST_SCOPE_ENV}=]`);
+    // `asc-19x2`: the full-suite step names the word instead of leaving the variable silent.
+    expect(result.stdout).toContain(`pnpm-stub: test ${blank} [${TEST_SCOPE_ENV}=full]`);
     // The index variable goes for the suite, where it is the whole defect, and stays for the two
     // steps whose subject IS the index. Both directions, through the real runner.
     expect(result.stdout).toContain(
-      `pnpm-stub: test ${blank} [${TEST_SCOPE_ENV}=] [GIT_INDEX_FILE=]`,
+      `pnpm-stub: test ${blank} [${TEST_SCOPE_ENV}=full] [GIT_INDEX_FILE=]`,
     );
     expect(result.stdout).toContain('node-stub: staged [GIT_INDEX_FILE=/tmp/partial.idx]');
     expect(result.stdout).toContain('node-stub: duplicate-ids [GIT_INDEX_FILE=/tmp/partial.idx]');

@@ -280,7 +280,9 @@ describe('pre-push gate', () => {
 
     expect(status).toBe(0);
     // The unfiltered suite: `pnpm test`, with no directory filters and no scope on the step.
-    expect(output).toContain('pnpm-stub: test [ASCEND_TEST_SCOPE=]');
+    // The full run now SAYS it is full (`asc-19x2`); silence is what a one-file `vitest run` sets,
+    // and the reporter no longer treats that as the whole suite.
+    expect(output).toContain('pnpm-stub: test [ASCEND_TEST_SCOPE=full]');
     expect(output).not.toContain('exec vitest run');
     // `align check` is reached only in full mode, so its presence is the escape hatch working.
     expect(output).toContain('[pre-push] align check');

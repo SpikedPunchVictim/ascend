@@ -160,11 +160,18 @@ export const PACKAGE_SCANNERS = ['core', 'store', 'cli'];
  * skip. The seam is named in that reporter's own docblock: *"only the gate knows the run it just
  * watched was the full one."*
  *
- * ABSENT MEANS FULL, deliberately. A person typing `pnpm test` gets a scan written; only the gate,
- * which knows it narrowed the run, says otherwise.
+ * THE WORD HAS TO BE SAYING IT, and that is `asc-19x2`. This used to be "absent means full", on the
+ * reasoning that a person's own `pnpm test` sets nothing -- but the variable is equally absent for
+ * `pnpm vitest run packages/cli/test/one-file.test.ts`, which is not the full suite: measured
+ * 2026-10-13, one file's run left a scan of 1 file / 23 tests and `scripts/test-baseline.mjs`
+ * reported it as 3,026 BELOW the baseline and exited 1. Default-by-absence is the same class as
+ * `dogfood/0090`. So `pnpm test` states the word itself (package.json), the gate states it on the
+ * step that runs the whole suite, and anything else writes nothing.
  */
 export const TEST_SCOPE_ENV = 'ASCEND_TEST_SCOPE';
 export const SUBSET_SCOPE = 'subset';
+/** What a run that collected the whole suite says. Anything else, including silence, does not. */
+export const FULL_SCOPE = 'full';
 
 /**
  * Whether the run about to be recorded is the whole suite.
@@ -173,7 +180,7 @@ export const SUBSET_SCOPE = 'subset';
  * @returns {boolean}
  */
 export function recordsWholeSuite(env) {
-  return env[TEST_SCOPE_ENV] !== SUBSET_SCOPE;
+  return env[TEST_SCOPE_ENV] === FULL_SCOPE;
 }
 
 /** `@ascend/<name>` package names that have a directory under `packages/`. */

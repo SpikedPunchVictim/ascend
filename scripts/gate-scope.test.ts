@@ -236,11 +236,13 @@ describe('PACKAGE_SCANNERS is derived, not asserted from memory', () => {
 });
 
 describe('the reporter contract', () => {
-  it('records the suite by default, so a person typing pnpm test still writes a scan', () => {
-    expect(recordsWholeSuite({})).toBe(true);
-    expect(recordsWholeSuite({ PATH: '/usr/bin' })).toBe(true);
-    // An empty string is not the subset marker. Only the gate's own word means "narrowed".
-    expect(recordsWholeSuite({ ASCEND_TEST_SCOPE: '' })).toBe(true);
+  it('records only a run that SAYS it collected the suite (`asc-19x2`)', () => {
+    expect(recordsWholeSuite({ ASCEND_TEST_SCOPE: 'full' })).toBe(true);
+    // Silence is not the word. `pnpm vitest run <one file>` sets nothing either, and it is not the
+    // suite -- measured 2026-10-13 as a 1-file scan the baseline check read as 3,026 below the floor.
+    expect(recordsWholeSuite({})).toBe(false);
+    expect(recordsWholeSuite({ PATH: '/usr/bin' })).toBe(false);
+    expect(recordsWholeSuite({ ASCEND_TEST_SCOPE: '' })).toBe(false);
   });
 
   it('does not record a narrowed run, which cannot speak for the suite', () => {
@@ -250,8 +252,8 @@ describe('the reporter contract', () => {
   it('compares against any other value rather than testing for a suffix', () => {
     // `subsetted`, `subset-of-one` and `SUBSET` are not the gate's word. The check is an equality
     // on the whole value, the same shape `isSet` uses for `ASCEND_PRECOMMIT_FULL`.
-    for (const value of ['subsetted', 'SUBSET', 'Subset', ' subset ']) {
-      expect(recordsWholeSuite({ ASCEND_TEST_SCOPE: value }), value).toBe(true);
+    for (const value of ['subsetted', 'SUBSET', 'Subset', ' subset ', 'FULL']) {
+      expect(recordsWholeSuite({ ASCEND_TEST_SCOPE: value }), value).toBe(false);
     }
   });
 });

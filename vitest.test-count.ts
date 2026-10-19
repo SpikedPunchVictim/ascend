@@ -26,12 +26,13 @@ import { recordsWholeSuite } from './scripts/gate-scope.mjs';
  * `scripts/test-baseline.mjs`, which the gate runs *after* the suite, because only the gate knows
  * the run it just watched was the full one.
  *
- * WHICH IS WHY IT ASKS. The gate narrows the suite to the packages a commit's staged paths can
- * reach (`scripts/gate-scope.mjs`, `asc-09wx.14`), and it sets `ASCEND_TEST_SCOPE=subset` on the
- * step it narrows. A subset run writes NO scan: its count is a true count of the files it
- * collected and a lie about the suite, and `scripts/test-baseline.mjs` would read the difference as
- * a breach and red every commit. The variable is absent for a person's own `pnpm test`, so an
- * ordinary run still records.
+ * WHICH IS WHY IT ASKS, AND WHY SILENCE IS NOT AN ANSWER (`asc-19x2`). The gate narrows the suite to
+ * the packages a commit's staged paths can reach (`scripts/gate-scope.mjs`, `asc-09wx.14`) and sets
+ * `ASCEND_TEST_SCOPE=subset` on that step; a subset run writes NO scan, because its count is a true
+ * count of the files it collected and a lie about the suite. But "absent means full" also covered
+ * `pnpm vitest run <one file>`, which is not the suite either: measured 2026-10-13, it wrote a
+ * 1-file scan and the baseline check read that as 3,026 tests below the floor. So the word has to be
+ * said -- `ASCEND_TEST_SCOPE=full` -- by `pnpm test` and by the gate's own full-suite step.
  *
  * Written on every FULL run, red or green: collection is unaffected by failures, so a red run's
  * count is still a true count. `.testcount/scan.json` is gitignored -- evidence about one machine's
@@ -66,8 +67,9 @@ export default class TestCount implements Reporter {
     // suite's own output, not have to infer it from a file's timestamp.
     if (!recordsWholeSuite(process.env)) {
       console.log(
-        '[test-count] this run was narrowed to the packages the commit reaches, so it did not ' +
-          'collect the suite -- the scan is left as the last full run wrote it',
+        '[test-count] this run did not say it collected the whole suite ' +
+          '(ASCEND_TEST_SCOPE=full), so it did not write the scan -- the baseline check still ' +
+          'reads the last full run',
       );
       return;
     }

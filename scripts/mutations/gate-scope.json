@@ -80,7 +80,7 @@
     {
       "id": "M6",
       "file": "vitest.test-count.ts",
-      "find": "    if (!recordsWholeSuite(process.env)) {\n      console.log(\n        '[test-count] this run was narrowed to the packages the commit reaches, so it did not ' +\n          'collect the suite -- the scan is left as the last full run wrote it',\n      );\n      return;\n    }\n\n",
+      "find": "    if (!recordsWholeSuite(process.env)) {\n      console.log(\n        '[test-count] this run did not say it collected the whole suite ' +\n          '(ASCEND_TEST_SCOPE=full), so it did not write the scan -- the baseline check still ' +\n          'reads the last full run',\n      );\n      return;\n    }\n",
       "replace": "",
       "killers": [
         {
@@ -182,6 +182,18 @@
         {
           "file": "scripts/gate.test.ts",
           "test": "states the full scope on the suite step"
+        }
+      ]
+    },
+    {
+      "id": "M18",
+      "file": "scripts/gate-scope.mjs",
+      "find": "  return env[TEST_SCOPE_ENV] === FULL_SCOPE;",
+      "replace": "  return env[TEST_SCOPE_ENV] !== SUBSET_SCOPE;",
+      "killers": [
+        {
+          "file": "scripts/gate-scope.test.ts",
+          "test": "records only a run that SAYS it collected the suite (`asc-19x2`)"
         }
       ]
     }

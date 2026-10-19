@@ -436,7 +436,9 @@ describe('the scope a run takes', () => {
     );
 
     expect(suite?.args).toEqual(['test']);
-    expect(suite?.env).toEqual({ ASCEND_TEST_SCOPE: '' });
+    // The word, not silence (`asc-19x2`): silence is also what `vitest run <one file>` sets, and
+    // the reporter no longer reads it as the whole suite.
+    expect(suite?.env).toEqual({ ASCEND_TEST_SCOPE: 'full' });
   });
 
   it('prints the subset under the label the full suite uses, so the label contract holds', () => {
