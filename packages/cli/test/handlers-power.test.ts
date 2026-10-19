@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { whyNot } from '../src/handler-power.js';
 
 /**
  * `asc handlers power`, driven as the real binary over a fixture corpus (asc-6ola.3).
@@ -244,5 +245,24 @@ describe('asc handlers power', () => {
     const run = power(fixture(), '--horizon', '0');
     expect(run.status).toBe(2);
     expect(run.stderr).toMatch(/--horizon takes a positive number of active days/);
+  });
+});
+
+describe('why a plan could not be computed, when the outcome never varied', () => {
+  it('says where a NUDGE is sized, because every unit succeeding is a say: handler by construction', () => {
+    // `asc-xg62`: `packages/core` compiles a `say:` handler to one emit per trigger, so "a trigger
+    // produced a row" is the identity and this instrument cannot size a nudge. The owner's decision
+    // is that nudges are sized git-side; a refusal that stops at "no variance" sends the reader
+    // looking for a flag that does not exist.
+    const said = whyNot(851, 851, 851, 48);
+    expect(said).toContain('size it git-side');
+    expect(said).toContain('spike/rework-design-effect/units.mjs');
+  });
+
+  it('does not claim a nudge when nothing succeeded', () => {
+    // The same branch covers "no unit succeeded", which is a different fact and not a say: handler.
+    const said = whyNot(60, 0, 60, 10);
+    expect(said).toContain('the outcome was the same');
+    expect(said).not.toContain('git-side');
   });
 });

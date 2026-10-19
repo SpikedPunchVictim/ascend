@@ -145,7 +145,7 @@ export function plan(
  * a change in), and one whose units carry no timestamps at all (no day rate to divide by). They are
  * named here rather than left to a thrown `PowerError`, because a stack trace is not a report.
  */
-function whyNot(
+export function whyNot(
   units: number,
   successes: number,
   dated: number,
@@ -154,9 +154,23 @@ function whyNot(
   if (units === 0)
     return 'nothing to plan -- this handler triggered in no unit of the replayed log';
   if (successes === 0 || successes === units) {
+    // EVERY UNIT SUCCEEDING IS THE IDENTITY A `say:` HANDLER HAS BY CONSTRUCTION, and that is a
+    // decision rather than a gap (`asc-xg62`): `packages/core` compiles a `say:` handler to one
+    // emit per trigger, so "a trigger produced a row" is true in every unit and this instrument
+    // cannot size a nudge. What a nudge is meant to move -- EV-63's rework, a later commit
+    // rewriting the lines -- is a git fact and is not in the event stream at all. The owner's
+    // decision is that nudges are sized GIT-SIDE, with the rework join the design-effect measurement
+    // already uses (EV-71/EV-72, `spike/rework-design-effect/units.mjs`), rather than by growing a
+    // second outcome definition in here.
+    const guidance =
+      successes === units
+        ? ` A \`say:\` handler has exactly this shape (one row per trigger), and a nudge's outcome is ` +
+          `not a row: size it git-side with the rework join (EV-71/EV-72, ` +
+          `spike/rework-design-effect/units.mjs), not here.`
+        : '';
     return (
       `nothing to plan -- the outcome was the same in all ${String(units)} units, so there is no ` +
-      `variance for any effect size to move`
+      `variance for any effect size to move.${guidance}`
     );
   }
   if (dated === 0 || activeDays === 0) {
