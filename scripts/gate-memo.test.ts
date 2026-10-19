@@ -407,6 +407,19 @@ describe('a failed tree is never memoised', () => {
     expect(readMemo(dir)).toBeNull();
   });
 
+  it('reports rather than throws when .ascend is a file', () => {
+    // `asc-s3xx`: the write fails at `mkdirSync`, and the CLEANUP then threw ENOTDIR from its own
+    // lstat -- inside the handler, where nothing caught it. A memo that cannot be written is
+    // reported and ignored; it must never be able to change the gate's verdict.
+    const dir = repo();
+    writeFileSync(join(dir, '.ascend'), 'not a directory\n', 'utf8');
+
+    const result = remember({ root: dir, tree: treeOf(dir), steps: memoSteps(), outcome: 'ok' });
+    expect(result.ok).toBe(false);
+    expect(result.written).toBe(false);
+    expect(result.error).toBeTruthy();
+  });
+
   it('leaves a blocked run out of the record, so the next amend runs the gate', () => {
     // The end-to-end half, and the assertion a mutation on the guard would fail: after a run that
     // blocked, no record exists -- and the next run therefore pays for every step rather than reading

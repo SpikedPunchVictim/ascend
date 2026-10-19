@@ -124,6 +124,18 @@
           "test": "does not re-gate an amend whose index is the tree that passed"
         }
       ]
+    },
+    {
+      "id": "M10",
+      "file": "scripts/gate-memo.mjs",
+      "find": "    try {\n      rmSync(temp, { force: true });\n    } catch {\n      // Nothing to remove, or nothing to remove it from. Both are the same answer here.\n    }",
+      "replace": "    rmSync(temp, { force: true });",
+      "killers": [
+        {
+          "file": "scripts/gate-memo.test.ts",
+          "test": "reports rather than throws when .ascend is a file"
+        }
+      ]
     }
   ]
 }

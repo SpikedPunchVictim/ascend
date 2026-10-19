@@ -683,6 +683,26 @@ describe('driving the real gate', () => {
     expect(`${result.stdout}${result.stderr}`).toContain('could not record this run');
   });
 
+  it('does not change its verdict when the memo cannot be written, in a repository', () => {
+    // `asc-s3xx`: the same failure with the memo ACTIVE. The test above only covers a run directory
+    // that is not a repository, where the memo is off and nothing is written -- and the cleanup path
+    // after a failed write threw ENOTDIR from its own lstat, which no test could see.
+    const { dir, bin } = sandbox({});
+    stageIn(dir, ['README.md']);
+    writeFileSync(join(dir, '.ascend'), 'not a directory\n', 'utf8');
+
+    const result = spawnSync(process.execPath, [GATE], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: runEnv(bin, false),
+    });
+
+    expect(result.status).toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'could not remember that this tree passed',
+    );
+  });
+
   it('times each step on its own, so a duration cannot be a total wearing a step name', () => {
     // `asc-09wx.14` exists because nobody could say what a commit cost. A row of durations is
     // only worth recording if each one belongs to its own step, and the two ways that can go

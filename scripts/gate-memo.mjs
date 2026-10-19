@@ -320,7 +320,16 @@ export function remember({ root = process.cwd(), tree, steps, outcome, memoPath 
   } catch (error) {
     // A stale temp file would be collected by nothing, so it goes now. `force` because the failure
     // may have been the write itself, in which case there is nothing there to remove.
-    rmSync(temp, { force: true });
+    //
+    // IN ITS OWN try/catch, and that is `asc-s3xx`: when `.ascend` exists as a FILE, `mkdirSync` is
+    // what fails and `rmSync` then throws ENOTDIR from its own lstat -- inside the handler, where
+    // nothing caught it. A memo that cannot be written must be REPORTED, never thrown: the gate's
+    // verdict is not this file's to change, which is the rule this whole function exists under.
+    try {
+      rmSync(temp, { force: true });
+    } catch {
+      // Nothing to remove, or nothing to remove it from. Both are the same answer here.
+    }
     return { ok: false, path, written: false, error: messageOf(error) };
   }
 }
