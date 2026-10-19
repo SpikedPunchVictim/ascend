@@ -1,0 +1,29 @@
+{
+  "_": "Kill-check for asc-xg62: the refusal says where a nudge IS sized. The mutants are the two ways it can lie -- the guidance pointing somewhere else, and the guidance attached to the branch it does not describe (nothing succeeded).",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/handler-power.ts",
+      "find": "          `not a row: size it git-side with the rework join (EV-71/EV-72, ` +",
+      "replace": "          `not a row: size it elsewhere with the rework join (EV-71/EV-72, ` +",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-power.test.ts",
+          "test": "says where a NUDGE is sized, because every unit succeeding is a say: handler by construction"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/handler-power.ts",
+      "find": "      successes === units\n        ? ` A \\`say:\\` handler",
+      "replace": "      successes === 0\n        ? ` A \\`say:\\` handler",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-power.test.ts",
+          "test": "does not claim a nudge when nothing succeeded"
+        }
+      ]
+    }
+  ]
+}

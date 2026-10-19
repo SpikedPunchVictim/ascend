@@ -1,0 +1,41 @@
+{
+  "_": "Kill-check for asc-zvzx: a write that says which store it wrote to. The mutants are the two ways the report can go missing again -- the wrong path, and the report absent from one of the two surfaces a caller reads.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/commands/record.ts",
+      "find": "        store: join(root, STORE_DIR),",
+      "replace": "        store: root,",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "names the store it wrote to, in the envelope and in the table"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/output.ts",
+      "find": "    ...(output.store === undefined ? [] : [`store: ${output.store}`, '']),\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "names the store it wrote to, in the envelope and in the table"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/output.ts",
+      "find": "    ...(settled.store === undefined ? {} : { store: settled.store }),\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "names the store it wrote to, in the envelope and in the table"
+        }
+      ]
+    }
+  ]
+}
