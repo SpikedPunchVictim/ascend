@@ -7,7 +7,7 @@
 | **Surfaced by** | `pnpm hook:install`, run to publish the corrected cost note in `.githooks/pre-push` |
 | **Entry type(s)** | none — this is about the hooks' own installation, not the store |
 | **Severity** | P1 |
-| **Status** | open |
+| **Status** | fixed 2026-10-19 — see Resolution |
 
 ## What was found
 
@@ -125,6 +125,25 @@ this record.
   layout decision inside a directory beads owns, and the installer already documents that it takes
   this mechanism rather than `core.hooksPath` because that single value is beads'. A fix should ask
   the marker, not assume the suffix.
+
+## Resolution (2026-10-19) — the claimant left
+
+GitButler displaced the hooks because GitButler was in charge of the checkout. This repository left it
+(commit `4ac779c`, `dogfood/0095`): HEAD is a normal branch again, and the checkout of that branch did
+the restoration — GitButler's own `post-checkout` dispatcher noticed the branch and moved
+`post-checkout-user` and `pre-commit-user` back into place. The two `-user` copies are deleted, and
+`pnpm hook:install` now exits 0:
+
+```
+[install-hooks] verifying the installed artifacts
+  ok  core.hooksPath = .beads/hooks
+  ok  .beads/hooks/pre-commit contains ascend's gate above beads' block
+  ok  .beads/hooks/pre-push contains ascend's gate above beads' block
+  ok  beads' block is intact and reachable in every spliced hook
+```
+
+The installer was never wrong: it refused to overwrite a file whose beads block had been moved out
+from under it, and the fix was to remove the thing that moved it, not to teach the installer to guess.
 
 ## Links
 

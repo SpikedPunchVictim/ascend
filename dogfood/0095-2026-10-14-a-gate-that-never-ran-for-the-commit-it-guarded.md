@@ -7,7 +7,7 @@
 | **Surfaced by** | `pnpm test` on the tree the gate cuts had just been committed into — the suite went red on a citation that no gate run had ever had the chance to see |
 | **Entry type(s)** | none — this is about the gate's own delivery, not the store |
 | **Severity** | P2 |
-| **Status** | open — partially fixed 2026-10-18, see Resolution |
+| **Status** | fixed 2026-10-19 — see Resolution |
 
 ## What was found
 
@@ -167,6 +167,26 @@ honest reading: a run proves a verdict about the content in front of it, not abo
 **What is still open.** Nothing blocks a push. A commit whose paths were edited again, or which
 another applied branch also changed, genuinely was not read by any run, and blocking on that would
 stop pushes for content no branch owns — that is `asc-n0if`, and it wants these numbers first.
+
+## Fixed (2026-10-19) — the delivery path came back
+
+The recording half above made the bypass visible; this record's actual defect — *`but commit` runs no
+hook* — was fixed by removing the client that skips it. The repository is vanilla git again
+(`4ac779c`): HEAD is `asc-rzhr-gate-coverage` merged with `asc-j6pj-derive-event-gate`, the hooks are
+the real ones (not a `GITBUTLER_MANAGED` dispatcher), and `git commit` runs the gate.
+
+The evidence is the migration commit itself, which had to pass it:
+
+```
+[pre-commit] format:check
+...
+test count: 3859 collected / 3857 passed in 164 files -- baseline 3049 / 3047, 810 above baseline
+[pre-commit] ascend gate ok
+```
+
+and `pnpm ungated` afterwards reports the commit it produced as covered (`4ac779c`, by the run that
+guarded it), which is the loop this record asked for: a verdict that is a fact about the commit it
+guards.
 
 ## Links
 
