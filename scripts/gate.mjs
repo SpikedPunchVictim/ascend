@@ -37,6 +37,7 @@ import { spawnSync } from 'node:child_process';
 import { loadavg } from 'node:os';
 import { resolve } from 'node:path';
 import { INDEX_ENV, stepEnv } from './gate-env.mjs';
+import { checkHooksPath, fixCommand } from './hooks-path.mjs';
 import { acquire } from './gate-lock.mjs';
 import { appendRun, LOG_PATH, ROW_VERSION } from './gate-log.mjs';
 import { worktreeOf } from './gate-coverage.mjs';
@@ -471,6 +472,44 @@ function main() {
   // when the gate finishes -- so the run row and the lock must live in the checkout, or the verdict
   // would be recorded in a directory nobody keeps. Unset for every other run: `root` is the answer.
   const stateRoot = process.env.ASCEND_GATE_STATE_ROOT ?? root;
+
+  // BEFORE ANY STEP: is the thing that delivered this run still able to deliver the next one? A
+  // `core.hooksPath` that is absolute-inside-the-repo, or that points at nothing, turns every hook
+  // off with no error anywhere -- and the only signal used to be a suite-wide test going red
+  // (`asc-1h3u`, `dogfood/0101`), which reads to whoever last edited anything as their own doing.
+  // Cheap enough to run every time: one `git config` and a stat.
+  const hooksPath = checkHooksPath(root);
+  if (!hooksPath.ok) {
+    for (const problem of hooksPath.problems) say(problem);
+    say(`fix: ${fixCommand()}`);
+    if (!isSet(process.env.ASCEND_GATE_NO_RECORD)) {
+      appendRun(
+        {
+          v: ROW_VERSION,
+          at: new Date().toISOString(),
+          head: head(root),
+          // Nothing was read, so nothing is claimed: a preflight refusal covers no commit.
+          tree: null,
+          work: null,
+          staged: staged(root),
+          steps: [],
+          total_ms: 0,
+          wall_ms: 0,
+          scope: 'hooks-path',
+          skipped: [],
+          waited_ms: 0,
+          broke_lock: null,
+          outcome: 'blocked',
+          blocked_at: 'core.hooksPath',
+          loadavg: loadavg(),
+        },
+        { root, logPath: resolve(stateRoot, LOG_PATH) },
+      );
+    }
+    process.exitCode = 2;
+    return;
+  }
+
   // What this commit can reach, and therefore what it has to run. Derived from the staged PATHS
   // rather than from the counts above: the counts say what kind of commit it is, and this decides
   // what it costs.

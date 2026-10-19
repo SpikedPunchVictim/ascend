@@ -26,9 +26,10 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkHooksPath } from './hooks-path.mjs';
 
 const BEGIN = '# --- BEGIN BEADS INTEGRATION';
 const END = '# --- END BEADS INTEGRATION';
@@ -81,16 +82,6 @@ const git = (...args) => run('git', args);
  * @returns {string}
  */
 const detail = (error) => (error instanceof Error ? error.message : String(error));
-
-/** True when `core.hooksPath` is set at all. `git config --get` exits 1 when absent. */
-function hooksPathIsSet() {
-  try {
-    git('config', '--get', SOURCE);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * @param {string} message
@@ -245,18 +236,10 @@ for (const hook of HOOKS) {
 }
 
 // The dead-path check: this is the rename regression, caught at install time. It is
-// about `core.hooksPath` and not about a single hook, so it runs once.
-if (hooksPathIsSet()) {
-  const configured = git('config', '--get', SOURCE);
-  const resolved = isAbsolute(configured) ? configured : join(repoRoot, configured);
-
-  if (!existsSync(resolved) || !statSync(resolved).isDirectory()) {
-    problems.push(`${SOURCE} -> '${configured}' is not a directory; git will run ZERO hooks`);
-  }
-  if (isAbsolute(configured) && !relative(repoRoot, configured).startsWith('..')) {
-    problems.push(`${SOURCE} is absolute and inside the repo; a rename will orphan every hook`);
-  }
-}
+// about `core.hooksPath` and not about a single hook, so it runs once -- and the rule itself lives
+// in `scripts/hooks-path.mjs`, because `scripts/gate.mjs` now runs the same check before any step
+// (`asc-1h3u`); two spellings of one rule is how the rule drifts.
+for (const problem of checkHooksPath(repoRoot).problems) problems.push(problem);
 
 if (problems.length > 0) {
   console.error('');

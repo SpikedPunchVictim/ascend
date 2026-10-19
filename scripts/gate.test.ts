@@ -561,6 +561,34 @@ describe('driving the real gate', () => {
     expect(existsSync(join(dir, '.ascend', 'gate-runs.jsonl'))).toBe(false);
   });
 
+  it('refuses before any step when core.hooksPath is absolute and inside the repository', () => {
+    // `asc-1h3u`: the measured value that turns every hook off after a rename, with no error
+    // anywhere -- it used to be caught only by a suite-wide test, twice inside a pre-push gate.
+    const { status, log, output } = runGate(
+      {
+        prepare: (runDir) => {
+          mkdirSync(join(runDir, '.beads', 'hooks'), { recursive: true });
+          execFileSync('git', ['config', 'core.hooksPath', join(runDir, '.beads', 'hooks')], {
+            cwd: runDir,
+            stdio: 'ignore',
+          });
+        },
+      },
+      ['README.md'],
+    );
+
+    expect(status).toBe(2);
+    expect(output).toContain('is absolute and inside the repo');
+    expect(output).toContain('git config core.hooksPath .beads/hooks');
+    const row = log[0];
+    expect(row?.outcome).toBe('blocked');
+    expect(row?.blocked_at).toBe('core.hooksPath');
+    expect(row?.steps).toEqual([]);
+    // It read nothing, so it claims nothing: a preflight refusal covers no commit.
+    expect(row?.tree).toBeNull();
+    expect(row?.work).toBeNull();
+  });
+
   it("blocks with the failing step's own status, not a generic one", () => {
     // The store guard exits 2 for "an input was missing", which is a different fact from 1
     // ("compared and breached"). Collapsing both to 1 loses the distinction the guard exists

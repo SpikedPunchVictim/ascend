@@ -1,0 +1,101 @@
+{
+  "_": "Kill-check for asc-1h3u: the core.hooksPath rule, shared by the installer and run by the gate before any step. The mutants are the two ways this can fail open -- a broken path nobody refuses, and a refusal that does not happen because nothing runs the rule -- plus the two spellings of 'inside the repo' that a symlinked checkout would make disagree. Every killer was found by planting the mutant and reading the failing test names off the runner's JSON.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "scripts/hooks-path.mjs",
+      "find": "  if (isAbsolute(raw) && !relative(real(root), resolved).startsWith('..')) {\n    problems.push(\n      `core.hooksPath is absolute and inside the repo; a rename will orphan every hook`,\n    );\n  }\n",
+      "replace": "",
+      "killers": [
+        {
+          "file": "scripts/hooks-path.test.ts",
+          "test": "refuses an absolute path inside the repository, which a rename orphans"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "scripts/hooks-path.mjs",
+      "find": "  if (!existsSync(resolved) || !statSync(resolved).isDirectory()) {",
+      "replace": "  if (false) {",
+      "killers": [
+        {
+          "file": "scripts/hooks-path.test.ts",
+          "test": "refuses a path that is not a directory, which is git running ZERO hooks quietly"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "scripts/hooks-path.mjs",
+      "find": "  if (raw === '') return { ok: true, configured: null, problems: [] };",
+      "replace": "  if (raw === '') return { ok: false, configured: null, problems: ['unset'] };",
+      "killers": [
+        {
+          "file": "scripts/hooks-path.test.ts",
+          "test": "says nothing when the value is unset, because a running gate already contradicts it"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "scripts/hooks-path.mjs",
+      "find": "  const resolved = isAbsolute(raw) ? real(raw) : join(root, raw);",
+      "replace": "  const resolved = isAbsolute(raw) ? real(raw) : join('/', raw);",
+      "killers": [
+        {
+          "file": "scripts/hooks-path.test.ts",
+          "test": "accepts the relative value the installer writes"
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "file": "scripts/hooks-path.mjs",
+      "find": "  if (isAbsolute(raw) && !relative(real(root), resolved).startsWith('..')) {",
+      "replace": "  if (isAbsolute(raw) && !relative(root, raw).startsWith('..')) {",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "refuses before any step when core.hooksPath is absolute and inside the repository"
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "file": "scripts/gate.mjs",
+      "find": "  if (!hooksPath.ok) {",
+      "replace": "  if (false) {",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "refuses before any step when core.hooksPath is absolute and inside the repository"
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "file": "scripts/gate.mjs",
+      "find": "          blocked_at: 'core.hooksPath',",
+      "replace": "          blocked_at: null,",
+      "killers": [
+        {
+          "file": "scripts/gate.test.ts",
+          "test": "refuses before any step when core.hooksPath is absolute and inside the repository"
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "file": "scripts/hooks-path.mjs",
+      "find": "  return `git config core.hooksPath ${hooksPath}`;",
+      "replace": "  return 'git config core.hooksPath';",
+      "killers": [
+        {
+          "file": "scripts/hooks-path.test.ts",
+          "test": "prints the command that fixes it, relative, because that is what survives a rename"
+        }
+      ]
+    }
+  ]
+}
