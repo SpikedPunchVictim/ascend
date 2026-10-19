@@ -203,20 +203,23 @@ context; the depth lives in the numbered files.
 
 | [0119](0119-2026-10-19-a-suite-inside-a-worktree-asserting-one.md) | **two tests for the new push gate asserted that the repository holds exactly one worktree — while the feature under test is a hook that holds a second one for the length of the run — so the gate blocked every push with its own suite.** The assertion they meant is "the run leaves no worktree behind"; what they wrote is a precondition the test does not own. Verbatim from the live hook run: `FAIL scripts/push-gate.test.ts > gating a pushed commit > runs the gate in a worktree of the commit, and records a row about THAT commit`, the same for `blocks the push when the gate refuses the commit`, then `[pre-push] ascend gate FAILED (exit 1) -- push blocked`; `git worktree list` held **2** entries for the length of the run and returned to 1 only after it. After the fix (compare against the count taken before the run) **8 of 8** tests pass both standalone and with a live hook's worktree open beside them. `n = 2` — one live hook run and one mutation baseline, one machine | `asc-9ve8` (P1, closed 2026-10-19: the worktree count is compared against the pre-run baseline) | **nobody was looking for it** — it arrived twice in one hour as a *harness* complaint: `pnpm mutate push-gate` refused to start because `BASELINE "runs the gate ..." fails on the unmutated tree -- kills nothing`, and the live hook exited 1. The mutation harness's baseline step is what made it legible: a killer that fails before its mutant is a killer measuring a precondition. The class is an assertion about a global quantity — one worktree, one lock, one process — which reads as obviously true in the state the test was written in and stops being true the moment the thing being tested changes that state |
 
-One hundred and nineteen findings, each with its own mechanism. The mechanism is the part that repeats even
+| [0120](0120-2026-10-19-a-seeded-control-not-reproducible-from-its-seed.md) | **the stats fixture honoured the permutation control's seed and not its input order, so a `k/501` draw was compared against a pinned constant and failed one run in twenty.** `association.ts` documents the rule in one sentence — *"REPRODUCIBLE FROM ITS PARAMETERS AND ITS INPUT ORDER, and only from both"* — and one `asc record` call gives every entry the same `recorded_at`, so the store's `(recorded_at, id)` order was whatever ids were minted and `permutationNull` walks the array it is given. `k` observed across runs: **6** (0.011976047904191617), **3** (0.005988023952095809), **2** (0.003992015968063872) against a bound of 0.0061698993205439034 — which sits between k=4 and k=3, so it passed at 6 and failed at 3 and 2. Naming the fixture's ids (`block-00 … block-29`) made the order the plan's order and the value deterministic: **k = 7, 0.013972055888223553**, pinned with `toBeCloseTo(…, 12)` and confirmed **10 of 10** consecutive runs | `asc-407m` (P2, closed 2026-10-19) | **nobody was looking for it** — it arrived as a red suite on an unrelated corpus change, and the first diagnosis was wrong in the way this repository keeps re-learning: *"passes 20 of 20 standalone"* was remembered rather than re-measured, and the re-measurement found one failure in twenty with no gate in flight. The class is a reproducibility claim with one of its two halves untested — and the source file had already written the second half down |
+
+One hundred and twenty findings, each with its own mechanism. The mechanism is the part that repeats even
 when the findings do not, so each record states its own explicitly.
 
-> **Adding 0119, the detector agreed.** `grep -c '^| \[0' dogfood/README.md` returned **118** and
-> `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **119** (118 findings plus the
-> `0000` template); `comm` of the disk numbers against the indexed ones returned exactly **`0119`**
-> alongside the standing **`0000`**. Re-run after the row landed: **119** indexed, `comm` back to
+> **Adding 0120, the detector agreed.** `grep -c '^| \[0' dogfood/README.md` returned **119** and
+> `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **120** (119 findings plus the
+> `0000` template); `comm` of the disk numbers against the indexed ones returned exactly **`0120`**
+> alongside the standing **`0000`**. Re-run after the row landed: **120** indexed, `comm` back to
 > `0000` alone.
 >
-> **The assertion was about a quantity the test did not own.** It read `git worktree list`, which has
-> one line in almost every repository, and asked for one — while the thing under test is the hook that
-> puts a second worktree there for the length of the run. The mutation harness refused to apply
-> anything until the two killers passed on the unmutated tree, which is the baseline step earning its
-> keep: a killer that fails before its mutant is a killer measuring a precondition.
+> **A seed is half of a reproducibility claim.** The source file said so — "REPRODUCIBLE FROM ITS
+> PARAMETERS AND ITS INPUT ORDER, and only from both" — with a measured example, and the fixture that
+> exercises it honoured the seed and left the order to chance: one `record` call gives every entry the
+> same timestamp, so the store's `(recorded_at, id)` order was whatever ids were minted. The assertion
+> compared that draw against a pinned constant, so it passed at k=6 and failed at k=3 and k=2. Naming
+> the fixture's ids made the order the plan's order, and the value deterministic (k=7, 10 of 10 runs).
 
 > **Adding 0118, the detector agreed a fifty-seventh time.** `grep -c '^| \[0' dogfood/README.md` returned
 > **117** and `ls dogfood/[0-9][0-9][0-9][0-9]-*.md | grep -vc '/0000-'` returned **119** (118 findings plus the

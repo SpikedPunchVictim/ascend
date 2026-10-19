@@ -221,9 +221,26 @@ function project(): string {
   return dir;
 }
 
-/** Record a batch in one call. Twenty-four subprocesses would make this suite minutes long. */
-function record(dir: string, type: string, entries: readonly Record<string, unknown>[]): void {
-  const document = JSON.stringify(entries.map((properties) => ({ properties })));
+/**
+ * Record a batch in one call. Twenty-four subprocesses would make this suite minutes long.
+ *
+ * `ids` is for a fixture whose result depends on the ORDER the store reads its rows back in. The
+ * store orders by `(recorded_at, id)` and one `record` call gives every entry the same timestamp, so
+ * a batch with minted ids has an order that changes run to run -- and `permutationNull` walks the
+ * array it is given, which makes its p a function of that order (`asc-407m`). Naming the ids pins it.
+ */
+function record(
+  dir: string,
+  type: string,
+  entries: readonly Record<string, unknown>[],
+  ids?: readonly string[],
+): void {
+  const document = JSON.stringify(
+    entries.map((properties, index) => ({
+      properties,
+      ...(ids === undefined ? {} : { id: ids[index] }),
+    })),
+  );
   const run = asc(['record', type, '-', '--json'], dir, document);
   expect(run.stderr).toBe('');
   expect(run.status).toBe(0);
@@ -1711,7 +1728,15 @@ describe('asc stats --cluster-by, the clustering correction', () => {
       for (let i = 0; i < as; i += 1) entries.push({ session_id: session, state: 'a', kind });
       for (let i = 0; i < bs; i += 1) entries.push({ session_id: session, state: 'b', kind });
     }
-    record(dir, 'sessions', entries);
+    // NAMED IDS, so the store's `(recorded_at, id)` order is the plan's order on every run. Without
+    // them the ids are random and the row order -- and therefore `permutationNull`'s draw -- moves
+    // from run to run (`asc-407m`: one failure in twenty, k landing on 6, 3 or 2).
+    record(
+      dir,
+      'sessions',
+      entries,
+      entries.map((_, index) => `block-${String(index).padStart(2, '0')}`),
+    );
   }
 
   /**
@@ -1785,9 +1810,17 @@ describe('asc stats --cluster-by, the clustering correction', () => {
     // `--permutations`. That control shuffles the second column ROW BY ROW, so it destroys the
     // within-session pairing and with it the very thing that makes the rows dependent -- it answers
     // a question about the marginals, and the marginals are what the session structure made them.
-    // MEASURED here: 0.0061698993205439034 row-counted, 0.011976047904191617 shuffled at 500
-    // iterations, and roughly 0.3 clustered. The shuffled control moves the number by a factor of
-    // two; the cluster correction moves it by a factor of fifty.
+    // MEASURED here: 0.0061698993205439034 row-counted, 0.013972055888223553 shuffled at 500
+    // iterations, and roughly 0.3 clustered. The shuffled control roughly doubles the number; the
+    // cluster correction moves it by a factor of twenty.
+    //
+    // PINNED, because the fixture now pins what the control walks. `permutationNull` is reproducible
+    // from its seed AND its input order, and this fixture used to let the order move: one `record`
+    // call gives every entry the same `recorded_at`, so the store's `(recorded_at, id)` order was
+    // whatever ids happened to be minted, and the control landed on k = 6, 3 or 2 across runs --
+    // one failure in twenty against a bound of 0.0061698993205439034 (`asc-407m`, dogfood/0120).
+    // The fixture names its ids now, the order is the plan's order, and k is 7 of 500 every time.
+    expect(shuffled['p_permuted'] as number).toBeCloseTo(0.013972055888223553, 12);
     expect(shuffled['p_permuted'] as number).toBeGreaterThan(plain['p'] as number);
     expect('p_clustered' in shuffled).toBe(false);
     expect(corrected['p_clustered'] as number).toBeGreaterThan(shuffled['p_permuted'] as number);
