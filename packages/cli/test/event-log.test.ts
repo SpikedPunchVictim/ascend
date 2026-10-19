@@ -212,6 +212,13 @@ describe('the event log: reading', () => {
     expect(() => readEventLog(dir)).toThrow(
       new RegExp(`derives ${String(EVENT_DERIVE_VERSION)}`, 'u'),
     );
+    // AND IT NAMES A REMEDY THAT CAN CLEAR THE REFUSAL (`asc-qdkv`). The old text said to re-run
+    // `asc ingest claude-code`, which only appends: the stale line stays, and the next read refuses
+    // at the same file and line. A reader who follows a prescription that cannot work comes back to
+    // the same error having done the thing the message told them to do.
+    expect(() => readEventLog(dir)).toThrow(/only appends/u);
+    expect(() => readEventLog(dir)).toThrow(/ascend-archived/u);
+    expect(() => readEventLog(dir)).not.toThrow(/to rewrite the log/u);
   });
 
   it('refuses a line that is not JSON, naming where it is', () => {

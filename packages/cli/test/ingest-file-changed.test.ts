@@ -354,7 +354,13 @@ describe('asc ingest file-changed', () => {
 
     expect(run.status).toBe(1);
     expect(flatten(run.stderr)).toContain('was derived at version');
-    expect(flatten(run.stderr)).toContain('Re-run `asc ingest claude-code` to rewrite the log.');
+    // THE REMEDY IT NAMES IS ONE THAT CAN WORK (`asc-qdkv`). It used to say to re-run
+    // `asc ingest claude-code`, which only appends -- the stale line stays and the next read refuses
+    // at the same file and line. A reader following that prescription meets this error again having
+    // done exactly what it said.
+    expect(flatten(run.stderr)).toContain('only appends');
+    expect(flatten(run.stderr)).toContain('ascend-archived');
+    expect(flatten(run.stderr)).not.toContain('to rewrite the log');
     expect(rows(dir)).toEqual([]);
   });
 

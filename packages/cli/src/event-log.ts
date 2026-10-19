@@ -16,6 +16,12 @@
  * different derive version is refused rather than replayed, because `event.ts` says exactly what
  * it would otherwise do: "A count moves when this moves, with no handler changed."
  *
+ * AND THE REFUSAL NOW SAYS WHAT CLEARS IT, which re-ingesting does not (`asc-qdkv`, `dogfood/0114`).
+ * The writer only appends, so a re-run leaves the stale line in place and the next read refuses at the
+ * same file and line -- measured, and the old message prescribed exactly that re-run. A prescription
+ * that cannot clear an error is worse than none: it turns the refusal into a reason to do the thing
+ * that does nothing, twice.
+ *
  * **NOT A STORE TYPE, ON PURPOSE.** `events/` is its own tree beside `entries/`. Handlers consume
  * normalized events, never stored rows (`handler-replay.ts`), so registering the log as a type
  * would buy the replay nothing while putting it into `asc export`, the SessionStart brief budget,
@@ -264,7 +270,10 @@ export function readEventLog(tree: string): EventLogRead {
           `${path}:${String(index + 1)} was derived at version ` +
             `${String(event.derive_version)}, and this build derives ${String(EVENT_DERIVE_VERSION)}. ` +
             `Refused rather than replayed: a count moves when the derive version moves, with no ` +
-            `handler changed. Re-run \`asc ingest claude-code\` to rewrite the log.`,
+            `handler changed. Re-ingesting does NOT clear this: the writer only appends, so a new ` +
+            `line lands beside the stale one and the next read refuses at this same file and line. ` +
+            `Move the stream files written at another version aside first (.ascend-archived/ is ` +
+            `this repository's convention), then run \`asc ingest claude-code\`.`,
         );
       }
       const key = `${event.session_id}\u0000${event.agent_id}\u0000${String(event.seq)}`;
