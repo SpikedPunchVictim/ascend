@@ -156,6 +156,15 @@ an intended survivor that does not say `why` it is equivalent are all refused ra
 here were written, and it is the difference between a spec that records a check and one that records
 an intention.
 
+**An empty `assertionResults` is not a survivor.** When the mutant leaves the module unparseable,
+vitest fails the file at COLLECTION: `assertionResults` is `[]` and `numFailedTests` is `0`, while
+`testResults[].status` is `failed` and the parse error sits in `testResults[].message`. Reading only
+`assertionResults` therefore reports "no killer" for a mutant that cannot load at all — measured on
+2026-10-13 as `success false, numTotalTests 0, numFailedTests 0, assertionResults [], message
+'Expression expected'` (`asc-funq`). Read `status` and `message` too: that case is a DEAD KILLER, and
+`scripts/mutate.mjs` already reports it as one, because a mutant that will not load proves nothing
+about any test.
+
 A run **edits the working tree**, so a target file with uncommitted changes is refused: the restore
 would silently revert an edit that is not the runner's. `--allow-dirty` overrides it and prints every
 path it may revert before the first mutant runs. The restore is checked by sha256, not trusted — a
