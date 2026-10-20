@@ -64,16 +64,16 @@
     {
       "id": "M5",
       "file": "scripts/gate-scope.mjs",
-      "find": "  return env[TEST_SCOPE_ENV] !== SUBSET_SCOPE;",
+      "find": "  return env[TEST_SCOPE_ENV] === FULL_SCOPE;",
       "replace": "  return true;",
       "killers": [
         {
           "file": "scripts/gate-scope.test.ts",
-          "test": "does not record a narrowed run"
+          "test": "records only a run that SAYS it collected the suite (`asc-19x2`)"
         },
         {
           "file": "scripts/test-count-reporter.test.ts",
-          "test": "writes nothing when the run was narrowed"
+          "test": "writes nothing for any value that is not the word (`asc-19x2`)"
         }
       ]
     },
@@ -172,16 +172,16 @@
     {
       "id": "M12",
       "file": "scripts/gate.mjs",
-      "find": "  args: ['test'],\n  env: { [TEST_SCOPE_ENV]: '' },\n};",
+      "find": "  args: ['test'],\n  env: { [TEST_SCOPE_ENV]: FULL_SCOPE },\n};",
       "replace": "  args: ['test'],\n};",
       "killers": [
         {
-          "file": "packages/cli/test/dev-hooks.test.ts",
-          "test": "runs the whole suite, not a narrowed one"
+          "file": "scripts/gate.test.ts",
+          "test": "states the full scope on the suite step rather than leaving it to be inherited"
         },
         {
-          "file": "scripts/gate.test.ts",
-          "test": "states the full scope on the suite step"
+          "file": "packages/cli/test/dev-hooks.test.ts",
+          "test": "runs the whole suite, not a narrowed one, and says it is the push talking"
         }
       ]
     },
