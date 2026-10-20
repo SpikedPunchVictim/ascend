@@ -1,0 +1,53 @@
+{
+  "feature": "the generated oclif.manifest.json is scanned from the commands, sorted deterministically, and prints the same help bytes as a scan (asc-cv3m)",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "scripts/cli-manifest.mjs",
+      "find": "    const { commands } = plugin.manifest;",
+      "replace": "    const commands = /** @type {Record<string, CommandEntry>} */ ({});",
+      "killers": [
+        {
+          "file": "packages/cli/test/manifest.test.ts",
+          "test": "regenerates the committed manifest byte for byte"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "scripts/cli-manifest.mjs",
+      "find": "    for (const id of Object.keys(commands).sort()) {",
+      "replace": "    for (const id of Object.keys(commands)) {",
+      "killers": [
+        {
+          "file": "packages/cli/test/manifest.test.ts",
+          "test": "regenerates the committed manifest byte for byte"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "scripts/cli-manifest.mjs",
+      "find": "      sorted[id] = { ...entry, relativePath: relative(cliRoot, real).split(sep) };",
+      "replace": "      sorted[id] = { ...entry, relativePath: entry.relativePath };",
+      "killers": [
+        {
+          "file": "packages/cli/test/manifest.test.ts",
+          "test": "regenerates the committed manifest byte for byte"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "packages/cli/oclif.manifest.json",
+      "find": "      \"description\": \"List the active entry types, with when to record each one.\",",
+      "replace": "      \"description\": \"List the active entry types.\",",
+      "killers": [
+        {
+          "file": "packages/cli/test/manifest.test.ts",
+          "test": "renders every root and subcommand help screen identically"
+        }
+      ]
+    }
+  ]
+}

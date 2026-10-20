@@ -22,11 +22,20 @@
  * that rung's files, which is the largest single source of the ~30 ms spread between harnesses
  * recorded on that bead. Pass the help file as argv[3] for the static rung (default: run it live,
  * once, into /tmp, so the number is never measured against stale bytes).
+ *
+ * Extended for asc-cv3m (2026-10-20): when `packages/cli/oclif.manifest.json` exists, a fifth rung
+ * measures the SAME help path with the manifest out of the way, so the milliseconds the manifest
+ * removes are a difference between two arms of one run rather than two runs that may have seen
+ * different machine load. The arm cannot use `ignoreManifest` -- oclif 5's `PluginLoader.loadRoot`
+ * drops that option for the root plugin (`scripts/cli-manifest.mjs` records the source) -- so it
+ * runs against a temporary plugin root with no manifest in it, which is why this file imports the
+ * generator's `manifestlessRoot` instead of re-creating the trick.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { manifestlessRoot } from '../scripts/cli-manifest.mjs';
 
 const bin = join(process.cwd(), 'packages/cli/dist/bin.js');
 const oclif = join(process.cwd(), 'node_modules/@oclif/core/lib/index.js');
@@ -41,9 +50,9 @@ if (process.argv[3] === undefined) {
 }
 const helpBytes = readFileSync(helpPath).length;
 
-function timed(argv) {
+function timed(argv, env = {}) {
   const start = process.hrtime.bigint();
-  const r = spawnSync(process.execPath, argv, { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, argv, { encoding: 'utf8', env: { ...process.env, ...env } });
   return { ms: Number(process.hrtime.bigint() - start) / 1e6, status: r.status, stderr: r.stderr };
 }
 
@@ -60,11 +69,11 @@ const rungs = [
 const p = (xs, q) => { const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; };
 
 /** One rung: WARM_UP discarded, then N timed, reported at p50 and p95. */
-function measure(argv) {
-  for (let i = 0; i < WARM_UP; i++) timed(argv);
+function measure(argv, env = {}) {
+  for (let i = 0; i < WARM_UP; i++) timed(argv, env);
   const runs = [];
   for (let i = 0; i < N; i++) {
-    const t = timed(argv);
+    const t = timed(argv, env);
     if (t.status !== 0) throw new Error(`rung exited ${t.status}: ${t.stderr.slice(0, 200)}`);
     runs.push(t.ms);
   }
@@ -81,8 +90,10 @@ console.log('------------------------|------------|------------|----------------
 let prev = null;
 let bare = null;
 let oclifFloor = null;
+let ascHelp = null;
 for (const [label, argv] of rungs.slice(0, 3)) {
   const { p50, p95 } = measure(argv);
+  ascHelp = { p50, p95 };
   if (bare === null) bare = p50;
   else if (oclifFloor === null) oclifFloor = p50;
   const gap = prev === null ? '' : `+${(p50 - prev).toFixed(3)} ms`;
@@ -99,6 +110,35 @@ console.log(
   `${staticLabel.padEnd(24)}| ${st.p50.toFixed(3).padStart(9)} ms | ${st.p95.toFixed(3).padStart(9)} ms | ` +
     `+${(st.p50 - bare).toFixed(3)} over bare node`,
 );
+
+// The manifest rung (`asc-cv3m`). Not a layer: the SAME help path, with the plugin root oclif
+// loads carrying no `oclif.manifest.json`, so it has to import all 26 command modules to list
+// them. The manifest's saving is the difference between this and rung 3, measured in one run.
+const manifestPath = join(process.cwd(), 'packages/cli/oclif.manifest.json');
+if (existsSync(manifestPath)) {
+  const root = manifestlessRoot();
+  try {
+    const launcher = [
+      `import { execute } from ${JSON.stringify(oclif)};`,
+      `await execute({ dir: ${JSON.stringify(join(root, 'dist/bin.js'))}, args: JSON.parse(process.env.ASC_ARGS) });`,
+    ].join('\n');
+    const scanned = measure(['--input-type=module', '-e', launcher], {
+      ASC_ARGS: JSON.stringify(['--help']),
+    });
+    console.log('\nasc --help (same path, no manifest in its plugin root)');
+    console.log(
+      `${'asc --help (scanned)'.padEnd(24)}| ${scanned.p50.toFixed(3).padStart(9)} ms | ` +
+        `${scanned.p95.toFixed(3).padStart(9)} ms | ` +
+        `+${(scanned.p50 - ascHelp.p50).toFixed(3)} over asc --help (p50)`,
+    );
+    console.log(
+      `  the manifest removes     ${(scanned.p50 - ascHelp.p50).toFixed(3).padStart(9)} ms p50, ` +
+        `${(scanned.p95 - ascHelp.p95).toFixed(3)} ms p95`,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 // The two numbers this run exists to put side by side. Every help path keeps oclif or drops it; the
 // first is already over the target before a line of ascend runs, the second is under it with room.

@@ -1,0 +1,3056 @@
+{
+  "commands": {
+    "annotate": {
+      "aliases": [],
+      "args": {},
+      "description": "Classify entries by rule, and report the unclassified remainder a scheme leaves.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> --scheme review --rule \"bug=sql: evidence_text LIKE '%crash%'\"",
+        "<%= config.bin %> <%= command.id %> --scheme review --rule \"docs=fts: install\" --scope \"type_name = 'decision'\"",
+        "<%= config.bin %> <%= command.id %> --scheme hand --ids \"bug=e1,e7,e9\" --ids \"docs=e4\"",
+        "<%= config.bin %> <%= command.id %> --scheme review --rule \"bug=sql: 1=1\" --dry-run"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "scheme": {
+          "description": "The scheme to write under. Created on first use, versioned when its shape changes.",
+          "name": "scheme",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "rule": {
+          "description": "A rule as '<label>=<kind>:<query>', applied in the order given; the first match wins. 'sql' is a predicate over an entry, 'fts' a text query over its evidence text.",
+          "name": "rule",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "label": {
+          "description": "Declare a vocabulary label that nothing assigns -- a label you expect to need. Repeatable.",
+          "name": "label",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "ids": {
+          "description": "Annotate named entries as '<label>=<id>,<id>', instead of --rule. Repeatable, and one pass may carry several labels this way.",
+          "name": "ids",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "replay": {
+          "description": "Apply the rules the scheme already has, read from its latest registered version, instead of --rule. Writes an ordinary pass under the same version.",
+          "name": "replay",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "scope": {
+          "description": "A SQL predicate over entries, narrowing what this run considers. The unclassified remainder is a remainder of this scope.",
+          "name": "scope",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "actor": {
+          "description": "Who or what produced this pass. Stored as created_by; omitted by default.",
+          "name": "actor",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "backtest": {
+          "description": "Grade --rule against the named scheme's latest pass, taken as ground truth: precision, recall and support per label, and where the rule and the hand truth disagree. Writes nothing -- the rule never touches the corpus.",
+          "name": "backtest",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "holdout": {
+          "description": "With --backtest, hold this fraction of the hand sample out (0.3 = 30%) and score the rule on it separately. Which entries are held out is fixed per hand scheme, and holdout rows never name the entries they got wrong, so fixing the rule reads only training entries.",
+          "name": "holdout",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "dry-run": {
+          "description": "Run the rules and report the census, then write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "annotate",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "annotate.js"
+      ]
+    },
+    "capture": {
+      "aliases": [],
+      "args": {},
+      "description": "Hash the files a session is shaped by -- CLAUDE.md, the Claude Code settings, the hook scripts and the installed skills -- and record one `intervention` row for whatever changed since the last run. Writes nothing when nothing moved, and nothing on the first run.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> --json",
+        "<%= config.bin %> <%= command.id %> --dry-run"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Report what would be recorded, and write neither the entry nor the baseline.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "capture",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "capture.js"
+      ]
+    },
+    "doctor": {
+      "aliases": [],
+      "args": {},
+      "description": "Check the registry for dead types, near-duplicate names, version drift, unmeasured properties, brief size, export and a stale installed hook script.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "doctor",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "doctor.js"
+      ]
+    },
+    "explore": {
+      "aliases": [],
+      "args": {
+        "type": {
+          "description": "The entry type to profile.",
+          "name": "type",
+          "required": true
+        }
+      },
+      "description": "Profile an entry type: the map, before any rows.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> verification_run",
+        "<%= config.bin %> <%= command.id %> skill_activation --json",
+        "<%= config.bin %> <%= command.id %> note --max-tokens 2000 --chars-per-token 0.79"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "page": {
+          "description": "List entries instead of profiling: one page, in a stable order.",
+          "name": "page",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "cursor": {
+          "description": "Resume from the cursor a previous page printed. Implies --page.",
+          "name": "cursor",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Entries per page, or per sample. Default 40.",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "sample": {
+          "description": "Draw a sample instead of a page, to show spread rather than order.",
+          "name": "sample",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "random",
+            "stratified",
+            "diverse",
+            "outlier"
+          ],
+          "type": "option"
+        },
+        "order": {
+          "description": "Which clock --page and --dump are ordered by (asc-pcu). stored, the default, is recorded_at -- when asc wrote the row. event is the occurred_at property -- when the event happened. They differ by as much as a backfill was long: a bulk ingest stamps every entry of one run with a single recorded_at, so the stored order of a derived type is really its id order, and every `range` this command prints about recorded_at is a range over the ingest. An entry with no occurred_at has no event clock, so it sorts first. A cursor carries the order it was issued under, and replaying it under the other is refused rather than served.",
+          "name": "order",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "stored",
+            "event"
+          ],
+          "type": "option"
+        },
+        "by": {
+          "description": "The categorical property to sample by. Required by --sample stratified.",
+          "name": "by",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "seed": {
+          "description": "Vary the draw. Omitted, the seed is fixed so a sample is reproducible.",
+          "name": "seed",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "max-tokens": {
+          "description": "Fit the output to a context budget, dropping rows and reporting what it dropped.",
+          "name": "max-tokens",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "chars-per-token": {
+          "description": "With --max-tokens: the code points per token to estimate with, for content that is not ascend's own output. Default 2, the floor measured for ascend. Denser scripts are far lower -- CJK measured 0.79, emoji 0.33 -- and at the default their output is estimated ~2.5x too small, so the budget it reports fitting is not one it fits. Any number above 0 is accepted; the ratio is echoed on the report as chars_per_token.",
+          "name": "chars-per-token",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "dump": {
+          "description": "Write the entries to files in <dir>, plus a manifest.json index of what is there.",
+          "name": "dump",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "dry-run": {
+          "description": "With --dump: report the files and their sizes without writing any of them.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "force": {
+          "description": "With --dump: write into a directory that already has files in it.",
+          "name": "force",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "select": {
+          "description": "Comma-separated declared properties to flatten a page to (id/recorded_at/type_version plus these, in order). Implies --page. Refuses a name this type does not declare.",
+          "name": "select",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "filter": {
+          "description": "A SQL predicate over this type: a declared property (e.g. stage) and an envelope column (e.g. cwd) both compare bare. Applies to the default map, --page, --sample and --group-by (refused with --dump). With the default map, every number on it -- top, distinct, min/max, per-version tallies and both state denominators -- is recomputed against the filtered population. Unlike `asc annotate --scope`, which is corpus-wide and needs json_extract(properties_json,'$.name') for a declared property. WATCH A BOOLEAN: it compares as the stored INTEGER, not the printed word -- \"...=true\" and \"...=1\" both match; \"...='false'\" silently matches ZERO rows instead of failing, because it compares a string to an integer. Never quote a boolean.",
+          "name": "filter",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "struck": {
+          "description": "Narrow to entries that have stopped counting (an invalidation). Applies to the default map, --page, --sample and --group-by, and composes with --filter (refused with --dump, like --filter). This is the door to the half `asc types list` counts out of its `entries`: explore itself profiles everything recorded, struck rows included.",
+          "name": "struck",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "group-by": {
+          "description": "One or two comma-separated declared properties to cross-tabulate instead of profiling. Only enum, boolean, string or ref properties qualify. Not combinable with --page, --cursor, --sample, --dump or --select.",
+          "name": "group-by",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "cluster": {
+          "description": "Correct every proportion this command prints for clustering by this declared property, and state the effective n it used. A session contributes many entries and they are not independent draws, so the uncorrected n overstates the evidence behind every interval on the map. Refuses a name this type does not declare, and refuses an entry that carries no value for it -- such an entry is in no cluster. Combinable with --filter and --struck, not with the modes that print entries rather than proportions (--page, --sample, --dump).",
+          "name": "cluster",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "explore",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "explore.js"
+      ]
+    },
+    "export": {
+      "aliases": [],
+      "args": {},
+      "description": "Write every type definition, entry, annotation scheme, and annotation as a JSONL stream. --redact scrubs project labels -- and any MCP server or skill named with --redact-name -- before the stream leaves this machine.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> > corpus.jsonl",
+        "<%= config.bin %> <%= command.id %> | <%= config.bin %> import -",
+        "<%= config.bin %> <%= command.id %> --json",
+        "<%= config.bin %> <%= command.id %> --redact | <%= config.bin %> import -",
+        "<%= config.bin %> <%= command.id %> --redact --redact-name my-internal-server --redact-map"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "hidden": true,
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "hidden": true,
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "redact": {
+          "description": "Rewrite the stream before printing it: every dash-encoded project label is tokenised, a working directory that cannot be made relative is dropped, and a report of what was found and changed is printed to stderr. Applies to both the default JSONL and --json.",
+          "name": "redact",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "redact-name": {
+          "description": "An MCP server or skill name to tokenise, on top of the project labels --redact always tokenises. Repeat for each name. Run --redact once first (the report names every server and skill the stream discloses) to see what there is to choose from. Requires --redact.",
+          "name": "redact-name",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "redact-map": {
+          "description": "Print the allocated label -> token map to stderr. This mapping is what re-identifies the redacted stream, which is why it is off by default and never written to a file: capture it yourself by redirecting stderr if you need to keep it. Requires --redact.",
+          "name": "redact-map",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "export",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "export.js"
+      ]
+    },
+    "handlers:check": {
+      "aliases": [],
+      "args": {
+        "file": {
+          "description": "A handler file. Pass several to replay them over the log together.",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Replay handlers over this project’s Claude Code transcripts and report what each would emit: the parsed handler, its hash, its count, and sample rows. Writes nothing. With --from-log, replay this project’s own event log instead — the events ingest already normalized, which is what remains once the transcripts expire (asc-igg8).",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> handlers/edit-unverified.yaml",
+        "<%= config.bin %> <%= command.id %> a.yaml b.yaml --samples 10 --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "root": {
+          "description": "The directory holding transcript projects. Defaults to ~/.claude/projects, which is where Claude Code writes them.",
+          "name": "root",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "A transcript directory name to replay, e.g. -Users-me-projects-app. Repeat it to replay several together. Defaults to the encoded path of the ascend project (or git repository) containing the working directory.",
+          "exclusive": [
+            "all-projects"
+          ],
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "all-projects": {
+          "description": "Replay every transcript directory under the root. Projects under an OS temp root are skipped and counted unless --include-ephemeral is passed.",
+          "exclusive": [
+            "project"
+          ],
+          "name": "all-projects",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "include-ephemeral": {
+          "description": "With --all-projects, also replay projects under an OS temp root.",
+          "name": "include-ephemeral",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "from-log": {
+          "description": "Replay this project’s own event log (`<project>/.ascend/events`) instead of the Claude Code transcripts. The log is what is left after the transcripts it was derived from are gone (asc-igg8), so it is the only source that still answers once they expire. The transcript flags above do not apply and are refused with it.",
+          "name": "from-log",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "samples": {
+          "description": "Rows to show per handler, spread evenly across the log.",
+          "name": "samples",
+          "default": 3,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "handlers:check",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": false,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "handlers",
+        "check.js"
+      ]
+    },
+    "handlers:compare": {
+      "aliases": [],
+      "args": {
+        "file": {
+          "description": "A handler file. Pass several to compare them over the log together.",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Replay handlers over Claude Code transcripts and compare, per handler, the share of compaction segments whose triggers produced a row before a change and after it. Where the holdout has assigned arms, each handler’s after arm is split into delivered and held out. Writes nothing.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> handlers/edit-unverified.yaml --at 2026-09-20T00:00:00Z",
+        "<%= config.bin %> <%= command.id %> a.yaml --at 2026-09-20 --all-projects --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "at": {
+          "description": "When the change was made, as an ISO 8601 date or time. A segment that ended before it is in the before arm; one that started at or after it is in the after arm.",
+          "name": "at",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "root": {
+          "description": "The directory holding transcript projects. Defaults to ~/.claude/projects, which is where Claude Code writes them.",
+          "name": "root",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "A transcript directory name to replay, e.g. -Users-me-projects-app. Repeat it to replay several together. Defaults to the encoded path of the ascend project (or git repository) containing the working directory.",
+          "exclusive": [
+            "all-projects"
+          ],
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "all-projects": {
+          "description": "Replay every transcript directory under the root. Projects under an OS temp root are skipped and counted unless --include-ephemeral is passed.",
+          "exclusive": [
+            "project"
+          ],
+          "name": "all-projects",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "include-ephemeral": {
+          "description": "With --all-projects, also replay projects under an OS temp root.",
+          "name": "include-ephemeral",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "handlers:compare",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": false,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "handlers",
+        "compare.js"
+      ]
+    },
+    "handlers:grade": {
+      "aliases": [],
+      "args": {
+        "id": {
+          "description": "The entry id of an `intervention` row, as `asc query` prints it.",
+          "name": "id",
+          "required": true
+        }
+      },
+      "description": "Read an intervention row’s own metric, check that the handler it names and the event derivation have not moved since it was written, and print that row’s state, its before/after comparison and the power figure its grading point is judged against. Refuses when the ruler has moved rather than comparing anyway. Writes nothing.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> 8f2c1d7a-1e6b-4c2f-9a30-5d7e6b8c9a01 --effect 0.5",
+        "<%= config.bin %> <%= command.id %> 8f2c1d7a-1e6b-4c2f-9a30-5d7e6b8c9a01 --effect 0.3 --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "effect": {
+          "description": "The RELATIVE reduction to plan for, as a fraction between 0 and 1, for the row’s last row to compare its grading point against. Required, and deliberately not defaulted: a figure this row did not choose would be this command inventing an effect size for it.",
+          "name": "effect",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "holdout": {
+          "description": "The share of units held back, between 0 and 1. Defaults to 0.5, the cheapest split.",
+          "name": "holdout",
+          "default": "0.5",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "horizon": {
+          "description": "The horizon to judge against, in active days. Defaults to 90.",
+          "name": "horizon",
+          "default": 90,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "at": {
+          "description": "When the change was made, as an ISO 8601 date or time. Defaults to the row’s own `applied_at`, which is the date the capture mechanism observed the change and the date the row means.",
+          "name": "at",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "root": {
+          "description": "The directory holding transcript projects. Defaults to ~/.claude/projects, which is where Claude Code writes them.",
+          "name": "root",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "A transcript directory name to replay, e.g. -Users-me-projects-app. Repeat it to replay several together. Defaults to the encoded path of the ascend project (or git repository) containing the working directory.",
+          "exclusive": [
+            "all-projects"
+          ],
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "all-projects": {
+          "description": "Replay every transcript directory under the root. Projects under an OS temp root are skipped and counted unless --include-ephemeral is passed.",
+          "exclusive": [
+            "project"
+          ],
+          "name": "all-projects",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "include-ephemeral": {
+          "description": "With --all-projects, also replay projects under an OS temp root.",
+          "name": "include-ephemeral",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "handlers:grade",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": false,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "handlers",
+        "grade.js"
+      ]
+    },
+    "handlers:power": {
+      "aliases": [],
+      "args": {
+        "file": {
+          "description": "A handler file. Pass several to plan them over the log together.",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Replay handlers over Claude Code transcripts and report, per handler, the base rate, the units per active day and the design effect, then how many days an experiment needs to detect a given relative reduction -- and whether the units on hand can reach it. Writes nothing.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> handlers/edit-unverified.yaml --effect 0.5",
+        "<%= config.bin %> <%= command.id %> a.yaml --effect 0.3 --holdout 0.2 --horizon 30 --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "effect": {
+          "description": "The RELATIVE reduction to plan for, as a fraction between 0 and 1. 0.5 asks how long it takes to detect a halving of the outcome rate.",
+          "name": "effect",
+          "required": true,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "holdout": {
+          "description": "The share of units held back, between 0 and 1. Defaults to 0.5, the cheapest split.",
+          "name": "holdout",
+          "default": "0.5",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "horizon": {
+          "description": "The horizon to judge against, in active days. Defaults to 90.",
+          "name": "horizon",
+          "default": 90,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "root": {
+          "description": "The directory holding transcript projects. Defaults to ~/.claude/projects, which is where Claude Code writes them.",
+          "name": "root",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "A transcript directory name to replay, e.g. -Users-me-projects-app. Repeat it to replay several together. Defaults to the encoded path of the ascend project (or git repository) containing the working directory.",
+          "exclusive": [
+            "all-projects"
+          ],
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "all-projects": {
+          "description": "Replay every transcript directory under the root. Projects under an OS temp root are skipped and counted unless --include-ephemeral is passed.",
+          "exclusive": [
+            "project"
+          ],
+          "name": "all-projects",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "include-ephemeral": {
+          "description": "With --all-projects, also replay projects under an OS temp root.",
+          "name": "include-ephemeral",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "handlers:power",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": false,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "handlers",
+        "power.js"
+      ]
+    },
+    "handlers:review": {
+      "aliases": [],
+      "args": {},
+      "description": "Report what holds each handler in handlers/: the ledger rows whose metric names it, whether those rows are open, watching or retired, and the handler files no row names at all. Read-only, and it replays nothing.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "handlers:review",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": false,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "handlers",
+        "review.js"
+      ]
+    },
+    "hook": {
+      "aliases": [],
+      "args": {
+        "stage": {
+          "description": "The lifecycle stage this hook was installed for.",
+          "name": "stage",
+          "options": [
+            "user-prompt-submit",
+            "post-tool-use",
+            "pre-tool-use"
+          ],
+          "required": true
+        }
+      },
+      "description": "Run this project’s say: handlers for one Claude Code lifecycle stage, reading the hook input on stdin. Installed by asc install-hook; not meant to be run by hand.",
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "holdout": {
+          "description": "A fraction strictly between 0 and 1; the share of units deliberately not shown.",
+          "name": "holdout",
+          "required": false,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hidden": true,
+      "hiddenAliases": [],
+      "id": "hook",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "hook.js"
+      ]
+    },
+    "import": {
+      "aliases": [],
+      "args": {
+        "file": {
+          "description": "Path to an `asc export` stream, or `-` to read from standard input.",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Restore type definitions, entries, annotation schemes, and annotations from an `asc export` stream.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> corpus.jsonl",
+        "<%= config.bin %> <%= command.id %> --dry-run corpus.jsonl",
+        "<%= config.bin %> export | <%= config.bin %> <%= command.id %> -"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Report exactly what would happen, then write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "import",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "import.js"
+      ]
+    },
+    "index:build": {
+      "aliases": [],
+      "args": {},
+      "description": "Build the derived index (index.db) from the JSONL tree, wholesale. Reads never build one: a read against a stale index refuses and tells you to run this.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "index:build",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "index",
+        "build.js"
+      ]
+    },
+    "ingest:claude-code": {
+      "aliases": [],
+      "args": {},
+      "description": "Derive entries from the Claude Code transcripts in ~/.claude/projects into this project’s store. Re-running creates no duplicates: every entry is keyed on the event it came from.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> --dry-run",
+        "<%= config.bin %> <%= command.id %> --root /path/to/projects --json",
+        "<%= config.bin %> <%= command.id %> --full"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "root": {
+          "description": "The directory holding transcript projects. Defaults to ~/.claude/projects, which is where Claude Code writes them. Resolved to an absolute, normalized path before use, so `./corpus` and `/abs/path/corpus` name the same run.",
+          "name": "root",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "dry-run": {
+          "description": "Read the transcripts and report what would be written, then write nothing at all.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "include-ephemeral": {
+          "description": "Also read project directories under a known OS temp root (e.g. a benchmark run’s own os.tmpdir()). Skipped by default: those projects can never recur, so they can never reach MIN_N, and they would otherwise sit in the store as permanent singleton strata in project-keyed analysis.",
+          "name": "include-ephemeral",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "full": {
+          "description": "Ignore the stored cursor (asc-4dm.4) and read every transcript, exactly as this command did before incremental reads existed. Use it to force a complete re-derive, or to recover from a cursor you no longer trust -- a missing or stale cursor only ever costs time, never correctness, so this flag is never required for a correct result.",
+          "name": "full",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "ingest:claude-code",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "ingest",
+        "claude-code.js"
+      ]
+    },
+    "ingest:file-changed": {
+      "aliases": [],
+      "args": {},
+      "description": "Record one `intervention` row for every change a tool call made to a watched file -- the instructions, settings, hook scripts and skills a session is shaped by -- dated to the call that made it. Re-running creates no duplicates: every entry is keyed on its event.",
+      "examples": [
+        "<%= config.bin %> <%= config.bin %>",
+        "<%= config.bin %> <%= config.bin %> --json",
+        "<%= config.bin %> <%= config.bin %> --dry-run"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Report what would be recorded, and write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "ingest:file-changed",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "ingest",
+        "file-changed.js"
+      ]
+    },
+    "ingest:git": {
+      "aliases": [],
+      "args": {},
+      "description": "Record the size of every non-merge commit reachable from HEAD, and whether it sits in the top tenth of its repository’s recent commits. Re-running creates no duplicates: every entry is keyed on its commit.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "ingest:git",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "ingest",
+        "git.js"
+      ]
+    },
+    "init": {
+      "aliases": [],
+      "args": {},
+      "description": "Create a .ascend/ store here, install the starter types, and offer recall.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> --dry-run",
+        "<%= config.bin %> <%= command.id %> --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Report exactly what would be created, then write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "init",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "init.js"
+      ]
+    },
+    "install-hook": {
+      "aliases": [],
+      "args": {},
+      "description": "Add a SessionStart hook to this project’s .claude/settings.json, so every session starts knowing which entry types exist.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> --dry-run",
+        "<%= config.bin %> <%= command.id %> --yes",
+        "<%= config.bin %> <%= command.id %> --yes --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Print the exact hook that would be installed, then write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "yes": {
+          "description": "Install without asking. Required when stdout is not a terminal.",
+          "name": "yes",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "holdout": {
+          "description": "A fraction strictly between 0 and 1; the share of units deliberately not shown.",
+          "name": "holdout",
+          "required": false,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "install-hook",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "install-hook.js"
+      ]
+    },
+    "install-skill": {
+      "aliases": [],
+      "args": {},
+      "description": "Copy the ascend-analysis skill and its /ascend-analyze command into this project’s .claude/, so a Claude Code session here can use them.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> --dry-run",
+        "<%= config.bin %> <%= command.id %> --yes",
+        "<%= config.bin %> <%= command.id %> --yes --force"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Report exactly which files would be written, with sizes, then write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "yes": {
+          "description": "Install without asking. Required when stdout is not a terminal.",
+          "name": "yes",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "force": {
+          "description": "Replace a destination file whose bytes differ from the one ascend would install.",
+          "name": "force",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "install-skill",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "install-skill.js"
+      ]
+    },
+    "invalidate": {
+      "aliases": [],
+      "args": {
+        "entryIds": {
+          "description": "Entry id(s) to invalidate. With --list, at most one id, to filter the listing by.",
+          "multiple": true,
+          "name": "entryIds",
+          "required": false
+        }
+      },
+      "description": "Strike entries under the reserved invalidation scheme, recording why they stopped counting. Entries are immutable and are never edited or deleted. A strike recorded in error cannot be withdrawn either -- retraction is deliberately unbuilt (asc-k6p.2), and reporting one is what reopens that decision.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> e12 --label superseded --reason \"unit mismatch, fixed in e19\" --superseded-by e19",
+        "<%= config.bin %> <%= command.id %> e12 e13 e14 --label wrong_subject --reason \"measured the wrong endpoint\"",
+        "<%= config.bin %> <%= command.id %> e12 --label duplicate --reason \"the same event as e7, written twice by the retired suffix\"",
+        "<%= config.bin %> <%= command.id %> e12 --label wrong_value --reason \"...\" --dry-run",
+        "<%= config.bin %> <%= command.id %> --list",
+        "<%= config.bin %> <%= command.id %> --list e12"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "label": {
+          "description": "Why the entry stopped counting. Required unless --list. The vocabulary is closed.",
+          "name": "label",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "wrong_subject",
+            "wrong_value",
+            "superseded",
+            "duplicate"
+          ],
+          "type": "option"
+        },
+        "reason": {
+          "description": "Free text: the durable record of why. Required unless --list, and never re-derived.",
+          "name": "reason",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "superseded-by": {
+          "description": "The replacing entry id. Required when --label is 'superseded', refused for any other label -- the store enforces this and its message reaches you as-is.",
+          "name": "superseded-by",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "actor": {
+          "description": "Who or what struck the entry(ies). Stored as created_by; omitted rather than passed as ''.",
+          "name": "actor",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "dry-run": {
+          "description": "Validate the whole batch and report what would be written, then write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "list": {
+          "description": "List recorded invalidations, newest first, instead of writing one. Mutually exclusive with --label, --reason, --superseded-by, --actor and --dry-run.",
+          "name": "list",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "invalidate",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "invalidate.js"
+      ]
+    },
+    "kappa": {
+      "aliases": [],
+      "args": {},
+      "description": "Measure agreement between two schemes, or two passes of one scheme, with Cohen's kappa.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> --scheme first --scheme second",
+        "<%= config.bin %> <%= command.id %> --scheme review --pass 2026-09-17T10:00:00.000Z --pass 2026-09-17T11:00:00.000Z"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "scheme": {
+          "description": "A scheme to read. Two of them, or one with two --pass.",
+          "name": "scheme",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "pass": {
+          "description": "A pass timestamp to read. Two of them, with a single --scheme. Default is each scheme's latest pass.",
+          "name": "pass",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "kappa",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "kappa.js"
+      ]
+    },
+    "query": {
+      "aliases": [],
+      "args": {
+        "sql": {
+          "description": "One SQL statement. Quote it so your shell does not split it.",
+          "name": "sql",
+          "required": true
+        }
+      },
+      "description": "Run one read-only SQL statement against the store. The connection cannot write, so no statement can change your data. Values are SQLite's representation of a column rather than a declared type: a boolean property reads as 1 or 0, a json property as JSON text, a blob as a hex literal, and an integer too large for a JavaScript number as a decimal string.",
+      "examples": [
+        "<%= config.bin %> query 'SELECT count(*) FROM entries'",
+        "<%= config.bin %> query 'SELECT * FROM v_decision_v1' --json",
+        "<%= config.bin %> query 'SELECT type_name, count(*) AS n FROM entries GROUP BY 1' --csv",
+        "<%= config.bin %> query 'SELECT * FROM other.entries' --across '~/projects/*'"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "across": {
+          "description": "Attach every project matching this glob, each under its own database name, and report the names on stderr. Quote the glob. The project you are in stays unqualified as \"main\". A SQLite connection holds a limited number of attached databases, so a glob matching more projects than fit is refused rather than partly attached.",
+          "name": "across",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "query",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "query.js"
+      ]
+    },
+    "record": {
+      "aliases": [],
+      "args": {
+        "type": {
+          "description": "The entry type to record. It must be registered in this project.",
+          "name": "type",
+          "required": true
+        },
+        "document": {
+          "description": "Path to an entry document, or `-` for standard input. A single object records one entry; an array records a batch. Omit it when using --prop/--na/--evidence.",
+          "name": "document",
+          "required": false
+        }
+      },
+      "description": "Record one or more entries of a single entry type.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> decision --prop=chosen=walk-up --prop=rationale=git-does-this",
+        "<%= config.bin %> <%= command.id %> decision --scaffold > entry.json",
+        "cat entry.json | <%= config.bin %> <%= command.id %> decision -",
+        "<%= config.bin %> <%= command.id %> stuck_event batch.json --dry-run"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Validate everything and report what would be written, then write nothing. An entry id the write would MINT is not reported, because a preview cannot know it -- name the id in the document to see one, and to make the write use it.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "scaffold": {
+          "description": "Print a skeleton entry document for this type and stop, writing nothing. The shape is described on stderr; the document goes to stdout, ready to redirect.",
+          "name": "scaffold",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "type-version": {
+          "description": "Record against this registered version instead of the latest one.",
+          "name": "type-version",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "prop": {
+          "description": "Set one property: --prop=<name>=<value>. Repeat for each property.",
+          "name": "prop",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "na": {
+          "description": "Property names that do not apply, comma-separated. Repeatable.",
+          "name": "na",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "evidence": {
+          "description": "Free text stored alongside the entry, and what `asc search` indexes.",
+          "name": "evidence",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "run-id": {
+          "description": "Group this entry with others from the same run. Defaults to nothing.",
+          "name": "run-id",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "workflow": {
+          "description": "What produced this entry. Defaults to nothing.",
+          "name": "workflow",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "actor": {
+          "description": "Who or what recorded this. Defaults to nothing.",
+          "name": "actor",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "record",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "record.js"
+      ]
+    },
+    "search": {
+      "aliases": [],
+      "args": {
+        "type": {
+          "description": "The entry type to search. A name that is not registered is refused.",
+          "name": "type",
+          "required": true
+        },
+        "text": {
+          "description": "The text to search for. Split into runs of letters, digits and underscores, each matched as a phrase; a query with no run of three or more is refused rather than matched.",
+          "name": "text",
+          "required": true
+        }
+      },
+      "description": "Search one entry type's evidence text, best match first. The index covers evidence_text only -- not properties, not the type name -- so the output reports what it could not cover: a search that finds nothing says why, and one that finds something says where else the terms occur. Scores are FTS5's bm25(): they are NEGATIVE and lower is better, and they compare within one result set rather than across types.",
+      "examples": [
+        "<%= config.bin %> search user_correction \"wrong directory\"",
+        "<%= config.bin %> search verification_run \"cargo test\" --limit 5",
+        "<%= config.bin %> search tool_denial \"permission\" --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Maximum rows to return. Defaults to 40.",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "search",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "search.js"
+      ]
+    },
+    "standing-costs": {
+      "aliases": [],
+      "args": {},
+      "description": "Measure what is injected into every transcript stream, and what tools return: bytes per attachment source, per instruction file, per skill listing, per tool, per Bash first command, and per --help look-up.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> --project -Users-me-projects-app",
+        "<%= config.bin %> <%= command.id %> --all-projects --limit 50 --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "root": {
+          "description": "The directory holding transcript projects. Defaults to ~/.claude/projects, which is where Claude Code writes them.",
+          "name": "root",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "A transcript directory name to replay, e.g. -Users-me-projects-app. Repeat it to replay several together. Defaults to the encoded path of the ascend project (or git repository) containing the working directory.",
+          "exclusive": [
+            "all-projects"
+          ],
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "all-projects": {
+          "description": "Replay every transcript directory under the root. Projects under an OS temp root are skipped and counted unless --include-ephemeral is passed.",
+          "exclusive": [
+            "project"
+          ],
+          "name": "all-projects",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "include-ephemeral": {
+          "description": "With --all-projects, also replay projects under an OS temp root.",
+          "name": "include-ephemeral",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Rows per ranked report. The whole corpus is always measured; this only trims what is shown, and every report still states its population in its (groups) row. Default 20.",
+          "name": "limit",
+          "default": 20,
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "standing-costs",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "standing-costs.js"
+      ]
+    },
+    "stats": {
+      "aliases": [],
+      "args": {
+        "type": {
+          "description": "The entry type to analyse.",
+          "name": "type",
+          "required": true
+        }
+      },
+      "description": "Run one analysis over a type: association, rules, changepoints, distinctive terms, lexical clustering, or near-duplicate collapse. Every p-value it prints is computed at the raw entry count and is corrected for clustering only where `--cluster-by <property>` says which property the rows are echoes of -- which `--assoc`, `--correlate` and `--rules` can do and does not happen by default; a corrected N is also reported by `asc explore <type> --cluster`.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> tool_denial --assoc",
+        "<%= config.bin %> <%= command.id %> tool_denial --assoc --permutations 400",
+        "<%= config.bin %> <%= command.id %> tool_denial --assoc --temporal weekday --blocks day",
+        "<%= config.bin %> <%= command.id %> tool_denial --assoc --temporal occurred_at:weekday --blocks occurred_at:day",
+        "<%= config.bin %> <%= command.id %> tool_denial --correlate tool_name --correlate denial_kind",
+        "<%= config.bin %> <%= command.id %> tool_denial --rules",
+        "<%= config.bin %> <%= command.id %> tool_denial --changepoints --period week",
+        "<%= config.bin %> <%= command.id %> decision --distinctive --by reversibility",
+        "<%= config.bin %> <%= command.id %> tool_denial --assoc --cluster-by session_id",
+        "<%= config.bin %> <%= command.id %> user_correction --rules --cluster-by session_id",
+        "<%= config.bin %> <%= command.id %> decision --cluster --threshold 0.9",
+        "<%= config.bin %> <%= command.id %> decision --duplicates"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "assoc": {
+          "description": "Rank every pair of categorical properties by association strength.",
+          "name": "assoc",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "correlate": {
+          "description": "Two property names: report that one pair in full, with its table.",
+          "name": "correlate",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "rules": {
+          "description": "Mine association rules over categorical property values (FP-growth).",
+          "name": "rules",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "temporal": {
+          "description": "A column whose values came from a TIMESTAMP -- a weekday, a date, a month. Name a property that already holds one, or derive it with `<clock>:<bucket>` (`at:weekday`, `occurred_at:day`; buckets are day, week, weekday). Needs --blocks. Only the caller knows a value was derived from time (a weekday and a project name are both just strings), so this is declared rather than guessed, and it is what makes a pair eligible for the block control.",
+          "name": "temporal",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        },
+        "blocks": {
+          "description": "Test every temporal pairing against this column's block structure -- the day each entry belongs to. Takes the same two forms as --temporal. Answers a DIFFERENT question from the q-values: \"is this pairing real over time, or is it the block structure?\". Needs --temporal.",
+          "name": "blocks",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "cluster-by": {
+          "description": "Correct every p-value and interval for CLUSTERING: the property one row is an ECHO of, almost always `session_id`. Not the same question as --blocks, which asks whether a temporal pairing is the block structure: this asks whether the rows are independent enough for a row-counted p at all, and on a corpus derived per session they are not -- one session contributes dozens of near-identical entries counted as independent evidence. --assoc and --correlate install a cluster-preserving permutation null (whole clusters' blocks of values move together, so each column's marginal is held exactly); --rules recomputes each confidence interval at its design effect. --changepoints and --distinctive REFUSE it: neither has a cluster-preserving null, and printing an uncorrected p under this flag is the one thing it exists to prevent. Named `--cluster-by` because `--cluster` is already a mode.",
+          "name": "cluster-by",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "permutations": {
+          "description": "Permutation iterations for the shuffled-label control: shuffle ONE column freely, so both marginals stay fixed and only the pairing between them is destroyed, then report the empirical p for every pair. Answers a THIRD question -- \"could these marginals alone manufacture this chi-square?\" -- and it does NOT catch a definitional pair, because a tautology's statistic is genuinely extreme rather than marginal-driven: read it beside `determinism`, never instead of it. THE SECOND COLUMN OF EACH PAIR IS THE ONE SHUFFLED -- `b` in the table, and the second `--correlate` -- so naming the same two columns the other way round is a different null and a different p. Off by default, because it costs roughly a second per pair per thousand iterations (measured, `spike/jpka-permutation-cost.mjs`). The published verdicts in docs/evidence/EV-patterns.md used 400.",
+          "name": "permutations",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "changepoints": {
+          "description": "Scan the entry rate over time for a break. With --by, one series per value.",
+          "name": "changepoints",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "distinctive": {
+          "description": "Terms that mark one group of entries out from the rest. Needs --by.",
+          "name": "distinctive",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "cluster": {
+          "description": "Cluster entries lexically over their prose. Needs --threshold.",
+          "name": "cluster",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "duplicates": {
+          "description": "Collapse near-duplicate entries into one representative and a count.",
+          "name": "duplicates",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "by": {
+          "description": "The property to group by (--distinctive) or to split into one series per value (--changepoints).",
+          "name": "by",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "threshold": {
+          "description": "Similarity cut. --duplicates: exact Jaccard, default 0.9 (EV-20 measured a false-merge rate of 0.000930 at 0.8 and 0.000000 at 0.9). --cluster: cosine DISTANCE, required, because EV-21 measured the silhouette curve flat across 0.82-0.92 and a default would be a number picked off a flat curve.",
+          "name": "threshold",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "linkage": {
+          "description": "How --cluster joins clusters. Default average: EV-21 judged 9 of its 10 largest clusters coherent with 89.7% of entries covered, against complete linkage at 70.1%.",
+          "name": "linkage",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "average",
+            "complete",
+            "single"
+          ],
+          "type": "option"
+        },
+        "method": {
+          "description": "Which changepoint test. Default pettitt (rank-based). cusum is magnitude-based with a seeded bootstrap; they fail differently, and two agreeing is a stronger claim than either.",
+          "name": "method",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "pettitt",
+            "cusum"
+          ],
+          "type": "option"
+        },
+        "at": {
+          "description": "Which clock --changepoints reads. Default recorded_at, which for an INGESTED type is when the ingest ran, not when anything happened -- those types declare occurred_at.",
+          "name": "at",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "period": {
+          "description": "Period for --changepoints. Default day.",
+          "name": "period",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "options": [
+            "day",
+            "week"
+          ],
+          "type": "option"
+        },
+        "min-support": {
+          "description": "Minimum itemset support for --rules. Default MIN_N (20).",
+          "name": "min-support",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "limit": {
+          "description": "Rows to print, for the six modes that print a table. Default 20. `--correlate` reports ONE named pair, so it refuses this flag rather than accepting a cap it would not apply.",
+          "name": "limit",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "stats",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "stats.js"
+      ]
+    },
+    "store:rewrite": {
+      "aliases": [],
+      "args": {},
+      "description": "Add the `version` a type line must now carry to every type line in the tree that states none. Writes only types/ files, only once, and reports what it changed.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "store:rewrite",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "store",
+        "rewrite.js"
+      ]
+    },
+    "store:verify": {
+      "aliases": [],
+      "args": {},
+      "description": "Refuse a record tree a commit would corrupt or shrink: git conflict markers, lines the reader would reject, or a record id present in a parent commit and absent from the candidate.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> --staged",
+        "<%= config.bin %> <%= command.id %> --staged --against origin/main --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "staged": {
+          "description": "Check the INDEX -- what the next commit would contain -- instead of HEAD. For a pre-commit hook. The baseline is HEAD and MERGE_HEAD (when a merge is in progress).",
+          "name": "staged",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "against": {
+          "description": "A commit a record id must not disappear relative to. Repeatable. Replaces the default baseline, so CI runs `--staged --against origin/main`.",
+          "name": "against",
+          "hasDynamicHelp": false,
+          "multiple": true,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "store:verify",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "store",
+        "verify.js"
+      ]
+    },
+    "types:brief": {
+      "aliases": [],
+      "args": {},
+      "description": "List the active entry types, with when to record each one.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "types:brief",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "types",
+        "brief.js"
+      ]
+    },
+    "types:capture": {
+      "aliases": [],
+      "args": {
+        "name": {
+          "description": "The type to plan capture for.",
+          "name": "name",
+          "required": true
+        }
+      },
+      "description": "Find where a type’s data already appears in this project’s Claude Code transcripts, and draft a handler that would capture it from there. Writes nothing unless --write.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> review_finding",
+        "<%= config.bin %> <%= command.id %> review_finding --write"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "root": {
+          "description": "The directory holding transcript projects. Defaults to ~/.claude/projects.",
+          "name": "root",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "project": {
+          "description": "The transcript directory name to read, e.g. -Users-me-projects-app. Defaults to this project’s own.",
+          "name": "project",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        },
+        "write": {
+          "description": "Save the drafts into handlers/, refusing to replace a file already there.",
+          "name": "write",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "types:capture",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "types",
+        "capture.js"
+      ]
+    },
+    "types:define": {
+      "aliases": [],
+      "args": {
+        "file": {
+          "description": "Path to a type document, or `-` to read one from standard input.",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Register a type definition from a JSON document.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> review.json",
+        "<%= config.bin %> <%= command.id %> --dry-run review.json",
+        "cat review.json | <%= config.bin %> <%= command.id %> -"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Report exactly what would happen, then write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "capture": {
+          "description": "After registering a new shape, look in this project’s transcripts for where its data already appears. On by default; --no-capture skips it.",
+          "name": "capture",
+          "allowNo": true,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "types:define",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "types",
+        "define.js"
+      ]
+    },
+    "types:deprecate": {
+      "aliases": [],
+      "args": {
+        "name": {
+          "description": "The type to deprecate.",
+          "name": "name",
+          "required": true
+        }
+      },
+      "description": "Retire an entry type, keeping the entries already recorded.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> review_completed",
+        "<%= config.bin %> <%= command.id %> --dry-run review_completed"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Report what would change, then write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "types:deprecate",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "types",
+        "deprecate.js"
+      ]
+    },
+    "types:export": {
+      "aliases": [],
+      "args": {
+        "name": {
+          "description": "Export this type only. Omit to export every type in the project.",
+          "name": "name",
+          "required": false
+        }
+      },
+      "description": "Write type definitions as JSON documents.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> review_completed > review.json",
+        "<%= config.bin %> <%= command.id %> | <%= config.bin %> types import -"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "hidden": true,
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "hidden": true,
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "types:export",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "types",
+        "export.js"
+      ]
+    },
+    "types:import": {
+      "aliases": [],
+      "args": {
+        "file": {
+          "description": "Path to a document or list of documents, or `-` to read from standard input.",
+          "name": "file",
+          "required": true
+        }
+      },
+      "description": "Register type definitions from exported JSON documents.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> review.json",
+        "<%= config.bin %> <%= command.id %> --dry-run types.json",
+        "<%= config.bin %> types export | <%= config.bin %> <%= command.id %> -"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Report exactly what would happen, then write nothing.",
+          "name": "dry-run",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "types:import",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "types",
+        "import.js"
+      ]
+    },
+    "types:list": {
+      "aliases": [],
+      "args": {},
+      "description": "List the entry types registered in this project.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %>",
+        "<%= config.bin %> <%= command.id %> --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "types:list",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "types",
+        "list.js"
+      ]
+    },
+    "types:show": {
+      "aliases": [],
+      "args": {
+        "name": {
+          "description": "The type to show.",
+          "name": "name",
+          "required": true
+        }
+      },
+      "description": "Show one registered entry type.",
+      "examples": [
+        "<%= config.bin %> <%= command.id %> review_completed",
+        "<%= config.bin %> <%= command.id %> review_completed --version 1 --json"
+      ],
+      "flags": {
+        "json": {
+          "description": "Print a versioned JSON envelope on stdout. The stable contract for scripts.",
+          "name": "json",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "table": {
+          "description": "Print an aligned table (the default).",
+          "name": "table",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv": {
+          "description": "Print RFC 4180 CSV.",
+          "name": "csv",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "csv-raw": {
+          "description": "With --csv, skip the leading-character safeguard against spreadsheet formula injection and emit the field exactly. For a pipeline that needs the original bytes back.",
+          "name": "csv-raw",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "debug": {
+          "description": "Include stack traces and internal detail when something fails.",
+          "name": "debug",
+          "allowNo": false,
+          "type": "boolean"
+        },
+        "version": {
+          "description": "Show this version instead of the latest one.",
+          "name": "version",
+          "hasDynamicHelp": false,
+          "multiple": false,
+          "type": "option"
+        }
+      },
+      "hasDynamicHelp": false,
+      "hiddenAliases": [],
+      "id": "types:show",
+      "pluginAlias": "@ascend/cli",
+      "pluginName": "@ascend/cli",
+      "pluginType": "core",
+      "strict": true,
+      "enableJsonFlag": false,
+      "isESM": true,
+      "relativePath": [
+        "dist",
+        "commands",
+        "types",
+        "show.js"
+      ]
+    }
+  },
+  "version": "0.0.0"
+}

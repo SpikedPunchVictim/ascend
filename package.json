@@ -9,7 +9,7 @@
     "node": ">=22.5"
   },
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node scripts/cli-manifest.mjs",
     "prepare": "pnpm build",
     "typecheck": "tsc -b && tsc -p tsconfig.eslint.json",
     "test": "ASCEND_TEST_SCOPE=full vitest run",
