@@ -82,7 +82,15 @@ function project(prefix = 'asc-flip-'): string {
 /** One decision entry, which is valid against the starter type `asc init` installs. */
 function record(dir: string, chosen: string): Run {
   return asc(
-    ['record', 'decision', '--prop', `chosen=${chosen}`, '--prop', 'rationale=driven by the suite'],
+    [
+      'record',
+      'decision',
+      '--prop=question=which way',
+      '--prop',
+      `chosen=${chosen}`,
+      '--prop',
+      'rationale=driven by the suite',
+    ],
     dir,
   );
 }

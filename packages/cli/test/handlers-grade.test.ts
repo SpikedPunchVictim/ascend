@@ -522,9 +522,18 @@ describe('asc handlers grade: refusing to read a row whose ruler has moved', () 
     // The other way to be the wrong id: a real entry of a type that carries no metric at all. A grader
     // that fell through to "no metric" here would blame the row for the caller's mistake, and the two
     // have different fixes.
-    expect(asc(['record', 'decision', '--prop=chosen=a', '--prop=rationale=b'], dir).status).toBe(
-      0,
-    );
+    expect(
+      asc(
+        [
+          'record',
+          'decision',
+          '--prop=question=which way',
+          '--prop=chosen=a',
+          '--prop=rationale=b',
+        ],
+        dir,
+      ).status,
+    ).toBe(0);
     const other = entryIdOf(dir, 'decision');
     expect(other).not.toBe(id);
     const wrong = grade(dir, other);

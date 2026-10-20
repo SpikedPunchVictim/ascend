@@ -440,6 +440,7 @@ function corpus(dir: string): void {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=JSONL',
         '--prop=rationale=a truncated array parses to nothing; a truncated line stream reads up to the damage',
         '--na=options_considered',
@@ -467,7 +468,13 @@ function stream(dir: string, name: string, text: string): string {
  */
 function recordDecision(dir: string, chosen: string): void {
   const run = asc(
-    ['record', 'decision', `--prop=chosen=${chosen}`, `--prop=rationale=because ${chosen}`],
+    [
+      'record',
+      'decision',
+      '--prop=question=which way',
+      `--prop=chosen=${chosen}`,
+      `--prop=rationale=because ${chosen}`,
+    ],
     dir,
   );
   expect(run.status).toBe(0);
@@ -1527,7 +1534,13 @@ describe('asc export -- secret-shaped content', () => {
     const dir = project();
     recordDecision(dir, 'clean');
     const run = asc(
-      ['record', 'decision', '--prop=chosen=rotate', `--prop=rationale=leaked ${KEY} in a log`],
+      [
+        'record',
+        'decision',
+        '--prop=question=which way',
+        '--prop=chosen=rotate',
+        `--prop=rationale=leaked ${KEY} in a log`,
+      ],
       dir,
     );
     expect(run.status).toBe(0);

@@ -1,0 +1,17 @@
+{
+  "_": "Kill-check for asc-f3at: a decision must say what it was deciding. The mutant makes `question` optional, which is exactly the state the bead measured -- a stored row whose rationale refers to a question the entry never names.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/starters.ts",
+      "find": "        name: 'question',\n        type: 'string',\n        required: true,",
+      "replace": "        name: 'question',\n        type: 'string',",
+      "killers": [
+        {
+          "file": "packages/cli/test/record.test.ts",
+          "test": "refuses a decision that never says what it was deciding (`asc-f3at`)"
+        }
+      ]
+    }
+  ]
+}

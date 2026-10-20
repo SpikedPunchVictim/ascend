@@ -259,7 +259,13 @@ describe('an index that is not a database', () => {
     writeFileSync(indexFile, 'not a database at all, just bytes\n');
 
     const run = asc(
-      ['record', 'decision', '--prop=chosen=rebuilt', '--prop=rationale=the-tree-is-the-store'],
+      [
+        'record',
+        'decision',
+        '--prop=question=which way',
+        '--prop=chosen=rebuilt',
+        '--prop=rationale=the-tree-is-the-store',
+      ],
       dir,
     );
 

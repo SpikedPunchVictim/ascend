@@ -270,6 +270,18 @@ export const STARTER_TYPES: readonly TypeSpec[] = [
       'and recording it as one makes the entries that matter harder to find.',
     properties: [
       {
+        name: 'question',
+        type: 'string',
+        required: true,
+        description:
+          'What was being decided, as a question this entry answers on its own: "whether to keep ' +
+          'the index in the tree", "how to version a changed type". The properties below record the ' +
+          'ANSWER; without this one an entry says what was chosen and never what it was chosen ' +
+          'about -- the failure asc-f3at measured, where a row\'s rationale referred to "the ' +
+          'bead\'s first cut" with nothing in the entry naming the cut. Required since the type ' +
+          'was versioned for it; rows recorded before do not have it.',
+      },
+      {
         name: 'options_considered',
         type: 'json',
         description:

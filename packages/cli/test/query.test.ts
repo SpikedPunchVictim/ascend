@@ -307,7 +307,10 @@ describe('a piped value is never taken for an operand', () => {
 describe('read-only, and what that costs the caller', () => {
   it('refuses a write and leaves the file untouched', () => {
     const dir = project();
-    asc(['record', 'decision', '--prop=chosen=x', '--prop=rationale=y'], dir);
+    asc(
+      ['record', 'decision', '--prop=question=which way', '--prop=chosen=x', '--prop=rationale=y'],
+      dir,
+    );
     const before = entryCount(dir);
     expect(before).toBe(1);
 
@@ -321,7 +324,10 @@ describe('read-only, and what that costs the caller', () => {
 
   it('refuses a write hidden behind a read, which is what the one-statement rule also protects', () => {
     const dir = project();
-    asc(['record', 'decision', '--prop=chosen=x', '--prop=rationale=y'], dir);
+    asc(
+      ['record', 'decision', '--prop=question=which way', '--prop=chosen=x', '--prop=rationale=y'],
+      dir,
+    );
     const result = asc(['query', 'SELECT 1; DELETE FROM entries'], dir);
 
     // Refused as a usage error before SQLite ever sees it, so the count is still 1 afterwards.

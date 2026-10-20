@@ -151,6 +151,7 @@ describe('asc record', () => {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=walk up',
         '--prop=rationale=git does this already',
         '--prop=reversibility=reversible',
@@ -169,10 +170,29 @@ describe('asc record', () => {
     expect(entry?.type_version).toBe(row?.['version']);
     expect(entry?.type_name).toBe('decision');
     expect(JSON.parse(entry?.properties_json ?? '{}')).toEqual({
+      question: 'which way',
       chosen: 'walk up',
       rationale: 'git does this already',
       reversibility: 'reversible',
     });
+  });
+
+  it('refuses a decision that never says what it was deciding (`asc-f3at`)', () => {
+    // The type's first version recorded the answer and never the question, and the bead's own
+    // measured entry is one whose rationale talks about "the bead's first cut" with nothing naming
+    // the cut. `question` is required in the versioned type, so the omission is refused rather than
+    // left to a reader to reconstruct.
+    const dir = project();
+    const run = asc(
+      ['record', 'decision', '--prop=chosen=walk up', '--prop=rationale=git does this already'],
+      dir,
+    );
+
+    expect(run.status).toBe(1);
+    const message = flatten(run.stderr);
+    expect(message).toContain("question: 'question' is required");
+    expect(message).toContain('--prop=question=');
+    expect(stored(dir)).toEqual([]);
   });
 
   it('names the store it wrote to, in the envelope and in the table', () => {
@@ -183,11 +203,11 @@ describe('asc record', () => {
     const where = join(realpathSync(dir), '.ascend');
     const entry = ['--prop=chosen=walk up', '--prop=rationale=git does this already'];
 
-    const json = asc(['record', 'decision', ...entry, '--json'], dir);
+    const json = asc(['record', 'decision', '--prop=question=which way', ...entry, '--json'], dir);
     expect(json.status).toBe(0);
     expect((JSON.parse(json.stdout) as { store?: string }).store).toBe(where);
 
-    const table = asc(['record', 'decision', ...entry], dir);
+    const table = asc(['record', 'decision', '--prop=question=which way', ...entry], dir);
     expect(table.status).toBe(0);
     expect(table.stdout).toContain(`store: ${where}`);
   });
@@ -197,11 +217,18 @@ describe('asc record', () => {
     const run = asc(
       ['record', 'decision', '-', '--json'],
       dir,
-      JSON.stringify({ properties: { chosen: 'operand', rationale: 'one convention for stdin' } }),
+      JSON.stringify({
+        properties: {
+          question: 'which way',
+          chosen: 'operand',
+          rationale: 'one convention for stdin',
+        },
+      }),
     );
 
     expect(run.status).toBe(0);
     expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      question: 'which way',
       chosen: 'operand',
       rationale: 'one convention for stdin',
     });
@@ -211,15 +238,22 @@ describe('asc record', () => {
     const dir = project();
     writeFileSync(
       join(dir, 'entry.json'),
-      JSON.stringify({ properties: { chosen: 'file', rationale: 'same shape' } }),
+      JSON.stringify({
+        properties: { question: 'which way', chosen: 'file', rationale: 'same shape' },
+      }),
     );
 
     expect(asc(['record', 'decision', 'entry.json'], dir).status).toBe(0);
     // The cast, not a bare index: `JSON.parse` returns `any`, and a bare `['chosen']` is an unsafe
     // member access lint refuses. Same idiom as the `chosen`-keyed assertion below.
-    expect((JSON.parse(stored(dir)[0]?.properties_json ?? '{}') as { chosen: string }).chosen).toBe(
-      'file',
-    );
+    expect(
+      (
+        JSON.parse(stored(dir)[0]?.properties_json ?? '{}') as {
+          question: 'which way';
+          chosen: string;
+        }
+      ).chosen,
+    ).toBe('file');
   });
 
   it('keeps the three states three states, in the row and in the generated view', () => {
@@ -364,7 +398,10 @@ describe('asc record', () => {
 
   it('refuses a document and entry flags together, rather than picking a winner', () => {
     const dir = project();
-    writeFileSync(join(dir, 'entry.json'), JSON.stringify({ properties: { chosen: 'a' } }));
+    writeFileSync(
+      join(dir, 'entry.json'),
+      JSON.stringify({ properties: { question: 'which way', chosen: 'a' } }),
+    );
     const run = asc(['record', 'decision', 'entry.json', '--prop=chosen=b'], dir);
 
     expect(run.status).toBe(2);
@@ -400,7 +437,15 @@ describe('asc record', () => {
 
     for (const { flag, storeField } of cases) {
       const run = asc(
-        ['record', 'decision', '--prop=chosen=a', '--prop=rationale=b', flag, ''],
+        [
+          'record',
+          'decision',
+          '--prop=question=which way',
+          '--prop=chosen=a',
+          '--prop=rationale=b',
+          flag,
+          '',
+        ],
         dir,
       );
 
@@ -427,6 +472,7 @@ describe('asc record', () => {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=a',
         '--prop=rationale=b',
         '--evidence',
@@ -636,7 +682,7 @@ describe('asc record', () => {
 
   it('refuses a malformed --prop with the shape it wants', () => {
     const dir = project();
-    const run = asc(['record', 'decision', '--prop=chosen'], dir);
+    const run = asc(['record', 'decision', '--prop=question=which way', '--prop=chosen'], dir);
 
     expect(run.status).toBe(2);
     expect(flatten(run.stderr)).toContain('--prop=<name>=<value>');
@@ -654,7 +700,15 @@ describe('asc record', () => {
     // the same answer asc-4if took for the fold collision one spec over.
     const dir = project();
     const run = asc(
-      ['record', 'decision', '--prop=chosen=a', '--prop=rationale=r', '--prop=chosen=b', '--json'],
+      [
+        'record',
+        'decision',
+        '--prop=question=which way',
+        '--prop=chosen=a',
+        '--prop=rationale=r',
+        '--prop=chosen=b',
+        '--json',
+      ],
       dir,
     );
 
@@ -680,6 +734,7 @@ describe('asc record', () => {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=a',
         '--prop=chosen=b',
         '--prop=rationale=r',
@@ -702,7 +757,15 @@ describe('asc record', () => {
     // which is worse than the noise it replaced.
     const dir = project();
     const run = asc(
-      ['record', 'decision', '--prop=chosen=a', '--prop=rationale=r', '--prop=chosen=a', '--json'],
+      [
+        'record',
+        'decision',
+        '--prop=question=which way',
+        '--prop=chosen=a',
+        '--prop=rationale=r',
+        '--prop=chosen=a',
+        '--json',
+      ],
       dir,
     );
 
@@ -710,6 +773,7 @@ describe('asc record', () => {
     expect(flatten(run.stderr)).toBe('');
     expect(envelope(run.stdout)[0]?.['warnings']).toEqual([]);
     expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      question: 'which way',
       chosen: 'a',
       rationale: 'r',
     });
@@ -725,6 +789,7 @@ describe('asc record', () => {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=a',
         '--prop=rationale=r',
         '--prop=options_considered={"x":1,"y":2}',
@@ -752,6 +817,7 @@ describe('asc record', () => {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=a',
         '--prop=rationale=r',
         '--prop=options_considered=1e999',
@@ -772,7 +838,10 @@ describe('asc record', () => {
     // so it is checked before the store is opened at all. Refusing after validation would instead
     // report a missing property, and the repeat would surface only on the second run.
     const dir = project();
-    const run = asc(['record', 'decision', '--prop=chosen=a', '--prop=chosen=b'], dir);
+    const run = asc(
+      ['record', 'decision', '--prop=question=which way', '--prop=chosen=a', '--prop=chosen=b'],
+      dir,
+    );
 
     expect(run.status).toBe(2);
     const message = flatten(run.stderr);
@@ -790,6 +859,7 @@ describe('asc record', () => {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=a',
         '--prop=rationale=r',
         '--prop=chosen=b',
@@ -815,6 +885,7 @@ describe('asc record', () => {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=walk up',
         '--prop=rationale=depth = path.length',
         '--json',
@@ -824,6 +895,7 @@ describe('asc record', () => {
 
     expect(run.status).toBe(0);
     expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      question: 'which way',
       chosen: 'walk up',
       rationale: 'depth = path.length',
     });
@@ -836,7 +908,14 @@ describe('asc record', () => {
     // `--na a --na a` meaning one thing.
     const dir = project();
     const run = asc(
-      ['record', 'decision', '--prop=rationale=because', '--na=chosen,chosen', '--json'],
+      [
+        'record',
+        'decision',
+        '--prop=question=which way',
+        '--prop=rationale=because',
+        '--na=chosen,chosen',
+        '--json',
+      ],
       dir,
     );
 
@@ -852,9 +931,9 @@ describe('asc record', () => {
       ['record', 'decision', '-', '--json'],
       dir,
       JSON.stringify([
-        { properties: { chosen: 'a', rationale: 'first' } },
-        { properties: { chosen: 'b', rationale: 'second' } },
-        { properties: { chosen: 'c', rationale: 'third' } },
+        { properties: { question: 'which way', chosen: 'a', rationale: 'first' } },
+        { properties: { question: 'which way', chosen: 'b', rationale: 'second' } },
+        { properties: { question: 'which way', chosen: 'c', rationale: 'third' } },
       ]),
     );
 
@@ -871,8 +950,8 @@ describe('asc record', () => {
       ['record', 'decision', '-'],
       dir,
       JSON.stringify([
-        { properties: { chosen: 'a', rationale: 'because' } },
-        { properties: { chosen: 'b', rationale: 'because' } },
+        { properties: { question: 'which way', chosen: 'a', rationale: 'because' } },
+        { properties: { question: 'which way', chosen: 'b', rationale: 'because' } },
       ]),
     );
 
@@ -889,9 +968,12 @@ describe('asc record', () => {
       ['record', 'decision', '-'],
       dir,
       JSON.stringify([
-        { properties: { chosen: 'a', rationale: 'fine' } },
-        { properties: { chosen: 'b', rationale: 'also fine' } },
-        { properties: { chosen: 'c', rationale: 'contradictory' }, na: ['chosen'] },
+        { properties: { question: 'which way', chosen: 'a', rationale: 'fine' } },
+        { properties: { question: 'which way', chosen: 'b', rationale: 'also fine' } },
+        {
+          properties: { question: 'which way', chosen: 'c', rationale: 'contradictory' },
+          na: ['chosen'],
+        },
       ]),
     );
 
@@ -907,8 +989,8 @@ describe('asc record', () => {
       ['record', 'decision', '-'],
       dir,
       JSON.stringify([
-        { properties: { chosen: 'a', rationale: 'fine' } },
-        { properties: { chosen: 'b', rationale: 'bad' }, na: ['chosen'] },
+        { properties: { question: 'which way', chosen: 'a', rationale: 'fine' } },
+        { properties: { question: 'which way', chosen: 'b', rationale: 'bad' }, na: ['chosen'] },
       ]),
     );
 
@@ -918,7 +1000,10 @@ describe('asc record', () => {
 
   it('does not prefix the index onto a single entry, where it would be noise', () => {
     const dir = project();
-    const run = asc(['record', 'decision', '--prop=chosen=a', '--na=chosen'], dir);
+    const run = asc(
+      ['record', 'decision', '--prop=question=which way', '--prop=chosen=a', '--na=chosen'],
+      dir,
+    );
 
     expect(run.status).toBe(1);
     expect(flatten(run.stderr)).not.toContain('entry 0:');
@@ -933,8 +1018,8 @@ describe('asc record', () => {
       ['record', 'decision', '-'],
       dir,
       JSON.stringify([
-        { properties: { chosen: 'a', rationale: 'because' }, id: 'same-id' },
-        { properties: { chosen: 'b', rationale: 'because' }, id: 'same-id' },
+        { properties: { question: 'which way', chosen: 'a', rationale: 'because' }, id: 'same-id' },
+        { properties: { question: 'which way', chosen: 'b', rationale: 'because' }, id: 'same-id' },
       ]),
     );
 
@@ -949,7 +1034,10 @@ describe('asc record', () => {
       ['record', 'decision', '-', '--json'],
       dir,
       JSON.stringify([
-        { properties: { chosen: 'a', rationale: 'because' }, id: 'chosen-by-the-caller' },
+        {
+          properties: { question: 'which way', chosen: 'a', rationale: 'because' },
+          id: 'chosen-by-the-caller',
+        },
       ]),
     );
 
@@ -964,8 +1052,8 @@ describe('asc record', () => {
       ['record', 'decision', '-', '--dry-run', '--json'],
       dir,
       JSON.stringify([
-        { properties: { chosen: 'a', rationale: 'because' } },
-        { properties: { chosen: 'b', rationale: 'because' } },
+        { properties: { question: 'which way', chosen: 'a', rationale: 'because' } },
+        { properties: { question: 'which way', chosen: 'b', rationale: 'because' } },
       ]),
     );
 
@@ -981,7 +1069,14 @@ describe('asc record', () => {
   it('reports dry_run on a real run too, rather than dropping the field', () => {
     const dir = project();
     const run = asc(
-      ['record', 'decision', '--prop=chosen=a', '--prop=rationale=because', '--json'],
+      [
+        'record',
+        'decision',
+        '--prop=question=which way',
+        '--prop=chosen=a',
+        '--prop=rationale=because',
+        '--json',
+      ],
       dir,
     );
 
@@ -1000,7 +1095,7 @@ describe('asc record', () => {
     const run = asc(
       ['record', 'decision', '-', '--dry-run', '--json'],
       dir,
-      JSON.stringify({ properties: { chosen: 'a', rationale: 'because' } }),
+      JSON.stringify({ properties: { question: 'which way', chosen: 'a', rationale: 'because' } }),
     );
 
     expect(run.status).toBe(0);
@@ -1018,7 +1113,7 @@ describe('asc record', () => {
       ['record', 'decision', '-', '--dry-run', '--json'],
       dir,
       JSON.stringify({
-        properties: { chosen: 'a', rationale: 'because' },
+        properties: { question: 'which way', chosen: 'a', rationale: 'because' },
         id: 'chosen-by-the-caller',
       }),
     );
@@ -1033,7 +1128,7 @@ describe('asc record', () => {
     const run = asc(
       ['record', 'decision', '-', '--json'],
       dir,
-      JSON.stringify({ properties: { chosen: 'a', rationale: 'because' } }),
+      JSON.stringify({ properties: { question: 'which way', chosen: 'a', rationale: 'because' } }),
     );
 
     expect(run.status).toBe(0);
@@ -1048,7 +1143,7 @@ describe('asc record', () => {
     const run = asc(
       ['record', 'decision', '-', '--dry-run'],
       dir,
-      JSON.stringify({ properties: { chosen: 'a', rationale: 'because' } }),
+      JSON.stringify({ properties: { question: 'which way', chosen: 'a', rationale: 'because' } }),
     );
 
     expect(run.status).toBe(0);
@@ -1348,7 +1443,7 @@ describe('asc record', () => {
       ['record', 'decision', '-', '--json'],
       dir,
       JSON.stringify({
-        properties: { chosen: 'a', rationale: 'because' },
+        properties: { question: 'which way', chosen: 'a', rationale: 'because' },
         run_id: 'run-7',
         workflow: 'stage-4',
         actor: 'claude-code',
@@ -1378,10 +1473,28 @@ describe('asc record', () => {
     mkdirSync(sub, { recursive: true });
 
     expect(
-      asc(['record', 'decision', '--prop=chosen=a', '--prop=rationale=because'], dir).status,
+      asc(
+        [
+          'record',
+          'decision',
+          '--prop=question=which way',
+          '--prop=chosen=a',
+          '--prop=rationale=because',
+        ],
+        dir,
+      ).status,
     ).toBe(0);
     expect(
-      asc(['record', 'decision', '--prop=chosen=b', '--prop=rationale=because'], sub).status,
+      asc(
+        [
+          'record',
+          'decision',
+          '--prop=question=which way',
+          '--prop=chosen=b',
+          '--prop=rationale=because',
+        ],
+        sub,
+      ).status,
     ).toBe(0);
 
     // Keyed on each entry's own `chosen` rather than on its position in the result: `stored`
@@ -1412,7 +1525,7 @@ describe('asc record', () => {
         ['record', 'decision', '-'],
         dir,
         JSON.stringify({
-          properties: { chosen: 'a' },
+          properties: { question: 'which way', chosen: 'a' },
           [key]: key === 'recorded_at' ? '2020-01-01T00:00:00.000Z' : 'x',
         }),
       );
@@ -1436,7 +1549,7 @@ describe('asc record', () => {
     const run = asc(
       ['record', 'decision', '-'],
       dir,
-      JSON.stringify({ properties: { chosen: 'a' }, source: 'self' }),
+      JSON.stringify({ properties: { question: 'which way', chosen: 'a' }, source: 'self' }),
     );
     const machineSources = ENTRY_SOURCES.filter((value) => value !== 'self');
 
@@ -1451,7 +1564,10 @@ describe('asc record', () => {
     const run = asc(
       ['record', 'decision', '-'],
       dir,
-      JSON.stringify({ properties: { chosen: 'a' }, evidenceText: 'spelt wrong' }),
+      JSON.stringify({
+        properties: { question: 'which way', chosen: 'a' },
+        evidenceText: 'spelt wrong',
+      }),
     );
 
     expect(run.status).toBe(1);
@@ -1468,6 +1584,7 @@ describe('asc record', () => {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=a',
         '--prop=rationale=because',
         '--prop=notaproperty=x',
@@ -1483,6 +1600,7 @@ describe('asc record', () => {
     ]);
     expect(stored(dir)).toHaveLength(1);
     expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      question: 'which way',
       chosen: 'a',
       rationale: 'because',
     });
@@ -1501,6 +1619,7 @@ describe('asc record', () => {
       [
         'record',
         'decision',
+        '--prop=question=which way',
         '--prop=chosen=a',
         '--prop=rationale=because',
         '--prop=__proto__=pwned',
@@ -1512,6 +1631,7 @@ describe('asc record', () => {
     expect(run.status).toBe(0);
     expect(flatten(run.stderr)).toContain("'__proto__' is not a property of decision");
     expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      question: 'which way',
       chosen: 'a',
       rationale: 'because',
     });
@@ -1522,19 +1642,29 @@ describe('asc record', () => {
     // value" (`core/state.ts`). Refusing here would pressure a recorder into fabricating one.
     const dir = project();
     const run = asc(
-      ['record', 'decision', '--na=chosen,options_considered,rationale,reversibility', '--json'],
+      [
+        'record',
+        'decision',
+        '--na=question,chosen,options_considered,rationale,reversibility',
+        '--json',
+      ],
       dir,
     );
 
     expect(run.status).toBe(0);
     expect(flatten(run.stderr)).toContain('every property of decision is marked not applicable');
     expect(stored(dir)).toHaveLength(1);
-    expect(JSON.parse(stored(dir)[0]?.na_json ?? '[]')).toHaveLength(4);
+    // Five, since `question` joined the type (`asc-f3at`): every property is still N/A, which is a
+    // decision, and the entry is still written.
+    expect(JSON.parse(stored(dir)[0]?.na_json ?? '[]')).toHaveLength(5);
   });
 
   it('refuses --na with an empty name, rather than storing a property called ""', () => {
     const dir = project();
-    const run = asc(['record', 'decision', '--prop=chosen=a', '--na=chosen,'], dir);
+    const run = asc(
+      ['record', 'decision', '--prop=question=which way', '--prop=chosen=a', '--na=chosen,'],
+      dir,
+    );
 
     expect(run.status).toBe(2);
     expect(flatten(run.stderr)).toContain('empty name');
@@ -1545,14 +1675,28 @@ describe('asc record', () => {
     const dir = project();
     expect(
       asc(
-        ['record', 'decision', '--prop=chosen=a', '--prop=rationale=because', '--type-version=1'],
+        [
+          'record',
+          'decision',
+          '--prop=question=which way',
+          '--prop=chosen=a',
+          '--prop=rationale=because',
+          '--type-version=1',
+        ],
         dir,
       ).status,
     ).toBe(0);
     expect(stored(dir)[0]?.type_version).toBe(1);
 
     const missing = asc(
-      ['record', 'decision', '--prop=chosen=b', '--prop=rationale=because', '--type-version=2'],
+      [
+        'record',
+        'decision',
+        '--prop=question=which way',
+        '--prop=chosen=b',
+        '--prop=rationale=because',
+        '--type-version=2',
+      ],
       dir,
     );
     expect(missing.status).toBe(1);
@@ -1567,8 +1711,11 @@ describe('asc record', () => {
       ['record', 'decision', '-', '--run-id=call-level'],
       dir,
       JSON.stringify([
-        { properties: { chosen: 'a', rationale: 'because' } },
-        { properties: { chosen: 'b', rationale: 'because' }, run_id: 'entry-level' },
+        { properties: { question: 'which way', chosen: 'a', rationale: 'because' } },
+        {
+          properties: { question: 'which way', chosen: 'b', rationale: 'because' },
+          run_id: 'entry-level',
+        },
       ]),
     );
 
@@ -1578,7 +1725,7 @@ describe('asc record', () => {
     // order is not insertion order, and asserting a list here would be asserting a tie-break.
     const byChosen = Object.fromEntries(
       stored(dir).map((entry) => [
-        (JSON.parse(entry.properties_json) as { chosen: string }).chosen,
+        (JSON.parse(entry.properties_json) as { question: 'which way'; chosen: string }).chosen,
         entry.run_id,
       ]),
     );
@@ -1610,14 +1757,27 @@ describe('asc record', () => {
     // them may need a further subcommand. The argv below is exactly what the allowlist matches.
     const dir = project();
     const shapes: readonly (readonly [string[], string])[] = [
-      [['record', 'decision', '--prop=chosen=a', '--prop=rationale=because'], ''],
+      [
+        [
+          'record',
+          'decision',
+          '--prop=question=which way',
+          '--prop=chosen=a',
+          '--prop=rationale=because',
+        ],
+        '',
+      ],
       [
         ['record', 'decision', '-'],
-        JSON.stringify({ properties: { chosen: 'b', rationale: 'because' } }),
+        JSON.stringify({
+          properties: { question: 'which way', chosen: 'b', rationale: 'because' },
+        }),
       ],
       [
         ['record', 'decision', '-', '--dry-run'],
-        JSON.stringify({ properties: { chosen: 'c', rationale: 'because' } }),
+        JSON.stringify({
+          properties: { question: 'which way', chosen: 'c', rationale: 'because' },
+        }),
       ],
     ];
 
@@ -1633,9 +1793,18 @@ describe('asc record', () => {
 
   it('records two different types, which is what makes the store a corpus', () => {
     const dir = project();
-    expect(asc(['record', 'decision', '--prop=chosen=a', '--prop=rationale=r'], dir).status).toBe(
-      0,
-    );
+    expect(
+      asc(
+        [
+          'record',
+          'decision',
+          '--prop=question=which way',
+          '--prop=chosen=a',
+          '--prop=rationale=r',
+        ],
+        dir,
+      ).status,
+    ).toBe(0);
     expect(
       asc(
         [
@@ -1668,7 +1837,7 @@ describe('a piped value is never taken for an operand', () => {
    * **twice** -- measured at 2.164x the document, holding across 40,034 and 100,034 bytes -- and
    * `evidence_text` is exactly the field `ARCHITECTURE` routes through stdin.
    */
-  const DOCUMENT = JSON.stringify({ properties: { chosen: 'piped' } });
+  const DOCUMENT = JSON.stringify({ properties: { question: 'which way', chosen: 'piped' } });
 
   it('reaches the "nothing to record" guard when a document is piped with no operand', () => {
     const dir = project();
@@ -1699,11 +1868,18 @@ describe('a piped value is never taken for an operand', () => {
     const run = asc(
       ['record', 'decision', '-', '--json'],
       dir,
-      JSON.stringify({ properties: { chosen: 'operand', rationale: 'one convention for stdin' } }),
+      JSON.stringify({
+        properties: {
+          question: 'which way',
+          chosen: 'operand',
+          rationale: 'one convention for stdin',
+        },
+      }),
     );
 
     expect(run.status).toBe(0);
     expect(JSON.parse(stored(dir)[0]?.properties_json ?? '{}')).toEqual({
+      question: 'which way',
       chosen: 'operand',
       rationale: 'one convention for stdin',
     });
@@ -1809,7 +1985,16 @@ describe('asc record -- the review_after advisory (asc-bli.5)', () => {
   it('never speaks for a type that declares no review_after', () => {
     const dir = project();
     for (let i = 0; i < 3; i++) {
-      const run = asc(['record', 'decision', '--prop=chosen=a', '--prop=rationale=r'], dir);
+      const run = asc(
+        [
+          'record',
+          'decision',
+          '--prop=question=which way',
+          '--prop=chosen=a',
+          '--prop=rationale=r',
+        ],
+        dir,
+      );
       expect(advisories(run)).toBe(0);
     }
   });
@@ -2035,7 +2220,10 @@ describe('the document path refuses before it waits, and its fix is reachable (a
   it('still names the flag when there is no document to edit', () => {
     // The control arm: the flags path keeps the sentence it had, so the change is scoped to the
     // form that cannot use it.
-    const run = asc(['record', 'decision', '--prop=chosen=a'], project());
+    const run = asc(
+      ['record', 'decision', '--prop=question=which way', '--prop=chosen=a'],
+      project(),
+    );
 
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('--prop=rationale');
@@ -2057,7 +2245,10 @@ describe('the document path refuses before it waits, and its fix is reachable (a
     // `writeProducedLines` rebuilds one, so refusing here would turn a path that self-heals today
     // into one that needs `asc index build`. A stale tree must still record.
     const dir = project();
-    asc(['record', 'decision', '--prop=chosen=a', '--prop=rationale=b'], dir);
+    asc(
+      ['record', 'decision', '--prop=question=which way', '--prop=chosen=a', '--prop=rationale=b'],
+      dir,
+    );
 
     // A blank line appended to the type tree is enough to make the index stale: measured, a read
     // then refuses with "the index ... is not current for this tree", while `asc record` with a
@@ -2068,7 +2259,7 @@ describe('the document path refuses before it waits, and its fix is reachable (a
     const run = asc(
       ['record', 'decision', '-'],
       dir,
-      '{"properties":{"chosen":"a","rationale":"b"}}',
+      '{"properties":{"question":"which way","chosen":"a","rationale":"b"}}',
     );
     expect(run.status).toBe(0);
   });
