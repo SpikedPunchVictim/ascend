@@ -1538,6 +1538,19 @@ export interface HandlerRun {
    */
   readonly unsatisfiedBefore: number;
   /**
+   * Triggers whose `saw:` answer was FALSE -- the watched event never matched in this partition
+   * (asc-3m5o).
+   *
+   * **The failure `saw:` has that `before:` does not.** An unsatisfied `before:` leaves its fields
+   * ABSENT, which is visible on the row; a `saw:` is never absent -- it renders `true` or `false`
+   * -- so a handler whose watch can never match answers `false` on every row and looks like it is
+   * working. Counted beside `unsatisfiedBefore` so `asc handlers check` can separate the two.
+   *
+   * A TRUE answer is `triggers - sawFalse` for a handler that declares `saw:`; there is no third
+   * state, which is why one number is enough.
+   */
+  readonly sawFalse: number;
+  /**
    * Table rows skipped because their cell count differs from their header (asc-tuur.3). Counted,
    * because a report with a malformed row otherwise reads as a report with one finding fewer.
    */
@@ -1587,6 +1600,7 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
   let noMatch = 0;
   let matchedButAbsent = 0;
   let unsatisfiedBefore = 0;
+  let sawFalse = 0;
   let malformedItems = 0;
   const window = handler.window;
   const sawSpec = handler.saw;
@@ -1885,6 +1899,9 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     let sawAnswer: boolean | undefined;
     if (sawSpec !== undefined) {
       sawAnswer = (seen.get(key) ?? []).some((watched) => sawSpec.match(watched, scope));
+      // The `never true` signal (asc-3m5o): a watch that matches nothing answers false on every
+      // row and is indistinguishable from a working one unless it is counted.
+      if (!sawAnswer) sawFalse += 1;
     }
     const emitScope = withSaw(withBefore(scope, earlier), sawAnswer);
 
@@ -1957,6 +1974,9 @@ export function runHandler(handler: CompiledHandler): HandlerRun {
     },
     get unsatisfiedBefore() {
       return unsatisfiedBefore;
+    },
+    get sawFalse() {
+      return sawFalse;
     },
     get malformedItems() {
       return malformedItems;

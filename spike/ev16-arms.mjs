@@ -55,7 +55,10 @@
  * WHAT COSTS MONEY. Each session is a real billed API call. `EV16_DRY_RUN=1` exercises everything
  * up to the spawn -- fixtures, store, hook install, prompt bytes, the grant -- and spends nothing.
  * Run that first, every time. `EV16_MAX_USD` is a hard ceiling: the harness reads `total_cost_usd`
- * off each session's envelope, accumulates, and REFUSES to start a session that would cross it.
+ * off each session's envelope, accumulates, and REFUSES to start a session that would cross it --
+ * projecting the next session's cost from what this route has actually cost, not checking what has
+ * already been spent after the fact (`asc-kzvi`, `spike/ceiling.mjs`). Pairs it did not run are
+ * printed and recorded, so a short denominator is stated rather than discovered.
  * The ceiling has no default, for the same reason the model does not.
  *
  * ONE SESSION PER INVOCATION IS NOT THE DESIGN -- P3 is stated as "0 of 3" against ">=2 of 3", so
@@ -67,6 +70,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { projectedNext, wouldCross } from './ceiling.mjs';
 
 const root = process.cwd();
 const bin = join(root, 'packages/cli/dist/bin.js');
@@ -485,21 +489,23 @@ async function runSession(arm, rep, spent) {
 }
 
 const sessions = [];
+const skipped = [];
 let spent = 0;
 for (const arm of arms) {
   if (ARMS[arm] === undefined) throw new Error(`unknown arm ${arm}`);
   for (let rep = 1; rep <= reps; rep += 1) {
-    if (!dryRun && spent >= maxUsd) {
-      console.error(
-        `CEILING REACHED: spent ${spent.toFixed(4)} of ${String(maxUsd)} USD. ` +
-          `Stopping before arm ${arm} rep ${String(rep)}. Completed sessions are written to spike/tmp/.`,
-      );
-      break;
+    // The projection is recomputed per pair from what this route has cost SO FAR, so a run whose
+    // first sessions were expensive stops earlier than one whose were cheap -- which is the point
+    // of a ceiling that bounds spend rather than acknowledging it (asc-kzvi).
+    const projected = projectedNext(sessions.map((session) => session.spentUsd ?? 0));
+    if (!dryRun && wouldCross(spent, projected, maxUsd)) {
+      skipped.push(`arm ${arm} rep ${String(rep)}`);
+      continue;
     }
     const session = await runSession(arm, rep, spent);
     spent += session.spentUsd ?? 0;
     sessions.push(session);
-    writeFileSync(join(out, 'ev16-arms.json'), JSON.stringify({ sessions, spent }, null, 2));
+    writeFileSync(join(out, 'ev16-arms.json'), JSON.stringify({ sessions, spent, skipped }, null, 2));
     if (session.sessionFailed) {
       console.error(
         `SESSION FAILED: arm ${arm} rep ${String(rep)} produced no billable envelope ` +
@@ -513,6 +519,17 @@ for (const arm of arms) {
   }
 }
 
+// What the ceiling took out, stated rather than left to be inferred from a missing arm: a run
+// reported as "n=2" with no explanation reads as a design that asked for two (asc-kzvi).
+if (skipped.length > 0) {
+  const projected = projectedNext(sessions.map((session) => session.spentUsd ?? 0));
+  console.error(
+    `CEILING: spent ${spent.toFixed(4)} of ${String(maxUsd)} USD, and the next session is ` +
+      `projected at ${projected.toFixed(4)}. Did NOT run ${String(skipped.length)} pair(s): ` +
+      `${skipped.join(', ')}. Completed sessions are written to spike/tmp/.`,
+  );
+}
+
 console.log(
   JSON.stringify(
     {
@@ -520,6 +537,7 @@ console.log(
       model,
       maxUsd,
       spentUsd: spent,
+      skipped,
       grant: {
         allowedTools: ALLOWED,
         permissionMode: 'dontAsk',

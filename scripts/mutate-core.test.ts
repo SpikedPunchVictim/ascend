@@ -4,6 +4,7 @@ import {
   asRecord,
   executed,
   killerArgs,
+  killerEnv,
   literalPattern,
   notApplied,
   parseArgs,
@@ -134,6 +135,32 @@ describe('killerArgs()', () => {
       '-t',
       'names settings\\.json',
     ]);
+  });
+});
+
+describe('killerEnv()', () => {
+  /**
+   * **The mark the failure log reads.** `vitest.failure-log.ts` writes `mutant` on each line so a
+   * reader can filter the deliberate reds out (`asc-5swk`), and an empty or inherited value here
+   * makes the reporter write `false` on a killer's line -- the one wrong answer the field can give.
+   *
+   * What this test does NOT cover is the call site: `runKiller` is deliberately unexported, for
+   * the reason `killerArgs`'s own test gives, so a `runKiller` that ignored this function's answer
+   * would still pass. That seam is one line in the runner, and it is reviewed rather than
+   * exercised -- stated here so the coverage is not read as more than it is.
+   */
+  it('marks the killer as a deliberate red, keeping everything it was given', () => {
+    expect(killerEnv({ PATH: '/bin', HOME: '/home/x' })).toStrictEqual({
+      PATH: '/bin',
+      HOME: '/home/x',
+      ASCEND_MUTATION: '1',
+    });
+  });
+
+  it('overwrites a stray value rather than trusting it', () => {
+    // An empty or inherited value would make the reporter write `false` on a killer's line, which
+    // is the single wrong answer this field can give.
+    expect(killerEnv({ ASCEND_MUTATION: '' })['ASCEND_MUTATION']).toBe('1');
   });
 });
 

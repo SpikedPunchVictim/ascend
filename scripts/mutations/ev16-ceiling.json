@@ -1,0 +1,53 @@
+{
+  "feature": "the EV-16 harness projects the next session against its ceiling instead of checking what is already spent (asc-kzvi)",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "spike/ceiling.mjs",
+      "find": "  if (paid.length === 0) return fallback;",
+      "replace": "  if (paid.length === 0) return 0;",
+      "killers": [
+        {
+          "file": "scripts/ceiling.test.ts",
+          "test": "uses the route mean when nothing has been observed"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "spike/ceiling.mjs",
+      "find": "  return paid.reduce((sum, cost) => sum + cost, 0) / paid.length;",
+      "replace": "  return paid.reduce((sum, cost) => sum + cost, 0);",
+      "killers": [
+        {
+          "file": "scripts/ceiling.test.ts",
+          "test": "averages what this route has actually cost"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "spike/ceiling.mjs",
+      "find": "  return spent + projected > max;",
+      "replace": "  return spent + projected >= max;",
+      "killers": [
+        {
+          "file": "scripts/ceiling.test.ts",
+          "test": "allows one that lands exactly on it"
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "file": "spike/ceiling.mjs",
+      "find": "  const paid = costs.filter((cost) => Number.isFinite(cost) && cost > 0);",
+      "replace": "  const paid = costs.filter((cost) => Number.isFinite(cost));",
+      "killers": [
+        {
+          "file": "scripts/ceiling.test.ts",
+          "test": "excludes a failed session rather than letting its zero pull the projection down"
+        }
+      ]
+    }
+  ]
+}

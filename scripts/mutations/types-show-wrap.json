@@ -1,0 +1,41 @@
+{
+  "feature": "asc types show wraps cells instead of eliding them (asc-1gnl)",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/cli/src/commands/types/show.ts",
+      "find": "        wrap: true,",
+      "replace": "        wrap: false,",
+      "killers": [
+        {
+          "file": "packages/cli/test/types.test.ts",
+          "test": "wraps a closed vocabulary and its guidance instead of eliding them"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/output.ts",
+      "find": "      if (output.wrap === true) return wrapCell(text, maxCellWidth);",
+      "replace": "      if (output.wrap === false) return wrapCell(text, maxCellWidth);",
+      "killers": [
+        {
+          "file": "packages/cli/test/types.test.ts",
+          "test": "wraps a closed vocabulary and its guidance instead of eliding them"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/output.ts",
+      "find": "    const cut = space > 0 ? space : Math.max(1, lastUnitToKeep(rest, width));",
+      "replace": "    const cut = Math.max(1, lastUnitToKeep(rest, width));",
+      "killers": [
+        {
+          "file": "packages/cli/test/types.test.ts",
+          "test": "wraps a closed vocabulary and its guidance instead of eliding them"
+        }
+      ]
+    }
+  ]
+}

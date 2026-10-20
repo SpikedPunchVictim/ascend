@@ -375,11 +375,16 @@ function refuse(message) {
 /**
  * @param {string} cmd
  * @param {readonly string[]} args
+ * @param {NodeJS.ProcessEnv} [env] replacement environment, or one inherited when omitted
  * @returns {Promise<{ code: number, out: string }>}
  */
-function sh(cmd, args) {
+function sh(cmd, args, env) {
   return new Promise((settle) => {
-    const child = spawn(cmd, args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(env === undefined ? {} : { env }),
+    });
     let out = '';
     child.stdout.on('data', (chunk) => {
       out += String(chunk);
@@ -411,7 +416,24 @@ const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
  * @returns {Promise<{ code: number, out: string }>}
  */
 function runKiller(killer) {
-  return sh('npx', killerArgs(killer));
+  return sh('npx', killerArgs(killer), killerEnv(process.env));
+}
+
+/**
+ * The environment one killer runs with.
+ *
+ * **`ASCEND_MUTATION` is the mark `vitest.failure-log.ts` reads**, so a line it appends can say the
+ * red was deliberate (`asc-5swk`). A killer is SUPPOSED to fail; without the mark the log cannot
+ * tell that red from the one it exists to keep, and measured 2026-10-09 it carried 2078 lines of
+ * which 89.2% of red runs were mutant kills. Pure and exported for the same reason `killerArgs`
+ * is: the wiring gets a killer without a test that spawns vitest, which would mutate the tree it
+ * runs in.
+ *
+ * @param {NodeJS.ProcessEnv} base
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function killerEnv(base) {
+  return { ...base, ASCEND_MUTATION: '1' };
 }
 
 /**

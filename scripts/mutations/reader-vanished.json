@@ -1,0 +1,29 @@
+{
+  "feature": "a transcript removed between the walk and the open is vanished, not a failure (asc-e74x)",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/adapter-claude-code/src/reader.ts",
+      "find": "        if (counters.reason === 'ENOENT') vanished.push(failure);",
+      "replace": "        if (counters.reason === 'NONE') vanished.push(failure);",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/reader.test.ts",
+          "test": "counts a transcript removed between the walk and the open as vanished"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/adapter-claude-code/src/reader.ts",
+      "find": "        else failures.push(failure);",
+      "replace": "        else vanished.push(failure);",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/reader.test.ts",
+          "test": "reads the other files when one cannot be opened"
+        }
+      ]
+    }
+  ]
+}

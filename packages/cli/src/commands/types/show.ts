@@ -119,6 +119,12 @@ export default class TypesShow extends BaseCommand {
 
       this.emit(format, {
         columns: ['field', 'value'],
+        // The one table in the CLI whose cells hold a CLOSED VOCABULARY: an enum list is a set of
+        // legal values, and the elision hid one on `stage_transition` along with the guidance
+        // sentence that warns against setting `to_status` equal to `from_status` (`asc-1gnl`).
+        // Wrapping keeps every value while the columns stay aligned; `--json` and `--csv` are
+        // unchanged, and every other table still elides because it is built to be scanned.
+        wrap: true,
         rows: [
           ...scalarRows(row),
           ...described.map((property) => ({

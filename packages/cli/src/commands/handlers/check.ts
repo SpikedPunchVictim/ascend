@@ -160,6 +160,15 @@ export default class HandlersCheck extends BaseCommand {
         add('before', handler.before.on);
         add('unsatisfiedBefore', replay.unsatisfiedBefore);
       }
+      // `before` and `saw` are the two backward-reference keys, and they fail in OPPOSITE ways
+      // (`asc-3m5o`): an unsatisfied `before` leaves its fields absent, which the row shows, while
+      // a `saw` that never matches answers `false` forever and looks like a working handler. So
+      // the count is reported, not only the declaration -- `sawFalse === triggers` is the
+      // "never true" signal, and it is the only shape of this failure the rows themselves hide.
+      if (handler.saw !== undefined) {
+        add('saw', handler.saw.on);
+        add('sawFalse', replay.sawFalse);
+      }
       // One row per judged name, in document order, following `analysis_questions[i]` in
       // `types show`: the table elides at 60 characters, so a joined list would lose every name
       // after the first, and `--json` gets each as a plain string.

@@ -1,0 +1,41 @@
+{
+  "feature": "the failure log states whether a red was a mutation kill and whether the run was the whole suite (asc-5swk)",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "vitest.failure-log.ts",
+      "find": "    const mutant = process.env['ASCEND_MUTATION'] === '1';",
+      "replace": "    const mutant = false;",
+      "killers": [
+        {
+          "file": "scripts/failure-log.test.ts",
+          "test": "marks a mutation run, and says a single-file run is a subset"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "vitest.failure-log.ts",
+      "find": "    const scope = recordsWholeSuite(process.env) ? 'full' : 'subset';",
+      "replace": "    const scope = 'subset';",
+      "killers": [
+        {
+          "file": "scripts/failure-log.test.ts",
+          "test": "does not mark an ordinary full-suite run"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "scripts/mutate.mjs",
+      "find": "  return { ...base, ASCEND_MUTATION: '1' };",
+      "replace": "  return { ...base };",
+      "killers": [
+        {
+          "file": "scripts/mutate-core.test.ts",
+          "test": "marks the killer as a deliberate red"
+        }
+      ]
+    }
+  ]
+}

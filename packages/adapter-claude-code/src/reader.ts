@@ -150,6 +150,21 @@ export interface CorpusTotals {
   /** Files that could not be read to the end. Never fatal. */
   readonly failures: readonly TranscriptFailure[];
   /**
+   * Transcripts that GONE between the walk and the open, reported apart from `failures`.
+   *
+   * The walk lists every transcript, then the sweep opens them one at a time; another session
+   * deleting a project's transcript directory in between leaves listed paths that no longer exist
+   * and the open answers ENOENT. Measured 2026-10-09: 54 entries under one project directory, all
+   * ENOENT, reddening the live-corpus tripwire on a commit that touched nothing related
+   * (`asc-e74x`, `dogfood/0072`).
+   *
+   * The distinction is the point: `failures` means a transcript is BROKEN (unreadable, malformed),
+   * which is the damage the tripwire exists to catch; `vanished` means it is GONE, which is a fact
+   * about a corpus that is being written to while it is read. A caller that treats the two alike
+   * cannot tell the operator's ordinary work from a defect in the reader.
+   */
+  readonly vanished: readonly TranscriptFailure[];
+  /**
    * Everything the sweep deliberately did not read: directories not descended into, symlinks
    * not followed, transcripts under a known OS temp root unless `includeEphemeral` asked
    * otherwise (`asc-80m`), and -- when `knownFiles` was passed -- a file whose stat exactly
@@ -450,6 +465,7 @@ export async function streamCorpus(
   let bytes = 0;
   let aborted = false;
   const failures: TranscriptFailure[] = [];
+  const vanished: TranscriptFailure[] = [];
   const unchanged: SkippedEntry[] = [];
 
   // A stat costs a syscall per file, so it is taken only when a caller actually asked for
@@ -500,12 +516,17 @@ export async function streamCorpus(
       // An abort is not a failure -- it is the caller's instruction, and the
       // remaining files were never opened. Only real damage is recorded.
       if (counters.reason === 'aborted') aborted = true;
-      else
-        failures.push({
+      else {
+        // ENOENT after a successful walk is the file having been REMOVED since it was listed --
+        // the transcript is gone, not broken (`asc-e74x`). Anything else is damage.
+        const failure = {
           path: file.path,
           reason: counters.reason ?? 'incomplete',
           parsed: counters.parsed,
-        });
+        };
+        if (counters.reason === 'ENOENT') vanished.push(failure);
+        else failures.push(failure);
+      }
     } else if (currentStat !== undefined) {
       // Read to completion, and only now: a file that failed partway must not reach a caller's
       // cursor, or a later run would skip exactly the bytes this run never derived from.
@@ -521,6 +542,7 @@ export async function streamCorpus(
     malformed,
     bytes,
     failures,
+    vanished,
     // `scan.skipped` (directories, symlinks, ephemeral projects) is decided during the WALK;
     // `unchanged` is decided here, per file, against the caller's cursor. Both are "a path the
     // sweep deliberately did not read" (`CorpusTotals.skipped`'s own doc), so they share one

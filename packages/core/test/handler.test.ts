@@ -1480,11 +1480,14 @@ describe('saw: an existence-only backward join, session-scoped', () => {
     emit: { p: '${path}', touched: '${saw.implementer_touched_file}' },
   };
 
-  const drive = (s: unknown, events: readonly NormalizedEvent[]): { rows: HandlerRow[] } => {
+  const drive = (
+    s: unknown,
+    events: readonly NormalizedEvent[],
+  ): { rows: HandlerRow[]; sawFalse: number; triggers: number } => {
     const handler = runHandler(compileHandler(s));
     const rows = events.flatMap((event) => [...handler.accept(event)]);
     handler.finish();
-    return { rows };
+    return { rows, sawFalse: handler.sawFalse, triggers: handler.triggers };
   };
 
   it('is true when a matching event of the watched kind came from ANOTHER stream of the session', () => {
@@ -1499,6 +1502,28 @@ describe('saw: an existence-only backward join, session-scoped', () => {
     // The severity-zero case: a construct that only ever answers true. No `file.changed` at all.
     const { rows } = drive(spec, [at('file.read', MAIN, 1, { path: '/a.ts', tool: 'Read' })]);
     expect(rows[0]?.fields).toEqual({ p: '/a.ts', touched: 'false' });
+  });
+
+  it('counts the triggers whose answer was false, which is the failure the rows hide', () => {
+    // The `never true` signal `asc handlers check` reports as `sawFalse` (asc-3m5o). A `saw:` is
+    // never absent -- every row says `true` or `false` -- so a watch that can never match looks
+    // exactly like a working one in the rows. The count is the only place it shows.
+    const never = drive(spec, [
+      at('file.read', MAIN, 1, { path: '/a.ts' }),
+      at('file.read', MAIN, 2, { path: '/b.ts' }),
+    ]);
+    expect(never.triggers).toBe(2);
+    expect(never.sawFalse).toBe(2);
+
+    // And it is a per-trigger count, not a declaration flag: one watched event matches the first
+    // trigger's `$path` and not the second's, so exactly one of the two answers false.
+    const mixed = drive(spec, [
+      at('file.changed', SUB, 0, { path: '/a.ts', tool: 'Edit' }),
+      at('file.read', MAIN, 1, { path: '/a.ts' }),
+      at('file.read', MAIN, 2, { path: '/b.ts' }),
+    ]);
+    expect(mixed.triggers).toBe(2);
+    expect(mixed.sawFalse).toBe(1);
   });
 
   it('is false when the watched kind appeared but never matched where', () => {

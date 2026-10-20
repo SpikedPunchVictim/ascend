@@ -16,10 +16,20 @@
 // A failure prints one line saying so. It never exits non-zero and never prints nothing, because
 // a session that silently has no memories looks the same as a project that has none.
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 const CAP_BYTES = 8_000;
 const MAX_SUMMARY = 160;
 const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+// A project with no beads store gets NOTHING, and that is the deployment rule rather than a
+// fallback: a repository without `.beads` has no memories to index and no rules to state, so the
+// hook would spend its bytes saying a store is absent in every session. Silence here is correct in
+// a way it is not below -- that catch is about a beads project whose index FAILED, where silence
+// would be indistinguishable from having no memories. `asc-09wx.13`, measured 2026-10-20: every
+// settings file that still ran `bd prime --hook-json` belonged to a project that does have a store.
+if (!existsSync(join(cwd, '.beads'))) process.exit(0);
 const bytes = (s) => Buffer.byteLength(s, 'utf8');
 const bd = (...args) =>
   execFileSync('bd', args, {

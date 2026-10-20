@@ -352,6 +352,21 @@ export interface Output {
    * that established idiom rather than a second mechanism doing the same job.
    */
   readonly filter?: FilterPopulation;
+
+  /**
+   * Wrap a long cell onto continuation lines instead of eliding it.
+   *
+   * **Set only by a command whose cells hold a CLOSED VOCABULARY.** `asc types show` renders an
+   * enum property as `enum required [a, b, c] -- <guidance>`, and the elision can hide a legal
+   * value the reader came to type -- measured on `stage_transition`, where 7 of 18 rows carried
+   * the `…` marker and both enum cells lost one (`asc-1gnl`). Eliding prose is a reasonable
+   * trade; eliding a set of legal values is not, and neither is cutting mid-word.
+   *
+   * Wrapping keeps the columns aligned and every value whole. `--json` and `--csv` already carry
+   * the untruncated value, so this changes the table and nothing else. Absent means elide, which
+   * is what every table built for scanning should do.
+   */
+  readonly wrap?: boolean;
 }
 
 /**
@@ -784,21 +799,51 @@ function cellText(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * A cell broken onto as many lines as it needs, at spaces where it can be.
+ *
+ * The counter-rule to `truncateCell`, and it exists for the cells that must not lose anything:
+ * `asc types show`'s enum lists are legal values, not prose (`Output.wrap`, `asc-1gnl`). A word
+ * longer than the width is broken at a legal boundary rather than allowed to overflow, so the
+ * width promise still holds and the surrogate/grapheme rules apply exactly as they do to a cut.
+ */
+function wrapCell(text: string, width: number): readonly string[] {
+  const lines: string[] = [];
+  let rest = text;
+  while (rest.length > width) {
+    // The last space that fits; a word with no space before it is cut at the width.
+    const space = rest.lastIndexOf(' ', width);
+    const cut = space > 0 ? space : Math.max(1, lastUnitToKeep(rest, width));
+    lines.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  lines.push(rest);
+  return lines;
+}
+
 export function renderTable(output: Output, maxCellWidth = MAX_CELL_WIDTH): string {
   if (output.columns.length === 0) return '';
 
   const coverage = withCoverage(output).coverage;
 
-  const rows = output.rows.map((row) =>
-    output.columns.map((column) => {
+  // A wrapped cell becomes several physical lines; the other cells on that logical row are padded
+  // with empty strings so the grid stays aligned. Without `wrap` every cell is one line and this
+  // is the same mapping it always was.
+  const rows: string[][] = [];
+  for (const row of output.rows) {
+    const cells = output.columns.map((column) => {
       // Newlines and tabs would break the grid, so a table flattens whitespace runs.
       // CSV and JSON keep the value verbatim -- the table is the lossy view, and it is
       // the one a human reads with the other two available beside it.
       const text = cellText(row[column]).replace(/\s+/g, ' ').trim();
-      if (text.length <= maxCellWidth) return text;
-      return truncateCell(text, maxCellWidth);
-    }),
-  );
+      if (output.wrap === true) return wrapCell(text, maxCellWidth);
+      return text.length <= maxCellWidth ? [text] : [truncateCell(text, maxCellWidth)];
+    });
+    const height = cells.reduce((tallest, lines) => Math.max(tallest, lines.length), 1);
+    for (let index = 0; index < height; index += 1) {
+      rows.push(cells.map((lines) => lines[index] ?? ''));
+    }
+  }
 
   // Folded rather than spread, and that is a measured fix rather than a preference.
   //

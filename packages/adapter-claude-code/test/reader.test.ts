@@ -402,6 +402,36 @@ describe('streamCorpus: totals and tolerance', () => {
     expect(records).toHaveLength(6);
   });
 
+  it('counts a transcript removed between the walk and the open as vanished, not as a failure', async () => {
+    // The live-corpus red this distinction exists for (asc-e74x, dogfood/0072): the walk lists
+    // every transcript, then the sweep opens them one at a time, and another session deleting a
+    // project's directory in between leaves listed paths that no longer exist. Reported as
+    // `failures`, that made a corpus tripwire red on a commit that touched nothing related.
+    //
+    // The sweep reads in SORTED PATH ORDER (`scanTranscripts` sorts), so deleting BETA from the
+    // first visit -- fired while alpha's transcript is being read -- lands deterministically
+    // before BETA is opened, with no sleeping or racing.
+    const root = scratchCopy();
+    const doomed = inRoot(root, BETA);
+    let deleted = false;
+
+    const totals = await streamCorpus(
+      () => {
+        if (deleted) return;
+        deleted = true;
+        rmSync(doomed, { force: true });
+      },
+      { root },
+    );
+
+    expect(totals.files).toBe(4);
+    // Nothing is BROKEN; one file is GONE. A caller that cannot tell these apart either hides
+    // real damage or reds on the operator's ordinary work.
+    expect(totals.failures).toEqual([]);
+    expect(totals.vanished.map((one) => one.path)).toEqual([doomed]);
+    expect(totals.vanished[0]?.reason).toBe('ENOENT');
+  });
+
   it('stops on an abort and reports partial totals rather than a failure', async () => {
     const controller = new AbortController();
     const totals = await streamCorpus(

@@ -40,6 +40,22 @@ each: { field: argv, from: 2, as: bead }
 emit: { stage: '\${bead}' }
 `;
 
+/**
+ * The `saw:` sibling of `before:`, in the same fixture corpus: a `bd close` that asks whether an
+ * `ls` has been offered anywhere in the session (asc-gtnu.7).
+ *
+ * The fixture's four events make the count unequal in the direction that matters: the first close
+ * comes before any `ls` (false), the failed close is excluded by `where`, the `ls` arrives, and the
+ * last close is true. So `sawFalse` is 1 of 2 triggers -- not 0, which a declaration-only report
+ * would also produce, and not 2, which a count of anything-but-the-declaration would.
+ */
+const SAW_HANDLER = `scope: session
+on: command.run
+where: { is_error: false, head: bd, argv.1: close }
+saw: { on: command.run, where: { head: ls }, as: seen_ls }
+emit: { head: '\${head}', seen: '\${saw.seen_ls}' }
+`;
+
 const bash = (id: string, command: string, isError: boolean, minute: number): string[] => {
   const ts = `2026-09-24T10:${String(minute).padStart(2, '0')}:00.000Z`;
   return [
@@ -440,6 +456,23 @@ describe('asc handlers check: scope: session and before', () => {
     // assertion, and it is the one the fixture's extra file exists for.
     expect(fields(0)).toEqual({ head: 'bd' });
     expect(fields(1)).toEqual({ head: 'bd', prior: 'ls' });
+  });
+
+  it('reports a saw key and counts the triggers whose answer was false', () => {
+    // The counterpart of the `before` report above, for the key that fails INVISIBLY (asc-3m5o):
+    // an unsatisfied `before` leaves its fields absent, but a `saw` answers `false` and looks
+    // like a working handler. The count is what makes a watch that never matches visible.
+    const home = fixture();
+    writeFileSync(join(home, 'saw.yaml'), SAW_HANDLER);
+    const run = asc(['saw.yaml', '--project', PROJECT_DIR, '--samples', '2', '--json'], home);
+    expect(run.status, run.stderr).toBe(0);
+    expect(valueOf(run, 'saw', 'saw')).toBe('command.run');
+    expect([valueOf(run, 'saw', 'triggers'), valueOf(run, 'saw', 'sawFalse')]).toEqual([2, 1]);
+    // The rows still say `true`/`false`; the count is not a substitute for them, it is the way to
+    // tell "this one was false" from "every one will be".
+    expect(
+      (valueOf(run, 'saw', 'sample[1]') as { fields: Record<string, unknown> }).fields,
+    ).toMatchObject({ seen: 'true' });
   });
 
   it('reports no before key and no scope surprise for a handler that declares neither', () => {

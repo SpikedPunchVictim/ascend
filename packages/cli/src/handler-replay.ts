@@ -56,6 +56,8 @@ export interface HandlerReplay {
   readonly matchedButAbsent: number;
   /** Triggers whose `before:` reference had no match, so its `${before.…}` fields are absent. */
   readonly unsatisfiedBefore: number;
+  /** Triggers whose `saw:` answer was FALSE -- a watch that matched nothing in this partition. */
+  readonly sawFalse: number;
   /** Table rows skipped because their cells did not match their header (asc-tuur.3). */
   readonly malformedItems: number;
   /**
@@ -299,6 +301,7 @@ export async function replayHandlers(
       noMatch: run.noMatch,
       matchedButAbsent: run.matchedButAbsent,
       unsatisfiedBefore: run.unsatisfiedBefore,
+      sawFalse: run.sawFalse,
       malformedItems: run.malformedItems,
     })),
     horizon: {

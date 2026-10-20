@@ -543,6 +543,57 @@ describe('asc types show', () => {
     expect(run.stdout).toContain('enum required [approved, changes_requested]');
   });
 
+  it('wraps a closed vocabulary and its guidance instead of eliding them', () => {
+    // The table elides at 60 characters, and this is the one table whose cells hold a CLOSED
+    // VOCABULARY: an enum list is a set of legal values, so a `…` inside one hides a value the
+    // reader came to type -- measured on `stage_transition`, where 7 of 18 rows carried the
+    // marker and both enum cells lost one (`asc-1gnl`). The guidance sentence is cut the same
+    // way, and on `stage_transition` the lost sentence is the one warning that setting
+    // `to_status` equal to `from_status` is legal and usually a mistake.
+    //
+    // The assertions read the output with runs of whitespace collapsed, because that is what a
+    // wrap does to a phrase: the table's column padding and the line break both vanish under the
+    // same rule, so a phrase that survived the wrap reads as one phrase again.
+    const dir = project();
+    asc(
+      [
+        'types',
+        'define',
+        json(dir, 'milestone.json', {
+          name: 'milestone',
+          properties: [
+            {
+              name: 'from_status',
+              type: 'enum',
+              enum_values: ['not_started', 'in_progress', 'complete', 'abandoned', 'blocked'],
+              required: true,
+            },
+          ],
+          description: 'A transition between plan stages.',
+          prose: {
+            from_status:
+              'One of the three the plan format allows. Record the transition, not the state.',
+          },
+        }),
+      ],
+      dir,
+    );
+
+    const run = asc(['types', 'show', 'milestone'], dir);
+    expect(run.status, run.stderr).toBe(0);
+    const flat = run.stdout.replace(/\s+/g, ' ');
+    // Every legal value, and the whole sentence -- neither shortened. The order is the STORE's:
+    // `canonicalizeTypeSpec` sorts enum members before hashing, so a declaration order written
+    // here would be a second, wrong statement about the value (`property-shape.ts`).
+    expect(flat).toContain(
+      'enum required [abandoned, blocked, complete, in_progress, not_started]',
+    );
+    expect(flat).toContain('Record the transition, not the state.');
+    // And no elision marker anywhere in this command's table, which is the property that makes
+    // the two assertions above hold for any long value rather than for this fixture.
+    expect(run.stdout).not.toContain('…');
+  });
+
   it('carries the structured property on the row, so --json needs no parsing', () => {
     const dir = project();
     asc(['types', 'define', json(dir, 'r.json', REVIEW)], dir);

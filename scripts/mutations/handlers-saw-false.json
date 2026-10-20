@@ -1,0 +1,41 @@
+{
+  "feature": "asc handlers check reports a saw: key and counts the triggers whose answer was false (asc-3m5o)",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/core/src/handler.ts",
+      "find": "      if (!sawAnswer) sawFalse += 1;",
+      "replace": "      if (sawAnswer) sawFalse += 1;",
+      "killers": [
+        {
+          "file": "packages/core/test/handler.test.ts",
+          "test": "counts the triggers whose answer was false"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/cli/src/commands/handlers/check.ts",
+      "find": "        add('sawFalse', replay.sawFalse);",
+      "replace": "        add('sawFalse', 0);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-check.test.ts",
+          "test": "reports a saw key and counts the triggers whose answer was false"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/cli/src/handler-replay.ts",
+      "find": "      sawFalse: run.sawFalse,",
+      "replace": "      sawFalse: 0,",
+      "killers": [
+        {
+          "file": "packages/cli/test/handlers-check.test.ts",
+          "test": "reports a saw key and counts the triggers whose answer was false"
+        }
+      ]
+    }
+  ]
+}
