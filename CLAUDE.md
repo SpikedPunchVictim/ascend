@@ -21,6 +21,7 @@ bd close <id>         # Complete work
 - Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+- `bd search` matches TITLES ONLY, and reports a description-only term as `No issues found matching …`. Search the full text before concluding anything is unfiled — `bd list --desc-contains <term>`, or `bd export | grep` to reach design and notes too — because a title-only search answers "not in a title", not "does not exist". The same rule applies to any project's tracker, which may be markdown checklists or something else entirely: search the full text it holds, not just its headings (`asc-kjzx`, decision `8689cd47`).
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 
