@@ -8,8 +8,17 @@
  *
  * The kappa sample is drawn and written WITHOUT the scorer's labels (`--kappa-sample`), so the
  * hand labels can be made before the scorer's are seen; `--kappa` then compares the two.
+ *
+ * THE SEED DOCUMENT MUST BE THE ONE THE TREES WERE BUILT FROM. `--seeds <path>` names it; the
+ * default is the live `seeds.json`, which asc-gtnu.15 extended from 81 to 190 while the EV-28
+ * trees still held 81. Scoring the old runs against the new document is not a re-run, it is a
+ * different measurement: a seed the reviewer never saw counts as escaped, so a class grows
+ * `neither` and its recall falls (measured 2026-10-21: `time_concurrency` 72.7% at n=11 became
+ * 45.0% at n=20 on the same findings). The report names its input by path and sha256 so the two
+ * cannot be confused again.
  */
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,7 +37,15 @@ const OUT = join(REPO, 'spike', 'tmp', 'recall');
 const BIN = join(REPO, 'packages', 'cli', 'dist', 'bin.js');
 const SEED = 20260927;
 
-const doc = JSON.parse(readFileSync(join(REPO, 'spike', 'recall', 'seeds.json'), 'utf8'));
+const seedsArg = process.argv.indexOf('--seeds');
+if (seedsArg !== -1 && process.argv[seedsArg + 1] === undefined) {
+  throw new Error('--seeds needs a path: the seed document the scored trees were built from');
+}
+const seedsPath =
+  seedsArg === -1 ? join(REPO, 'spike', 'recall', 'seeds.json') : process.argv[seedsArg + 1];
+const seedsText = readFileSync(seedsPath, 'utf8');
+const seedsSha = createHash('sha256').update(seedsText).digest('hex');
+const doc = JSON.parse(seedsText);
 const ledger = JSON.parse(readFileSync(join(OUT, 'ledger.json'), 'utf8'));
 
 /** Every review_finding in a fresh scratch store built from the pruned root. */
@@ -125,6 +142,7 @@ if (process.argv.includes('--kappa-sample')) {
 
 const report = [];
 const say = (s) => report.push(s);
+say(`## Input\nseeds ${seedsPath} sha256=${seedsSha} n=${String(doc.seeds.length)}`);
 
 // --- integrity -------------------------------------------------------------------------------
 say('## Integrity');
@@ -194,6 +212,37 @@ for (let i = 0; i < armC.length; i += 1) {
     say(`  ${kind.padEnd(24)} ${a.runId} x ${b.runId} J=${String(matchJaccard(a.found, b.found)?.toFixed(3))}`);
   }
 }
+
+// --- cross-model complement (asc-gtnu.13) ----------------------------------------------------
+// A seed both models were shown, found by exactly one of them, is the only unit a per-model
+// checklist can be drawn from. Written for asc-gtnu.13; the seeds are paired by construction
+// (same class tree, same source), so this is a true complement and not a confounded comparison.
+say('\n## Cross-model complement: seeds found by exactly one model, arm A');
+const complement = [];
+for (const cls of Object.keys(doc.lenses)) {
+  const s = armA.find((r) => r.cls === cls && r.model === 'claude-sonnet-5');
+  const o = armA.find((r) => r.cls === cls && r.model === 'claude-opus-5-5');
+  if (!s || !o) continue;
+  const seeds = doc.seeds.filter((x) => x.class === cls);
+  const pick = (pred) => seeds.filter(pred);
+  const onlyS = pick((x) => s.foundSet.has(x.id) && !o.foundSet.has(x.id));
+  const onlyO = pick((x) => o.foundSet.has(x.id) && !s.foundSet.has(x.id));
+  const both = pick((x) => s.foundSet.has(x.id) && o.foundSet.has(x.id));
+  const neither = pick((x) => !s.foundSet.has(x.id) && !o.foundSet.has(x.id));
+  complement.push({
+    cls,
+    n: seeds.length,
+    both: both.map((x) => x.id),
+    onlyS: onlyS.map((x) => x.id),
+    onlyO: onlyO.map((x) => x.id),
+    neither: neither.map((x) => x.id),
+  });
+  say(`${cls.padEnd(32)} n=${String(seeds.length).padStart(2)} both=${String(both.length).padStart(2)} S-only=${String(onlyS.length).padStart(2)} O-only=${String(onlyO.length).padStart(2)} neither=${String(neither.length).padStart(2)}`);
+  for (const x of [...onlyS, ...onlyO]) {
+    say(`  ${x.id.padEnd(6)} ${onlyO.includes(x) ? 'O' : 'S'}-only  breakingTest=${String(x.breaksCommittedTest)}  ${String(x.lensRationale ?? '').slice(0, 90)}`);
+  }
+}
+writeFileSync(join(OUT, 'complement.json'), JSON.stringify(complement, null, 2));
 
 // --- P5 --------------------------------------------------------------------------------------
 say('\n## Prediction 5: findings per run');
