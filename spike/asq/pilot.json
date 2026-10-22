@@ -1,0 +1,69 @@
+{
+ "model": "deepseek-v4.1-flash:cloud",
+ "seed": 20261020,
+ "examples": 25,
+ "test": 41,
+ "answered": 41,
+ "accuracy": 0.7073170731707317,
+ "majority_baseline": 0.12195121951219512,
+ "per_class": {
+  "assumption_audit": {
+   "n": 5,
+   "correct": 5
+  },
+  "boundary_conditions": {
+   "n": 5,
+   "correct": 3
+  },
+  "cross_implementation_divergence": {
+   "n": 5,
+   "correct": 3
+  },
+  "data_lifecycle": {
+   "n": 5,
+   "correct": 5
+  },
+  "environment_divergence": {
+   "n": 1,
+   "correct": 1
+  },
+  "error_paths": {
+   "n": 5,
+   "correct": 2
+  },
+  "state_machine": {
+   "n": 5,
+   "correct": 5
+  },
+  "time_concurrency": {
+   "n": 5,
+   "correct": 4
+  },
+  "write_read_asymmetry": {
+   "n": 5,
+   "correct": 1
+  }
+ },
+ "confusion": {
+  "assumption_audit -> assumption_audit": 5,
+  "boundary_conditions -> boundary_conditions": 3,
+  "boundary_conditions -> assumption_audit": 1,
+  "boundary_conditions -> state_machine": 1,
+  "cross_implementation_divergence -> cross_implementation_divergence": 3,
+  "cross_implementation_divergence -> state_machine": 1,
+  "cross_implementation_divergence -> error_paths": 1,
+  "data_lifecycle -> data_lifecycle": 5,
+  "environment_divergence -> environment_divergence": 1,
+  "error_paths -> error_paths": 2,
+  "error_paths -> boundary_conditions": 2,
+  "error_paths -> state_machine": 1,
+  "state_machine -> state_machine": 5,
+  "time_concurrency -> assumption_audit": 1,
+  "time_concurrency -> time_concurrency": 4,
+  "write_read_asymmetry -> write_read_asymmetry": 1,
+  "write_read_asymmetry -> cross_implementation_divergence": 3,
+  "write_read_asymmetry -> assumption_audit": 1
+ },
+ "cost_usd": 0.381625,
+ "prompt_chars": 32402
+}
