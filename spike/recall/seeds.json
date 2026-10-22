@@ -6,7 +6,12 @@
     "boundary_conditions": "for every conditional and size-dependent operation: zero, one, maximum, negative, just past a threshold; empty collections and strings; index arithmetic; values that pass one check but fail a stricter one downstream.",
     "error_paths": "every catch, optional chain, fallback, and async boundary: is the error surfaced or swallowed, is state consistent afterwards, can the caller retry, is the error branch dead code.",
     "cross_implementation_divergence": "the same invariant implemented in more than one place where one implementation guards and another does not; the guarded sibling is the specification, cite it.",
-    "time_concurrency": "timezone and locale dependence, expiry without an expiry check, rapid repeats and duplicates, check-then-act races, dedupe keys that do not survive input variation, retries without idempotency."
+    "time_concurrency": "timezone and locale dependence, expiry without an expiry check, rapid repeats and duplicates, check-then-act races, dedupe keys that do not survive input variation, retries without idempotency.",
+    "assumption_audit": "every implicit assumption per function: this collection is non-empty, this key exists, this string is in this format, the caller already normalized this, this enum never grows; the ones with no guard where a violation is plausible and the result is wrong rather than loud.",
+    "state_machine": "every mutable status: dead-end states entered and never exited, states that can be true at once, transitions interrupted midway, and whether a reset path after an error returns to something usable.",
+    "data_lifecycle": "each entity from creation to deletion: created but never persisted, modified in place through a shared reference, partial writes, non-atomic multi-step mutations, orphans, and deletes that over-match.",
+    "environment_divergence": "behavior that varies by runtime version, OS, host locale, parser or encoding where one variant is clearly less tested: platform paths, locale casing, unicode and word classes, scalar typing, key ordering.",
+    "write_read_asymmetry": "every canonicalization applied on one side of storage but not the other: a value normalized when written and compared raw when read, a default applied on one path only, an error written as a value, a reader and a writer that disagree about what absent means."
   },
   "control": {
     "id": "control",
@@ -1620,10 +1625,2264 @@
         "before: the most recent match earlier in the partition never resolves to the trigger itself",
         "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s"
       ]
+    },
+    {
+      "id": "tc12",
+      "class": "time_concurrency",
+      "line": 634,
+      "edits": [
+        {
+          "line": 634,
+          "before": "if (calls === undefined && until === undefined) {",
+          "after": "if (false) {"
+        }
+      ],
+      "distinguishingToken": "never decided",
+      "why": "A window with no bound loads: nothing can ever close it, so it sits open until the replay stops and is counted unclosed -- an expiry with no expiry check.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses a window with no end"
+      ]
+    },
+    {
+      "id": "tc13",
+      "class": "time_concurrency",
+      "line": 719,
+      "edits": [
+        {
+          "line": 719,
+          "before": "const clash = until === undefined ? undefined : watched.find((kind) => kind === until);",
+          "after": "const clash = until === undefined ? undefined : on === until ? until : undefined;"
+        }
+      ],
+      "distinguishingToken": "until",
+      "why": "For an any-window only the first watcher is checked: an until equal to another watched kind closes the window on the event it is waiting for, and it never decides anything.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileWindow refuses an until that is a kind the window watches refuses an any-form alternative"
+      ]
+    },
+    {
+      "id": "tc14",
+      "class": "time_concurrency",
+      "line": 1048,
+      "edits": [
+        {
+          "line": 1048,
+          "before": "const handlerScope = handler.scope;",
+          "after": "const handlerScope = 'session' as HandlerScope;"
+        }
+      ],
+      "distinguishingToken": "scope: session",
+      "why": "Every handler runs session-scoped: concurrent streams share one partition, and the constructs refused at compile for that scope -- call numbers, per-stream session.end -- now collide.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows counts an undecided window at session end as unclosed, and emits nothing for it",
+        "windows absent + until: session.end emits at stream end when nothing matched",
+        "windows still emits a count that reached at_least before session end",
+        "windows keeps interleaved streams apart",
+        "judged declares a field the handler deliberately does not measure counts a spawn whose return never came as unclosed, not as a row",
+        "scope: session merges a session’s streams, and scope: stream does not does NOT match it under the default scope, and reports the decided miss instead",
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope",
+        "a window decided with no match is counted, not dropped still counts a stream’s own end as unclosed, not as a decided miss",
+        "a window decided with no match is counted, not dropped leaves finish() a no-op for a stream-scoped handler, whose windows a session.end decides"
+      ]
+    },
+    {
+      "id": "tc15",
+      "class": "time_concurrency",
+      "line": 1089,
+      "edits": [
+        {
+          "line": 1089,
+          "before": "if (each === undefined) return [row(trigger, scope, closedBy)];",
+          "after": "if (each === undefined) return [row(trigger, scope, closedBy), row(trigger, scope, closedBy)];"
+        }
+      ],
+      "distinguishingToken": "duplicate",
+      "why": "Every trigger emits its row twice: a replay that delivers an event once produces two records, and nothing downstream carries an idempotency key.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event treats an absent field as not equal: eq false, ne true",
+        "matching a single event captures from a field and compares captures with $",
+        "matching a single event supports any, all, not, in, contains, any_matches, followed_by",
+        "windows first: emits at the match, carrying the matched event",
+        "windows holds a calls window open while a call inside the limit is still running",
+        "windows count: emits at close only when at_least is reached",
+        "windows absent + until: emits when nothing matched before the until kind",
+        "windows absent + until: session.end emits at stream end when nothing matched",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element",
+        "windows still emits a count that reached at_least before session end",
+        "windows keeps interleaved streams apart",
+        "judged declares a field the handler deliberately does not measure carries the declared names on every row it emits",
+        "judged declares a field the handler deliberately does not measure rides on a window row, which is the shape asc-6ola.9 uses",
+        "scope: session merges a session’s streams, and scope: stream does not matches an event of another stream in the same session",
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window",
+        "before: the most recent match earlier in the partition emits the earlier event’s field, not the trigger’s",
+        "before: the most recent match earlier in the partition omits the field and COUNTS the trigger when nothing precedes it",
+        "a window decided with no match is counted, not dropped counts an absent window as a verdict with a row, not as a miss"
+      ]
+    },
+    {
+      "id": "tc16",
+      "class": "time_concurrency",
+      "line": 1103,
+      "edits": [
+        {
+          "line": 1103,
+          "before": "if (one.count >= spec.atLeast) return rows(one.trigger, withCount(one), closedBy);",
+          "after": "if (one.count >= spec.atLeast && closedBy !== 'until') return rows(one.trigger, withCount(one), closedBy);"
+        }
+      ],
+      "distinguishingToken": "at_least",
+      "why": "Which bound wins depends on arrival order: a count window that reached at_least is dropped when its until arrives on the same event that closed it.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "tc17",
+      "class": "time_concurrency",
+      "line": 1165,
+      "edits": [
+        {
+          "line": 1165,
+          "before": "const past = limit !== undefined && event.call > limit;",
+          "after": "const past = limit !== undefined && event.call > limit && ![...calls].some((call) => call <= limit);"
+        }
+      ],
+      "distinguishingToken": "straggler",
+      "why": "An event outside the window is no longer 'past' while a straggling call is still running, so it can match the window it is outside of.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "tc18",
+      "class": "time_concurrency",
+      "line": 1212,
+      "edits": [
+        {
+          "line": 1212,
+          "before": "one.count += 1;",
+          "after": "one.count = event.call - one.trigger.call;"
+        }
+      ],
+      "distinguishingToken": "count",
+      "why": "The count comes from call numbers rather than from matches: calls run in parallel and finish out of order, so a count window's threshold is reached on a number that never measured what it claims.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "tc19",
+      "class": "time_concurrency",
+      "line": 1276,
+      "edits": [
+        {
+          "line": 1276,
+          "before": "const record = (event: NormalizedEvent): void => {",
+          "after": "const record = (event: NormalizedEvent): void => {\n    lastBefore.clear();"
+        }
+      ],
+      "distinguishingToken": "lastBefore",
+      "why": "Recording one partition's reference clears every other's: with two streams interleaved, whether a ${before.…} resolves depends on which stream's event arrived last.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition applies before.where while recording, so it is the most recent MATCH"
+      ]
+    },
+    {
+      "id": "tc20",
+      "class": "time_concurrency",
+      "line": 1293,
+      "edits": [
+        {
+          "line": 1293,
+          "before": "lastBefore.clear();",
+          "after": "void lastBefore;"
+        }
+      ],
+      "distinguishingToken": "finish",
+      "why": "Teardown leaves the retained references in place, so a retried or restarted replay inherits the previous run's events and answers with data that was never in its stream.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa01",
+      "class": "assumption_audit",
+      "line": 80,
+      "edits": [
+        {
+          "line": 80,
+          "before": "/^[ims]*$/",
+          "after": "/^[gims]*$/"
+        }
+      ],
+      "distinguishingToken": "REGEX_FLAGS",
+      "why": "Assumes no regex carries the g flag: `test` and `exec` keep lastIndex between calls, so a global pattern answers differently on every event.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses a regex flag other than i, m, s"
+      ]
+    },
+    {
+      "id": "aa02",
+      "class": "assumption_audit",
+      "line": 231,
+      "edits": [
+        {
+          "line": 231,
+          "before": "value === undefined || value === null",
+          "after": "value === undefined"
+        }
+      ],
+      "distinguishingToken": "absent",
+      "why": "Assumes a null field is absent. With null no longer absent, eq matches null, exists reports it, and a template emits the string 'null'.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa03",
+      "class": "assumption_audit",
+      "line": 252,
+      "edits": [
+        {
+          "line": 252,
+          "before": "!/^\\d+$/.test(index) || rest.length > 0",
+          "after": "! /^\\d+$/.test(index)"
+        }
+      ],
+      "distinguishingToken": "rest.length",
+      "why": "Assumes no path addresses a field inside an array element (argv.1.x): the check on leftover segments is dropped, and read then returns undefined for it, a condition that is silently never true.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa04",
+      "class": "assumption_audit",
+      "line": 278,
+      "edits": [
+        {
+          "line": 278,
+          "before": "typeof value === 'string' && pattern.test(value.slice(0, MAX_SUBJECT_LENGTH));",
+          "after": "pattern.test((value as string).slice(0, MAX_SUBJECT_LENGTH));"
+        }
+      ],
+      "distinguishingToken": "MAX_SUBJECT_LENGTH",
+      "why": "Assumes the field holds a string: the guard is gone, so a number from a malformed event reaches .slice and throws.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa05",
+      "class": "assumption_audit",
+      "line": 379,
+      "edits": [
+        {
+          "line": 379,
+          "before": "return !absent(value) && value === right.get(trigger);",
+          "after": "return value === right.get(trigger);"
+        }
+      ],
+      "distinguishingToken": "right.get(trigger)",
+      "why": "Assumes the right operand is never absent, but a $capture resolves to undefined when its regex did not match, so eq matches the very events that lack the field.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa06",
+      "class": "assumption_audit",
+      "line": 442,
+      "edits": [
+        {
+          "line": 442,
+          "before": "return Array.isArray(value) && (value as readonly unknown[]).includes",
+          "after": "return (value as readonly unknown[]).includes"
+        }
+      ],
+      "distinguishingToken": "contains",
+      "why": "Assumes contains' field is really an array: a string value survives the cast and `.includes` does a substring test, which the compiler never promised.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa07",
+      "class": "assumption_audit",
+      "line": 467,
+      "edits": [
+        {
+          "line": 467,
+          "before": "absent(left(event, trigger)) !== arg",
+          "after": "left(event, trigger) === undefined !== arg"
+        }
+      ],
+      "distinguishingToken": "exists",
+      "why": "Assumes absent means undefined only; exists: false then reports a null field as present.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa08",
+      "class": "assumption_audit",
+      "line": 590,
+      "edits": [
+        {
+          "line": 590,
+          "before": "!Object.hasOwn(EVENT_KINDS, until)",
+          "after": "!(until in EVENT_KINDS)"
+        }
+      ],
+      "distinguishingToken": "EVENT_KINDS",
+      "why": "Assumes an own-property check is what EVENT_KINDS needs; `in` walks the prototype chain, so `until: toString` is accepted as an event kind.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa09",
+      "class": "assumption_audit",
+      "line": 678,
+      "edits": [
+        {
+          "line": 678,
+          "before": "!Object.hasOwn(EVENT_KINDS, kind)",
+          "after": "!(kind in EVENT_KINDS)"
+        }
+      ],
+      "distinguishingToken": "watcher",
+      "why": "The same own-property assumption as the window's until check, at the any-watcher's kind gate: a prototype key is accepted as a kind.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa10",
+      "class": "assumption_audit",
+      "line": 688,
+      "edits": [
+        {
+          "line": 688,
+          "before": "watchers.some((one) => event.kind === one.kind && one.test(event, scope));",
+          "after": "watchers.some((one) => one.test(event, scope));"
+        }
+      ],
+      "distinguishingToken": "any-window",
+      "why": "Assumes the watcher's where cannot be true of another kind: the kind check is dropped, so an any-window matches events of kinds it never named.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows any: a list of per-kind watchers, each where checked against its own kind"
+      ]
+    },
+    {
+      "id": "aa11",
+      "class": "assumption_audit",
+      "line": 701,
+      "edits": [
+        {
+          "line": 701,
+          "before": "match = (event, scope) => event.kind === kind && where(event, scope);",
+          "after": "match = (event, scope) => where(event, scope);"
+        }
+      ],
+      "distinguishingToken": "window.first.runner",
+      "why": "Assumes the kind check is redundant because the where was compiled for this kind -- the comment above it records that it is not: the edit-verified fixture lost window.first.runner to a Bash call's tool.use.start.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows first: the window kind is part of the match, not only the where",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s"
+      ]
+    },
+    {
+      "id": "aa12",
+      "class": "assumption_audit",
+      "line": 736,
+      "edits": [
+        {
+          "line": 736,
+          "before": "atLeast: (atLeast as number | undefined) ?? 1,",
+          "after": "atLeast: (atLeast as number | undefined) ?? 0,"
+        }
+      ],
+      "distinguishingToken": "at_least",
+      "why": "Assumes the default at_least of 1 is arbitrary: at 0 a count window that matched nothing emits a row claiming a count.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows still emits a count that reached at_least before session end"
+      ]
+    },
+    {
+      "id": "aa13",
+      "class": "assumption_audit",
+      "line": 757,
+      "edits": [
+        {
+          "line": 757,
+          "before": "typeof kind !== 'string' || !Object.hasOwn(EVENT_KINDS, kind)",
+          "after": "typeof kind !== 'string'"
+        }
+      ],
+      "distinguishingToken": "before.on",
+      "why": "Assumes before.on names a real kind; a misspelt kind is accepted, and record() then never stores an event, so every reference is unsatisfied.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition refuses a kind that does not exist"
+      ]
+    },
+    {
+      "id": "aa14",
+      "class": "assumption_audit",
+      "line": 793,
+      "edits": [
+        {
+          "line": 793,
+          "before": "typeof on !== 'string' || !Object.hasOwn(EVENT_KINDS, on)",
+          "after": "typeof on !== 'string'"
+        }
+      ],
+      "distinguishingToken": "is not an event kind",
+      "why": "Assumes the handler's own `on` may name anything; the membership check is dropped, so a typo loads green and matches no event.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses an unknown event kind"
+      ]
+    },
+    {
+      "id": "aa15",
+      "class": "assumption_audit",
+      "line": 1091,
+      "edits": [
+        {
+          "line": 1091,
+          "before": "if (!Array.isArray(list)) return [];",
+          "after": "if (list === undefined) return [];"
+        }
+      ],
+      "distinguishingToken": "each.field",
+      "why": "Assumes the array the compiler checked is an array in the data: the guard is bypassed, and a string field is iterated character by character.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa16",
+      "class": "assumption_audit",
+      "line": 1156,
+      "edits": [
+        {
+          "line": 1156,
+          "before": "calls.add(event.call)",
+          "after": "calls.add(event.seq)"
+        }
+      ],
+      "distinguishingToken": "running",
+      "why": "Assumes call and seq are different identifiers that cannot be confused: keyed by seq, a start is never removed by its own end, so a calls window is held open forever.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "aa17",
+      "class": "assumption_audit",
+      "line": 1233,
+      "edits": [
+        {
+          "line": 1233,
+          "before": "if (typeof source !== 'string') continue;",
+          "after": "if (typeof source !== 'string' || source.length === 0) continue;"
+        }
+      ],
+      "distinguishingToken": "capture.field",
+      "why": "A capture field that is the empty string is skipped before the regex sees it, so a pattern that matches the empty string can never capture, and the row omits a value the event carried.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "aa18",
+      "class": "assumption_audit",
+      "line": 1247,
+      "edits": [
+        {
+          "line": 1247,
+          "before": "earlier = lastBefore.get(key);",
+          "after": "earlier = [...lastBefore.values()][0];"
+        }
+      ],
+      "distinguishingToken": "before:",
+      "why": "Assumes the partition is what indexes the reference: reading the first entry of the map resolves to another stream's event under the default scope.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope"
+      ]
+    },
+    {
+      "id": "aa19",
+      "class": "assumption_audit",
+      "line": 1263,
+      "edits": [
+        {
+          "line": 1263,
+          "before": "event.call + window.calls",
+          "after": "window.calls"
+        }
+      ],
+      "distinguishingToken": "calls window",
+      "why": "Assumes the limit is relative to the trigger: an absolute `calls: 3` closes every window opened by a call numbered 3 or later on the next event.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "aa20",
+      "class": "assumption_audit",
+      "line": 1278,
+      "edits": [
+        {
+          "line": 1278,
+          "before": "if (spec === undefined || event.kind !== spec.on) return;",
+          "after": "if (spec === undefined) return;"
+        }
+      ],
+      "distinguishingToken": "record",
+      "why": "Assumes only events of the before kind reach record: without the kind filter the partition's reference becomes whatever event came last.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "sm01",
+      "class": "state_machine",
+      "line": 1063,
+      "edits": [
+        {
+          "line": 1063,
+          "before": "for (const [name, template] of handler.emit) {",
+          "after": "for (const [name, template] of handler.emit.slice(0, 1)) {"
+        }
+      ],
+      "distinguishingToken": "emit",
+      "why": "Only the first declared emit field is ever written, so every row after it is missing its fields with nothing saying so.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event fans out one row per matching array element",
+        "matching a single event captures from a field and compares captures with $",
+        "matching a single event omits a field whose single reference is absent, and renders it empty inside text",
+        "windows first: emits at the match, carrying the matched event",
+        "windows count: emits at close only when at_least is reached",
+        "judged declares a field the handler deliberately does not measure rides on a window row, which is the shape asc-6ola.9 uses",
+        "scope: session merges a session’s streams, and scope: stream does not matches an event of another stream in the same session",
+        "before: the most recent match earlier in the partition emits the earlier event’s field, not the trigger’s",
+        "before: the most recent match earlier in the partition reads the MOST RECENT match, so the second edit wins",
+        "before: the most recent match earlier in the partition applies before.where while recording, so it is the most recent MATCH",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s"
+      ]
+    },
+    {
+      "id": "sm02",
+      "class": "state_machine",
+      "line": 1070,
+      "edits": [
+        {
+          "line": 1070,
+          "before": "seq: trigger.seq,",
+          "after": "seq: trigger.call,"
+        }
+      ],
+      "distinguishingToken": "seq:",
+      "why": "A row is located by its call number instead of its position in the stream; every row of a stream reports the same or a wrong seq.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "sm03",
+      "class": "state_machine",
+      "line": 1089,
+      "edits": [
+        {
+          "line": 1089,
+          "before": "if (each === undefined) return [row(trigger, scope, closedBy)];",
+          "after": "if (each === undefined) return [];"
+        }
+      ],
+      "distinguishingToken": "each",
+      "why": "A handler with no each: emits nothing at all -- the plainest transition in the file is dead, and the trigger counter still moves.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event treats an absent field as not equal: eq false, ne true",
+        "matching a single event captures from a field and compares captures with $",
+        "matching a single event omits a field whose single reference is absent, and renders it empty inside text",
+        "matching a single event supports any, all, not, in, contains, any_matches, followed_by",
+        "windows first: emits at the match, carrying the matched event",
+        "windows first: the window kind is part of the match, not only the where",
+        "windows holds a calls window open while a call inside the limit is still running",
+        "windows count: emits at close only when at_least is reached",
+        "windows absent + until: emits when nothing matched before the until kind",
+        "windows absent + until: session.end emits at stream end when nothing matched",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element",
+        "windows still emits a count that reached at_least before session end",
+        "windows keeps interleaved streams apart",
+        "judged declares a field the handler deliberately does not measure carries the declared names on every row it emits",
+        "judged declares a field the handler deliberately does not measure invents no value for a judged name",
+        "judged declares a field the handler deliberately does not measure leaves a handler that declares none byte-identical",
+        "judged declares a field the handler deliberately does not measure rides on a window row, which is the shape asc-6ola.9 uses",
+        "scope: session merges a session’s streams, and scope: stream does not matches an event of another stream in the same session",
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window",
+        "before: the most recent match earlier in the partition emits the earlier event’s field, not the trigger’s",
+        "before: the most recent match earlier in the partition reads the MOST RECENT match, so the second edit wins",
+        "before: the most recent match earlier in the partition never resolves to the trigger itself",
+        "before: the most recent match earlier in the partition omits the field and COUNTS the trigger when nothing precedes it",
+        "before: the most recent match earlier in the partition applies before.where while recording, so it is the most recent MATCH",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s",
+        "a window decided with no match is counted, not dropped counts an absent window as a verdict with a row, not as a miss"
+      ]
+    },
+    {
+      "id": "sm04",
+      "class": "state_machine",
+      "line": 1103,
+      "edits": [
+        {
+          "line": 1103,
+          "before": "if (one.count >= spec.atLeast)",
+          "after": "if (one.count > spec.atLeast)"
+        }
+      ],
+      "distinguishingToken": "at_least",
+      "why": "A count window that reached exactly at_least is decided as 'nothing matched': the threshold state is unreachable.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running",
+        "windows count: emits at close only when at_least is reached",
+        "windows still emits a count that reached at_least before session end"
+      ]
+    },
+    {
+      "id": "sm05",
+      "class": "state_machine",
+      "line": 1112,
+      "edits": [
+        {
+          "line": 1112,
+          "before": "if (closedBy === 'session.end' && spec.until !== 'session.end') {",
+          "after": "if (closedBy === 'session.end') {"
+        }
+      ],
+      "distinguishingToken": "absent",
+      "why": "An absent window bounded by until: session.end is never decided: the stream's end counts it unclosed and emits no verdict, a handler green over its whole signal.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows absent + until: session.end emits at stream end when nothing matched",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element"
+      ]
+    },
+    {
+      "id": "sm06",
+      "class": "state_machine",
+      "line": 1121,
+      "edits": [
+        {
+          "line": 1121,
+          "before": "if (closedBy === 'session.end') unclosed += 1;",
+          "after": "if (closedBy !== 'session.end') unclosed += 1;"
+        }
+      ],
+      "distinguishingToken": "noMatch",
+      "why": "The two resting states are swapped for a first window: a close by until or calls is reported as unclosed, and the stream's end as a decided no-match.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "judged declares a field the handler deliberately does not measure counts a spawn whose return never came as unclosed, not as a row",
+        "scope: session merges a session’s streams, and scope: stream does not does NOT match it under the default scope, and reports the decided miss instead",
+        "a window decided with no match is counted, not dropped counts a first closed by its until",
+        "a window decided with no match is counted, not dropped still counts a stream’s own end as unclosed, not as a decided miss"
+      ]
+    },
+    {
+      "id": "sm07",
+      "class": "state_machine",
+      "line": 1129,
+      "edits": [
+        {
+          "line": 1129,
+          "before": "name === 'window.count' ? one.count : one.scope(name);",
+          "after": "one.count;"
+        }
+      ],
+      "distinguishingToken": "window.count",
+      "why": "Every name on a count window's row resolves to the count, so the emitted fields that should carry the trigger's own values all carry one number.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "sm08",
+      "class": "state_machine",
+      "line": 1154,
+      "edits": [
+        {
+          "line": 1154,
+          "before": "running.set(key, calls);",
+          "after": "running.set(key, new Set());"
+        }
+      ],
+      "distinguishingToken": "running",
+      "why": "The set the event adds its call to is not the one stored, so no call is ever seen as running and every calls window closes at the first event past its limit.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "sm09",
+      "class": "state_machine",
+      "line": 1165,
+      "edits": [
+        {
+          "line": 1165,
+          "before": "const past = limit !== undefined && event.call > limit;",
+          "after": "const past = limit !== undefined && event.call >= limit;"
+        }
+      ],
+      "distinguishingToken": "past",
+      "why": "An event in the window's own last call is already counted as past it, so the window is bounded one call short of what calls: says.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "sm10",
+      "class": "state_machine",
+      "line": 1176,
+      "edits": [
+        {
+          "line": 1176,
+          "before": "out.push(...close(window, one, closedBy));",
+          "after": "close(window, one, closedBy);"
+        }
+      ],
+      "distinguishingToken": "close(",
+      "why": "A decided window's rows are built and thrown away: the counters move, the verdict never reaches the caller.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running",
+        "windows count: emits at close only when at_least is reached",
+        "windows absent + until: emits when nothing matched before the until kind",
+        "windows absent + until: session.end emits at stream end when nothing matched",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element",
+        "windows still emits a count that reached at_least before session end",
+        "windows keeps interleaved streams apart",
+        "a window decided with no match is counted, not dropped counts an absent window as a verdict with a row, not as a miss"
+      ]
+    },
+    {
+      "id": "sm11",
+      "class": "state_machine",
+      "line": 1193,
+      "edits": [
+        {
+          "line": 1193,
+          "before": "if (!past && after && window.match(event, one.scope)) {",
+          "after": "if (!past && window.match(event, one.scope)) {"
+        }
+      ],
+      "distinguishingToken": "after",
+      "why": "The seq guard is dropped, so a window counts events that precede its trigger as later matches whenever the replay offers them afterwards.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "sm12",
+      "class": "state_machine",
+      "line": 1206,
+      "edits": [
+        {
+          "line": 1206,
+          "before": "continue;",
+          "after": "still.push(one);\n            continue;"
+        }
+      ],
+      "distinguishingToken": "closed_by",
+      "why": "A first window that matched is kept open as well as emitted, so it is decided twice: once by its match and again at the stream's end.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window"
+      ]
+    },
+    {
+      "id": "sm13",
+      "class": "state_machine",
+      "line": 1216,
+      "edits": [
+        {
+          "line": 1216,
+          "before": "open.set(key, still);",
+          "after": "open.set(key, waiting);"
+        }
+      ],
+      "distinguishingToken": "still",
+      "why": "The windows closed by this event are written back, so each of them decides again on the next event and again at the stream's end.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows absent + until: emits when nothing matched before the until kind",
+        "windows absent + until: session.end stays silent when a watcher matched first",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element",
+        "scope: session merges a session’s streams, and scope: stream does not does NOT match it under the default scope, and reports the decided miss instead",
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window"
+      ]
+    },
+    {
+      "id": "sm14",
+      "class": "state_machine",
+      "line": 1228,
+      "edits": [
+        {
+          "line": 1228,
+          "before": "if (event.kind !== handler.on) return out;",
+          "after": "if (event.kind !== handler.on && out.length === 0) return out;"
+        }
+      ],
+      "distinguishingToken": "handler.on",
+      "why": "An event of another kind that closed a window falls through into the trigger body and can open a window of its own after its captures and where have run.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows shares_token matches an array field by any element",
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window"
+      ]
+    },
+    {
+      "id": "sm15",
+      "class": "state_machine",
+      "line": 1240,
+      "edits": [
+        {
+          "line": 1240,
+          "before": "if (!handler.where(event, scope)) return out;",
+          "after": "if (!handler.where(event, scope)) return [];"
+        }
+      ],
+      "distinguishingToken": "where",
+      "why": "An on-kind event that fails where discards the rows it just completed for other windows instead of returning them.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows first: emits at the match, carrying the matched event",
+        "windows count: emits at close only when at_least is reached"
+      ]
+    },
+    {
+      "id": "sm16",
+      "class": "state_machine",
+      "line": 1252,
+      "edits": [
+        {
+          "line": 1252,
+          "before": "if (window === undefined) {",
+          "after": "if (window === undefined || window.mode === 'first') {"
+        }
+      ],
+      "distinguishingToken": "window.first",
+      "why": "A first window never opens: its trigger emits a row with no closed_by, so 'the first later event that matches' is never measured.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows first: emits at the match, carrying the matched event",
+        "windows first: an event past the call limit is outside the window",
+        "windows first: the window kind is part of the match, not only the where",
+        "windows never lets the trigger match its own window",
+        "judged declares a field the handler deliberately does not measure rides on a window row, which is the shape asc-6ola.9 uses",
+        "judged declares a field the handler deliberately does not measure counts a spawn whose return never came as unclosed, not as a row",
+        "scope: session merges a session’s streams, and scope: stream does not matches an event of another stream in the same session",
+        "scope: session merges a session’s streams, and scope: stream does not does NOT match it under the default scope, and reports the decided miss instead",
+        "scope: session merges a session’s streams, and scope: stream does not keeps two sessions apart even at session scope",
+        "scope: session merges a session’s streams, and scope: stream does not counts a session-scoped window the log ended inside, at finish",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s",
+        "a window decided with no match is counted, not dropped counts a first closed by its until",
+        "a window decided with no match is counted, not dropped still counts a stream’s own end as unclosed, not as a decided miss"
+      ]
+    },
+    {
+      "id": "sm17",
+      "class": "state_machine",
+      "line": 1262,
+      "edits": [
+        {
+          "line": 1262,
+          "before": "scope: emitScope,",
+          "after": "scope,"
+        }
+      ],
+      "distinguishingToken": "${before.",
+      "why": "A window row stores the raw scope, so its ${before.…} resolves against the trigger's own fields -- i.e. to nothing -- rather than the reference.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "sm18",
+      "class": "state_machine",
+      "line": 1279,
+      "edits": [
+        {
+          "line": 1279,
+          "before": "if (!spec.match(event, () => undefined)) return;",
+          "after": "if (!spec.on) return;"
+        }
+      ],
+      "distinguishingToken": "before.where",
+      "why": "The filter is dropped while recording, so the reference becomes the most recent event of that kind rather than the most recent MATCH.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition applies before.where while recording, so it is the most recent MATCH"
+      ]
+    },
+    {
+      "id": "sm19",
+      "class": "state_machine",
+      "line": 1290,
+      "edits": [
+        {
+          "line": 1290,
+          "before": "for (const list of open.values()) unclosed += list.length;",
+          "after": "for (const list of open.values()) unclosed += list.length > 0 ? 1 : 0;"
+        }
+      ],
+      "distinguishingToken": "unclosed",
+      "why": "finish counts partitions with open windows rather than windows, so a replay that stopped inside three windows reports one.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "sm20",
+      "class": "state_machine",
+      "line": 1306,
+      "edits": [
+        {
+          "line": 1306,
+          "before": "return noMatch;",
+          "after": "return unclosed;"
+        }
+      ],
+      "distinguishingToken": "noMatch",
+      "why": "The noMatch getter returns the other counter: a caller reading both states sees the same number twice and cannot tell a decided no-match from an undecided window.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not does NOT match it under the default scope, and reports the decided miss instead",
+        "a window decided with no match is counted, not dropped counts a first closed by its until",
+        "a window decided with no match is counted, not dropped still counts a stream’s own end as unclosed, not as a decided miss",
+        "a window decided with no match is counted, not dropped counts a count window closed below at_least"
+      ]
+    },
+    {
+      "id": "dl01",
+      "class": "data_lifecycle",
+      "line": 565,
+      "edits": [
+        {
+          "line": 565,
+          "before": "if (absent(raw)) return undefined;",
+          "after": "if (absent(raw)) return '';"
+        }
+      ],
+      "distinguishingToken": "absent",
+      "why": "An absent value is persisted as the empty string, so a template writes a field it does not have and the absent/empty distinction the file relies on is lost.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event omits a field whose single reference is absent, and renders it empty inside text",
+        "before: the most recent match earlier in the partition never resolves to the trigger itself",
+        "before: the most recent match earlier in the partition omits the field and COUNTS the trigger when nothing precedes it",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s",
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope"
+      ]
+    },
+    {
+      "id": "dl02",
+      "class": "data_lifecycle",
+      "line": 822,
+      "edits": [
+        {
+          "line": 822,
+          "before": "const group = spec['group'] ?? 1;",
+          "after": "const group = spec['group'] ?? 0;"
+        }
+      ],
+      "distinguishingToken": "capture.group",
+      "why": "A capture with no explicit group silently records the WHOLE match instead of group 1, so every ${capture} carries more than the pattern asked for.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event captures from a field and compares captures with $"
+      ]
+    },
+    {
+      "id": "dl03",
+      "class": "data_lifecycle",
+      "line": 833,
+      "edits": [
+        {
+          "line": 833,
+          "before": "new Set(captures.map((one) => one.name))",
+          "after": "new Set<string>()"
+        }
+      ],
+      "distinguishingToken": "captureNames",
+      "why": "Captures are compiled but their names are never registered, so a $ capture reference is refused at compile and never resolves at run time.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event captures from a field and compares captures with $",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element"
+      ]
+    },
+    {
+      "id": "dl04",
+      "class": "data_lifecycle",
+      "line": 850,
+      "edits": [
+        {
+          "line": 850,
+          "before": "const from = eachSpec['from'] ?? 0;",
+          "after": "const from = eachSpec['from'] ?? 1;"
+        }
+      ],
+      "distinguishingToken": "each.from",
+      "why": "An each: with no explicit from: silently skips the first element, so the row for the first item is never created.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "dl05",
+      "class": "data_lifecycle",
+      "line": 875,
+      "edits": [
+        {
+          "line": 875,
+          "before": "if (!isMap(emitSpec) || Object.keys(emitSpec).length === 0)",
+          "after": "if (!isMap(emitSpec))"
+        }
+      ],
+      "distinguishingToken": "emit:",
+      "why": "A handler with an empty emit loads: every row it produces is an empty fields map, which is indistinguishable from a handler that emitted nothing.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "dl06",
+      "class": "data_lifecycle",
+      "line": 893,
+      "edits": [
+        {
+          "line": 893,
+          "before": "spec: parsed as Json,",
+          "after": "spec: {} as Json,"
+        }
+      ],
+      "distinguishingToken": "spec",
+      "why": "The compiled handler no longer retains the spec it was compiled from: the hash and the declarations survive, the document itself is replaced by an empty object, so nothing can be re-derived from a compiled handler.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "dl07",
+      "class": "data_lifecycle",
+      "line": 946,
+      "edits": [
+        {
+          "line": 946,
+          "before": "out.push(name);",
+          "after": "out.push(name);\n    out.push(name);"
+        }
+      ],
+      "distinguishingToken": "judged",
+      "why": "The duplicate-name guard checks what was seen, not what was pushed, so a judged name is persisted twice on every row.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "judged declares a field the handler deliberately does not measure carries the declared names on every row it emits",
+        "judged declares a field the handler deliberately does not measure invents no value for a judged name",
+        "judged declares a field the handler deliberately does not measure rides on a window row, which is the shape asc-6ola.9 uses"
+      ]
+    },
+    {
+      "id": "dl08",
+      "class": "data_lifecycle",
+      "line": 1048,
+      "edits": [
+        {
+          "line": 1048,
+          "before": "const handlerScope = handler.scope;",
+          "after": "const handlerScope = 'stream' as HandlerScope;"
+        }
+      ],
+      "distinguishingToken": "scope: session",
+      "why": "The compiled scope is ignored at run time: a session-scoped handler partitions per stream, so its windows are split along the very boundary it was written to cross.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not matches an event of another stream in the same session",
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window"
+      ]
+    },
+    {
+      "id": "dl09",
+      "class": "data_lifecycle",
+      "line": 1095,
+      "edits": [
+        {
+          "line": 1095,
+          "before": "out.push(row(trigger, (name) => (name === each.as ? item : scope(name)), closedBy));",
+          "after": "out.push(row(trigger, scope, closedBy));"
+        }
+      ],
+      "distinguishingToken": "each.as",
+      "why": "The per-element binding is dropped: every row of an each: carries the same values and ${as} resolves to the trigger's field, so the elements are created and never represented.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event fans out one row per matching array element"
+      ]
+    },
+    {
+      "id": "dl10",
+      "class": "data_lifecycle",
+      "line": 1108,
+      "edits": [
+        {
+          "line": 1108,
+          "before": "if (spec.mode === 'absent') {",
+          "after": "if ((spec.mode as string) === 'count') {"
+        }
+      ],
+      "distinguishingToken": "count window",
+      "why": "A count window closed without reaching at_least is decided as an absent verdict: it emits a 'nothing matched' row carrying no count instead of being counted as noMatch.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows absent + until: emits when nothing matched before the until kind",
+        "windows absent + until: session.end emits at stream end when nothing matched",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element",
+        "windows keeps interleaved streams apart",
+        "a window decided with no match is counted, not dropped counts an absent window as a verdict with a row, not as a miss"
+      ]
+    },
+    {
+      "id": "dl11",
+      "class": "data_lifecycle",
+      "line": 1157,
+      "edits": [
+        {
+          "line": 1157,
+          "before": "calls.delete(event.call);",
+          "after": "calls.clear();"
+        }
+      ],
+      "distinguishingToken": "running",
+      "why": "One call's end clears every running call in the stream, an over-broad delete: a later calls window no longer waits for the calls it should.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows holds a calls window open while a call inside the limit is still running"
+      ]
+    },
+    {
+      "id": "dl12",
+      "class": "data_lifecycle",
+      "line": 1201,
+      "edits": [
+        {
+          "line": 1201,
+          "before": "read(found, name.slice('window.first.'.length))",
+          "after": "read(one.trigger, name.slice('window.first.'.length))"
+        }
+      ],
+      "distinguishingToken": "window.first",
+      "why": "The matched event is never read: every ${window.first.…} resolves against the trigger, so the event the window was opened to capture is lost the moment it is captured.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows first: emits at the match, carrying the matched event",
+        "windows first: the window kind is part of the match, not only the where",
+        "judged declares a field the handler deliberately does not measure rides on a window row, which is the shape asc-6ola.9 uses",
+        "scope: session merges a session’s streams, and scope: stream does not matches an event of another stream in the same session",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s"
+      ]
+    },
+    {
+      "id": "dl13",
+      "class": "data_lifecycle",
+      "line": 1212,
+      "edits": [
+        {
+          "line": 1212,
+          "before": "one.count += 1;",
+          "after": "one.count = 1;"
+        }
+      ],
+      "distinguishingToken": "at_least",
+      "why": "A count window's count is overwritten by each match rather than accumulated, so at_least: 2 can never be reached no matter how many events match.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows count: emits at close only when at_least is reached"
+      ]
+    },
+    {
+      "id": "dl14",
+      "class": "data_lifecycle",
+      "line": 1224,
+      "edits": [
+        {
+          "line": 1224,
+          "before": "open.delete(key);",
+          "after": "open.clear();"
+        }
+      ],
+      "distinguishingToken": "session.end",
+      "why": "One stream's end evicts every partition's open windows: concurrent streams lose windows they never closed, and the loss is silent.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "dl15",
+      "class": "data_lifecycle",
+      "line": 1234,
+      "edits": [
+        {
+          "line": 1234,
+          "before": "capture.regex.exec(source.slice(0, MAX_SUBJECT_LENGTH))",
+          "after": "capture.regex.exec(source)"
+        }
+      ],
+      "distinguishingToken": "MAX_SUBJECT_LENGTH",
+      "why": "The capture reads the whole stored field with no bound: the one place the length cap was applied to a captured value is removed.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "dl16",
+      "class": "data_lifecycle",
+      "line": 1246,
+      "edits": [
+        {
+          "line": 1246,
+          "before": "if (handler.before !== undefined) {",
+          "after": "if (true) {"
+        }
+      ],
+      "distinguishingToken": "unsatisfiedBefore",
+      "why": "A reference is looked up for handlers that declared no before:, so unsatisfiedBefore counts references that were never created and swamps the real ones.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "dl17",
+      "class": "data_lifecycle",
+      "line": 1266,
+      "edits": [
+        {
+          "line": 1266,
+          "before": "open.set(key, list);",
+          "after": "open.set(key, [...list, ...list]);"
+        }
+      ],
+      "distinguishingToken": "open",
+      "why": "Every open window is stored twice, so each one is decided twice and the rows of a single trigger appear twice in the replay.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows first: emits at the match, carrying the matched event",
+        "windows holds a calls window open while a call inside the limit is still running",
+        "windows count: emits at close only when at_least is reached",
+        "windows absent + until: emits when nothing matched before the until kind",
+        "windows counts an undecided window at session end as unclosed, and emits nothing for it",
+        "windows absent + until: session.end emits at stream end when nothing matched",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element",
+        "windows still emits a count that reached at_least before session end",
+        "windows keeps interleaved streams apart",
+        "judged declares a field the handler deliberately does not measure rides on a window row, which is the shape asc-6ola.9 uses",
+        "judged declares a field the handler deliberately does not measure counts a spawn whose return never came as unclosed, not as a row",
+        "scope: session merges a session’s streams, and scope: stream does not matches an event of another stream in the same session",
+        "scope: session merges a session’s streams, and scope: stream does not does NOT match it under the default scope, and reports the decided miss instead",
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window",
+        "scope: session merges a session’s streams, and scope: stream does not counts a session-scoped window the log ended inside, at finish",
+        "a window decided with no match is counted, not dropped counts a first closed by its until",
+        "a window decided with no match is counted, not dropped still counts a stream’s own end as unclosed, not as a decided miss",
+        "a window decided with no match is counted, not dropped counts a count window closed below at_least",
+        "a window decided with no match is counted, not dropped counts an absent window as a verdict with a row, not as a miss"
+      ]
+    },
+    {
+      "id": "dl18",
+      "class": "data_lifecycle",
+      "line": 1280,
+      "edits": [
+        {
+          "line": 1280,
+          "before": "lastBefore.set(partition(event), event);",
+          "after": "lastBefore.set('all', event);"
+        }
+      ],
+      "distinguishingToken": "lastBefore",
+      "why": "The retained reference is stored under one shared key: every partition overwrites every other's, so a stream's ${before.…} can resolve to an event from another session.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition emits the earlier event’s field, not the trigger’s",
+        "before: the most recent match earlier in the partition reads the MOST RECENT match, so the second edit wins",
+        "before: the most recent match earlier in the partition applies before.where while recording, so it is the most recent MATCH",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s"
+      ]
+    },
+    {
+      "id": "dl19",
+      "class": "data_lifecycle",
+      "line": 1289,
+      "edits": [
+        {
+          "line": 1289,
+          "before": "const finish = (): void => {",
+          "after": "const finish = (): void => {\n    return;"
+        }
+      ],
+      "distinguishingToken": "finish",
+      "why": "Teardown is a no-op: the windows still open when the replay stops are neither counted nor cleared, so unclosed is 0 and the maps keep growing across replays.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not counts a session-scoped window the log ended inside, at finish"
+      ]
+    },
+    {
+      "id": "dl20",
+      "class": "data_lifecycle",
+      "line": 1300,
+      "edits": [
+        {
+          "line": 1300,
+          "before": "return triggers;",
+          "after": "return triggers + unclosed;"
+        }
+      ],
+      "distinguishingToken": "triggers",
+      "why": "The trigger counter includes windows that were never decided, so a reader cannot reconcile triggers, rows and unclosed.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed01",
+      "class": "environment_divergence",
+      "line": 48,
+      "edits": [
+        {
+          "line": 48,
+          "before": "export const MAX_SUBJECT_LENGTH = 100_000;",
+          "after": "export const MAX_SUBJECT_LENGTH = 10_000;"
+        }
+      ],
+      "distinguishingToken": "MAX_SUBJECT_LENGTH",
+      "why": "The cap is a host-tolerance number, not a property of the data: at 10k a match past the truncation point silently never fires, and nothing reports that the field was cut.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed02",
+      "class": "environment_divergence",
+      "line": 80,
+      "edits": [
+        {
+          "line": 80,
+          "before": "/^[ims]*$/",
+          "after": "/^[imsy]*$/"
+        }
+      ],
+      "distinguishingToken": "REGEX_FLAGS",
+      "why": "The sticky flag set the engine accepts is written for one version of the language; y, like g, makes test() depend on lastIndex, so the same pattern answers differently per call.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed03",
+      "class": "environment_divergence",
+      "line": 87,
+      "edits": [
+        {
+          "line": 87,
+          "before": "'users',",
+          "after": "'user',"
+        }
+      ],
+      "distinguishingToken": "STOP_TOKENS",
+      "why": "The stop list is shaped by one OS's home directory: with 'users' gone, every path under /Users shares that token, so shares_token relates two unrelated files on a Mac and not on Linux.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed04",
+      "class": "environment_divergence",
+      "line": 1283,
+      "edits": [
+        {
+          "line": 1283,
+          "before": "const accept = (event: NormalizedEvent): readonly HandlerRow[] => {",
+          "after": "const accept = (event: NormalizedEvent): readonly HandlerRow[] => {\n    if (event.kind === 'session.end') finish();"
+        }
+      ],
+      "distinguishingToken": "session.end",
+      "why": "A stream's end tears down the whole run: session.end is one event per transcript FILE, so how many files a machine happened to capture decides when every other partition's windows are counted unclosed and dropped.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows absent + until: session.end emits at stream end when nothing matched",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element",
+        "windows still emits a count that reached at_least before session end",
+        "scope: session merges a session’s streams, and scope: stream does not does not let a stream’s session.end close a session-scoped window"
+      ]
+    },
+    {
+      "id": "ed05",
+      "class": "environment_divergence",
+      "line": 103,
+      "edits": [
+        {
+          "line": 103,
+          "before": ".split(/[\\\\/]/)",
+          "after": ".split('/')"
+        }
+      ],
+      "distinguishingToken": "basename",
+      "why": "The basename filter splits on / only, so a Windows path is not split at all and ${x|basename} emits the whole path on one platform and the last segment on another.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed06",
+      "class": "environment_divergence",
+      "line": 229,
+      "edits": [
+        {
+          "line": 229,
+          "before": "(Array.isArray(value) ? 'array' : typeof value)",
+          "after": "typeof value"
+        }
+      ],
+      "distinguishingToken": "typeOf",
+      "why": "typeof reports an array as 'object'; dropping the array branch makes the operand type check depend on the one answer that is not portable across the front end's value model.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed07",
+      "class": "environment_divergence",
+      "line": 271,
+      "edits": [
+        {
+          "line": 271,
+          "before": "typeof flags === 'string' ? flags : ''",
+          "after": "typeof flags === 'string' ? flags : 'u'"
+        }
+      ],
+      "distinguishingToken": "new RegExp",
+      "why": "The engine's default regex mode is now unicode: patterns that were valid before (a lone - inside a class, an escape like \\-) are refused, so a handler that loads on one host fails on another.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed08",
+      "class": "environment_divergence",
+      "line": 418,
+      "edits": [
+        {
+          "line": 418,
+          "before": "new Set(arg as readonly unknown[])",
+          "after": "new Set<unknown>((arg as readonly unknown[]).map(String))"
+        }
+      ],
+      "distinguishingToken": "in:",
+      "why": "The in: list is stringified at compile and compared against raw values, so the same list matches on a host whose parser yields numbers and not on one whose parser yields strings.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed09",
+      "class": "environment_divergence",
+      "line": 551,
+      "edits": [
+        {
+          "line": 551,
+          "before": "!Object.hasOwn(FILTERS, filter)",
+          "after": "FILTERS[filter] === undefined"
+        }
+      ],
+      "distinguishingToken": "FILTERS",
+      "why": "A prototype-chain lookup where the code had an own-property check: an inherited name (constructor, toString) passes as a filter on a runtime whose built-ins differ, and is then called as one.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed10",
+      "class": "environment_divergence",
+      "line": 566,
+      "edits": [
+        {
+          "line": 566,
+          "before": "(raw as readonly unknown[]).join(' ')",
+          "after": "(raw as readonly unknown[]).map(String).join(' ')"
+        }
+      ],
+      "distinguishingToken": "Array.isArray(raw)",
+      "why": "The rendered text relies on Array#join's implicit stringification; making it explicit changes nothing for strings and everything for a parser that yields numbers, so the emitted bytes depend on the front end.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed11",
+      "class": "environment_divergence",
+      "line": 586,
+      "edits": [
+        {
+          "line": 586,
+          "before": "typeof calls !== 'number' || !Number.isInteger(calls) || calls < 1",
+          "after": "!(typeof calls === 'number' || typeof calls === 'string') || Number(calls) < 1"
+        }
+      ],
+      "distinguishingToken": "window.calls",
+      "why": "A numeric string is accepted: YAML 1.1 and 1.2 disagree on how `calls: 3` arrives, and event.call + calls then concatenates instead of adding, so the window's bound is a different number per parser.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed12",
+      "class": "environment_divergence",
+      "line": 654,
+      "edits": [
+        {
+          "line": 654,
+          "before": "typeof atLeast !== 'number' || !Number.isInteger(atLeast) || atLeast < 1",
+          "after": "!(typeof atLeast === 'number' || typeof atLeast === 'string') || Number(atLeast) < 1"
+        }
+      ],
+      "distinguishingToken": "at_least",
+      "why": "The same parser-dependent scalar typing, on at_least: the comparison `one.count >= '2'` coerces, so a threshold that loads on one front end is a string on another.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed13",
+      "class": "environment_divergence",
+      "line": 806,
+      "edits": [
+        {
+          "line": 806,
+          "before": "parsed['capture'] ?? {}",
+          "after": "parsed['capture'] || {}"
+        }
+      ],
+      "distinguishingToken": "capture:",
+      "why": "An explicit null -- which some YAML emitters write for an empty mapping -- is refused by ?? and silently ignored by ||, so the same document loads on one front end and not the other.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed14",
+      "class": "environment_divergence",
+      "line": 823,
+      "edits": [
+        {
+          "line": 823,
+          "before": "typeof group !== 'number' || !Number.isInteger(group) || group < 0",
+          "after": "!Number.isInteger(Number(group)) || Number(group) < 0"
+        }
+      ],
+      "distinguishingToken": "capture.group",
+      "why": "A group given as a string is accepted and indexed as one, so which capture group a handler reads depends on the scalar typing of the parser that loaded it.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed15",
+      "class": "environment_divergence",
+      "line": 858,
+      "edits": [
+        {
+          "line": 858,
+          "before": "typeof from !== 'number' || !Number.isInteger(from) || from < 0",
+          "after": "!Number.isInteger(Number(from)) || Number(from) < 0"
+        }
+      ],
+      "distinguishingToken": "each.from",
+      "why": "The same lenient numeric coercion on each.from: how many elements are skipped is decided by the parser's scalar typing rather than by the document.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed16",
+      "class": "environment_divergence",
+      "line": 894,
+      "edits": [
+        {
+          "line": 894,
+          "before": "sha256Hex(canonicalJson(parsed))",
+          "after": "sha256Hex(JSON.stringify(parsed))"
+        }
+      ],
+      "distinguishingToken": "hash",
+      "why": "Identity becomes key-order dependent: two YAML parsers emit the same mapping with different key order, so one handler gets two hashes on two front ends.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "the handler hash ignores key order and changes with any value"
+      ]
+    },
+    {
+      "id": "ed17",
+      "class": "environment_divergence",
+      "line": 930,
+      "edits": [
+        {
+          "line": 930,
+          "before": "if (!Array.isArray(spec) || spec.length === 0) {",
+          "after": "if (!Array.isArray(spec)) {"
+        }
+      ],
+      "distinguishingToken": "judged",
+      "why": "A front end that writes `judged: []` for an empty sequence yields a handler that declares nothing rather than one that is refused -- the same document, a different meaning per emitter.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "judged declares a field the handler deliberately does not measure refuses an empty list"
+      ]
+    },
+    {
+      "id": "ed18",
+      "class": "environment_divergence",
+      "line": 938,
+      "edits": [
+        {
+          "line": 938,
+          "before": "!/^[a-z_][a-z0-9_]*$/.test(name)",
+          "after": "!/^[\\w]+$/.test(name)"
+        }
+      ],
+      "distinguishingToken": "judged",
+      "why": "The name rule is rewritten as \\w, whose meaning is ASCII in this engine and Unicode-aware in a Python port: the same judged name is valid on one host and not another.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "judged declares a field the handler deliberately does not measure refuses a name that is not a name"
+      ]
+    },
+    {
+      "id": "ed19",
+      "class": "environment_divergence",
+      "line": 1072,
+      "edits": [
+        {
+          "line": 1072,
+          "before": "ts: trigger.ts",
+          "after": "ts: new Date(trigger.ts).toISOString()"
+        }
+      ],
+      "distinguishingToken": "trigger.ts",
+      "why": "A timestamp the producer wrote is reparsed and re-emitted: a naive local time is assigned the host's zone, so the same log produces different ts values on machines in different timezones.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "ed20",
+      "class": "environment_divergence",
+      "line": 1239,
+      "edits": [
+        {
+          "line": 1239,
+          "before": "Object.hasOwn(captured, name)",
+          "after": "name in captured"
+        }
+      ],
+      "distinguishingToken": "captured",
+      "why": "A capture named toString or constructor is allowed by the name rule and now resolves through the prototype on one runtime, so ${name} reads a function instead of the event field.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "wr01",
+      "class": "write_read_asymmetry",
+      "line": 315,
+      "edits": [
+        {
+          "line": 315,
+          "before": "return { type, get: (trigger) => trigger(name) };",
+          "after": "return { type, get: (trigger) => trigger(name) ?? '' };"
+        }
+      ],
+      "distinguishingToken": "operand",
+      "why": "A reference that did not resolve is written as the empty string, which the reader cannot tell from a value that was genuinely empty -- the distinction the whole file turns on.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "wr02",
+      "class": "write_read_asymmetry",
+      "line": 510,
+      "edits": [
+        {
+          "line": 510,
+          "before": "if (name.startsWith('before.')) {",
+          "after": "if (name.startsWith('Before.')) {"
+        }
+      ],
+      "distinguishingToken": "before.",
+      "why": "The compile side stops recognizing the prefix the run side still resolves, so a ${before.x} that would work at run time is refused before it ever gets there.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not still allows calls and until: session.end under the default scope",
+        "before: the most recent match earlier in the partition emits the earlier event’s field, not the trigger’s",
+        "before: the most recent match earlier in the partition reads the MOST RECENT match, so the second edit wins",
+        "before: the most recent match earlier in the partition never resolves to the trigger itself",
+        "before: the most recent match earlier in the partition omits the field and COUNTS the trigger when nothing precedes it",
+        "before: the most recent match earlier in the partition applies before.where while recording, so it is the most recent MATCH",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s",
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope",
+        "before: the most recent match earlier in the partition refuses a field the before kind does not carry",
+        "before: the most recent match earlier in the partition refuses a ${before.…} template on a handler that declares no before",
+        "before: the most recent match earlier in the partition names the reference in the handler hash"
+      ]
+    },
+    {
+      "id": "wr03",
+      "class": "write_read_asymmetry",
+      "line": 567,
+      "edits": [
+        {
+          "line": 567,
+          "before": "part.filter === undefined ? undefined : FILTERS[part.filter]",
+          "after": "part.filter === undefined ? undefined : (FILTERS[part.filter] as ((value: string) => string) | undefined) ?? FILTERS['snake']"
+        }
+      ],
+      "distinguishingToken": "filter",
+      "why": "The compile step refuses an unknown filter and the render step substitutes snake: a name that passes one and is applied as another.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "wr04",
+      "class": "write_read_asymmetry",
+      "line": 691,
+      "edits": [
+        {
+          "line": 691,
+          "before": "!Object.hasOwn(EVENT_KINDS, kind)",
+          "after": "!Object.hasOwn(EVENT_KINDS, kind.trim())"
+        }
+      ],
+      "distinguishingToken": "window",
+      "why": "The window's kind is validated after trimming and compared untrimmed, so `on: ' agent.return'` loads and then never matches an event.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "wr05",
+      "class": "write_read_asymmetry",
+      "line": 812,
+      "edits": [
+        {
+          "line": 812,
+          "before": "if (eventFieldType(on, name) !== undefined)",
+          "after": "if (name === 'session_id')"
+        }
+      ],
+      "distinguishingToken": "shadows",
+      "why": "The shadow check is narrowed to one name: any other capture may take a name the trigger already has, and the run-time scope prefers the capture, so the event's own field becomes unreadable.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses a capture shadowing a field"
+      ]
+    },
+    {
+      "id": "wr06",
+      "class": "write_read_asymmetry",
+      "line": 833,
+      "edits": [
+        {
+          "line": 833,
+          "before": "new Set(captures.map((one) => one.name))",
+          "after": "new Set(captures.map((one) => one.field))"
+        }
+      ],
+      "distinguishingToken": "capture",
+      "why": "Captures are registered under their FIELD name and resolved at run time by capture name: every ${capture} is refused and every $field is accepted but never populated.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event captures from a field and compares captures with $",
+        "windows any: a list of per-kind watchers, each where checked against its own kind",
+        "windows shares_token matches an array field by any element"
+      ]
+    },
+    {
+      "id": "wr07",
+      "class": "write_read_asymmetry",
+      "line": 855,
+      "edits": [
+        {
+          "line": 855,
+          "before": "if (captureNames.has(as as string) || eventFieldType(on, as as string) !== undefined) {",
+          "after": "if (captureNames.has(as as string) && eventFieldType(on, as as string) !== undefined) {"
+        }
+      ],
+      "distinguishingToken": "each.as",
+      "why": "The two shadow refusals become one conjunction, so an each: binding may take a capture's name or the trigger's field name and silently replace it in every row.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "compileHandler refuses what would silently match nothing refuses each.as shadowing a field"
+      ]
+    },
+    {
+      "id": "wr08",
+      "class": "write_read_asymmetry",
+      "line": 890,
+      "edits": [
+        {
+          "line": 890,
+          "before": "new Set(Object.keys(emitSpec))",
+          "after": "new Set<string>()"
+        }
+      ],
+      "distinguishingToken": "judged",
+      "why": "The emitted-names set the judged check reads is always empty, so a field that is both emitted and judged loads and every reader downstream has to choose which half to believe.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "judged declares a field the handler deliberately does not measure refuses a name that is also emitted"
+      ]
+    },
+    {
+      "id": "wr09",
+      "class": "write_read_asymmetry",
+      "line": 942,
+      "edits": [
+        {
+          "line": 942,
+          "before": "if (emitted.has(name)) {",
+          "after": "if (!emitted.has(name)) {"
+        }
+      ],
+      "distinguishingToken": "judged",
+      "why": "The overlap rule is inverted: a judged name must be emitted and an emitted one is accepted, so the two halves of a row are exactly backwards.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "judged declares a field the handler deliberately does not measure carries the declared names on every row it emits",
+        "judged declares a field the handler deliberately does not measure invents no value for a judged name",
+        "judged declares a field the handler deliberately does not measure rides on a window row, which is the shape asc-6ola.9 uses",
+        "judged declares a field the handler deliberately does not measure counts a spawn whose return never came as unclosed, not as a row",
+        "judged declares a field the handler deliberately does not measure changes the hash, so declaring a judgment is a different handler",
+        "judged declares a field the handler deliberately does not measure refuses a duplicate name",
+        "judged declares a field the handler deliberately does not measure refuses a name that is also emitted"
+      ]
+    },
+    {
+      "id": "wr10",
+      "class": "write_read_asymmetry",
+      "line": 1065,
+      "edits": [
+        {
+          "line": 1065,
+          "before": "if (value !== undefined) fields[name] = value;",
+          "after": "fields[name] = value ?? '';"
+        }
+      ],
+      "distinguishingToken": "fields",
+      "why": "An absent emitted value is written as the empty string: the write side stops distinguishing them and a reader sees a field the handler never measured.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "matching a single event omits a field whose single reference is absent, and renders it empty inside text",
+        "before: the most recent match earlier in the partition never resolves to the trigger itself",
+        "before: the most recent match earlier in the partition omits the field and COUNTS the trigger when nothing precedes it",
+        "before: the most recent match earlier in the partition resolves the reference at the TRIGGER, so a window row carries the trigger’s",
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope"
+      ]
+    },
+    {
+      "id": "wr11",
+      "class": "write_read_asymmetry",
+      "line": 1079,
+      "edits": [
+        {
+          "line": 1079,
+          "before": "...(handler.judged.length === 0 ? {} : { judged: handler.judged }),",
+          "after": "judged: handler.judged,"
+        }
+      ],
+      "distinguishingToken": "judged",
+      "why": "Every row now carries judged, so a handler that declares none writes an empty list and a reader can no longer tell it from a handler that declares some.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "judged declares a field the handler deliberately does not measure leaves a handler that declares none byte-identical"
+      ]
+    },
+    {
+      "id": "wr12",
+      "class": "write_read_asymmetry",
+      "line": 1093,
+      "edits": [
+        {
+          "line": 1093,
+          "before": "(list as readonly unknown[]).slice(each.from)",
+          "after": "(list as readonly unknown[]).slice(0)"
+        }
+      ],
+      "distinguishingToken": "each.from",
+      "why": "each.from is validated at compile and ignored at run: the declaration says where the rows start and the code starts them all at the first element.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "wr13",
+      "class": "write_read_asymmetry",
+      "line": 1104,
+      "edits": [
+        {
+          "line": 1104,
+          "before": "if (closedBy === 'session.end') unclosed += 1;",
+          "after": "if (closedBy === 'session.end') noMatch += 1;"
+        }
+      ],
+      "distinguishingToken": "unclosed",
+      "why": "A count window left open at a stream's end is written into the decided-no-match counter, so the two states a reader compares are the same number twice.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows still emits a count that reached at_least before session end"
+      ]
+    },
+    {
+      "id": "wr14",
+      "class": "write_read_asymmetry",
+      "line": 1116,
+      "edits": [
+        {
+          "line": 1116,
+          "before": "return rows(one.trigger, one.scope, closedBy);",
+          "after": "return rows(one.trigger, one.scope, closedBy === 'until' ? 'match' : closedBy);"
+        }
+      ],
+      "distinguishingToken": "closed_by",
+      "why": "An absent window closed by its until is written as closed_by: match -- the one verdict that says the opposite of what happened.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "windows absent + until: emits when nothing matched before the until kind"
+      ]
+    },
+    {
+      "id": "wr15",
+      "class": "write_read_asymmetry",
+      "line": 1144,
+      "edits": [
+        {
+          "line": 1144,
+          "before": "read(earlier, name.slice('before.'.length))",
+          "after": "read(earlier, name)"
+        }
+      ],
+      "distinguishingToken": "before.",
+      "why": "The reference is stored under the plain field name and read under the prefixed one, so every ${before.…} resolves to undefined while the compile check said it was available.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition emits the earlier event’s field, not the trigger’s",
+        "before: the most recent match earlier in the partition reads the MOST RECENT match, so the second edit wins",
+        "before: the most recent match earlier in the partition applies before.where while recording, so it is the most recent MATCH"
+      ]
+    },
+    {
+      "id": "wr16",
+      "class": "write_read_asymmetry",
+      "line": 1200,
+      "edits": [
+        {
+          "line": 1200,
+          "before": "name.startsWith('window.first.')",
+          "after": "name.startsWith('window.')"
+        }
+      ],
+      "distinguishingToken": "window.first",
+      "why": "The run-time prefix is wider than the compile-time one: a name refused at load is resolved at run time, and ${window.count} on a first window silently reads the matched event's own field.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "wr17",
+      "class": "write_read_asymmetry",
+      "line": 1236,
+      "edits": [
+        {
+          "line": 1236,
+          "before": "if (value !== undefined) captured[capture.name] = value;",
+          "after": "captured[capture.name] = value ?? '';"
+        }
+      ],
+      "distinguishingToken": "captured",
+      "why": "A capture whose regex did not match is stored as the empty string rather than left absent, so every row writes a value the event did not contain.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "wr18",
+      "class": "write_read_asymmetry",
+      "line": 1248,
+      "edits": [
+        {
+          "line": 1248,
+          "before": "if (earlier === undefined) unsatisfiedBefore += 1;",
+          "after": "if (earlier !== undefined) unsatisfiedBefore += 1;"
+        }
+      ],
+      "distinguishingToken": "unsatisfiedBefore",
+      "why": "The counter is written for the state it is meant to exclude: satisfied references are reported as unsatisfied and the ones that failed are not reported at all.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "before: the most recent match earlier in the partition emits the earlier event’s field, not the trigger’s",
+        "before: the most recent match earlier in the partition never resolves to the trigger itself",
+        "before: the most recent match earlier in the partition omits the field and COUNTS the trigger when nothing precedes it",
+        "before: the most recent match earlier in the partition applies before.where while recording, so it is the most recent MATCH",
+        "before: the most recent match earlier in the partition does not reach across streams under the default scope"
+      ]
+    },
+    {
+      "id": "wr19",
+      "class": "write_read_asymmetry",
+      "line": 1280,
+      "edits": [
+        {
+          "line": 1280,
+          "before": "lastBefore.set(partition(event), event);",
+          "after": "lastBefore.set(partition(event).trim(), event);"
+        }
+      ],
+      "distinguishingToken": "partition",
+      "why": "The reference is stored under a trimmed key and read under the raw one, so a partition whose key has surrounding whitespace never resolves its own reference.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": false,
+      "failingTests": []
+    },
+    {
+      "id": "wr20",
+      "class": "write_read_asymmetry",
+      "line": 1303,
+      "edits": [
+        {
+          "line": 1303,
+          "before": "return unclosed;",
+          "after": "return unclosed + noMatch;"
+        }
+      ],
+      "distinguishingToken": "unclosed",
+      "why": "The unclosed getter now includes the decided no-match windows, so a caller cannot tell a window that ran out of log from one that was decided.",
+      "compiles": true,
+      "testsRun": 100,
+      "breaksCommittedTest": true,
+      "failingTests": [
+        "scope: session merges a session’s streams, and scope: stream does not does NOT match it under the default scope, and reports the decided miss instead",
+        "a window decided with no match is counted, not dropped counts a first closed by its until",
+        "a window decided with no match is counted, not dropped counts a count window closed below at_least"
+      ]
     }
   ],
   "measured": {
-    "at": "2026-09-27T04:35:40.853Z",
+    "at": "2026-10-20T18:28:02.590Z",
     "baselineTests": 100,
     "control": false,
     "classes": {
@@ -1652,11 +3911,51 @@
         "unverified": 0
       },
       "time_concurrency": {
-        "n": 11,
+        "n": 20,
         "tooClose": [],
         "togetherCompiles": true,
-        "breaking": 10,
-        "surviving": 1,
+        "breaking": 16,
+        "surviving": 4,
+        "unverified": 0
+      },
+      "assumption_audit": {
+        "n": 20,
+        "tooClose": [],
+        "togetherCompiles": true,
+        "breaking": 9,
+        "surviving": 11,
+        "unverified": 0
+      },
+      "state_machine": {
+        "n": 20,
+        "tooClose": [],
+        "togetherCompiles": true,
+        "breaking": 14,
+        "surviving": 6,
+        "unverified": 0
+      },
+      "data_lifecycle": {
+        "n": 20,
+        "tooClose": [],
+        "togetherCompiles": true,
+        "breaking": 13,
+        "surviving": 7,
+        "unverified": 0
+      },
+      "environment_divergence": {
+        "n": 20,
+        "tooClose": [],
+        "togetherCompiles": true,
+        "breaking": 4,
+        "surviving": 16,
+        "unverified": 0
+      },
+      "write_read_asymmetry": {
+        "n": 20,
+        "tooClose": [],
+        "togetherCompiles": true,
+        "breaking": 13,
+        "surviving": 7,
         "unverified": 0
       }
     }

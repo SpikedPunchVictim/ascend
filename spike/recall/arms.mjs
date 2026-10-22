@@ -244,31 +244,58 @@ function seededApply(cls) {
 }
 
 /**
- * PREREG section 5, fixed before the runs: classes in this order, and within each A-sonnet,
- * A-opus, B-sonnet, B-opus, C-sonnet, C-opus. The Sonnet pilot fills the first class's C-sonnet
- * slot, so it is not run again.
+ * EV-28's matrix, kept so the recorded run stays reconstructable against this file: three arms by
+ * two models per class, in the class order its PREREG section 5 fixed before any run. Nothing in
+ * the rerun below reads these; the recorded results are.
  */
-export const CLASS_ORDER = ['boundary_conditions', 'error_paths', 'cross_implementation_divergence', 'time_concurrency'];
-export const ORDER = CLASS_ORDER.flatMap((cls, i) =>
-  [
-    ['A', 'claude-sonnet-5'],
-    ['A', 'claude-opus-5-5'],
-    ['B', 'claude-sonnet-5'],
-    ['B', 'claude-opus-5-5'],
-    ['C', 'claude-sonnet-5'],
-    ['C', 'claude-opus-5-5'],
-  ]
-    .filter(([arm, model]) => !(i === 0 && arm === 'C' && model === 'claude-sonnet-5'))
-    .map(([arm, model]) => ({
-      runId: `${arm}-${cls}-${model}`,
-      model,
-      arm,
-      cls: arm === 'C' ? null : cls,
-      slot: cls,
-      runnable: arm !== 'B',
-      apply: arm === 'C' ? () => {} : seededApply(cls),
-      mutationMarker: arm === 'C' ? null : SEEDS_SHA,
-    })),
+export const EV28_CLASS_ORDER = ['boundary_conditions', 'error_paths', 'cross_implementation_divergence', 'time_concurrency'];
+export const EV28_ARMS = [
+  ['A', 'claude-sonnet-5'],
+  ['A', 'claude-opus-5-5'],
+  ['B', 'claude-sonnet-5'],
+  ['B', 'claude-opus-5-5'],
+  ['C', 'claude-sonnet-5'],
+  ['C', 'claude-opus-5-5'],
+];
+
+/**
+ * The rerun's matrix (asc-gtnu.15): one seeded arm and one unseeded control, both models.
+ *
+ * **A and B measured the same thing, so the rerun buys one seeded arm rather than two.** EV-28's
+ * test runner actually ran in 1 of 8 arm-A runs, and the seeded-with-runner versus seeded-offline
+ * recall gap was 0.278 versus 0.274 (`asc-gtnu.15`) -- one seeded arm IS the seeded arm. Dropping
+ * B takes a class from six runs to four, which is what pays for six classes at 24 runs.
+ *
+ * The six classes are the five EV-28 never measured plus `time_concurrency`, which had 11 seeds
+ * (an anecdote under MIN_N) and now has 20. The four it did measure at n >= 20 are not re-run: a
+ * second sample of a measured class would answer a question already answered.
+ */
+export const CLASS_ORDER = [
+  'assumption_audit',
+  'state_machine',
+  'data_lifecycle',
+  'environment_divergence',
+  'write_read_asymmetry',
+  'time_concurrency',
+];
+const RERUN_ARMS = [
+  ['A', 'claude-sonnet-5'],
+  ['A', 'claude-opus-5-5'],
+  ['C', 'claude-sonnet-5'],
+  ['C', 'claude-opus-5-5'],
+];
+
+export const ORDER = CLASS_ORDER.flatMap((cls) =>
+  RERUN_ARMS.map(([arm, model]) => ({
+    runId: `${arm}-${cls}-${model}`,
+    model,
+    arm,
+    cls: arm === 'C' ? null : cls,
+    slot: cls,
+    runnable: arm !== 'B',
+    apply: arm === 'C' ? () => {} : seededApply(cls),
+    mutationMarker: arm === 'C' ? null : SEEDS_SHA,
+  })),
 );
 
 const isMain = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
