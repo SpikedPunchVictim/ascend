@@ -1,0 +1,41 @@
+{
+  "_": "Kill-check for asc-0439.1. Each mutant drops or defaults one of the two fields this change adds, and names the test that must notice. The defaulted-0 mutants are the ones that matter: the field is ABSENT on a call that named no window, and 0 is a real offset and a real limit, so a defaulted 0 turns 'not measured' into a measurement.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "index, is_error: isError, command }",
+      "replace": "index, is_error: isError }",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "emits one command.run per executed segment"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "offset: num(input['offset']),",
+      "replace": "offset: 0,",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "omits offset and limit on a whole-file Read"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "file": "packages/adapter-claude-code/src/normalize.ts",
+      "find": "limit: num(input['limit']),",
+      "replace": "limit: 0,",
+      "killers": [
+        {
+          "file": "packages/adapter-claude-code/test/normalize.test.ts",
+          "test": "omits offset and limit on a whole-file Read"
+        }
+      ]
+    }
+  ]
+}

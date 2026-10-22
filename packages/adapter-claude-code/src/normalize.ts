@@ -82,8 +82,23 @@ import type { TranscriptFile } from './transcript-file.js';
  *    files, measured 2026-10-15 -- and the fields move nothing. `hook.context` is a separate kind
  *    rather than a field on `hook.delivery` because the two records cannot be joined and do not
  *    even agree: see the kind's docblock in `event.ts`.
+ * 14: the two sizes a standing-cost detector needs and the stream did not keep (asc-0439.1):
+ *    `file.read` carries `offset` and `limit`, the window the call asked for, so EV-54's
+ *    repeat-read null is computable on events alone; `command.run` carries `command`, the raw
+ *    text of the call, which `head` and `argv` cannot reconstruct for a pipeline, a heredoc or
+ *    quoting. Two new fields; NO count moves and no event is added. The fields are absent on the
+ *    events a pre-14 build already wrote, which is why this is a bump and not a quiet addition:
+ *    a detector reading `offset` over a mixed log would count "not measured" as "no window".
+ *
+ *    WHAT HAPPENS TO EXISTING STORES. Nothing in place: the event log only appends, so a re-derive
+ *    writes version 14 beside the old lines and `readEventLog` refuses at the first mixed file.
+ *    This checkout's log was ALREADY at three versions (11, 12 and 13, measured 2026-10-21), so it
+ *    already refuses; the way to clear either state is the same and is one step, not two: remove
+ *    the stale stream files and re-derive from the transcripts together, because removing them
+ *    alone leaves a log that reads as zero events rather than as an error
+ *    (`ascend-event-log-append-only-stale-after-every-bump`, dogfood/0114). Not done here.
  */
-export const EVENT_DERIVE_VERSION = 13;
+export const EVENT_DERIVE_VERSION = 14;
 
 /** What the normalizer saw and could not place. Each is a count, because a drop is silent. */
 export interface NormalizeCounters {
@@ -606,7 +621,7 @@ export function createNormalizer(): Normalizer {
             'command.run',
             call,
             ts,
-            { id, head, argv: [...argv], index, is_error: isError },
+            { id, head, argv: [...argv], index, is_error: isError, command },
             batch,
           );
           if (head !== undefined && SEARCH_HEADS.has(head) && segments.length <= 3) {
@@ -664,7 +679,22 @@ export function createNormalizer(): Normalizer {
           batch,
         );
       } else if (tool === 'Read') {
-        emit(out, 'file.read', call, ts, { id, tool, path: str(input['file_path']) }, batch);
+        // The window the call asked for, absent when it asked for none: a whole-file read sets
+        // neither, and 0 is a real offset and a real limit (asc-0439.1).
+        emit(
+          out,
+          'file.read',
+          call,
+          ts,
+          {
+            id,
+            tool,
+            path: str(input['file_path']),
+            offset: num(input['offset']),
+            limit: num(input['limit']),
+          },
+          batch,
+        );
       } else if (role === 'edit' && isError !== true) {
         const filePath = str(input['file_path']) ?? str(input['notebook_path']);
         const edits = Array.isArray(input['edits'])

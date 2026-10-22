@@ -38,6 +38,8 @@ interface Sweep {
   readonly streams: number;
   readonly contexts: readonly NormalizedEvent[];
   readonly findings: readonly NormalizedEvent[];
+  readonly reads: readonly NormalizedEvent[];
+  readonly runs: readonly NormalizedEvent[];
 }
 
 async function sweep(): Promise<Sweep> {
@@ -54,11 +56,15 @@ async function sweep(): Promise<Sweep> {
   let lastSeq = -1;
   const contexts: NormalizedEvent[] = [];
   const findings: NormalizedEvent[] = [];
+  const reads: NormalizedEvent[] = [];
+  const runs: NormalizedEvent[] = [];
 
   const take = (event: NormalizedEvent): void => {
     byKind[event.kind] = (byKind[event.kind] ?? 0) + 1;
     if (event.kind === 'model.context') contexts.push(event);
     if (event.kind === 'review.finding') findings.push(event);
+    if (event.kind === 'file.read') reads.push(event);
+    if (event.kind === 'command.run') runs.push(event);
     if (!Object.hasOwn(EVENT_KINDS, event.kind)) undeclared.add(event.kind);
     for (const field of Object.keys(event)) {
       if (eventFieldType(event.kind, field) === undefined) undeclared.add(`${event.kind}.${field}`);
@@ -101,6 +107,8 @@ async function sweep(): Promise<Sweep> {
     streams,
     contexts,
     findings,
+    reads,
+    runs,
   };
 }
 
@@ -125,6 +133,35 @@ describe.skipIf(!available)('the normalizer against the real corpus', () => {
       'model.context',
     ]) {
       expect(result.byKind[kind] ?? 0, kind).toBeGreaterThan(10);
+    }
+  }, 180_000);
+
+  /**
+   * The end-to-end half of `asc-0439.1`: the sizes a standing-cost detector reads have to survive
+   * `decode.ts` and the reader, not just the object-literal path in `normalize.test.ts`.
+   *
+   * Every `command.run` carries the raw text of its call -- that is what `argv` cannot rebuild for
+   * a pipeline or a heredoc -- and a `file.read` carries its window when the call named one. The
+   * window is per call rather than per event, so the assertion counts observations rather than
+   * demanding the field everywhere; absence is a real state (a whole-file read) and never a
+   * defaulted 0.
+   */
+  it('carries the raw command text and the read window on real calls', async () => {
+    const result = await once();
+    expect(result.runs.length).toBeGreaterThan(100);
+    for (const run of result.runs) {
+      expect(run['command'], `command.run ${String(run['id'])} lost its command text`).toBeTypeOf(
+        'string',
+      );
+      expect(String(run['command']).length).toBeGreaterThan(0);
+    }
+    const windowed = result.reads.filter((event) => event['limit'] !== undefined);
+    expect(windowed.length, 'no real Read named a limit').toBeGreaterThan(0);
+    for (const read of result.reads) {
+      for (const field of ['offset', 'limit']) {
+        if (read[field] === undefined) continue;
+        expect(read[field], `${String(read['path'])}.${field}`).toBeTypeOf('number');
+      }
     }
   }, 180_000);
 

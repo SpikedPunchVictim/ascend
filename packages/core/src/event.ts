@@ -114,16 +114,44 @@ export const EVENT_KINDS: Readonly<Record<string, Readonly<Record<string, EventF
     is_error: 'boolean',
     bytes: 'number',
   },
-  /** One per executed segment of a shell call. `is_error` belongs to the whole call. */
+  /**
+   * One per executed segment of a shell call. `is_error` belongs to the whole call.
+   *
+   * `command` is the RAW text of the call the segment came from, carried unchanged (asc-0439.1).
+   * It is the same value on every segment of one call, and it is here rather than on
+   * `tool.use.start` because the segment is what a standing-cost detector reads: `argv` is the
+   * normalizer's reading of the call, and a pipeline, a heredoc or quoting it collapses is
+   * recoverable from nothing else. `head` and `argv` answer "what ran"; `command` answers "what
+   * the model actually asked for", and the two disagree exactly where EV-54's shell-segment
+   * measurement found it mattered. Always present: a segment exists only because this text did.
+   */
   'command.run': {
     id: 'string',
     head: 'string',
     argv: 'array',
     index: 'number',
     is_error: 'boolean',
+    command: 'string',
   },
   'search.run': { id: 'string', via: 'string', pattern: 'string', hits: 'number' },
-  'file.read': { id: 'string', tool: 'string', path: 'string' },
+  /**
+   * `offset` and `limit` are the window the call asked for, as the model wrote it (asc-0439.1).
+   * EV-54's repeat-read detector is defined on `(path, offset, limit)`: without them two reads of
+   * one file are one fact, and a re-read of the part already read cannot be told from a first
+   * look at a different part.
+   *
+   * BOTH ARE ABSENT when the call set no window -- a whole-file read sets neither -- and absent
+   * never means 0, which is a real offset (a read starting at the top of the file) and a real
+   * limit (a zero-line read). The harness writes them on the tool's own input, so a call that
+   * names one and not the other carries one and not the other.
+   */
+  'file.read': {
+    id: 'string',
+    tool: 'string',
+    path: 'string',
+    offset: 'number',
+    limit: 'number',
+  },
   'file.changed': {
     id: 'string',
     tool: 'string',

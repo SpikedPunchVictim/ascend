@@ -155,6 +155,27 @@ describe('createNormalizer', () => {
     expect(events.find((event) => event.kind === 'file.read')).toMatchObject({ path: '/a/b.ts' });
   });
 
+  it('carries the window a Read asked for, and 0 is a window rather than no window', () => {
+    const events = normalize([
+      assistant([
+        { id: 't1', name: 'Read', input: { file_path: '/a/b.ts', offset: 0, limit: 20 } },
+      ]),
+      toolResult('t1', false),
+    ]);
+    const read = events.find((event) => event.kind === 'file.read');
+    expect(read).toMatchObject({ path: '/a/b.ts', offset: 0, limit: 20 });
+  });
+
+  it('omits offset and limit on a whole-file Read, rather than writing 0', () => {
+    const events = normalize([
+      assistant([{ id: 't1', name: 'Read', input: { file_path: '/a/b.ts' } }]),
+      toolResult('t1', false),
+    ]);
+    const read = events.find((event) => event.kind === 'file.read');
+    expect(read?.['offset']).toBeUndefined();
+    expect(read?.['limit']).toBeUndefined();
+  });
+
   it('counts a result whose call it never saw', () => {
     const normalizer = createNormalizer();
     normalizer.accept(toolResult('ghost', false), MAIN);
@@ -173,6 +194,12 @@ describe('createNormalizer', () => {
     ]);
     expect(runs[0]?.['argv']).toEqual(['bd', 'close', 'a-1', 'b-2']);
     expect(runs[0]?.['is_error']).toBe(false);
+    // The raw call, unchanged and the same on every segment -- what a detector reaches for when
+    // argv has collapsed a pipeline or a heredoc.
+    expect(runs.map((event) => event['command'])).toEqual([
+      'cd x && bd close a-1 b-2; ls',
+      'cd x && bd close a-1 b-2; ls',
+    ]);
   });
 
   it('reads a check verdict from its own exit status when nothing follows it', () => {
@@ -978,6 +1005,7 @@ describe('review.finding, from a ReportFindings call', () => {
   });
 
   it('pins the derivation version as a LITERAL, so a bump is deliberate', () => {
+    // 14: `file.read` carries `offset`/`limit` and `command.run` carries `command` (asc-0439.1).
     // 13: `tool.use.end` carries `bytes`, `hook.context` is a new kind, and `tool.use.start`
     // carries `head`/`argv` for an exec call (asc-09wx.8.4, asc-hvnx).
     // 12: `hook.delivery` reads a `hook_success` attachment (asc-xn4g).
@@ -991,7 +1019,7 @@ describe('review.finding, from a ReportFindings call', () => {
     // tautological. The version exists so a count that moves between two replays can be
     // attributed to the normalizer rather than to a handler, and that only works if changing it
     // is a decision someone makes on purpose.
-    expect(EVENT_DERIVE_VERSION).toBe(13);
+    expect(EVENT_DERIVE_VERSION).toBe(14);
   });
 });
 
