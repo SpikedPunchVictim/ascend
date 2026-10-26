@@ -75,22 +75,30 @@ const MIN_ENTRIES = 200;
  * count from a single session cannot hold a floor against a corpus of forty-four, and writing
  * the pair down is what makes that visible instead of implied. RE-MEASURED 2026-10-14, entries
  * and sessions: verification_run 1490/24, context_compaction 1147/33, tool_denial 504/44,
- * skill_activation 138/32, review_finding 36/1, user_correction 8/5.
+ * skill_activation 138/32, review_finding 36/1, user_correction 8/5. Only `user_correction`
+ * moved since: 3 on 2026-10-26, and its floor carries the reconciliation (`asc-kmb6`).
  */
 const MIN_PER_TYPE: Readonly<Record<string, number>> = {
   verification_run: 50,
   tool_denial: 50,
   context_compaction: 50,
   skill_activation: 10,
-  // RE-MEASURED 2026-10-14: 8 entries across 5 sessions. This comment used to read "20 measured,
-  // across 10 sessions", and the sentence it carried -- that the floor is deliberately at the
-  // measured value rather than below it -- did not describe the pair it sat above even then,
-  // because the floor below is 5. It does not describe this pair either. The measurement is
-  // corrected here and the floor is NOT corrected, because choosing it is a design decision
-  // rather than arithmetic; the honest thing available from the source is that the rationale for
-  // 5 is recorded nowhere this comment can point to. What matters operationally is the headroom,
-  // and it is 3.
-  user_correction: 5,
+  // RE-MEASURED 2026-10-26: 3 entries, down from 8 on 2026-10-14, and the floor moves 5 -> 1
+  // because the drop is the CORPUS, not the deriver (`asc-kmb6`, `dogfood/0123`).
+  //
+  // The corpus is a WINDOW, not an archive: Claude Code reaps transcripts older than about
+  // thirty days, and the oldest surviving one is 2026-09-23. An instrumented pass reports the
+  // same 3 and names a file still on disk for each (occurred_at 2026-09-27, 2026-10-09,
+  // 2026-10-22), so 8 - 3 = 5 corrections left with no file left to read. The reconciliation is
+  // exact, which is the only reason that is a mechanism rather than a guess -- a drop that did
+  // not add up would be a deriver defect wearing the same message.
+  //
+  // SO THE FLOOR IS 1, not a number a little below 3. A floor above a retention-bounded ceiling
+  // is a floor that expires by calendar, and any absolute value here is a prediction about the
+  // next thirty days of one person's behaviour. What a floor can still assert for a type this
+  // rare is that it derives at all; catching a deriver that emits nothing is carried by the four
+  // types that derive in the hundreds, and by MIN_ENTRIES.
+  user_correction: 1,
   // `review_finding` is deliberately ABSENT, and the REASON has changed since this omission was
   // written. It used to be that the corpus derived zero of it -- no `ReportFindings` call in
   // 1,236 transcript files (`asc-gtnu`, re-measured 2026-09-26) -- so a floor here would have had
