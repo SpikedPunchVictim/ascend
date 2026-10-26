@@ -103,9 +103,9 @@
     },
     {
       "id": "M9",
-      "file": "packages/cli/src/commands/handlers/compare.ts",
-      "find": "      add('design', split === undefined ? OBSERVATIONAL : CONTROLLED);",
-      "replace": "      add('design', OBSERVATIONAL);",
+      "file": "packages/cli/src/handler-compare-rows.ts",
+      "find": "  add('design', split === undefined ? OBSERVATIONAL : CONTROLLED);",
+      "replace": "  add('design', OBSERVATIONAL);",
       "killers": [
         {
           "file": "packages/cli/test/handlers-compare.test.ts",
@@ -115,9 +115,9 @@
     },
     {
       "id": "M10",
-      "file": "packages/cli/src/commands/handlers/compare.ts",
-      "find": "        add('after.unassigned', split.unassigned);\n      }",
-      "replace": "      }",
+      "file": "packages/cli/src/handler-compare-rows.ts",
+      "find": "    add('after.unassigned', split.unassigned);\n  }",
+      "replace": "  }",
       "killers": [
         {
           "file": "packages/cli/test/handlers-compare.test.ts",
