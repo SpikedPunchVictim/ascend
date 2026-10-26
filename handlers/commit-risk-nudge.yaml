@@ -1,0 +1,38 @@
+# asc-09wx.12: the treatment arm of the commit-risk experiment -- a sentence after a commit lands.
+#
+# WHAT IT IS FOR. EV-63 measured that the commits that get reworked within seven days are
+# disproportionately the large ones, and EV-71/EV-72 sized an experiment on that fact: one
+# compaction segment of one stream is the randomized unit (asc-6ola.4), `asc install-hook
+# --holdout` decides which units are shown this sentence and which are deliberately left silent,
+# and the outcome is read git-side (a later commit rewrites the lines inside a 7-day window) rather
+# than from the event stream, because no handler can see a later commit. This file is the sentence.
+#
+# WHY `tool.use.start` AND NOT `command.run`. Both reach PostToolUse after the commit has landed,
+# so both are the same moment. `command.run` carries the finer per-segment predicate, but the kind
+# has no `tool` field, so `stageMatcher` (install-hook) cannot narrow the hook's matcher and every
+# tool call in the session would start an `asc hook` process to say nothing. Measured on this
+# project's transcripts, `asc handlers check`: the command.run form fires 230 times and the
+# tool.use.start form below fires 241, so the narrowing costs nothing in coverage here.
+#
+# WHY `followed_by` AND NOT `contains`. `argv contains commit` was measured at 598 rows on the same
+# corpus -- 2.5x what it should fire -- because it matches any command that merely mentions the
+# word: a `bd comment` that quotes a commit subject, a `grep`, a `pnpm mutate commit-risk-nudge`
+# run. The live hook recorded one such decision on this file's first day. `followed_by: [git,
+# commit]` requires the two tokens adjacent, so it fires on `git commit` and on `cd x && git
+# commit`, and not on a mention. It misses the option-bearing form (`git -c foo commit`), which
+# session-commit.yaml measured at 9% of commits; a unit whose only commit is that form still
+# receives the sentence if any other commit in it matches, which is why the loss was accepted.
+#
+# THE SENTENCE IS THE INTERVENTION. `CompiledHandler.hash` covers it, and the hash is in the
+# holdout key (holdout-arm.ts), so editing one word starts a new intervention whose units do not
+# inherit this one's arms. Reword it only when the experiment is restarted, not to make it read
+# better between runs.
+on: tool.use.start
+description: A commit landed, and large commits are the ones reworked later.
+where:
+  tool: Bash
+  argv: { followed_by: [git, commit] }
+say: >-
+  A commit just landed. Large commits are the ones a later commit rewrites within the week. If
+  this one was large, read its diff back now: unrelated changes belong in their own commit, and a
+  follow-up rewrite is what the experiment measures.

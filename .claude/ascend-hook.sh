@@ -45,6 +45,8 @@ elif [ -f "$root/node_modules/.bin/asc" ]; then
   bin="$root/node_modules/.bin/asc"
 elif [ -f "$root"'/packages/cli/dist/bin.js' ]; then
   bin="$root"'/packages/cli/dist/bin.js'
+elif [ -x "$root/.ascend/bin/asc" ]; then
+  bin="$root/.ascend/bin/asc"
 elif command -v asc >/dev/null 2>&1; then
   bin="$(command -v asc)"
 else
@@ -53,7 +55,10 @@ fi
 
 case "$bin" in
   *.js)
-    command -v node >/dev/null 2>&1 || exit 0
+    command -v node >/dev/null 2>&1 || {
+      echo "asc: $bin needs node, and node is not on PATH" >&2
+      exit 1
+    }
     run() { node "$bin" "$@"; }
     ;;
   *)
@@ -63,10 +68,35 @@ esac
 
 # With a stage (`sh ascend-hook.sh post-tool-use`), this is a lifecycle hook for the project's
 # say: handlers: the hook's JSON input is on stdin, and `asc hook` reads it from there.
+#
+# EVERY argument is forwarded, not just the stage, because a stage's entry may carry flags -- the
+# holdout rate `asc install-hook --holdout` bakes in (asc-xn4g). Forwarding `"$1"` alone dropped
+# them silently: the entry would read `... post-tool-use --holdout 0.3`, the flag would never
+# reach `asc hook`, and the project would run no experiment while its settings.json said it did.
 if [ -n "$1" ]; then
-  run hook "$1"
+  run hook "$@"
+  status=$?
+  [ "$status" -eq 0 ] || exit 1
   exit 0
 fi
 
 run ingest claude-code >/dev/null 2>&1
+
+# Capture reads and WRITES, and its stderr is the ONLY channel it has to the model: on
+# SessionStart, exit-0 stderr is discarded and never reaches the transcript (the Claude Code
+# hooks reference is explicit, and dogfood/0082 is three sessions of that silence). So its
+# stdout is discarded -- a table on the injected stream would put ascend's own bookkeeping in
+# front of a session as if it were context -- and its status is TESTED rather than swallowed.
+# A watched file that is there and cannot be read writes no row and no baseline, and says so;
+# exiting 0 there would make a capture that has silently stopped capturing look like one that
+# found nothing.
+run capture >/dev/null
+capture_status=$?
+
+# Last, and still unconditioned on everything above: a broken ingest or an unreadable watched
+# file must never suppress the one thing this hook has always reliably done.
 run types brief
+brief_status=$?
+
+[ "$capture_status" -eq 0 ] || exit "$capture_status"
+exit "$brief_status"

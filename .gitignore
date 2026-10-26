@@ -67,6 +67,18 @@ node_modules/
 .ascend/watched-hashes.json
 .ascend/watched-hashes.json.*.ascend-tmp
 
+# The holdout arm's decision record (asc-xn4g), one JSONL row per unit `asc hook` decided to hold
+# back or deliver. Machine-local for two reasons. Its rows carry a session id and a tool_use id, and
+# this repository is public -- the same argument `.ascend/events/` makes below. And it is a record of
+# what THIS checkout's hook decided about THIS machine's sessions, which is what the git-side grade
+# (`asc-09wx.19`) reads on the machine that ran the experiment; a clone's copy would be a different
+# population pretending to be this one's.
+#
+# It is also not a RECORD FILE, and that is why it is ignored rather than committed: `asc store
+# verify --staged` reads every `.jsonl` under `.ascend/` as one and refused the commit with
+# "not a record line (no \"kind\")". The exposure log is the hook's own bookkeeping, not an entry.
+.ascend/exposure/
+
 # align machine-local files — telemetry (opt-in: ALIGN_TELEMETRY=1 / --telemetry / align.config.ts telemetry:true)
 # and the scan-observation record, which is evidence about THIS checkout only (ADR 029).
 .align/telemetry.jsonl

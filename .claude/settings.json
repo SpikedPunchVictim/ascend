@@ -22,11 +22,11 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Skill",
+        "matcher": "Bash|Skill",
         "hooks": [
           {
             "type": "command",
-            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/.claude/ascend-hook.sh\" ] || sh \"$CLAUDE_PROJECT_DIR/.claude/ascend-hook.sh\" post-tool-use"
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/.claude/ascend-hook.sh\" ] || sh \"$CLAUDE_PROJECT_DIR/.claude/ascend-hook.sh\" post-tool-use --holdout 0.5"
           }
         ]
       }

@@ -1,0 +1,29 @@
+{
+  "_": "Kill-check for asc-09wx.12's treatment arm. The handler is a YAML predicate, so the mutants are the two things that decide WHEN the sentence arrives and it loads at all: the predicate it matches on, and the tool it is narrowed to. A third mutant on `on:` was measured and discarded: changing the kind fails the file at COLLECTION, because the describe block loads the handler at module scope, and a mutant that will not load proves nothing about any test. Killers were found by applying each mutant and reading the failing names off assertionResults.",
+  "mutants": [
+    {
+      "id": "M1",
+      "file": "handlers/commit-risk-nudge.yaml",
+      "find": "  argv: { followed_by: [git, commit] }",
+      "replace": "  argv: { followed_by: [git, status] }",
+      "killers": [
+        {
+          "file": "packages/cli/test/project-handlers.test.ts",
+          "test": "speaks once when a Bash call commits, and not on a command that does not"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "file": "handlers/commit-risk-nudge.yaml",
+      "find": "  tool: Bash",
+      "replace": "  tool: Skill",
+      "killers": [
+        {
+          "file": "packages/cli/test/project-handlers.test.ts",
+          "test": "speaks once when a Bash call commits, and not on a command that does not"
+        }
+      ]
+    }
+  ]
+}

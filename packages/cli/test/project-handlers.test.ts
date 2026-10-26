@@ -215,6 +215,45 @@ describe('review-finding-nudge', () => {
   });
 });
 
+describe('commit-risk-nudge', () => {
+  const handler = loadHandler(read('commit-risk-nudge.yaml'));
+  const said = (tool_name: string, tool_input: object): string[] => {
+    const run = runHandler(handler);
+    const events =
+      hookEvents('post-tool-use', {
+        session_id: 's',
+        hook_event_name: 'PostToolUse',
+        tool_name,
+        tool_input,
+        tool_use_id: 'toolu_1',
+      }) ?? [];
+    return events.flatMap((event) => run.accept(event).map((row) => row.fields['say'] ?? ''));
+  };
+
+  it('runs at post-tool-use, after the commit has landed', () => {
+    expect(sayStage(handler)).toBe('post-tool-use');
+  });
+
+  it('speaks once when a Bash call commits, and not on a command that does not', () => {
+    expect(said('Bash', { command: 'git commit -m x' })).toHaveLength(1);
+    expect(said('Bash', { command: 'git status' })).toEqual([]);
+  });
+
+  it('stays silent on a command that only mentions the word, which `contains` matched', () => {
+    // Measured on the live hook: `argv contains commit` fired on `pnpm mutate commit-risk-nudge`
+    // and on a `bd comment` quoting a commit subject. The sentence says a commit landed, so a
+    // mention is a false treatment, not a harmless extra.
+    expect(said('Bash', { command: 'bd comment "the commit landed"' })).toEqual([]);
+    expect(said('Bash', { command: 'pnpm mutate commit-risk-nudge' })).toEqual([]);
+  });
+
+  it('stays silent outside Bash, so the installed matcher can name one tool', () => {
+    // `stageMatcher` reads `where.tool` off this file. Drop the narrowing and the install widens
+    // to every tool call, which is a process started to say nothing on each of them.
+    expect(said('Skill', { skill: 'bug-hunt' })).toEqual([]);
+  });
+});
+
 describe('sayStage: stage: pre is a request the harness has to be able to serve (asc-eve4)', () => {
   it('resolves a pre handler on tool.use.start to pre-tool-use', () => {
     expect(sayStage(loadHandler('on: tool.use.start\nstage: pre\nsay: hi\n'))).toBe('pre-tool-use');
