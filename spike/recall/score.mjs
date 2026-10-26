@@ -34,7 +34,11 @@ import { REPO, SUBJECT } from './trees.mjs';
 
 export const R = 3;
 const OUT = join(REPO, 'spike', 'tmp', 'recall');
-const BIN = join(REPO, 'packages', 'cli', 'dist', 'bin.js');
+// `ASCEND_BIN` exists because the trees are pinned to an old commit and the CLI that INGESTS
+// their transcripts must not be. At 25d4504 the deriver predates the `api-request-blob` fix
+// (asc-j6pj) and emits every finding twice, once per place the same tool_use is carried; the
+// count still scores because a hit is a set membership, but `findings per run` doubles.
+const BIN = process.env.ASCEND_BIN ?? join(REPO, 'packages', 'cli', 'dist', 'bin.js');
 const SEED = 20260927;
 
 const seedsArg = process.argv.indexOf('--seeds');
