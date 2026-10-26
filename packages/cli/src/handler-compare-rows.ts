@@ -43,13 +43,16 @@ const OBSERVATIONAL =
  * It says what makes the number mean something rather than who computed it: the assignment is a
  * hash of the unit, so it cannot depend on what the unit went on to do, and that is the whole of
  * the argument. It does not claim the arms are otherwise alike -- a segment inheriting a summary
- * that already mentions the guidance is exposed, whatever its arm says -- and it does not claim the
- * live arm is correct, which is a measurement nobody has taken.
+ * that already mentions the guidance is exposed, whatever its arm says, and those are counted and
+ * kept out of the held-out side (`after.exposed`) -- and it does not claim the live arm is correct,
+ * which is a measurement nobody has taken.
  */
 const CONTROLLED =
   'controlled -- the after arm is split by the arm the hook assigned, which is a hash of the unit ' +
   'and so cannot follow what the unit did: delivered against held out estimates the guidance’s ' +
-  'effect, where before against after could only ever be a correlation';
+  'effect, where before against after could only ever be a correlation. A held-out unit whose ' +
+  'inherited summary already quoted the guidance is counted as exposed and kept out of the ' +
+  'held-out side';
 
 /**
  * One comparison, as rows.
@@ -70,6 +73,7 @@ export function compareRows(comparison: Comparison, at: string, add: Add): void 
   if (split !== undefined) {
     armRows('after.delivered', split.delivered, add);
     armRows('after.held_out', split.heldOut, add);
+    add('after.exposed', split.exposed);
     add('after.unassigned', split.unassigned);
   }
   add('straddling', comparison.straddling);

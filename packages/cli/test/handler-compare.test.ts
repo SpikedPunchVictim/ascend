@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { armAssignments, compareArms } from '../src/handler-compare.js';
+import { armAssignments, compareArms, exposedUnits } from '../src/handler-compare.js';
 import type { DecidedRecord } from '../src/exposure-log.js';
 import type { Arm as HoldoutArm, Intervention } from '../src/holdout-arm.js';
 import { unitKey, type UnitCount, type UnitSpan } from '../src/handler-replay.js';
@@ -288,5 +288,94 @@ describe('armAssignments', () => {
       NUDGE,
     );
     expect(arms.size).toBe(0);
+  });
+});
+
+/** A sentence a `say:` handler delivers, long enough that a summary would have to quote it. */
+const SENTENCE =
+  'A commit just landed. Large commits are the ones a later commit rewrites within the week.';
+
+describe('compareArms: a held-out unit that was shown the guidance anyway (asc-xn4g)', () => {
+  /**
+   * The arm is a hash of the unit, so it cannot see what the unit inherited. A segment opened by a
+   * compaction carries a summary of the conversation before it, and a summary that quotes the
+   * sentence has shown the model the guidance in a unit the hook said nothing to. Counting that as
+   * control measures the leak as the treatment's absence.
+   */
+  const split = (
+    exposed: ReadonlySet<string> | undefined,
+  ): { heldOut: number; exposed: number; delivered: number; unassigned: number } | undefined => {
+    const specs = Array.from({ length: 20 }, () => ({ ...AFTER, triggers: 1, rows: 1 }));
+    const { spans, counts } = units(specs);
+    const assignments = new Map<string, HoldoutArm>(
+      Array.from({ length: 20 }, (_, index) => [key(index), index < 8 ? 'held_out' : 'delivered']),
+    );
+    const result = compareArms(counts, spans, AT, assignments, exposed);
+    return result.controlled === undefined
+      ? undefined
+      : {
+          heldOut: result.controlled.heldOut.units,
+          exposed: result.controlled.exposed,
+          delivered: result.controlled.delivered.units,
+          unassigned: result.controlled.unassigned,
+        };
+  };
+
+  it('takes an exposed unit out of the held-out arm and counts it apart', () => {
+    const result = split(new Set([key(0), key(1), key(2)]));
+    expect([result?.heldOut, result?.exposed]).toEqual([5, 3]);
+  });
+
+  it('leaves the delivered arm and the unassigned count where they were', () => {
+    // The reclassification is only ever out of the held-out side: a delivered unit was shown the
+    // guidance by design, and moving it would take units away from the treatment it belongs to.
+    const result = split(new Set([key(0), key(1), key(2)]));
+    expect([result?.delivered, result?.unassigned]).toEqual([12, 0]);
+  });
+
+  it('reports no exposure at all when the caller passes none, which is every caller before this', () => {
+    expect(split(undefined)?.exposed).toBe(0);
+  });
+});
+
+describe('exposedUnits', () => {
+  const assignments = new Map<string, HoldoutArm>([
+    ['u1', 'held_out'],
+    ['u2', 'delivered'],
+    ['u3', 'held_out'],
+  ]);
+
+  it('names a held-out unit whose opening prompt carries the sentence', () => {
+    const opening = new Map([['u1', `Summary:\n${SENTENCE}\nThen the work continued.`]]);
+    expect([...exposedUnits(assignments, opening, [SENTENCE])]).toEqual(['u1']);
+  });
+
+  it('matches a sentence the summary reflowed, because a summary is wrapped prose', () => {
+    // The handler's YAML is a folded block, so its sentence is one line; the summary that quotes it
+    // is wrapped. A byte comparison would miss the quote it copied correctly.
+    const opening = new Map([
+      [
+        'u1',
+        SENTENCE.replace('. Large', '.\n   Large').replace('within the week', 'within  the week'),
+      ],
+    ]);
+    expect([...exposedUnits(assignments, opening, [SENTENCE])]).toEqual(['u1']);
+  });
+
+  it('never names a delivered unit, however the prompt reads', () => {
+    const opening = new Map([['u2', SENTENCE]]);
+    expect(exposedUnits(assignments, opening, [SENTENCE]).size).toBe(0);
+  });
+
+  it('names nothing for a unit whose events carried no prompt', () => {
+    // A subagent stream can run entirely on its parent's prompt, so an absent opening is ordinary.
+    expect(exposedUnits(assignments, new Map(), [SENTENCE]).size).toBe(0);
+  });
+
+  it('names nothing when the handler says nothing to look for', () => {
+    // A capture handler has no sentence, and an empty needle would match every opening prompt --
+    // reclassifying every held-out unit as exposed and emptying the arm it exists to protect.
+    const opening = new Map([['u1', 'anything at all']]);
+    expect(exposedUnits(assignments, opening, ['', '   ']).size).toBe(0);
   });
 });

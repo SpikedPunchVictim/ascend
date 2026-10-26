@@ -50,7 +50,17 @@ export interface Arm {
 export interface Controlled {
   readonly delivered: Arm;
   readonly heldOut: Arm;
-  /** After units no assignment named. `delivered.units + heldOut.units + unassigned = after.units`. */
+  /**
+   * After units assigned `held_out` whose opening prompt already carried the handler's sentence
+   * (asc-xn4g). In neither side of the contrast, because a unit whose inherited summary quoted the
+   * guidance was shown it whatever its arm says -- counting it as control would credit the arm with
+   * a treatment it received.
+   */
+  readonly exposed: number;
+  /**
+   * After units no assignment named.
+   * `delivered.units + heldOut.units + exposed + unassigned = after.units`.
+   */
   readonly unassigned: number;
 }
 
@@ -78,17 +88,24 @@ export interface Comparison {
  * `assignments` maps a unit key to the arm the hook put it in. Omitted, or naming no after unit,
  * the result is exactly what it was before the holdout existed -- which is what every caller with
  * no decisions to pass gets, unchanged down to the bytes it prints.
+ *
+ * `exposed` names the units among those assignments that were shown the guidance anyway, which for
+ * this design means a held-out segment whose inherited summary quoted it (`exposedUnits`). They are
+ * counted and kept out of the held-out arm; absent, nothing is reclassified and the split is what
+ * the arm decisions alone say.
  */
 export function compareArms(
   counts: ReadonlyMap<string, UnitCount>,
   spans: ReadonlyMap<string, UnitSpan>,
   at: string,
   assignments?: ReadonlyMap<string, HoldoutArm>,
+  exposed?: ReadonlySet<string>,
 ): Comparison {
   const before: UnitCount[] = [];
   const after: UnitCount[] = [];
   const delivered: UnitCount[] = [];
   const heldOut: UnitCount[] = [];
+  const shown: UnitCount[] = [];
   let straddling = 0;
   let undated = 0;
   let unassigned = 0;
@@ -101,8 +118,10 @@ export function compareArms(
       after.push(count);
       const arm = assignments?.get(unit);
       if (arm === 'delivered') delivered.push(count);
-      else if (arm === 'held_out') heldOut.push(count);
-      else unassigned += 1;
+      else if (arm === 'held_out') {
+        if (exposed?.has(unit) === true) shown.push(count);
+        else heldOut.push(count);
+      } else unassigned += 1;
     } else straddling += 1;
   }
   const beforeArm = arm(before);
@@ -111,7 +130,12 @@ export function compareArms(
   // names only before units, or only units this replay never saw, is no assignment at all.
   const controlled: Controlled | undefined =
     after.length > unassigned
-      ? { delivered: arm(delivered), heldOut: arm(heldOut), unassigned }
+      ? {
+          delivered: arm(delivered),
+          heldOut: arm(heldOut),
+          exposed: shown.length,
+          unassigned,
+        }
       : undefined;
   const difference =
     controlled === undefined
@@ -156,6 +180,50 @@ function arm(units: readonly UnitCount[]): Arm {
     rows: units.reduce((sum, unit) => sum + unit.rows, 0),
     proportion: wilson(withRow, units.length),
   };
+}
+
+/**
+ * The held-out units whose opening prompt already carried one of `sentences` (asc-xn4g).
+ *
+ * **This is the one way a control unit can be treated, and the arm cannot see it.** A segment
+ * opened by a compaction inherits a summary of the conversation before it. If that summary quotes
+ * the guidance, the model reads the guidance in a segment the hook deliberately said nothing to --
+ * so the unit is in the held-out arm by assignment and in the treatment by exposure, and a
+ * difference that credits the arm is reading its own leak as an effect.
+ *
+ * **What it catches and what it misses, stated rather than implied.** It catches a summary that
+ * carries the sentence, allowing for reflow: both sides are flattened to single spaces, because a
+ * summary is wrapped prose and a byte comparison would miss a sentence it quoted correctly. It
+ * MISSES a summary that paraphrases, and it says nothing about a model that carried the idea
+ * without quoting it. So the number this feeds is a FLOOR on contamination, not an estimate of it,
+ * and the caller prints it as a count rather than subtracting an inferred share from anything.
+ *
+ * `opening` is `ReplayResult.opening`, which is why this is computed per handler and from the
+ * replay rather than from the decisions: which text counts as the sentence depends on the handler,
+ * and which text the unit opened with depends on the transcript.
+ */
+export function exposedUnits(
+  assignments: ReadonlyMap<string, HoldoutArm>,
+  opening: ReadonlyMap<string, string>,
+  sentences: Iterable<string>,
+): ReadonlySet<string> {
+  const units = new Set<string>();
+  // An empty needle would match every opening prompt, so the empties are dropped here rather than
+  // left for `includes` to answer yes to.
+  const needles = [...sentences].map(flatten).filter((one) => one !== '');
+  for (const [unit, written] of assignments) {
+    if (written !== 'held_out') continue;
+    const text = opening.get(unit);
+    if (text === undefined) continue;
+    const opened = flatten(text);
+    if (needles.some((needle) => opened.includes(needle))) units.add(unit);
+  }
+  return units;
+}
+
+/** Text with each whitespace run collapsed to one space, so reflowed prose still matches. */
+function flatten(text: string): string {
+  return text.replace(/\s+/gu, ' ').trim();
 }
 
 /**

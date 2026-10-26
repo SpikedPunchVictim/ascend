@@ -135,6 +135,20 @@ export interface ReplayResult {
   readonly horizon: LogHorizon;
   /** Every unit the log held, with its span, so a comparison can place it before or after a time. */
   readonly units: ReadonlyMap<string, UnitSpan>;
+  /**
+   * The first prompt text each unit carried (asc-xn4g), so a comparison can tell whether a unit
+   * that was held out had already been shown the guidance anyway.
+   *
+   * For a unit after a compaction this IS the summary the compaction produced: the harness writes
+   * the summary as a `user` record at the head of the new segment, and the normalizer emits it as
+   * `prompt.submit` like any other user text. A summary that quotes a handler's sentence has
+   * carried that sentence into a segment whose arm says it was not shown -- which is the one way a
+   * "control" unit can be treated, and the reason `handler-compare.ts` needs this map at all.
+   *
+   * Absent for a unit whose events carried no prompt, which is ordinary: a subagent stream can
+   * run entirely on its parent's prompt.
+   */
+  readonly opening: ReadonlyMap<string, string>;
   readonly derive_version: number;
   readonly counters: NormalizeCounters;
 }
@@ -206,6 +220,7 @@ export async function replayHandlers(
     triggerUnit: new Map<string, string>(),
   }));
   const spans = new Map<string, { first_ts?: string; last_ts?: string }>();
+  const opening = new Map<string, string>();
   const normalizer = createNormalizer();
   let events = 0;
   let first: string | undefined;
@@ -227,6 +242,10 @@ export async function replayHandlers(
     const unit = unitKey(event.session_id, event.agent_id, segment);
     let span = spans.get(unit);
     if (span === undefined) spans.set(unit, (span = {}));
+    if (event.kind === 'prompt.submit' && !opening.has(unit)) {
+      const text = event['text'];
+      if (typeof text === 'string') opening.set(unit, text);
+    }
     if (typeof ts === 'string') {
       if (span.first_ts === undefined || ts < span.first_ts) span.first_ts = ts;
       if (span.last_ts === undefined || ts > span.last_ts) span.last_ts = ts;
@@ -320,6 +339,7 @@ export async function replayHandlers(
     // the normalizer's counters are a statement about a sweep, and no sweep happened.
     counters: normalizer.counters,
     units: spans,
+    opening,
   };
 }
 

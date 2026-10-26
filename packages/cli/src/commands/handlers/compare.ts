@@ -16,7 +16,7 @@ import { resolve } from 'node:path';
 import { Args, Flags } from '@oclif/core';
 import { BaseCommand } from '../../base.js';
 import { readDecided } from '../../exposure-log.js';
-import { armAssignments, compareArms } from '../../handler-compare.js';
+import { armAssignments, compareArms, exposedUnits } from '../../handler-compare.js';
 import { compareRows, isoInstant } from '../../handler-compare-rows.js';
 import { replayHandlers } from '../../handler-replay.js';
 import { findProjectRoot, storePaths } from '../../project.js';
@@ -91,11 +91,20 @@ export default class HandlersCompare extends BaseCommand {
         rows.push({ [HANDLER]: replay.name, [FIELD]: field, [VALUE]: value });
       };
       const intervention = { id: replay.name, version: replay.handler.hash };
+      const assignments = armAssignments(decided, intervention);
+      // What this handler actually says, taken from the rows it produced rather than re-rendered:
+      // a `say:` sentence can be built from event fields, so the replay's own output is the only
+      // text that is certain to be the one the hook would have delivered.
+      const sentences = replay.rows.flatMap((row) => {
+        const said = row.fields['say'];
+        return typeof said === 'string' ? [said] : [];
+      });
       const comparison = compareArms(
         replay.units,
         result.units,
         at,
-        armAssignments(decided, intervention),
+        assignments,
+        exposedUnits(assignments, result.opening, sentences),
       );
       add('hash', replay.handler.hash);
       compareRows(comparison, at, add);

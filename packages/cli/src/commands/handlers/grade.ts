@@ -39,7 +39,7 @@ import { findEntry, type SqlDatabase } from '@ascend/store';
 import { BaseCommand } from '../../base.js';
 import { refusal, usageError } from '../../errors.js';
 import { readDecided } from '../../exposure-log.js';
-import { armAssignments, compareArms } from '../../handler-compare.js';
+import { armAssignments, compareArms, exposedUnits } from '../../handler-compare.js';
 import { compareRows, isoInstant, type Add } from '../../handler-compare-rows.js';
 import { HORIZON_DAYS, plan, type Asked } from '../../handler-power.js';
 import { replayHandlers } from '../../handler-replay.js';
@@ -203,15 +203,24 @@ export default class HandlersGrade extends BaseCommand {
         out.push({ [HANDLER]: replay.name, [FIELD]: field, [VALUE]: value });
       };
       ledgerFacts(row, args.id, point, reading, named.handler.hash, add);
+      const assignments = armAssignments(readDecided(storePaths(root).tree), {
+        id: replay.name,
+        version: replay.handler.hash,
+      });
+      // Same rule as `handlers compare`, and computed here for the reason `handler-compare-rows.ts`
+      // gives for sharing its sentences: a grade that read contamination differently from the
+      // command that printed the comparison would be a second answer to one question.
+      const sentences = replay.rows.flatMap((one) => {
+        const said = one.fields['say'];
+        return typeof said === 'string' ? [said] : [];
+      });
       compareRows(
         compareArms(
           replay.units,
           result.units,
           at,
-          armAssignments(readDecided(storePaths(root).tree), {
-            id: replay.name,
-            version: replay.handler.hash,
-          }),
+          assignments,
+          exposedUnits(assignments, result.opening, sentences),
         ),
         at,
         add,

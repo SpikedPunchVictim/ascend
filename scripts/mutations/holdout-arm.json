@@ -1,5 +1,5 @@
 {
-  "_": "Kill-check for asc-xn4g. The holdout arm end to end: the assignment function (E30.1), the split of the after arm and the read of the hook's own decisions (E30.4). Each mutant breaks ONE thing and names the test that must notice. The killers were found by running the mutant and reading the failing names off `assertionResults`, not by guessing which test ought to care.",
+  "_": "Kill-check for asc-xn4g. The holdout arm end to end: the assignment function (E30.1), the split of the after arm and the read of the hook's own decisions (E30.4), and the contamination flag (E30.3), which takes a held-out unit whose inherited summary quoted the sentence out of the held-out side. Each mutant breaks ONE thing and names the test that must notice. The killers were found by running the mutant and reading the failing names off `assertionResults`, not by guessing which test ought to care.",
   "mutants": [
     {
       "id": "M1",
@@ -16,8 +16,8 @@
     {
       "id": "M2",
       "file": "packages/cli/src/handler-compare.ts",
-      "find": "      if (arm === 'delivered') delivered.push(count);\n      else if (arm === 'held_out') heldOut.push(count);",
-      "replace": "      if (arm === 'held_out') delivered.push(count);\n      else if (arm === 'delivered') heldOut.push(count);",
+      "find": "      if (arm === 'delivered') delivered.push(count);\n      else if (arm === 'held_out') {",
+      "replace": "      if (arm === 'held_out') delivered.push(count);\n      else if (arm === 'delivered') {",
       "killers": [
         {
           "file": "packages/cli/test/handler-compare.test.ts",
@@ -28,8 +28,8 @@
     {
       "id": "M3",
       "file": "packages/cli/src/handler-compare.ts",
-      "find": "      else unassigned += 1;",
-      "replace": "      else delivered.push(count);",
+      "find": "      } else unassigned += 1;",
+      "replace": "      } else delivered.push(count);",
       "killers": [
         {
           "file": "packages/cli/test/handler-compare.test.ts",
@@ -40,8 +40,8 @@
     {
       "id": "M4",
       "file": "packages/cli/src/handler-compare.ts",
-      "find": "    after.length > unassigned\n      ? { delivered: arm(delivered), heldOut: arm(heldOut), unassigned }",
-      "replace": "    after.length > 0\n      ? { delivered: arm(delivered), heldOut: arm(heldOut), unassigned }",
+      "find": "    after.length > unassigned",
+      "replace": "    after.length >= unassigned",
       "killers": [
         {
           "file": "packages/cli/test/handler-compare.test.ts",
@@ -134,6 +134,54 @@
         {
           "file": "packages/cli/test/handlers-compare.test.ts",
           "test": "says controlled and splits the after arm by the arm the hook assigned"
+        }
+      ]
+    },
+    {
+      "id": "M12",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "    if (written !== 'held_out') continue;",
+      "replace": "    if (written === 'held_out') continue;",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "never names a delivered unit, however the prompt reads"
+        }
+      ]
+    },
+    {
+      "id": "M13",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "        if (exposed?.has(unit) === true) shown.push(count);\n        else heldOut.push(count);",
+      "replace": "        heldOut.push(count);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "takes an exposed unit out of the held-out arm and counts it apart"
+        }
+      ]
+    },
+    {
+      "id": "M14",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "  return text.replace(/\\s+/gu, ' ').trim();",
+      "replace": "  return text;",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "matches a sentence the summary reflowed, because a summary is wrapped prose"
+        }
+      ]
+    },
+    {
+      "id": "M15",
+      "file": "packages/cli/src/handler-compare.ts",
+      "find": "  const needles = [...sentences].map(flatten).filter((one) => one !== '');",
+      "replace": "  const needles = [...sentences].map(flatten);",
+      "killers": [
+        {
+          "file": "packages/cli/test/handler-compare.test.ts",
+          "test": "names nothing when the handler says nothing to look for"
         }
       ]
     }
