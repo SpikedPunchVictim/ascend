@@ -157,6 +157,25 @@ for (const r of view) {
 const failed = ledger.runs.filter((r) => !r.completed);
 say(`runs completed=${String(runs.length)} failed=${String(failed.length)} total spent=$${ledger.runs.reduce((s, r) => s + (r.spentUsd ?? 0), 0).toFixed(4)}`);
 
+/**
+ * The harness each scored run was produced by (asc-0m1q).
+ *
+ * Printed ABOVE every recall figure rather than left in the ledger, because that is the failure
+ * the bead records: `claude-sonnet-5` scored 8/11 and then 2/11 on byte-identical seeds, and the
+ * two runs differed in exactly these fields while the envelope reported the same model id. A
+ * figure whose harness is not on the page is a figure that will be compared to one that had a
+ * different harness. Runs recorded before the ledger carried these print as `unrecorded`, which is
+ * a statement about the record and not a guess about the route.
+ */
+const harnesses = new Map();
+for (const r of runs) {
+  const baseUrl = r.route?.baseUrl ?? 'unrecorded';
+  const auth = r.route?.auth ?? 'unrecorded';
+  const key = `model=${String(r.model)} cli=${r.cliVersion ?? 'unrecorded'} route=${baseUrl} (${auth})`;
+  harnesses.set(key, (harnesses.get(key) ?? 0) + 1);
+}
+for (const [key, count] of [...harnesses].sort()) say(`harness ${key}: ${String(count)} run(s)`);
+
 // --- recall per class ------------------------------------------------------------------------
 say('\n## Recall per class (per arm, model)');
 const seedRuns = [];

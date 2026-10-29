@@ -26,7 +26,7 @@
  * carrying `modelUsage` for the pinned model, the harness stops (exit 3) rather than recording a
  * run that reviewed nothing as a run that found nothing.
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -89,6 +89,40 @@ function argvFor(model, budget) {
 
 function loadLedger() {
   return existsSync(LEDGER) ? JSON.parse(readFileSync(LEDGER, 'utf8')) : { runs: [] };
+}
+
+/**
+ * The CLI's own version (asc-0m1q).
+ *
+ * **A model id is not a model version, and this file learned that expensively.** `claude-sonnet-5`
+ * scored 8/11 on `tc01-tc11` on 2026-09-27 and 2/11 on the same seeds, same pinned tree, on
+ * 2026-10-22, while `claude-opus-5-5` held at 9/11 then 10/11. Each session's envelope reported
+ * `claude-sonnet-5` as `canonicalModel` in both runs. What differed was this string and the route
+ * below, so a recall figure that carries the model id and not these is not comparable to anything.
+ *
+ * Read once, before the first run: a ledger row is a claim about the harness that produced it.
+ */
+const CLI_VERSION = (() => {
+  const res = spawnSync('claude', ['--version'], { encoding: 'utf8' });
+  return res.status === 0 ? (res.stdout ?? '').trim() || null : null;
+})();
+
+/**
+ * Where the session's model calls went (asc-0m1q), as the two env facts that decide it.
+ *
+ * `baseUrl` non-null means a gateway or proxy sat in front of the provider; null means the CLI
+ * reached it directly. `auth` names WHICH credential kind was present and never its value: the
+ * 2026-10-22 run used first-party credentials where EV-28 had gone through a local gateway, and
+ * the ledger could not say so afterwards.
+ */
+function route() {
+  const base = process.env['ANTHROPIC_BASE_URL'];
+  const auth = process.env['ANTHROPIC_API_KEY']
+    ? 'api-key'
+    : process.env['ANTHROPIC_AUTH_TOKEN']
+      ? 'auth-token'
+      : 'credentials';
+  return { baseUrl: base === undefined || base === '' ? null : base, auth };
 }
 
 export function spentOf(ledger) {
@@ -174,7 +208,7 @@ export async function runOne({ runId, model, arm, cls, slot = null, mutationMark
   }
   const tree = buildTree({ runnable, apply });
   const argv = argvFor(model, budget);
-  const meta = { runId, model, arm, cls, slot, mutationMarker, dir: tree.dir, runnable, budgetUsd: budget, invocation: ['claude', ...argv] };
+  const meta = { runId, model, arm, cls, slot, mutationMarker, dir: tree.dir, runnable, budgetUsd: budget, invocation: ['claude', ...argv], cliVersion: CLI_VERSION, route: route() };
   if (dryRun) return { ...meta, dryRun: true };
 
   const cache = mkdtempSync(join(tmpdir(), 'rv-cache-'));
