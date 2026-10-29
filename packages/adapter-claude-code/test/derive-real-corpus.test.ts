@@ -430,9 +430,21 @@ describe.skipIf(!available)('the deriver against the real corpus', () => {
     // `user_correction` is the one deliberate exception, and it must stay the only
     // one -- an accidental second would put user content into agent context on
     // every sweep.
+    //
+    // "ONLY", NOT "AT LEAST ONE", AND THE DIFFERENCE IS A RETENTION WINDOW (`asc-kmb6`,
+    // `dogfood/0123`). On 2026-10-29 no surviving correction was of the shape that carries the
+    // user's words: both were `AskUserQuestion` answers, which the deriver deliberately leaves
+    // textless because the only prose there is the HARNESS's question (`derive.ts`,
+    // `derive.test.ts` pins both shapes). A test that required the type to appear would go red on
+    // a corpus behaving exactly as designed. What a live sweep can still assert is that no OTHER
+    // type carries prose -- the safety property, true at any corpus size -- while "the words ARE
+    // carried when a correction has words" stays where it is deterministic, in the fixtures.
     const result = once();
     const withText = result.entries.filter((entry) => entry.evidenceText !== undefined);
-    expect([...new Set(withText.map((entry) => entry.type))]).toEqual(['user_correction']);
+    const others = [...new Set(withText.map((entry) => entry.type))].filter(
+      (type) => type !== 'user_correction',
+    );
+    expect(others).toEqual([]);
   }, 120_000);
 
   it(
